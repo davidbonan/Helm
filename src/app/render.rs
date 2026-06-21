@@ -823,6 +823,15 @@ impl HelmApp {
                     run_collapsed,
                     run_panel_height,
                     |ui| {
+                        // ⌘R badge next to Run/Relaunch while Cmd is held alone
+                        // (keybindings §5); unbound ⇒ no badge.
+                        let run_shortcut = ui
+                            .input(|i| {
+                                let m = i.modifiers;
+                                m.command && !m.shift && !m.alt && !m.ctrl
+                            })
+                            .then(|| keymap.shortcut_for(Action::Run).map(|s| s.display()))
+                            .flatten();
                         run_action = crate::ui::run_panel::run_panel(
                             ui,
                             &palette,
@@ -832,6 +841,7 @@ impl HelmApp {
                             run_collapsed,
                             run_edit,
                             run_port_edit,
+                            run_shortcut.as_deref(),
                             |ui| match run_panes_all.get_mut(&run_key) {
                                 Some(TerminalState::Live(pane)) => {
                                     pane.set_visible(true);

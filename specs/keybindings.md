@@ -113,6 +113,7 @@ changing the layout.
 | Workspace sidebar icon (in the left sidebar) | `B` (for `Cmd+B`) |
 | Git sidebar icon (top right) | `G` (for `Cmd+G`) |
 | "Terminal ⇄ Git" switch (center zone header) | `⇧⌘G` (for `Cmd+Shift+G`) |
+| **Run / Relaunch** button (Run strip, git sidebar) | `⌘R` (for `Cmd+R`) — left of the button the shortcut triggers (Run when stopped, Relaunch when running) |
 | Access to **Preferences** | `,` (for `Cmd+,`) |
 
 Beyond the 9th repo, no badge (no associated shortcut, §1). Only the
