@@ -36,6 +36,7 @@ fn drive(
                 collapsed,
                 edit,
                 None,
+                None,
                 |ui| {
                     ui.label("RUN_BODY");
                 },
@@ -165,6 +166,7 @@ fn drive_port(
                 false,
                 None,
                 port_edit,
+                None,
                 |ui| {
                     ui.label("RUN_BODY");
                 },
@@ -221,4 +223,58 @@ fn enter_commits_the_port_edit() {
         harness.run();
     });
     assert!(action.commit_port_edit);
+}
+
+/// Renders `run_panel` with the held-Cmd `shortcut` badge so the assertions can
+/// query the resulting tree (keybindings §5).
+fn drive_shortcut(
+    status: RunStatus,
+    shortcut: Option<&'static str>,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) {
+    let palette = Palette::light();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 320.0))
+        .build_ui(move |ui| {
+            run_panel(
+                ui,
+                &palette,
+                &status,
+                "cargo run",
+                None,
+                false,
+                None,
+                None,
+                shortcut,
+                |ui| {
+                    ui.label("RUN_BODY");
+                },
+            );
+        });
+    harness.run();
+    actions(&mut harness);
+}
+
+#[test]
+fn cmd_held_shows_the_run_shortcut_badge() {
+    drive_shortcut(RunStatus::Stopped, Some("⌘R"), |harness| {
+        harness.get_by_label("⌘R");
+    });
+}
+
+#[test]
+fn cmd_held_shows_the_badge_while_running() {
+    drive_shortcut(RunStatus::Running, Some("⌘R"), |harness| {
+        harness.get_by_label("⌘R");
+    });
+}
+
+#[test]
+fn no_shortcut_hides_the_badge() {
+    drive_shortcut(RunStatus::Stopped, None, |harness| {
+        assert!(
+            harness.query_by_label("⌘R").is_none(),
+            "no held Cmd ⇒ no run shortcut badge"
+        );
+    });
 }

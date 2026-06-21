@@ -5,7 +5,7 @@
 
 use lucide_icons::Icon;
 
-use crate::theme::{Palette, RADIUS_PILL};
+use crate::theme::{Palette, RADIUS_PILL, SHORTCUT_BADGE_SIZE};
 
 /// Header strip height; also the collapsed panel height (git.md §3).
 pub const HEADER_HEIGHT: f32 = 36.0;
@@ -72,6 +72,8 @@ impl RunPanelAction {
 /// value, shown as a clickable chip when the command consumes it. `edit` /
 /// `port_edit` are `Some` while their inline editor is open (mutually exclusive).
 /// `body` paints the terminal viewer and is called only when expanded.
+/// `shortcut` is the `Cmd+R` display badge shown next to the Run/Relaunch button
+/// while Cmd is held (keybindings §5); `None` hides it.
 #[allow(clippy::too_many_arguments)]
 pub fn run_panel(
     ui: &mut egui::Ui,
@@ -82,6 +84,7 @@ pub fn run_panel(
     collapsed: bool,
     edit: Option<&mut String>,
     port_edit: Option<&mut String>,
+    shortcut: Option<&str>,
     body: impl FnOnce(&mut egui::Ui),
 ) -> RunPanelAction {
     let mut action = RunPanelAction::default();
@@ -116,7 +119,7 @@ pub fn run_panel(
             // Right cluster first (right-to-left) so the command field takes the
             // remaining middle width; the port chip sits just left of the controls.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                run_controls(ui, palette, status, &mut action);
+                run_controls(ui, palette, status, shortcut, &mut action);
                 port_field(ui, palette, port, port_edit, &mut action);
                 command_field(ui, palette, command, edit, &mut action);
             });
@@ -143,11 +146,14 @@ pub fn run_panel(
     action
 }
 
-/// Run / Stop / Relaunch buttons by state (laid out right-to-left).
+/// Run / Stop / Relaunch buttons by state (laid out right-to-left). The `Cmd+R`
+/// badge sits to the immediate left of the Run/Relaunch button — the control that
+/// shortcut triggers (run when stopped, relaunch when running; render.rs).
 fn run_controls(
     ui: &mut egui::Ui,
     palette: &Palette,
     status: &RunStatus,
+    shortcut: Option<&str>,
     action: &mut RunPanelAction,
 ) {
     match status {
@@ -162,6 +168,7 @@ fn run_controls(
             ) {
                 action.relaunch = true;
             }
+            shortcut_badge(ui, palette, shortcut);
             if icon_button(ui, palette, palette.git_deleted, true, "Stop", Icon::Square) {
                 action.stop = true;
             }
@@ -170,7 +177,20 @@ fn run_controls(
             if icon_button(ui, palette, palette.git_added, true, "Run", Icon::Play) {
                 action.run = true;
             }
+            shortcut_badge(ui, palette, shortcut);
         }
+    }
+}
+
+/// The muted `⌘R` keycap shown while Cmd is held (keybindings §5). Inert label —
+/// the adjacent button stays the click target.
+fn shortcut_badge(ui: &mut egui::Ui, palette: &Palette, shortcut: Option<&str>) {
+    if let Some(shortcut) = shortcut {
+        ui.label(
+            egui::RichText::new(shortcut)
+                .size(SHORTCUT_BADGE_SIZE)
+                .color(palette.text_muted),
+        );
     }
 }
 
