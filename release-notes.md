@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.0.1
+
+- Hold Cmd to reveal a ⌘R badge next to the Run/Relaunch button.
+- Agent cards in the Columns view are now collapsible, with a progress preview.
+- Polished the first-launch empty state.
+
 ## 1.0.0
 
 - First stable release of helm.
@@ -48,10 +54,3 @@
 ## 0.7.1
 
 - Commit-message generation now follows the project's conventions.
-
-## 0.7.0
-
-- New agents dashboard: a two-pane cockpit with a live terminal panel.
-- Per-repo uncommitted line-stats indicator in the sidebar.
-- Larger commit input, a centered switch with icons, and tab dividers.
-- Inset project separators, hover-reveal chips, and row accent bars.
