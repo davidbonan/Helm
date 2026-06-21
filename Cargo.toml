@@ -1,0 +1,116 @@
+[package]
+name = "helm"
+version = "0.9.1"
+edition = "2021"
+rust-version = "1.92"
+description = "Native dev workspace centered on terminal + git, written in Rust"
+authors = ["David Bonan"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davidbonan/Helm"
+homepage = "https://github.com/davidbonan/Helm"
+readme = "README.md"
+keywords = ["terminal", "git", "egui", "macos", "developer-tools"]
+categories = ["development-tools", "command-line-utilities"]
+publish = false
+
+[[bin]]
+name = "helm"
+path = "src/main.rs"
+
+# Stack added over the milestones; full list in specs/overview.md §4.
+[dependencies]
+# persistence: window geometry (size/position) restored by eframe — the only
+# source of truth for the chrome, outside the application TOML (architecture §4).
+# default-features minus accesskit: the first Accessibility query (Swish, any
+# AX client) flips egui into rebuilding the full accessibility tree every frame,
+# for the life of the process (the macOS adapter never deactivates) — constant
+# stutter for an app that repaints while terminals stream. wayland / x11 /
+# web_screen_reader target other platforms.
+# glow: the renderer every release shipped with — dropping default features had
+# silently swapped it for wgpu.
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "persistence",
+    "glow",
+] }
+egui = "0.34"
+# egui's font backend; exposed directly to validate a system font before
+# passing it to set_fonts (a failed parse in egui would panic on the first frame).
+ab_glyph = "0.2"
+# default-features=false: no network transport (push/pull out of MVP, git.md §1)
+git2 = { version = "0.21.0", default-features = false }
+portable-pty = "0.9.0"
+# portable-pty's error type (openpty/resize/spawn return anyhow::Result); already
+# pulled transitively, we expose it directly to propagate without a lossy conversion.
+anyhow = "1.0"
+# Terminal emulation: grid, VTE parser, scrollback, cursor (terminal.md §3).
+alacritty_terminal = "0.26"
+# UI ⇄ workers channels (git, PTY) — commands/results (architecture §3, §5).
+crossbeam-channel = "0.5"
+# libproc binding: current cwd of a pane inherited on split (terminal.md §2, architecture §5).
+libc = "0.2"
+# Folder open dialog (Cmd+O, multi-selection); on macOS = native NSOpenPanel (D-2).
+rfd = "0.15"
+# Persistence of application preferences in TOML (architecture §4).
+serde = { version = "1.0", features = ["derive"] }
+# update::check: parsing the GitHub Releases API response (update.md §4).
+serde_json = "1.0"
+toml = "1.1"
+# macOS path ~/Library/Application Support/helm (architecture §4).
+directories = "6.0"
+lucide-icons = "1.17"
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-onig"] }
+two-face = "0.5.1"
+# Markdown rendering of the bundled release notes (update.md §9.4): the What's
+# new modal and the Preferences › Updates block. Paired with egui 0.34; text
+# only — no image loading (notes are text, §9.6).
+egui_commonmark = { version = "0.23", default-features = false, features = ["pulldown_cmark"] }
+# Workspace launcher icons: read CFBundleIconFile from each app's Info.plist
+# (plist handles XML or binary) and decode the bundle's .icns to RGBA. Only the
+# PNG entries are needed (every target app stores its sizes as PNG), so the heavy
+# JPEG2000 decoder is left out.
+icns = { version = "0.4", default-features = false, features = ["pngio"] }
+plist = "1"
+# Image preview in the diff view (git.md §4): decode the new-side blob of an
+# image file to a texture. Pure-Rust decoders only (no C deps); the `png` feature
+# also covers the headless-verify capture encoding.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "ico",
+    "tiff",
+] }
+
+# Native titlebar AX-zone extension (app::titlebar): gesture tools (Swish…)
+# only recognize the real NSWindow titlebar band, not the egui-drawn header.
+# Same versions as winit's own objc2 stack, to share a single copy.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSArray", "NSGeometry", "NSThread"] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSAnimation",
+    "NSLayoutConstraint",
+    "NSResponder",
+    "NSTitlebarAccessoryViewController",
+    "NSView",
+    "NSViewController",
+    "NSWindow",
+] }
+raw-window-handle = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[features]
+# Enabled only by the .claude/skills/headless-verify skill: opens the real app
+# (egui_kittest::Harness::new_eframe) and captures a PNG via the wgpu renderer.
+# Outside the default `cargo test` loop, which stays without wgpu (testing.md §8).
+headless-verify = ["egui_kittest/eframe", "egui_kittest/wgpu"]
+
+[dev-dependencies]
+egui_kittest = "0.34"
+tempfile = "3.27.0"

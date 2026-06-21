@@ -1,0 +1,17 @@
+pub mod agent_watch;
+pub mod ai;
+pub mod app;
+pub mod feedback;
+pub mod frame_log;
+pub mod git;
+pub mod keybindings;
+pub mod notify;
+pub mod persistence;
+pub mod release_notes;
+pub mod run;
+pub mod terminal;
+pub mod theme;
+pub mod ui;
+pub mod update;
+pub mod workspace;
+pub mod workspace_launcher;

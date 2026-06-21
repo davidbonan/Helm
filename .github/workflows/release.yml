@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
+
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Git identity for the e2e tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@users.noreply.github.com"
+
+      - name: Tests
+        run: cargo test
+
+      - name: Bundle
+        run: ./scripts/bundle.sh
+
+      - name: Zip (ditto preserves symlinks/xattrs — update.md §3)
+        run: ditto -c -k --keepParent dist/helm.app helm-macos.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" helm-macos.zip --title "${GITHUB_REF_NAME}" --generate-notes

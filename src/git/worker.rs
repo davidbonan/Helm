@@ -1,0 +1,1278 @@
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::git::branch::{self, Branch};
+use crate::git::commit_detail::{self, CommitDetail};
+use crate::git::conflict::{self, ConflictFile};
+use crate::git::diff::{self, DiffSource, FileDiff};
+use crate::git::graph::{self, Graph};
+use crate::git::rebase::{self, RebaseCommit, RebaseStep};
+use crate::git::status::{load_repo, op_in_progress, op_summary, OpSummary, RepoStatus};
+use crate::git::sync::{self, PullMode, SyncError, SyncOutcome};
+use crate::git::{commit, discard, stage, stash, tag};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCommand {
+    Status,
+    Stage(String),
+    Unstage(String),
+    StageAll,
+    UnstageAll,
+    Discard(String),
+    DiscardAll,
+    Commit(String),
+    /// Computes a file's diff for the overlay view (M6-3). `staged` selects the
+    /// source: `false` ⇒ Unstaged (WT vs index), `true` ⇒ Staged (index vs HEAD).
+    Diff {
+        path: String,
+        staged: bool,
+    },
+    StageHunk {
+        path: String,
+        hunk: usize,
+    },
+    UnstageHunk {
+        path: String,
+        hunk: usize,
+    },
+    StageLines {
+        path: String,
+        hunk: usize,
+        lines: Vec<usize>,
+    },
+    UnstageLines {
+        path: String,
+        hunk: usize,
+        lines: Vec<usize>,
+    },
+    /// Discards hunk `hunk` of an **unstaged** file (git.md §4): reverts that
+    /// hunk's working-tree change to the index content. Destructive — the app
+    /// confirms it first.
+    DiscardHunk {
+        path: String,
+        hunk: usize,
+    },
+    /// Loads the commit graph (M9-1) off the UI thread. `limit` bounds the
+    /// pagination (0 ⇒ module default).
+    Graph {
+        limit: usize,
+    },
+    /// Lists the commits `onto..HEAD` for the interactive-rebase page (git.md
+    /// §9) — the page opens with a loader and fills on the reply.
+    RebaseTodo {
+        onto: String,
+    },
+    /// Loads a commit's detail (M9-2): metadata + files changed vs first parent.
+    CommitDetail(git2::Oid),
+    /// Loads the **read-only** diff of a file at the commit vs its first parent (M9-2/M6-1).
+    CommitFileDiff {
+        oid: git2::Oid,
+        path: String,
+    },
+    /// Reads every conflicted file from the index merge stages for the conflict
+    /// editor's file rail (conflicts.md §6/§8) — like `Diff`, a read that returns
+    /// its own payload. One reply for the whole rail (the per-kind staleness gate
+    /// would otherwise drop all but the newest of N per-file reads).
+    ReadConflicts,
+    /// Writes the conflict editor's resolution (conflicts.md §2/§8): `content`
+    /// replaces the file and clears its merge stages; `None` is a delete
+    /// resolution. Mutates the index, so it replies with a status snapshot.
+    ResolveFile {
+        path: String,
+        content: Option<String>,
+    },
+    /// Resolves a binary / oversize conflict by taking one whole side from the
+    /// index (conflicts.md §5). Mutates the index, so it replies with a snapshot.
+    ResolveFileSide {
+        path: String,
+        ours: bool,
+    },
+    /// Checks out a branch from a graph chip — local, or remote via DWIM (local
+    /// namesake, created and tracked as needed); dirty working tree ⇒ automatic
+    /// stash first (untracked included).
+    Checkout(String),
+    /// Stashes the entire working tree (untracked included) (M12-4).
+    Stash,
+    /// Applies then drops `stash@{0}`; conflict ⇒ stash kept + error.
+    StashPop,
+    /// Applies then drops the stash whose **stash commit** is the oid (graph
+    /// stash row menu); same conflict rule as `StashPop`.
+    StashPopAt(git2::Oid),
+    /// Applies the stash whose **stash commit** is the oid **without dropping it**
+    /// (graph stash row menu, git.md §9): the no-drop twin of `StashPopAt`, the
+    /// stash stays either way.
+    StashApplyAt(git2::Oid),
+    /// Drops the stash whose **stash commit** is the oid (graph stash row menu,
+    /// confirmed by a modal on the app side).
+    StashDropAt(git2::Oid),
+    /// Creates the branch on HEAD and checks it out (M12-5, Branch popover).
+    CreateBranch(String),
+    /// Creates a local branch at the commit pointed to by `at` (graph chip
+    /// context menu, git.md §9) **without** checking it out — HEAD is untouched.
+    /// `at` is the source ref, fully qualified on the app side.
+    CreateBranchAt {
+        name: String,
+        at: String,
+    },
+    /// Creates a **lightweight** tag `name` on the commit `at` (graph row menu,
+    /// git.md §9) — no checkout, no push. Duplicate/invalid name ⇒ clean failure.
+    CreateTagAt {
+        name: String,
+        at: git2::Oid,
+    },
+    /// Deletes the **local** branch (graph context menu, confirmed by a modal);
+    /// current branch or checked out elsewhere ⇒ clean failure.
+    DeleteBranch(String),
+    /// Renames the **local** branch `from` to `to` (graph chip menu, git.md §9):
+    /// `git branch -m` semantics — HEAD follows when it is the current branch,
+    /// upstream config moves with it; duplicate/invalid ⇒ clean failure (never
+    /// a forced overwrite).
+    RenameBranch {
+        from: String,
+        to: String,
+    },
+    /// **Detached** checkout on a tag's commit (graph tag menu, git.md §9): same
+    /// automatic stash as the branch checkout, menu-only.
+    CheckoutTag(String),
+    /// Deletes the **local** tag (graph tag menu, confirmed by a modal). The
+    /// remote-side deletion, if asked, runs first on the sync runner.
+    DeleteTag(String),
+    /// Moves the current branch to `target` (graph row menu, git.md §9): Soft /
+    /// Mixed run directly, Hard is confirmed by a modal on the app side. Local
+    /// `git2` reset, no network; detached HEAD is gated out in the UI.
+    Reset {
+        target: git2::Oid,
+        mode: git2::ResetType,
+    },
+}
+
+impl GitCommand {
+    /// `true` for commands that write (index, worktree, refs): they drive the
+    /// busy state of the graph toolbar
+    /// (D-2026-06-03-toolbar-loader-commandes-git).
+    pub fn mutates(&self) -> bool {
+        !matches!(
+            self,
+            GitCommand::Status
+                | GitCommand::Diff { .. }
+                | GitCommand::Graph { .. }
+                | GitCommand::RebaseTodo { .. }
+                | GitCommand::CommitDetail(_)
+                | GitCommand::CommitFileDiff { .. }
+                | GitCommand::ReadConflicts
+        )
+    }
+
+    /// `true` for commit-addressed reads (detail / file diff of an immutable
+    /// commit): they answer a click and no queued command can change their
+    /// result, so the worker serves them **before** the queued poll reads
+    /// (status/graph) — the sidebar must not wait for a reload backlog.
+    /// `RebaseTodo` also jumps: it answers a click and the rebase page must
+    /// open instantly even behind a slow graph reload; if an overtaken
+    /// mutation moves HEAD, the plan is stale — the execution re-derives and
+    /// refuses (`sync::interactive_rebase`), never a silently wrong todo.
+    pub fn jumps_queue(&self) -> bool {
+        matches!(
+            self,
+            GitCommand::CommitDetail(_)
+                | GitCommand::CommitFileDiff { .. }
+                | GitCommand::RebaseTodo { .. }
+        )
+    }
+
+    /// Reply variant this command resolves to — the slot its generation stamps
+    /// (M17-13).
+    pub fn result_kind(&self) -> ResultKind {
+        match self {
+            GitCommand::Diff { .. } => ResultKind::Diff,
+            GitCommand::Graph { .. } => ResultKind::Graph,
+            GitCommand::RebaseTodo { .. } => ResultKind::RebaseTodo,
+            GitCommand::CommitDetail(_) => ResultKind::CommitDetail,
+            GitCommand::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
+            GitCommand::ReadConflicts => ResultKind::Conflicts,
+            _ => ResultKind::Status,
+        }
+    }
+}
+
+/// One slot per `GitResult` variant: the staleness gate (M17-13) compares a
+/// reply's generation against the **latest request of the same kind** — a
+/// status burst never invalidates an in-flight graph, and vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultKind {
+    Status,
+    Diff,
+    Graph,
+    RebaseTodo,
+    CommitDetail,
+    CommitFileDiff,
+    Conflicts,
+}
+
+const RESULT_KINDS: usize = 7;
+
+#[derive(Debug)]
+pub enum GitResult {
+    /// Reply for status and mutating commands. `source` identifies the original
+    /// command: the app routes a failure to its surface (inline error in the
+    /// Branch popover for `CreateBranch`, contextual toast otherwise).
+    Status {
+        source: GitCommand,
+        result: Result<RepoSnapshot, git2::Error>,
+    },
+    Diff(Result<FileDiff, git2::Error>),
+    /// Echoes the requested `limit` (data role only since M17-13: staleness
+    /// rides the generation tag).
+    Graph {
+        limit: usize,
+        result: Result<Graph, git2::Error>,
+    },
+    /// Carries the requested `onto`: the rebase page adopts only the reply
+    /// that targets its own onto (a reopened page never inherits the plan of
+    /// the previous target).
+    RebaseTodo {
+        onto: String,
+        result: Result<Vec<RebaseCommit>, git2::Error>,
+    },
+    CommitDetail(Result<CommitDetail, git2::Error>),
+    /// Carries the requested `oid`: the open diff adopts only the reply that
+    /// targets its commit (and its path).
+    CommitFileDiff {
+        oid: git2::Oid,
+        result: Result<FileDiff, git2::Error>,
+    },
+    /// Every conflicted file of the index — the editor's file rail
+    /// (conflicts.md §8), adopted by the open editor while it is loading.
+    Conflicts {
+        result: Result<Vec<ConflictFile>, git2::Error>,
+    },
+}
+
+impl GitResult {
+    pub fn kind(&self) -> ResultKind {
+        match self {
+            GitResult::Status { .. } => ResultKind::Status,
+            GitResult::Diff(_) => ResultKind::Diff,
+            GitResult::Graph { .. } => ResultKind::Graph,
+            GitResult::RebaseTodo { .. } => ResultKind::RebaseTodo,
+            GitResult::CommitDetail(_) => ResultKind::CommitDetail,
+            GitResult::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
+            GitResult::Conflicts { .. } => ResultKind::Conflicts,
+        }
+    }
+
+    /// `true` when the payload is adoptable state (`Ok`): only those go through
+    /// the staleness gate. Errors always surface — they report on the command
+    /// (toast, inline editor error), not on superseded state. Exception:
+    /// a `RebaseTodo` error IS state (the page's clean error screen), so it is
+    /// gated too — a stale failure must not clobber a page reopened on the
+    /// same target while the fresh reply is in flight.
+    pub fn carries_state(&self) -> bool {
+        match self {
+            GitResult::Status { result, .. } => result.is_ok(),
+            GitResult::Diff(result) => result.is_ok(),
+            GitResult::Graph { result, .. } => result.is_ok(),
+            GitResult::RebaseTodo { .. } => true,
+            GitResult::CommitDetail(result) => result.is_ok(),
+            GitResult::CommitFileDiff { result, .. } => result.is_ok(),
+            GitResult::Conflicts { result } => result.is_ok(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSnapshot {
+    pub status: RepoStatus,
+    pub branch: Branch,
+    /// Stash count (M12-4): enables/disables **Pop** in the toolbar.
+    pub stash_count: usize,
+    /// At least one remote configured (M12-6): without a remote, Pull/Push are grayed out.
+    pub has_remote: bool,
+    /// Remote name of the current branch's upstream, if any (git.md §10): drives
+    /// the force-push gating (greyed without it) and names the remote in its
+    /// confirmation modal.
+    pub upstream_remote: Option<String>,
+    /// Merge / rebase in progress (M12-8): banner in the status sidebar.
+    pub op_in_progress: bool,
+    /// One-line summary of that op (conflicts.md §2): verb + best-effort
+    /// source/target branch names for the conflict panel header. `None` outside
+    /// merge/rebase/cherry-pick/revert.
+    pub op: Option<OpSummary>,
+    /// Cloud forge behind `origin` (git.md §9), `None` when there is no `origin`
+    /// or its host is unrecognized: gates the **Create pull request** graph entry
+    /// and carries the workspace/owner + repo that builds its URL.
+    pub pr_remote: Option<crate::git::forge::Forge>,
+}
+
+#[derive(Clone, Default)]
+pub struct MutationLock {
+    locked: Arc<AtomicBool>,
+}
+
+impl MutationLock {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn try_acquire(&self) -> Option<MutationGuard> {
+        self.locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| MutationGuard {
+                locked: Arc::clone(&self.locked),
+            })
+    }
+}
+
+pub(crate) struct MutationGuard {
+    locked: Arc<AtomicBool>,
+}
+
+impl Drop for MutationGuard {
+    fn drop(&mut self) {
+        self.locked.store(false, Ordering::Release);
+    }
+}
+
+pub struct GitWorker {
+    commands: Option<Sender<(u64, GitCommand)>>,
+    results: Receiver<(u64, GitResult)>,
+    handle: Option<JoinHandle<()>>,
+    /// Abandoned session (repo switch): the thread skips the remaining reads in
+    /// its queue — no one will read their results anymore.
+    cancelled: Arc<AtomicBool>,
+    /// Sent commands whose reply hasn't been drained yet (the worker replies
+    /// exactly once per command, in order **per kind** — commit-addressed reads
+    /// jump the queue): lets us know whether a mutation is in progress without
+    /// a dedicated signal from the thread.
+    in_flight: Mutex<VecDeque<GitCommand>>,
+    /// Generation tag (M17-13): every send stamps the next value; the thread
+    /// echoes it on the reply.
+    generation: AtomicU64,
+    /// Latest generation sent, per result kind — the reference the staleness
+    /// gate compares replies against.
+    latest: [AtomicU64; RESULT_KINDS],
+}
+
+impl GitWorker {
+    pub fn spawn(repo_path: &Path, on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::spawn_with_lock(repo_path, MutationLock::new(), on_event)
+    }
+
+    pub fn spawn_with_lock(
+        repo_path: &Path,
+        mutation_lock: MutationLock,
+        on_event: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let repo_path = repo_path.to_path_buf();
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<(u64, GitCommand)>();
+        let (res_tx, res_rx) = crossbeam_channel::unbounded::<(u64, GitResult)>();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let handle = std::thread::spawn(move || {
+            run(&repo_path, cmd_rx, res_tx, on_event, &flag, mutation_lock)
+        });
+        Self {
+            commands: Some(cmd_tx),
+            results: res_rx,
+            handle: Some(handle),
+            cancelled,
+            in_flight: Mutex::new(VecDeque::new()),
+            generation: AtomicU64::new(0),
+            latest: Default::default(),
+        }
+    }
+
+    pub fn send(&self, command: GitCommand) {
+        if let Some(commands) = &self.commands {
+            let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+            let kind = command.result_kind();
+            let queued = command.clone();
+            if commands.send((generation, command)).is_ok() {
+                self.latest[kind as usize].store(generation, Ordering::Relaxed);
+                self.in_flight.lock().unwrap().push_back(queued);
+            }
+        }
+    }
+
+    /// `true` when a newer request of the same kind was sent after the one this
+    /// reply answers: its payload is already outdated, the fresher reply is in
+    /// flight (M17-13).
+    pub fn superseded(&self, generation: u64, kind: ResultKind) -> bool {
+        generation < self.latest[kind as usize].load(Ordering::Relaxed)
+    }
+
+    pub fn has_pending(&self, kind: ResultKind) -> bool {
+        self.in_flight
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| command.result_kind() == kind)
+    }
+
+    pub fn try_recv(&self) -> Option<(u64, GitResult)> {
+        let result = self.results.try_recv().ok();
+        if let Some((_, reply)) = &result {
+            self.settle(reply.kind());
+        }
+        result
+    }
+
+    pub fn recv(&self) -> Option<(u64, GitResult)> {
+        let result = self.results.recv().ok();
+        if let Some((_, reply)) = &result {
+            self.settle(reply.kind());
+        }
+        result
+    }
+
+    /// Drops the in-flight command this reply answers: the oldest of its kind —
+    /// replies are FIFO per kind, but commit-addressed reads overtake the other
+    /// kinds (`jumps_queue`), so a blind front pop would unpair the queue.
+    fn settle(&self, kind: ResultKind) {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        if let Some(index) = in_flight
+            .iter()
+            .position(|command| command.result_kind() == kind)
+        {
+            in_flight.remove(index);
+        }
+    }
+
+    /// `true` while a `Commit` awaits its reply: the commit button shows a
+    /// spinner and ignores clicks — a double-click (or repeated ⌘Enter) must
+    /// not enqueue a second commit that would fail with "nothing staged".
+    pub fn has_pending_commit(&self) -> bool {
+        self.in_flight
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| matches!(command, GitCommand::Commit(_)))
+    }
+
+    /// First **mutating** command awaiting a reply, if any: the graph toolbar
+    /// shows a loader and grays out all its buttons meanwhile
+    /// (D-2026-06-03-toolbar-loader-commandes-git). Reads (status, diff, graph)
+    /// don't count — the poll doesn't make the toolbar flicker.
+    pub fn pending_mutation(&self) -> Option<GitCommand> {
+        self.in_flight
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|command| command.mutates())
+            .cloned()
+    }
+}
+
+impl Drop for GitWorker {
+    fn drop(&mut self) {
+        // Only join if a mutation is at stake (it must complete — write safety):
+        // joining unconditionally blocked the UI thread on a repo switch while
+        // the worker drained the poll backlog (status + graph of the left repo).
+        self.cancelled.store(true, Ordering::Relaxed);
+        let pending_mutation = self.pending_mutation().is_some();
+        self.commands = None;
+        if let Some(handle) = self.handle.take() {
+            if pending_mutation {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+fn run(
+    repo_path: &Path,
+    commands: Receiver<(u64, GitCommand)>,
+    results: Sender<(u64, GitResult)>,
+    on_event: impl Fn(),
+    cancelled: &AtomicBool,
+    mutation_lock: MutationLock,
+) {
+    let repo = git2::Repository::open(repo_path);
+    let mut queue: VecDeque<(u64, GitCommand)> = VecDeque::new();
+    loop {
+        if queue.is_empty() {
+            match commands.recv() {
+                Ok(message) => queue.push_back(message),
+                Err(_) => break,
+            }
+        }
+        while let Ok(message) = commands.try_recv() {
+            queue.push_back(message);
+        }
+        let Some((generation, command)) = queue.remove(next_index(&queue)) else {
+            continue;
+        };
+        // Abandoned session: queued reads are skipped, but an already-requested
+        // mutation still applies (a Stage clicked just before the switch isn't
+        // lost) — without a snapshot or reply.
+        if cancelled.load(Ordering::Relaxed) {
+            if command.mutates() {
+                if let Ok(repo) = repo.as_ref() {
+                    let _ = mutate_with_lock(repo, &command, &mutation_lock);
+                }
+            }
+            continue;
+        }
+        let repo = repo
+            .as_ref()
+            .map_err(|err| git2::Error::from_str(err.message()));
+        let result = dispatch(repo, &command, &mutation_lock);
+        if results.send((generation, result)).is_err() {
+            break;
+        }
+        on_event();
+    }
+}
+
+/// Position of the next command to serve: the first commit-addressed read if
+/// any (`jumps_queue` — it answers a click and must not wait for the poll
+/// backlog), the queue's front otherwise. Commands of the **same kind** never
+/// overtake each other: per-kind FIFO holds, the staleness gate (M17-13) and
+/// the per-kind `in_flight` settlement stay exact.
+fn next_index(queue: &VecDeque<(u64, GitCommand)>) -> usize {
+    queue
+        .iter()
+        .position(|(_, command)| command.jumps_queue())
+        .unwrap_or(0)
+}
+
+/// Read commands (`Diff`, `Graph`, `CommitDetail`, `CommitFileDiff`) reply with
+/// their own variant without touching the index; any other command mutates the
+/// index then replies with a status snapshot (refresh). A repo-open failure
+/// follows the same command→variant routing (a single match).
+fn dispatch(
+    repo: Result<&git2::Repository, git2::Error>,
+    command: &GitCommand,
+    mutation_lock: &MutationLock,
+) -> GitResult {
+    match command {
+        GitCommand::Diff { path, staged } => {
+            let source = if *staged {
+                DiffSource::Staged
+            } else {
+                DiffSource::Unstaged
+            };
+            GitResult::Diff(repo.and_then(|repo| diff::file_diff(repo, path, source)))
+        }
+        GitCommand::Graph { limit } => GitResult::Graph {
+            limit: *limit,
+            result: repo.and_then(|repo| graph::load_repo(repo, *limit)),
+        },
+        GitCommand::RebaseTodo { onto } => GitResult::RebaseTodo {
+            onto: onto.clone(),
+            result: repo.and_then(|repo| rebase::rebase_commits(repo, onto)),
+        },
+        GitCommand::CommitDetail(oid) => {
+            GitResult::CommitDetail(repo.and_then(|repo| commit_detail::load_repo(repo, *oid)))
+        }
+        GitCommand::CommitFileDiff { oid, path } => GitResult::CommitFileDiff {
+            oid: *oid,
+            result: repo.and_then(|repo| diff::commit_file_diff(repo, *oid, path)),
+        },
+        GitCommand::ReadConflicts => GitResult::Conflicts {
+            result: repo.and_then(conflict::read_conflicts),
+        },
+        _ => GitResult::Status {
+            source: command.clone(),
+            result: repo.and_then(|repo| apply(repo, command, mutation_lock)),
+        },
+    }
+}
+
+fn apply(
+    repo: &git2::Repository,
+    command: &GitCommand,
+    mutation_lock: &MutationLock,
+) -> Result<RepoSnapshot, git2::Error> {
+    let _guard = mutation_guard(command, mutation_lock)?;
+    mutate(repo, command)?;
+    snapshot(repo)
+}
+
+fn mutate_with_lock(
+    repo: &git2::Repository,
+    command: &GitCommand,
+    mutation_lock: &MutationLock,
+) -> Result<(), git2::Error> {
+    let _guard = mutation_guard(command, mutation_lock)?;
+    mutate(repo, command)
+}
+
+fn mutation_guard(
+    command: &GitCommand,
+    mutation_lock: &MutationLock,
+) -> Result<Option<MutationGuard>, git2::Error> {
+    if command.mutates() {
+        mutation_lock
+            .try_acquire()
+            .map(Some)
+            .ok_or_else(|| git2::Error::from_str("another Git operation is in progress"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Error> {
+    match command {
+        GitCommand::Status => {}
+        GitCommand::Stage(path) => stage::stage(repo, path)?,
+        GitCommand::Unstage(path) => stage::unstage(repo, path)?,
+        GitCommand::StageAll => stage::stage_all(repo)?,
+        GitCommand::UnstageAll => stage::unstage_all(repo)?,
+        GitCommand::Discard(path) => discard::discard_file(repo, path)?,
+        GitCommand::DiscardAll => discard::discard_all(repo)?,
+        GitCommand::Commit(message) => {
+            commit::commit(repo, message)?;
+        }
+        GitCommand::Checkout(name) => branch::checkout(repo, name)?,
+        GitCommand::Stash => stash::stash(repo)?,
+        GitCommand::StashPop => stash::pop(repo)?,
+        GitCommand::StashPopAt(oid) => stash::pop_at(repo, *oid)?,
+        GitCommand::StashApplyAt(oid) => stash::apply_at(repo, *oid)?,
+        GitCommand::StashDropAt(oid) => stash::drop_at(repo, *oid)?,
+        GitCommand::CreateBranch(name) => branch::create_and_checkout(repo, name)?,
+        GitCommand::CreateBranchAt { name, at } => branch::create_at(repo, name, at)?,
+        GitCommand::CreateTagAt { name, at } => tag::create_lightweight(repo, name, *at)?,
+        GitCommand::DeleteBranch(name) => branch::delete_local(repo, name)?,
+        GitCommand::RenameBranch { from, to } => branch::rename(repo, from, to)?,
+        GitCommand::CheckoutTag(name) => tag::checkout_detached(repo, name)?,
+        GitCommand::DeleteTag(name) => tag::delete(repo, name)?,
+        GitCommand::Reset { target, mode } => branch::reset(repo, *target, *mode)?,
+        GitCommand::StageHunk { path, hunk } => stage::stage_hunk(repo, path, *hunk)?,
+        GitCommand::UnstageHunk { path, hunk } => stage::unstage_hunk(repo, path, *hunk)?,
+        GitCommand::StageLines { path, hunk, lines } => {
+            stage::stage_lines(repo, path, *hunk, lines)?
+        }
+        GitCommand::UnstageLines { path, hunk, lines } => {
+            stage::unstage_lines(repo, path, *hunk, lines)?
+        }
+        GitCommand::DiscardHunk { path, hunk } => stage::discard_hunk(repo, path, *hunk)?,
+        GitCommand::ResolveFile { path, content } => {
+            conflict::resolve_file(repo, path, content.as_deref())?
+        }
+        GitCommand::ResolveFileSide { path, ours } => {
+            conflict::resolve_file_side(repo, path, *ours)?
+        }
+        GitCommand::Diff { .. }
+        | GitCommand::Graph { .. }
+        | GitCommand::RebaseTodo { .. }
+        | GitCommand::CommitDetail(_)
+        | GitCommand::CommitFileDiff { .. }
+        | GitCommand::ReadConflicts => {
+            unreachable!("read-only commands are handled by dispatch, not apply")
+        }
+    }
+    Ok(())
+}
+
+fn snapshot(repo: &git2::Repository) -> Result<RepoSnapshot, git2::Error> {
+    Ok(RepoSnapshot {
+        status: load_repo(repo)?,
+        branch: branch::current(repo)?,
+        stash_count: stash::count(repo)?,
+        has_remote: !repo.remotes()?.is_empty(),
+        upstream_remote: upstream_remote(repo),
+        op_in_progress: op_in_progress(repo),
+        op: op_summary(repo),
+        pr_remote: pr_remote(repo),
+    })
+}
+
+/// Cloud forge of the `origin` remote (git.md §9), parsed from its URL — `None`
+/// without an `origin` or for an unrecognized host. No network: just a config read.
+fn pr_remote(repo: &git2::Repository) -> Option<crate::git::forge::Forge> {
+    let remote = repo.find_remote("origin").ok()?;
+    crate::git::forge::parse_remote(remote.url().ok()?)
+}
+
+/// Remote name of the current branch's upstream (`branch.<name>.remote`), or
+/// `None` if HEAD is detached/unborn or the branch has no tracking config.
+fn upstream_remote(repo: &git2::Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    if !head.is_branch() {
+        return None;
+    }
+    let name = head.shorthand().ok()?;
+    let local = repo.find_branch(name, git2::BranchType::Local).ok()?;
+    local.upstream().ok()?;
+    repo.config()
+        .ok()?
+        .get_string(&format!("branch.{name}.remote"))
+        .ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncCommand {
+    FetchAll,
+    Pull(PullMode),
+    Push,
+    /// Force-pushes the current branch to its upstream with a lease (toolbar Push
+    /// chevron, git.md §10): `git push --force-with-lease`. Confirmed by a modal;
+    /// same execution rules as `Push` (the lease keeps it safe — never bare
+    /// `--force`).
+    ForcePush,
+    /// Rebases the current branch onto the named ref (graph context menu,
+    /// git.md §9). Local op via the `git` subprocess — same execution rules as
+    /// Pull/Push (dedicated thread, one op at a time, toasts on completion).
+    Rebase(String),
+    /// Executes the plan of the interactive-rebase page (git.md §9): `git
+    /// rebase -i` with the injected todo — same execution rules as `Rebase`.
+    /// `current` is the branch the page was opened on: the execution refuses
+    /// when HEAD no longer names it (checkout from the terminal meanwhile).
+    InteractiveRebase {
+        current: String,
+        onto: String,
+        steps: Vec<RebaseStep>,
+    },
+    /// Merges the named ref into the current branch (graph context menu,
+    /// git.md §9). Local op via the `git` subprocess — same execution rules as
+    /// `Rebase` (dedicated thread, one op at a time, toasts on completion).
+    Merge(String),
+    /// Replays the commit on the current branch (`git cherry-pick <sha>`, graph
+    /// row menu — git.md §9). Local op, same execution rules as `Rebase`.
+    CherryPick(String),
+    /// Commits the inverse of the commit on the current branch (`git revert
+    /// --no-edit <sha>`, graph row menu — git.md §9). Same rules as `CherryPick`.
+    Revert(String),
+    /// Aborts the merge/rebase in progress (banner button, git.md §10): the
+    /// abort flavor follows the repo state on the domain side.
+    AbortOp,
+    /// Continues the merge/rebase after its conflicts are resolved (conflict
+    /// editor "Continue", conflicts.md §2/§5): the `--continue` flavor follows
+    /// the repo state on the domain side, non-interactively.
+    ContinueOp,
+    /// Deletes the branch on its remote (`git push <remote> --delete`, graph
+    /// context menu, confirmed by a modal): a network op, same execution rules
+    /// as Pull/Push (git.md §10).
+    DeleteRemoteBranch(String),
+    /// Combined menu entry: delete the remote first, then enqueue the local
+    /// deletion only if the network side succeeded.
+    DeleteRemoteThenLocalBranch {
+        remote: String,
+        local: String,
+    },
+    /// Pushes a tag to `origin` (`git push origin <tag>`, graph tag menu — git.md
+    /// §9): a network op, same execution rules as Push (§10).
+    PushTag(String),
+    /// "Also delete on origin" tag deletion: removes the tag on `origin` first,
+    /// then enqueues the local deletion only if the network side succeeded —
+    /// never a silent half (busy ⇒ nothing happens, refusal toast on the app
+    /// side). Local-only deletion goes straight to the worker (`DeleteTag`).
+    DeleteRemoteThenLocalTag(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncReply {
+    pub command: SyncCommand,
+    pub result: Result<SyncOutcome, SyncError>,
+}
+
+/// Runs network operations (git.md §10) on a **dedicated thread per op**: the
+/// sequential git worker and the status poll (§7) are never blocked. **One op at
+/// a time**: `request` ignores until the previous one has been drained (`busy`).
+/// The thread is not joined: abandoning the session mid-op lets the subprocess
+/// finish in the background, its reply discarded.
+pub struct SyncRunner {
+    repo_path: PathBuf,
+    on_event: Arc<dyn Fn() + Send + Sync>,
+    results_tx: Sender<SyncReply>,
+    results_rx: Receiver<SyncReply>,
+    in_flight: Option<SyncCommand>,
+    mutation_lock: MutationLock,
+}
+
+impl SyncRunner {
+    pub fn new(repo_path: &Path, on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::new_with_lock(repo_path, MutationLock::new(), on_event)
+    }
+
+    pub fn new_with_lock(
+        repo_path: &Path,
+        mutation_lock: MutationLock,
+        on_event: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            on_event: Arc::new(on_event),
+            results_tx,
+            results_rx,
+            in_flight: None,
+            mutation_lock,
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Op in progress, if any: the toolbar (M12-6) shows the spinner on the
+    /// relevant button and disables the other network actions.
+    pub fn in_flight(&self) -> Option<SyncCommand> {
+        self.in_flight.clone()
+    }
+
+    /// Launches the op; returns `false` (request ignored) if an op is in progress.
+    pub fn request(&mut self, command: SyncCommand) -> bool {
+        if self.in_flight.is_some() {
+            return false;
+        }
+        let Some(guard) = self.mutation_lock.try_acquire() else {
+            return false;
+        };
+        self.in_flight = Some(command.clone());
+        let path = self.repo_path.clone();
+        let tx = self.results_tx.clone();
+        let on_event = Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            // Release the lock before broadcasting the reply (as GitWorker does):
+            // recv() unblocks on the send, so a caller that re-requests right after
+            // draining must find the lock already free.
+            let result = {
+                let _guard = guard;
+                execute_sync(&path, &command)
+            };
+            let _ = tx.send(SyncReply { command, result });
+            on_event();
+        });
+        true
+    }
+
+    pub fn try_recv(&mut self) -> Option<SyncReply> {
+        let reply = self.results_rx.try_recv().ok();
+        if reply.is_some() {
+            self.in_flight = None;
+        }
+        reply
+    }
+
+    pub fn recv(&mut self) -> Option<SyncReply> {
+        let reply = self.results_rx.recv().ok();
+        if reply.is_some() {
+            self.in_flight = None;
+        }
+        reply
+    }
+}
+
+/// Cadence of the silent background fetch (git.md §7).
+const BACKGROUND_FETCH_INTERVAL_SECS: f64 = 10.0;
+
+/// A background-fetch tick is due once the interval has elapsed, never while one
+/// is already running (single-flight) nor on a repo without a remote.
+fn background_fetch_due(now: f64, last_run: f64, in_flight: bool, has_remote: bool) -> bool {
+    has_remote && !in_flight && now - last_run >= BACKGROUND_FETCH_INTERVAL_SECS
+}
+
+/// Silent `git fetch --all` of the active repo every `BACKGROUND_FETCH_INTERVAL_SECS`,
+/// off the UI thread: keeps `refs/remotes/*` fresh so the graph — reloaded by the
+/// poll (git.md §7) — shows the real remote position without a manual fetch/pull.
+///
+/// Lock-free on purpose: `sync::background_fetch_all` disables auto-maintenance, so a
+/// fetch only writes loose `refs/remotes` + objects (never a repack / `packed-refs`
+/// rewrite), disjoint from the index and local refs the mutation lock guards — holding
+/// it would instead spuriously fail user staging/commits on every tick. The caller
+/// defers a tick to any in-flight manual network op / AI rebase — the only op that
+/// also moves the remote refs.
+/// Failures (offline / auth) are swallowed: the fetch stays invisible until it moves
+/// a ref the graph then shows. Single-flight: a fetch slower than the interval is not
+/// stacked. The thread is not joined: abandoning the session mid-fetch lets the
+/// subprocess finish, its result dropped.
+pub struct FetchRunner {
+    repo_path: PathBuf,
+    on_event: Arc<dyn Fn() + Send + Sync>,
+    in_flight: Arc<AtomicBool>,
+    last_run: f64,
+}
+
+impl FetchRunner {
+    pub fn new(
+        repo_path: &Path,
+        started: f64,
+        on_event: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            on_event: Arc::new(on_event),
+            in_flight: Arc::new(AtomicBool::new(false)),
+            last_run: started,
+        }
+    }
+
+    /// Spawns a fetch when the cadence allows it; a no-op otherwise. Only the UI
+    /// thread calls this, so the load-then-store of `in_flight` needs no CAS — the
+    /// fetch thread only ever clears it.
+    pub fn tick(&mut self, now: f64, has_remote: bool) {
+        let in_flight = self.in_flight.load(Ordering::Acquire);
+        if !background_fetch_due(now, self.last_run, in_flight, has_remote) {
+            return;
+        }
+        self.last_run = now;
+        self.in_flight.store(true, Ordering::Release);
+        let path = self.repo_path.clone();
+        let in_flight = Arc::clone(&self.in_flight);
+        let on_event = Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let _ = sync::background_fetch_all(&path);
+            in_flight.store(false, Ordering::Release);
+            on_event();
+        });
+    }
+}
+
+fn sync_follow_up(
+    command: &SyncCommand,
+    result: &Result<SyncOutcome, SyncError>,
+) -> Option<GitCommand> {
+    match (command, result) {
+        (SyncCommand::DeleteRemoteThenLocalBranch { local, .. }, Ok(_)) => {
+            Some(GitCommand::DeleteBranch(local.clone()))
+        }
+        (SyncCommand::DeleteRemoteThenLocalTag(name), Ok(_)) => {
+            Some(GitCommand::DeleteTag(name.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn execute_sync(path: &Path, command: &SyncCommand) -> Result<SyncOutcome, SyncError> {
+    match command {
+        SyncCommand::FetchAll => sync::fetch_all(path),
+        SyncCommand::Pull(mode) => sync::pull(path, *mode),
+        SyncCommand::Push => sync::push(path),
+        SyncCommand::ForcePush => sync::force_push(path),
+        SyncCommand::Rebase(onto) => sync::rebase_onto(path, onto),
+        SyncCommand::InteractiveRebase {
+            current,
+            onto,
+            steps,
+        } => sync::interactive_rebase(path, current, onto, steps),
+        SyncCommand::Merge(from) => sync::merge(path, from),
+        SyncCommand::CherryPick(sha) => sync::cherry_pick(path, sha),
+        SyncCommand::Revert(sha) => sync::revert(path, sha),
+        SyncCommand::AbortOp => sync::abort_op(path),
+        SyncCommand::ContinueOp => sync::continue_op(path),
+        SyncCommand::DeleteRemoteBranch(name) => sync::delete_remote_branch(path, name),
+        SyncCommand::DeleteRemoteThenLocalBranch { remote, local } => {
+            let repo = git2::Repository::open(path)
+                .map_err(|err| SyncError::Other(err.message().to_owned()))?;
+            branch::validate_local_deletable(&repo, local)
+                .map_err(|err| SyncError::Other(err.message().to_owned()))?;
+            sync::delete_remote_branch(path, remote)
+        }
+        SyncCommand::PushTag(name) => sync::push_tag(path, name),
+        SyncCommand::DeleteRemoteThenLocalTag(name) => sync::delete_remote_tag(path, name),
+    }
+}
+
+/// Drains network-op replies: each completed op reloads status + graph (the
+/// graph only in Graph mode, same rules as the poll git.md §7). Seam:
+/// `GitSession::drain_sync` delegates here, business e2e tests exercise it without egui.
+pub fn drain_sync_refresh(
+    sync: &mut SyncRunner,
+    worker: &GitWorker,
+    graph_mode: bool,
+    graph_limit: usize,
+) -> Vec<SyncReply> {
+    let mut replies = Vec::new();
+    while let Some(reply) = sync.try_recv() {
+        if let Some(command) = sync_follow_up(&reply.command, &reply.result) {
+            worker.send(command);
+        }
+        worker.send(GitCommand::Status);
+        if graph_mode {
+            worker.send(GitCommand::Graph { limit: graph_limit });
+        }
+        replies.push(reply);
+    }
+    replies
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_stamps_the_latest_generation_per_result_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worker = GitWorker::spawn(tmp.path(), || {});
+        worker.send(GitCommand::Status); // generation 1
+        worker.send(GitCommand::Graph { limit: 50 }); // generation 2
+        worker.send(GitCommand::Stage("a.txt".into())); // generation 3, Status kind
+
+        assert!(
+            worker.superseded(1, ResultKind::Status),
+            "the Stage request supersedes the older Status one (same kind)"
+        );
+        assert!(!worker.superseded(3, ResultKind::Status));
+        assert!(
+            !worker.superseded(2, ResultKind::Graph),
+            "a status burst never supersedes the in-flight graph request"
+        );
+    }
+
+    #[test]
+    fn a_rebase_todo_error_is_gated_like_state() {
+        // The page adopts even the failure (clean error screen): a stale Err
+        // from a superseded request must pass the gate, not bypass it.
+        let todo_err = GitResult::RebaseTodo {
+            onto: "main".into(),
+            result: Err(git2::Error::from_str("boom")),
+        };
+        assert!(todo_err.carries_state());
+        // Other reads keep reporting their errors regardless of staleness.
+        let status_err = GitResult::Status {
+            source: GitCommand::Status,
+            result: Err(git2::Error::from_str("boom")),
+        };
+        assert!(!status_err.carries_state());
+    }
+
+    #[test]
+    fn every_command_resolves_to_its_reply_kind() {
+        assert_eq!(GitCommand::Status.result_kind(), ResultKind::Status);
+        assert_eq!(
+            GitCommand::Commit("m".into()).result_kind(),
+            ResultKind::Status,
+            "mutating commands reply with a status snapshot"
+        );
+        assert_eq!(
+            GitCommand::Diff {
+                path: "a".into(),
+                staged: false
+            }
+            .result_kind(),
+            ResultKind::Diff
+        );
+        assert_eq!(
+            GitCommand::Graph { limit: 1 }.result_kind(),
+            ResultKind::Graph
+        );
+        assert_eq!(
+            GitCommand::CommitDetail(git2::Oid::ZERO_SHA1).result_kind(),
+            ResultKind::CommitDetail
+        );
+        assert_eq!(
+            GitCommand::CommitFileDiff {
+                oid: git2::Oid::ZERO_SHA1,
+                path: "a".into()
+            }
+            .result_kind(),
+            ResultKind::CommitFileDiff
+        );
+    }
+
+    #[test]
+    fn commit_addressed_reads_jump_the_poll_backlog() {
+        let queue: VecDeque<(u64, GitCommand)> = [
+            (1, GitCommand::Status),
+            (2, GitCommand::Graph { limit: 50 }),
+            (3, GitCommand::CommitDetail(git2::Oid::ZERO_SHA1)),
+            (
+                4,
+                GitCommand::CommitFileDiff {
+                    oid: git2::Oid::ZERO_SHA1,
+                    path: "a".into(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            next_index(&queue),
+            2,
+            "the commit detail overtakes the queued poll reads"
+        );
+
+        let queue: VecDeque<(u64, GitCommand)> = [
+            (1, GitCommand::Stage("a.txt".into())),
+            (2, GitCommand::CommitDetail(git2::Oid::ZERO_SHA1)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            next_index(&queue),
+            1,
+            "a commit is immutable: its detail may overtake a queued mutation"
+        );
+
+        let queue: VecDeque<(u64, GitCommand)> = [
+            (1, GitCommand::Status),
+            (
+                2,
+                GitCommand::Diff {
+                    path: "a".into(),
+                    staged: false,
+                },
+            ),
+            (3, GitCommand::Graph { limit: 50 }),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            next_index(&queue),
+            0,
+            "working-tree reads depend on queued mutations: strict FIFO"
+        );
+    }
+
+    #[test]
+    fn replies_settle_the_in_flight_entry_of_their_kind() {
+        // Non-repo path: every command replies (with an error), whatever the
+        // serve order — the bookkeeping must pair each reply with the oldest
+        // in-flight command of its kind, never blindly with the queue's front.
+        let tmp = tempfile::tempdir().unwrap();
+        let worker = GitWorker::spawn(tmp.path(), || {});
+        worker.send(GitCommand::Status);
+        worker.send(GitCommand::CommitDetail(git2::Oid::ZERO_SHA1));
+
+        let (_, first) = worker.recv().expect("first reply");
+        assert!(!worker.has_pending(first.kind()));
+        let other = if first.kind() == ResultKind::Status {
+            ResultKind::CommitDetail
+        } else {
+            ResultKind::Status
+        };
+        assert!(worker.has_pending(other), "the other command is in flight");
+        let (_, second) = worker.recv().expect("second reply");
+        assert_eq!(second.kind(), other);
+        assert!(!worker.has_pending(other));
+    }
+
+    #[test]
+    fn only_ok_payloads_carry_state() {
+        let ok = GitResult::Graph {
+            limit: 1,
+            result: Ok(Graph {
+                commits: Vec::new(),
+                has_more: false,
+            }),
+        };
+        assert!(ok.carries_state());
+        assert_eq!(ok.kind(), ResultKind::Graph);
+
+        let err = GitResult::Status {
+            source: GitCommand::CreateBranch("feat".into()),
+            result: Err(git2::Error::from_str("exists")),
+        };
+        assert!(
+            !err.carries_state(),
+            "errors are never gated — they report on the command"
+        );
+        assert_eq!(err.kind(), ResultKind::Status);
+    }
+
+    #[test]
+    fn request_is_ignored_while_busy_and_busy_clears_on_drain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runner = SyncRunner::new(tmp.path(), || {});
+        assert!(!runner.busy());
+
+        assert!(runner.request(SyncCommand::FetchAll));
+        assert!(runner.busy());
+        assert_eq!(runner.in_flight(), Some(SyncCommand::FetchAll));
+        assert!(!runner.request(SyncCommand::Push));
+
+        let reply = runner.recv().unwrap();
+        assert_eq!(reply.command, SyncCommand::FetchAll);
+        assert!(reply.result.is_err());
+        assert!(!runner.busy());
+
+        assert!(runner.request(SyncCommand::Push));
+    }
+
+    #[test]
+    fn background_fetch_advances_remote_tracking_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str], cwd: &Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let bare = root.join("bare.git");
+        let a = root.join("a");
+        let b = root.join("b");
+        git(
+            &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+            root,
+        );
+        // Clone A publishes the first commit.
+        git(
+            &["clone", bare.to_str().unwrap(), a.to_str().unwrap()],
+            root,
+        );
+        std::fs::write(a.join("f.txt"), "1").unwrap();
+        git(&["add", "."], &a);
+        git(&["commit", "-m", "c1"], &a);
+        git(&["push", "-u", "origin", "main"], &a);
+        // Clone B advances the remote past A's tracking ref.
+        git(
+            &["clone", bare.to_str().unwrap(), b.to_str().unwrap()],
+            root,
+        );
+        std::fs::write(b.join("f.txt"), "2").unwrap();
+        git(&["commit", "-am", "c2"], &b);
+        git(&["push", "origin", "main"], &b);
+
+        let target = git2::Repository::open(&b)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap();
+        let tracking = |repo: &Path| {
+            git2::Repository::open(repo)
+                .unwrap()
+                .find_reference("refs/remotes/origin/main")
+                .unwrap()
+                .target()
+                .unwrap()
+        };
+        assert_ne!(tracking(&a), target, "A is behind before the fetch");
+
+        let mut fetch = FetchRunner::new(&a, 0.0, || {});
+        fetch.tick(BACKGROUND_FETCH_INTERVAL_SECS, true);
+        let mut waited = 0;
+        while fetch.in_flight.load(Ordering::Acquire) && waited < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            waited += 1;
+        }
+        assert!(!fetch.in_flight.load(Ordering::Acquire), "fetch finished");
+        assert_eq!(
+            tracking(&a),
+            target,
+            "background fetch advanced refs/remotes/origin/main without a checkout"
+        );
+    }
+
+    #[test]
+    fn background_fetch_fires_on_cadence_only() {
+        let interval = BACKGROUND_FETCH_INTERVAL_SECS;
+        // Before the interval has elapsed: not due.
+        assert!(!background_fetch_due(interval - 0.1, 0.0, false, true));
+        // Interval elapsed, idle, remote present: due.
+        assert!(background_fetch_due(interval, 0.0, false, true));
+        // Already fetching (single-flight): never due, even past the interval.
+        assert!(!background_fetch_due(interval * 3.0, 0.0, true, true));
+        // No remote: never due.
+        assert!(!background_fetch_due(interval * 3.0, 0.0, false, false));
+    }
+}

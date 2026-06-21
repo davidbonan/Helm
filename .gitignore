@@ -1,0 +1,11 @@
+/target
+# Bundle .app produit par scripts/bundle.sh, jamais versionné.
+/dist
+**/*.rs.bk
+.DS_Store
+# Preuves du skill headless-verify (captures PNG + dumps a11y), jamais versionnées.
+/verify-artifacts
+# Harnais éphémères du skill headless-verify, jamais versionnés.
+tests/headless_verify_scratch_*.rs
+# Dépôt(s) git de test générés par scripts/seed-test-repo.sh, jamais versionnés.
+/.repositories
