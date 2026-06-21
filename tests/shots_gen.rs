@@ -23,7 +23,7 @@ use helm::terminal::layout::{Layout, Orient, PaneId};
 use helm::terminal::links::Editor;
 use helm::terminal::palette::TermPalette;
 use helm::theme::Palette;
-use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode};
+use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, TermView, AGENT_PREVIEW_LINES};
 use helm::ui::ai_rebase_modal::{ai_rebase_modal, AiRebasePage};
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState};
 use helm::ui::diff_view::{diff_view, DiffViewState};
@@ -38,7 +38,7 @@ use helm::ui::repo_sidebar::{
     SidebarAction, SidebarItem,
 };
 use helm::ui::tab_bar::{tab_bar, TabBarAction};
-use helm::ui::terminal_view::{terminal_tree, terminal_view};
+use helm::ui::terminal_view::{terminal_tree, terminal_view, terminal_view_preview};
 use helm::ui::{central_switch, root_layout};
 use helm::update::UpdateState;
 use helm::workspace_launcher::WorkspaceOpener;
@@ -55,6 +55,10 @@ struct Spec {
     worktree_id: usize,
     stats: Option<(usize, usize)>,
     body: &'static [&'static str],
+    /// Grid row (0-based) the cursor is parked on after the body is fed — the
+    /// preview anchors its chrome cut on it, so it must sit in the composer.
+    /// `None` leaves the cursor where the body ended.
+    cursor_row: Option<usize>,
 }
 
 fn term(rows: u16, cols: u16, lines: &[&str]) -> SharedTerm {
@@ -93,6 +97,7 @@ fn specs() -> Vec<Spec> {
                 "",
                 "\x1b[36m✻\x1b[0m \x1b[1mWorking…\x1b[0m \x1b[2m(esc to interrupt · 41s · ↓ 2.3k tokens)\x1b[0m",
             ],
+            cursor_row: None,
         },
         Spec {
             repo: "helm",
@@ -103,39 +108,69 @@ fn specs() -> Vec<Spec> {
             detail: "Finished 3m ago",
             worktree_id: 1,
             stats: Some((57, 9)),
+            // Codex leaves its startup chrome on screen: a top "update available"
+            // banner box and a boxed session-info banner, both box-framed. Its
+            // composer is a *bare* prompt line (no box) with a status line under it.
+            // The condensed preview must drop the top banners and the bottom
+            // composer / status — anchoring on the cursor, not on a box — and show
+            // only the conversation between them.
             body: &[
                 "\x1b[2mhelm  ~/dev/helm.worktrees/agents  agents-dashboard\x1b[0m",
-                "$ codex exec --full-auto",
-                "\x1b[35mCodex\x1b[0m  \x1b[2mgpt · full-auto\x1b[0m",
+                "╭──────────────────────────────────────────────────────────────╮",
+                "│ \x1b[36m✦ Update available!\x1b[0m 0.139.0 → 0.141.0  ·  npm i -g @openai/codex │",
+                "╰──────────────────────────────────────────────────────────────╯",
                 "",
-                "\x1b[1m>\x1b[0m add the columns view to the agents dashboard",
+                "╭──────────────────────────────────────────────────────────────╮",
+                "│ \x1b[1m>_ OpenAI Codex\x1b[0m \x1b[2m(v0.139.0)\x1b[0m · gpt-5.5 xhigh · ~/dev/helm-studio │",
+                "╰──────────────────────────────────────────────────────────────╯",
                 "",
-                "\x1b[32m⏺\x1b[0m Update \x1b[36msrc/ui/agents_view.rs\x1b[0m \x1b[2m(+182 −6)\x1b[0m",
-                "\x1b[32m⏺\x1b[0m Update \x1b[36msrc/persistence.rs\x1b[0m \x1b[2m(+11)\x1b[0m",
-                "\x1b[32m⏺\x1b[0m cargo test agents_view … \x1b[32mok\x1b[0m",
+                "  \x1b[2mTip: use /fast to enable our fastest inference\x1b[0m",
                 "",
-                "\x1b[32m✓ Done\x1b[0m \x1b[2m— 2 files changed, ready to review\x1b[0m",
+                "\x1b[34m•\x1b[0m explain the worktree grouping in the sidebar",
+                "  \x1b[2mhelm groups a root repo with its linked worktrees under one\x1b[0m",
+                "  \x1b[2msidebar header, so their branches read together.\x1b[0m",
+                "\x1b[34m•\x1b[0m now add an uncommitted ratio bar to each worktree row",
+                "  \x1b[2mDone — a green/red proportion bar mirroring the sidebar.\x1b[0m",
+                "  \x1b[2mcargo test ui_agents_view … ok\x1b[0m",
+                "",
+                "\x1b[1m›\x1b[0m summarize recent commits",
+                "  \x1b[2mgpt-5.5 xhigh · ~/dev/helm-studio\x1b[0m",
             ],
+            cursor_row: Some(18),
         },
         Spec {
             repo: "api",
             branch: "main",
             tab: "Tab 2",
-            agent: "aider",
-            badge: AgentBadge::Idle,
-            detail: "Idle",
+            agent: "claude",
+            badge: AgentBadge::Working,
+            detail: "Working…",
             worktree_id: 0,
             stats: None,
+            // A full-screen TUI at the pane's real 110-col width, ending in Claude
+            // Code's bottom chrome block — a multi-row boxed composer plus mode /
+            // hint / status lines under it: the condensed preview must detect and
+            // drop that whole block and show only the conversation above it.
             body: &[
                 "\x1b[2mapi  ~/dev/api  main\x1b[0m",
-                "$ aider",
-                "\x1b[34maider\x1b[0m  \x1b[2mv0.64\x1b[0m",
+                "\x1b[38;5;208mClaude Code\x1b[0m  \x1b[2mv2.1.162 · opus\x1b[0m",
                 "",
-                "\x1b[2m> /add src/routes/health.rs\x1b[0m",
-                "\x1b[2mAdded src/routes/health.rs to the chat.\x1b[0m",
+                "\x1b[1m>\x1b[0m run the full test suite, fix failures, then update the changelog and open a PR",
                 "",
-                "\x1b[2mwaiting for instructions…\x1b[0m",
+                "\x1b[32m⏺\x1b[0m Bash \x1b[2mcargo test --workspace\x1b[0m",
+                "  \x1b[2mtest tests::health::returns_200 … ok\x1b[0m",
+                "  \x1b[31mtest tests::billing::prorates_midcycle … FAILED — expected 4200, got 5000\x1b[0m",
+                "\x1b[32m⏺\x1b[0m Update \x1b[36msrc/billing/proration.rs\x1b[0m \x1b[2m(+18 −7) — clamp the partial-period ratio to [0,1]\x1b[0m",
+                "",
+                "╭────────────────────────────────────────────────────────────────────────────────────────────────╮",
+                "│ > _                                                                                            │",
+                "│                                                                                                │",
+                "╰────────────────────────────────────────────────────────────────────────────────────────────────╯",
+                "  \x1b[2m⏵⏵ accept edits on (shift+tab to cycle)\x1b[0m",
+                "  \x1b[2m? for shortcuts\x1b[0m",
+                "  \x1b[36m✻ Crunching…\x1b[0m \x1b[2m(esc to interrupt · 1m24s · ↓ 6.2k tokens)\x1b[0m",
             ],
+            cursor_row: Some(11),
         },
     ]
 }
@@ -144,7 +179,16 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
     let palette = Palette::dark();
     let term_pal = TermPalette::dark();
     let data = specs();
-    let grids: Vec<SharedTerm> = data.iter().map(|s| term(22, 110, s.body)).collect();
+    let grids: Vec<SharedTerm> = data
+        .iter()
+        .map(|s| {
+            let t = term(22, 110, s.body);
+            if let Some(row) = s.cursor_row {
+                emu::feed(&t, format!("\x1b[{};1H", row + 1).as_bytes());
+            }
+            t
+        })
+        .collect();
 
     let mut harness = Harness::builder()
         .with_size(size)
@@ -173,17 +217,28 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
                 view,
                 620.0,
                 380.0,
-                |idx, tui| {
-                    terminal_view(
-                        tui,
-                        &grids[idx],
-                        &term_pal,
-                        DEFAULT_FONT_SIZE,
-                        selected == Some(idx),
-                        false,
-                        None,
-                        None,
-                    );
+                |idx, tui, view| match view {
+                    TermView::Full => {
+                        terminal_view(
+                            tui,
+                            &grids[idx],
+                            &term_pal,
+                            DEFAULT_FONT_SIZE,
+                            selected == Some(idx),
+                            false,
+                            None,
+                            None,
+                        );
+                    }
+                    TermView::Preview => {
+                        terminal_view_preview(
+                            tui,
+                            &grids[idx],
+                            &term_pal,
+                            DEFAULT_FONT_SIZE,
+                            AGENT_PREVIEW_LINES,
+                        );
+                    }
                 },
             );
         });
@@ -214,8 +269,8 @@ fn gen_agents_list() {
 fn gen_agents_columns() {
     render(
         AgentsViewMode::Columns,
-        None,
-        egui::vec2(1280.0, 800.0),
+        Some(0),
+        egui::vec2(1680.0, 900.0),
         "agents_columns",
     );
 }

@@ -159,34 +159,62 @@ the way to reach a workspace).
 design and **titlebar placement** (centered, shown in both modes, no separate
 header bar) — switches between **List** and **Columns**; the choice is
 **persisted** (`Prefs.agents_view`, default **List**) and restored next launch.
-*List* is the cockpit above. *Columns* is a **wall of live terminals**: one column
-per project that has a running agent, laid out left→right with **horizontal
-scroll** when they overflow. The column width is **shared** across columns and
-**resizable** — dragging the handle in any column gap widens/narrows them all
+*List* is the cockpit above. *Columns* is a **wall of status cards**: one column
+per project that has a running agent, laid out left→right on a **single 2D scroll
+plane** — horizontal between columns when they overflow the width, vertical down
+the whole wall when the tallest column overflows the height (one gesture, no
+per-column scrollbars). The expanded terminal still owns the vertical wheel while
+hovered (scrollback), so the wall scrolls vertically from anywhere else — header,
+band, gap, or a collapsed preview. The column width is **shared** across columns
+and **resizable** — dragging the handle in any column gap widens/narrows them all
 (clamped, persisted in `Prefs.agents_column_width`, restored on launch).
-Inter-column margins are kept tight so terminals get the most room. A column
-**hugs its content height** (a single short terminal leaves no empty lane below
-it), scrolling vertically only once its cards outgrow the page.
+Inter-column margins are kept tight so the cards get the most room. Each column
+**hugs its full content height** (a short column leaves no empty lane below it),
+so the tallest column drives the wall's vertical extent.
 Each column carries **its own hue** (cycled from the theme's graph-lane palette,
 washed against the theme base so it stays balanced in light and dark) so projects
 read apart at a glance.
 Each column is split into **worktree sub-cards** (branch chip + an **uncommitted
 ratio bar** when the worktree is dirty, mirroring the sidebar + agent count),
-each holding a **sub-sub-card per agent** — agent name + state indicator + the
-list view's **jump icon** (external-link) header over a live terminal whose
-**height is shared and resizable**: dragging the handle along any card's bottom
-edge resizes every terminal at once (clamped, persisted in
-`Prefs.agents_terminal_height`, restored on launch). The nesting is **always
-full** (project → worktree → agent, even with one of each). Every terminal is the
-same interactive widget (type / scroll), so all agents are watchable and
-reply-able at once; the **hovered** terminal owns the mouse wheel (scrollback /
-TUI) so the column no longer scrolls in tandem. Both modes mirror panes from the
-same `(repo, tab, pane)` keys; clicking any column terminal **focuses** it
-(becomes the single `selected_agent` — drives the focus lock and
-`Esc`-as-interrupt), reusing the cockpit's click→focus handshake, while the card's
+each holding a **sub-sub-card per agent**. A card is **collapsed to a status
+header** by default — state indicator + agent name + tab + state caption + the
+list view's **jump icon** (external-link) — under which it shows a **read-only
+progress preview**: the agent's last few **conversation** lines (count
+`AGENT_PREVIEW_LINES`) at **readable native size**, left-aligned, with the cursor
+hidden. The pane is **never resized** (only the expanded card drives a PTY
+resize), so a wide/TUI agent never reflows just to be glanced at; a line wider
+than the narrow card is **clipped at the right with a soft fade** rather than
+shrunk to illegibility. The preview keeps only the **conversation**, dropping the
+agent's chrome generically (no per-agent parsing). It drops the **bottom chrome
+block** — the composer (a box for Claude Code, a bare prompt line for Codex) and
+the status / hint lines beneath it — by anchoring on the **cursor**, which lives
+in the input composer pinned to the bottom of the screen, and cutting from there
+up over the composer's own border; the cursor is trusted only when it actually
+sits in the lower half (a cursor still parked high in a fresh banner is no
+composer). It also drops any **box-framed chrome left on screen** — a startup
+banner at the top, the composer's border — so a Codex session still showing its
+"update available" banner glances as its transcript, not its header. So the glance
+shows what the agent is **doing** (the transcript), not its input UI nor its
+banners; the **header badge** already carries the live state, so nothing is lost.
+Even unfocused agents read a real état d'avancement.
+**Clicking a card's body selects it** (the preview clicks through to the same),
+and the **selected** card **expands in place** to the full interactive terminal —
+the same widget mirrored live as the List panel (read / scroll the scrollback,
+type a reply, `Esc`-as-interrupt) — while every other card stays a collapsed
+header. So at most **one agent is expanded at a time** (the most urgent picked by
+default, per the selection rule above), and glancing at the wall reflows **at most
+that one pane**, never the whole grid. The expanded terminal owns the mouse wheel
+while hovered (scrollback / TUI) so the column no longer scrolls in tandem; its
+**height is shared and resizable** — dragging the handle along its bottom edge sets
+the height for the next expansion too (clamped, persisted in
+`Prefs.agents_terminal_height`, restored on launch). The nesting is **always full**
+(project → worktree → agent, even with one of each), so every agent is watchable at
+a glance and one click away from a full terminal. Both modes mirror panes from the
+same `(repo, tab, pane)` keys; selecting a card makes it the single
+`selected_agent` (drives the focus lock and `Esc`-as-interrupt), while the card's
 **jump icon focuses** that pane in its workspace (same handshake as the list
-row's). The **focused** agent's card stays opaque while the **others dim** — same
-spotlight as an unfocused split pane (terminal.md), no outline.
+row's). The selected card reads with the list's accent wash; an unselected card
+lights on hover to signal it expands on click.
 
 Leaving the dashboard: picking any project, or `Esc` — **except** when the panel
 terminal holds keyboard focus, where `Esc` reaches the agent as an interrupt

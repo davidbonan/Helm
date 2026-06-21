@@ -880,21 +880,33 @@ impl HelmApp {
                                 agents_view,
                                 agents_column_width,
                                 agents_terminal_height,
-                                |idx, term_ui| {
-                                    if mirror_agent_terminal(
-                                        term_ui,
-                                        panes_all,
-                                        &agent_keys,
-                                        idx,
-                                        selected_agent.as_ref(),
-                                        font_size,
-                                        &term_palette,
-                                        &palette,
-                                        clear_shortcut,
-                                        &mut agents_terminal_focused,
-                                        &mut open_link,
-                                    ) {
-                                        terminal_click = Some(idx);
+                                |idx, term_ui, view| match view {
+                                    crate::ui::agents_view::TermView::Full => {
+                                        if mirror_agent_terminal(
+                                            term_ui,
+                                            panes_all,
+                                            &agent_keys,
+                                            idx,
+                                            selected_agent.as_ref(),
+                                            font_size,
+                                            &term_palette,
+                                            &palette,
+                                            clear_shortcut,
+                                            &mut agents_terminal_focused,
+                                            &mut open_link,
+                                        ) {
+                                            terminal_click = Some(idx);
+                                        }
+                                    }
+                                    crate::ui::agents_view::TermView::Preview => {
+                                        mirror_agent_preview(
+                                            term_ui,
+                                            panes_all,
+                                            &agent_keys,
+                                            idx,
+                                            font_size,
+                                            &term_palette,
+                                        );
                                     }
                                 },
                             );
@@ -1680,21 +1692,33 @@ impl HelmApp {
                                 agents_view,
                                 agents_column_width,
                                 agents_terminal_height,
-                                |idx, term_ui| {
-                                    if mirror_agent_terminal(
-                                        term_ui,
-                                        panes_all,
-                                        &agent_keys,
-                                        idx,
-                                        selected_agent.as_ref(),
-                                        font_size,
-                                        &term_palette,
-                                        &palette,
-                                        clear_shortcut,
-                                        &mut agents_terminal_focused,
-                                        &mut open_link,
-                                    ) {
-                                        terminal_click = Some(idx);
+                                |idx, term_ui, view| match view {
+                                    crate::ui::agents_view::TermView::Full => {
+                                        if mirror_agent_terminal(
+                                            term_ui,
+                                            panes_all,
+                                            &agent_keys,
+                                            idx,
+                                            selected_agent.as_ref(),
+                                            font_size,
+                                            &term_palette,
+                                            &palette,
+                                            clear_shortcut,
+                                            &mut agents_terminal_focused,
+                                            &mut open_link,
+                                        ) {
+                                            terminal_click = Some(idx);
+                                        }
+                                    }
+                                    crate::ui::agents_view::TermView::Preview => {
+                                        mirror_agent_preview(
+                                            term_ui,
+                                            panes_all,
+                                            &agent_keys,
+                                            idx,
+                                            font_size,
+                                            &term_palette,
+                                        );
                                     }
                                 },
                             );
@@ -2395,6 +2419,36 @@ fn mirror_agent_terminal(
         any_focused,
         open_link,
     )
+}
+
+/// Read-only progress preview of an agent's pane for a collapsed Columns card: its
+/// last lines, scaled to fit the card (the pane is kept visible so its reader stays
+/// live, but never resized — only the expanded card drives a PTY resize).
+fn mirror_agent_preview(
+    ui: &mut egui::Ui,
+    panes: &mut HashMap<PaneKey, Panes>,
+    keys: &[(RepoKey, TabId, PaneId)],
+    idx: usize,
+    font_size: f32,
+    term_palette: &TermPalette,
+) {
+    let Some((rk, tid, pid)) = keys.get(idx) else {
+        return;
+    };
+    let Some(panes) = panes.get_mut(&(rk.clone(), *tid)) else {
+        return;
+    };
+    if let Some(TerminalState::Live(pane)) = panes.get_mut(pid) {
+        pane.set_visible(true);
+        pane.set_reply_palette(*term_palette);
+        terminal_view_preview(
+            ui,
+            pane.grid(),
+            term_palette,
+            font_size,
+            crate::ui::agents_view::AGENT_PREVIEW_LINES,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

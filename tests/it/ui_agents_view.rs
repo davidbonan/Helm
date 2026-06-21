@@ -12,7 +12,7 @@ use egui_kittest::Harness;
 
 use helm::agent_watch::AgentBadge;
 use helm::theme::Palette;
-use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode};
+use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, TermView};
 
 #[derive(Default)]
 struct Captured {
@@ -80,9 +80,14 @@ fn harness(
                 view,
                 672.0,
                 360.0,
-                |idx, term_ui| {
-                    sink.drawn.borrow_mut().push(idx);
-                    term_ui.label(format!("TERM-{idx}"));
+                |idx, term_ui, view| match view {
+                    TermView::Full => {
+                        sink.drawn.borrow_mut().push(idx);
+                        term_ui.label(format!("TERM-{idx}"));
+                    }
+                    TermView::Preview => {
+                        term_ui.label(format!("PREV-{idx}"));
+                    }
                 },
             );
             // Latch: a Working row repaints (spinner), so later settle frames see no
@@ -283,9 +288,10 @@ fn header_toggle_switches_back_to_list() {
 }
 
 #[test]
-fn columns_render_a_terminal_per_agent() {
-    // Two projects (→ two columns), the first split across two worktrees: the full
-    // project → worktree → agent nesting mirrors a live terminal for every agent.
+fn columns_expand_only_the_selected_card() {
+    // Two projects (→ two columns), the first split across two worktrees. Cards
+    // collapse to a status header by default; only the selected agent's card
+    // expands to a mirrored live terminal — the others stay collapsed.
     let (harness, cap) = harness(
         vec![
             row("helm", "claude", "Tab 1", AgentBadge::Working),
@@ -295,16 +301,46 @@ fn columns_render_a_terminal_per_agent() {
             },
             row("api", "aider", "Tab 1", AgentBadge::Idle),
         ],
-        None,
+        Some(1),
         AgentsViewMode::Columns,
     );
     let mut drawn = cap.drawn.borrow().clone();
     drawn.sort_unstable();
     drawn.dedup();
-    assert_eq!(drawn, vec![0, 1, 2], "every agent gets a terminal card");
-    harness.get_by_label("TERM-0");
+    assert_eq!(
+        drawn,
+        vec![1],
+        "only the selected card mirrors a full terminal"
+    );
     harness.get_by_label("TERM-1");
-    harness.get_by_label("TERM-2");
+    // Every other agent stays reachable as a collapsed status header over a
+    // read-only progress preview of its last lines.
+    harness.get_by_label("Claude in helm — Tab 1");
+    harness.get_by_label("Aider in api — Tab 1");
+    harness.get_by_label("PREV-0");
+    harness.get_by_label("PREV-2");
+}
+
+#[test]
+fn clicking_a_collapsed_column_card_selects_it() {
+    // Clicking another card's body (not its jump icon) selects it, so the app
+    // expands that card's terminal on the next frame.
+    let (mut harness, cap) = harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Working),
+            Row {
+                worktree_id: 1,
+                ..row("helm", "codex", "Tab 1", AgentBadge::Done)
+            },
+        ],
+        Some(0),
+        AgentsViewMode::Columns,
+    );
+    // `Node::click()` clicks the header center — the body, well left of the jump icon.
+    harness.get_by_label("Codex in helm — Tab 1").click();
+    harness.step();
+    assert_eq!(cap.select.get(), Some(1));
+    assert_eq!(cap.jump.get(), None);
 }
 
 #[test]
@@ -319,14 +355,19 @@ fn horizontal_gesture_over_a_terminal_scrolls_the_columns() {
             row("api", "codex", "Tab 1", AgentBadge::Idle),
             row("web", "aider", "Tab 1", AgentBadge::Idle),
         ],
-        None,
+        Some(0),
         AgentsViewMode::Columns,
     );
     // `TERM-0`'s a11y rect is just its label at the strip's top-left; aim well
     // inside the 360px-tall strip so the pointer is unambiguously over the terminal.
     let label = harness.get_by_label("TERM-0").rect();
     let over_terminal = egui::pos2(label.left() + 250.0, label.top() + 150.0);
-    let before = harness.get_by_label("TERM-1").rect().center().x;
+    // Probe a collapsed card in the second column (only column 0 has a terminal).
+    let before = harness
+        .get_by_label("Codex in api — Tab 1")
+        .rect()
+        .center()
+        .x;
     // A continuous horizontal gesture with the pointer pinned over a terminal:
     // egui smooths each wheel notch over several frames, so feed one per frame.
     for _ in 0..20 {
@@ -339,11 +380,57 @@ fn horizontal_gesture_over_a_terminal_scrolls_the_columns() {
         });
         harness.step();
     }
-    let after = harness.get_by_label("TERM-1").rect().center().x;
+    let after = harness
+        .get_by_label("Codex in api — Tab 1")
+        .rect()
+        .center()
+        .x;
     assert!(
         (before - after).abs() > 50.0,
         "horizontal gesture over a terminal must scroll the columns: \
-         TERM-1 x {before} -> {after}"
+         column 2 x {before} -> {after}"
+    );
+}
+
+#[test]
+fn vertical_gesture_scrolls_the_whole_wall() {
+    // Many collapsed cards in one project overflow the 1200px window height. The
+    // wall is a single 2D scroll plane (no per-column scrollbars), so a vertical
+    // gesture over any non-terminal area moves the whole wall — every visible card
+    // shifts up together.
+    let data: Vec<Row> = (0..16)
+        .map(|i| {
+            let tab: &'static str = Box::leak(format!("Tab {}", i + 1).into_boxed_str());
+            row("helm", "claude", tab, AgentBadge::Idle)
+        })
+        .collect();
+    let (mut harness, _) = harness(data, None, AgentsViewMode::Columns);
+    // Pin the pointer over the worktree band (top of the column, not a terminal) and
+    // measure a card mid-column that stays visible across the scroll.
+    let over = harness.get_by_label("main").rect().center();
+    let before = harness
+        .get_by_label("Claude in helm — Tab 10")
+        .rect()
+        .center()
+        .y;
+    for _ in 0..20 {
+        harness.event(egui::Event::PointerMoved(over));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.step();
+    }
+    let after = harness
+        .get_by_label("Claude in helm — Tab 10")
+        .rect()
+        .center()
+        .y;
+    assert!(
+        (before - after) > 50.0,
+        "vertical gesture must scroll the wall up: card y {before} -> {after}"
     );
 }
 
@@ -387,14 +474,29 @@ fn dragging_a_column_gap_resizes_the_columns() {
 
 #[test]
 fn clicking_a_column_card_jump_icon_focuses_the_workspace() {
-    // Each column terminal card carries the same external-link affordance as a list
-    // row: clicking it focuses the pane in its workspace (emits `jump`, not `select`).
+    // Each column card carries the same external-link affordance as a list row: the
+    // jump icon sits 30px in from the card's right edge (CARD_PAD_X 16 + half the
+    // 28px hit box). Clicking it focuses the pane (emits `jump`, not `select`).
     let (mut harness, cap) = harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
         None,
         AgentsViewMode::Columns,
     );
-    harness.get_by_label("Open Claude in workspace").click();
+    let r = harness.get_by_label("Claude in helm — Tab 1").rect();
+    let pos = egui::pos2(r.right() - 30.0, r.center().y);
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
     harness.step();
     assert_eq!(cap.jump.get(), Some(0));
     assert_eq!(cap.select.get(), None);
@@ -406,7 +508,7 @@ fn dragging_a_card_bottom_resizes_the_terminal_height() {
     // mirrored terminal's rect (its top is the strip top) so the grab survives layout.
     let (mut harness, cap) = harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
-        None,
+        Some(0),
         AgentsViewMode::Columns,
     );
     let strip = harness.get_by_label("TERM-0").rect();
