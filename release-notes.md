@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.0.0
+
+- First stable release of helm.
+
 ## 0.9.1
 
 - The terminal now renders in JetBrains Mono, Ghostty's default monospace font.
@@ -51,12 +55,3 @@
 - Per-repo uncommitted line-stats indicator in the sidebar.
 - Larger commit input, a centered switch with icons, and tab dividers.
 - Inset project separators, hover-reveal chips, and row accent bars.
-
-## 0.6.2
-
-- In-app merge and rebase conflict resolution: side-by-side panes with an
-  always-editable output and live syntax highlighting.
-- Conflicts now surface in a dedicated panel; the files are the entry point.
-- Open Folder is git-only.
-- Unified the agent activity indicators and added a Done pulse.
-- Split the project root into a header plus a main worktree row.
