@@ -194,14 +194,33 @@ const EMPTY_STATE_SUBTITLE_SIZE: f32 = 15.0;
 const EMPTY_STATE_LABEL_SIZE: f32 = 15.0;
 const EMPTY_STATE_BUTTON_HEIGHT: f32 = 30.0;
 const EMPTY_STATE_TEXT_MARGIN: f32 = 32.0;
+const EMPTY_STATE_ICON_SIZE: f32 = 40.0;
+const EMPTY_STATE_DROP_HINT: &str = "or drop a folder here";
 
-/// Central empty state (design-system §2): welcome title + tagline + primary
-/// folder-open button + shortcut reminder. Returns `true` on click; the caller
-/// triggers the dialog (same path as ⌘O).
+/// Central empty state (design-system §2): a helm glyph, welcome title + tagline,
+/// primary folder-open button + shortcut reminder, and a drag-and-drop hint. A
+/// folder dragged over the window highlights the zone; the import itself lands in
+/// `ui()`. Returns `true` on click (same path as ⌘O).
 pub fn central_empty_state(ui: &mut egui::Ui, palette: &Palette, keymap: &Keymap) -> bool {
     let mut clicked = false;
+    let dragging_folder = ui.input(|i| !i.raw.hovered_files.is_empty());
+    if dragging_folder {
+        ui.painter().rect(
+            ui.max_rect().shrink(16.0),
+            egui::CornerRadius::same(12),
+            with_alpha(palette.accent, 18),
+            egui::Stroke::new(1.5, palette.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
     ui.vertical_centered(|ui| {
         ui.add_space((ui.available_height() / 2.0 - EMPTY_STATE_BUTTON_HEIGHT * 2.0).max(0.0));
+        ui.label(
+            egui::RichText::new(lucide_icons::Icon::ShipWheel.unicode().to_string())
+                .font(egui::FontId::proportional(EMPTY_STATE_ICON_SIZE))
+                .color(palette.text_muted),
+        );
+        ui.add_space(12.0);
         // Both sidebars open on a small window can squeeze the central zone below
         // the title's intrinsic width: the texts yield (instead of wrapping letter
         // by letter), the button + shortcut keep the action reachable.
@@ -246,6 +265,13 @@ pub fn central_empty_state(ui: &mut egui::Ui, palette: &Palette, keymap: &Keymap
             ui.add_space(8.0);
             ui.label(egui::RichText::new(shortcut.display()).color(palette.text_muted));
         }
+        ui.add_space(8.0);
+        let (hint, color) = if dragging_folder {
+            ("Drop to open", palette.accent)
+        } else {
+            (EMPTY_STATE_DROP_HINT, palette.text_muted)
+        };
+        ui.label(egui::RichText::new(hint).color(color));
     });
     clicked
 }

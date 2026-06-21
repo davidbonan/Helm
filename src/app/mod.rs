@@ -2180,6 +2180,32 @@ impl eframe::App for HelmApp {
             self.caches
                 .set_dirty_stats(workspace_dirty_stats(&self.workspace));
         }
+        // A folder dropped from Finder onto the empty-state central card imports it
+        // like Open Folder. Gated to the empty workspace: with a repo open the
+        // terminal owns the file drop (it pastes the path), so the two never compete.
+        if self.workspace.is_empty() {
+            let dropped: Vec<PathBuf> = ctx.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|f| f.path.clone())
+                    .collect()
+            });
+            if !dropped.is_empty() {
+                let rejected = add_picked_folders(&mut self.workspace, dropped).rejected;
+                self.caches.sync(&self.workspace);
+                if !rejected.is_empty() {
+                    let now = ctx.input(|i| i.time);
+                    self.toasts.error(non_git_toast(&rejected), now);
+                }
+                let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+                self.persist(move |_| next);
+                self.caches
+                    .set_branch_labels(workspace_branches(&self.workspace));
+                self.caches
+                    .set_dirty_stats(workspace_dirty_stats(&self.workspace));
+            }
+        }
         // The gear toggles the Preferences page, rendered on the next frame by the
         // exclusive branch at the top of `ui()` (preferences.md §2).
         if actions.toggle_preferences {

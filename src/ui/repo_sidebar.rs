@@ -274,9 +274,19 @@ pub fn repo_sidebar(
         ui.add_space(ROW_PAD_X);
         ui.label(crate::ui::section_label(palette, "Helm"));
     });
-    agents_entry(ui, palette, agents_badge, agents_active, out);
+    if !items.is_empty() {
+        agents_entry(ui, palette, agents_badge, agents_active, out);
+    }
 
-    sidebar_header(ui, palette, projects, cmd_held, open_folder.as_deref(), out);
+    sidebar_header(
+        ui,
+        palette,
+        projects,
+        !items.is_empty(),
+        cmd_held,
+        open_folder.as_deref(),
+        out,
+    );
 
     if items.is_empty() {
         open_folder_row(ui, palette, open_folder.as_deref(), out);
@@ -564,8 +574,9 @@ fn project_header(
 }
 
 /// Cross-repo Agents nav row pinned above the project list (specs/agents.md §5):
-/// always visible, highlighted while the dashboard is open, badged at the right
-/// edge by the workspace-wide max badge (spinner = working, green dot = finished).
+/// shown once the workspace has a project (hidden on the first-launch empty state,
+/// where no agent can run), highlighted while the dashboard is open, badged at the
+/// right edge by the workspace-wide max badge (spinner = working, green dot = done).
 fn agents_entry(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -660,6 +671,7 @@ fn sidebar_header(
     ui: &mut egui::Ui,
     palette: &Palette,
     projects: &[ProjectVisibility],
+    show_add: bool,
     cmd_held: bool,
     open_folder: Option<&str>,
     out: &mut SidebarAction,
@@ -669,41 +681,45 @@ fn sidebar_header(
         ui.add_space(ROW_PAD_X);
         ui.label(crate::ui::section_label(palette, "Projects"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, plus, hovered) =
-                crate::ui::clickable(ui, egui::vec2(PLUS_HIT, PLUS_HIT), true);
-            let color = if hovered {
-                palette.text_secondary
-            } else {
-                palette.text_muted
-            };
-            crate::ui::paint_icon(
-                ui.painter(),
-                rect.center(),
-                PLUS_SIZE,
-                lucide_icons::Icon::Plus,
-                color,
-            );
-            let hover = match open_folder {
-                Some(badge) => format!("Add a project · {badge}"),
-                None => "Add a project".to_owned(),
-            };
-            let plus = plus.on_hover_text(hover);
-            plus.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add a project")
-            });
-            if plus.clicked() {
-                out.open = true;
-            }
-            if let Some(badge) = open_folder.filter(|_| cmd_held) {
-                ui.label(
-                    egui::RichText::new(badge)
-                        .size(SHORTCUT_BADGE_SIZE)
-                        .color(palette.text_muted),
+            // Empty state: the labelled "Open Folder…" nav row right below is the add
+            // affordance, so the redundant header "+" is dropped until a project exists.
+            if show_add {
+                let (rect, plus, hovered) =
+                    crate::ui::clickable(ui, egui::vec2(PLUS_HIT, PLUS_HIT), true);
+                let color = if hovered {
+                    palette.text_secondary
+                } else {
+                    palette.text_muted
+                };
+                crate::ui::paint_icon(
+                    ui.painter(),
+                    rect.center(),
+                    PLUS_SIZE,
+                    lucide_icons::Icon::Plus,
+                    color,
                 );
+                let hover = match open_folder {
+                    Some(badge) => format!("Add a project · {badge}"),
+                    None => "Add a project".to_owned(),
+                };
+                let plus = plus.on_hover_text(hover);
+                plus.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add a project")
+                });
+                if plus.clicked() {
+                    out.open = true;
+                }
+                if let Some(badge) = open_folder.filter(|_| cmd_held) {
+                    ui.label(
+                        egui::RichText::new(badge)
+                            .size(SHORTCUT_BADGE_SIZE)
+                            .color(palette.text_muted),
+                    );
+                }
             }
             // Left of the `+`: the eye toggling project visibility. Its dropdown is
-            // the only place a hidden project still shows, so it lists every
-            // project — hidden ones included — even when the sidebar is empty.
+            // the only place a hidden project still shows, so it lists every project —
+            // hidden ones included — even when the sidebar list is empty.
             if !projects.is_empty() {
                 let (rect, eye, hovered) =
                     crate::ui::clickable(ui, egui::vec2(PLUS_HIT, PLUS_HIT), true);

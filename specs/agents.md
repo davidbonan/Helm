@@ -129,10 +129,11 @@ thread (the ~100 ms subprocess never blocks the UI). No bundle, entitlement, or
 no-op (osascript limitation) — focus is the dashboard's job.
 
 **Cross-repo agents dashboard** (`CentralMode::Agents`, in-layout — *not* a
-full-window page). Reached from an **always-visible Agents entry** under a
-**Helm** section label at the top of the left sidebar (mirroring the Projects
-section above the repository list); the entry carries the workspace-wide max
-badge (accent spinner = working, green dot = a finished turn). Opening it sets
+full-window page). Reached from an **Agents entry** under a **Helm** section
+label at the top of the left sidebar (mirroring the Projects section above the
+repository list), shown **once the workspace has a project** — hidden on the
+first-launch empty state, where no agent can run; the entry carries the
+workspace-wide max badge (accent spinner = working, green dot = a finished turn). Opening it sets
 the central area to the dashboard while the **project sidebar stays** (the entry
 highlighted); the per-repo git panel is **hidden** (the view is cross-repo).
 
