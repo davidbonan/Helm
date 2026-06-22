@@ -246,6 +246,39 @@ pub(crate) fn select_repo_command(key: egui::Key, modifiers: egui::Modifiers) ->
     digit_index(key)
 }
 
+/// `Cmd+Ctrl+0` opens the Agents dashboard — slot 0 of the positional repo
+/// family (keybindings §1): fixed, not rebindable, like `Cmd+Ctrl+1..9`.
+pub(crate) fn open_agents_command(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    modifiers.command
+        && modifiers.ctrl
+        && !modifiers.shift
+        && !modifiers.alt
+        && key == egui::Key::Num0
+}
+
+/// `Cmd+Ctrl+0` pressed this frame. The physical `0` slot is honored too, so the
+/// chord stays layout-independent like the repo selectors (an AZERTY slot that
+/// emits punctuation without `Shift` still resolves to `Num0`).
+pub(crate) fn open_agents_pressed(ctx: &egui::Context) -> bool {
+    ctx.input(|input| {
+        input.events.iter().any(|event| match event {
+            egui::Event::Key {
+                key,
+                physical_key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                let key = physical_key
+                    .filter(|p| *p == egui::Key::Num0)
+                    .unwrap_or(*key);
+                open_agents_command(key, *modifiers)
+            }
+            _ => false,
+        })
+    })
+}
+
 pub fn route_select_repo_keys(ctx: &egui::Context, workspace: &mut Workspace) {
     let index = ctx.input(|input| {
         input.events.iter().find_map(|event| match event {

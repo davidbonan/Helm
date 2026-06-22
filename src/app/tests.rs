@@ -1,7 +1,7 @@
 use super::git_session::PaneKey;
 use super::keys::{
-    git_command, layout_command, positional_key, select_repo_command, select_tab_command,
-    tab_action, zoom_command, FocusZone, LayoutCommand, TabAction, ZoomCommand,
+    git_command, layout_command, open_agents_command, positional_key, select_repo_command,
+    select_tab_command, tab_action, zoom_command, FocusZone, LayoutCommand, TabAction, ZoomCommand,
 };
 use super::*;
 use crate::persistence::Project;
@@ -355,6 +355,28 @@ fn cmd_ctrl_digits_select_repos_one_through_nine() {
         None,
         "there is no repo 0 selector"
     );
+}
+
+#[test]
+fn cmd_ctrl_zero_opens_the_agents_dashboard() {
+    let cmd_ctrl = cmd(egui::Modifiers {
+        ctrl: true,
+        ..Default::default()
+    });
+    assert!(open_agents_command(egui::Key::Num0, cmd_ctrl));
+    // Shares the repo family's modifiers: Ctrl is required, Shift/Alt refused.
+    assert!(!open_agents_command(
+        egui::Key::Num0,
+        cmd(egui::Modifiers::default())
+    ));
+    let cmd_ctrl_shift = cmd(egui::Modifiers {
+        ctrl: true,
+        shift: true,
+        ..Default::default()
+    });
+    assert!(!open_agents_command(egui::Key::Num0, cmd_ctrl_shift));
+    // Only the 0 slot; the digit selectors stay with the repos.
+    assert!(!open_agents_command(egui::Key::Num1, cmd_ctrl));
 }
 
 #[test]

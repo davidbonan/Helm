@@ -66,7 +66,7 @@ const GIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1)
 type Panes = HashMap<PaneId, TerminalState>;
 
 mod keys;
-use keys::{action_pressed, overlay_or_command};
+use keys::{action_pressed, open_agents_pressed, overlay_or_command};
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
     route_zoom_keys,

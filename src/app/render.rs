@@ -317,6 +317,12 @@ impl HelmApp {
             self.sidebars.git = true;
         }
         let open_dialog = action_pressed(ctx, &self.keymap, Action::OpenFolder);
+        // Cmd+Ctrl+0 opens the Agents dashboard — slot 0 of the positional repo
+        // family (keybindings §1). No-op on the empty workspace, where the
+        // dashboard and its sidebar entry do not exist (agents.md §5).
+        if !self.workspace.is_empty() && open_agents_pressed(ctx) {
+            self.central_mode = CentralMode::Agents;
+        }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);
         route_tab_keys(ctx, &self.keymap, &mut self.workspace);

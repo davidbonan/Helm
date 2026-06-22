@@ -15,6 +15,7 @@ is customizable from the Preferences page (§6).
 | Shortcut | Action |
 |-----------|--------|
 | `Cmd+O` | **Open Folder** → adds the folder as a repo in the left sidebar (see [`overview.md`](overview.md) §3.1) |
+| `Cmd+Ctrl+0` | Open the **Agents** dashboard ([`agents.md`](agents.md) §5) — slot 0 of the positional repo family, above repo 1 in the sidebar. No-op on the empty workspace (no dashboard yet) |
 | `Cmd+Ctrl+1` … `Cmd+Ctrl+9` | Select repo 1 to 9 (sidebar order). Beyond 9: no shortcut (click/scroll) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | **Cycle repo** next / previous in sidebar order, wrapping (worktrees included, folded/bare rows skipped). Layout-independent (no number row); rebindable (§6) |
 | `Cmd+T` | **New Tab** terminal in the active repo (a fresh pane in the repo's folder). Without an active repo: no-op |
@@ -85,7 +86,7 @@ helm has a single **active zone** that receives the keyboard, chosen on click:
 terminal pane, left sidebar, right sidebar or commit field. The selection
 of shortcuts depends on this zone.
 
-- **Global** (`Cmd+O`, `Cmd+1..9`, `Cmd+Ctrl+1..9`, `Ctrl+Tab`/`Ctrl+Shift+Tab`,
+- **Global** (`Cmd+O`, `Cmd+1..9`, `Cmd+Ctrl+0`, `Cmd+Ctrl+1..9`, `Ctrl+Tab`/`Ctrl+Shift+Tab`,
   `Cmd+T`, `Cmd+,`, `Cmd+B`, `Cmd+G`, `Cmd+Shift+G`, `Cmd+R`):
   active whatever the active zone; `Cmd+1..9` (tabs) and `Cmd+Ctrl+1..9`
   (repos) take precedence over any terminal use of the same combinations.
