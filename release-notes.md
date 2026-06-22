@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.0.2
+
+- Jump to the Agents pane with ⌃⌘0; hold Cmd to reveal its shortcut badge.
+- Confirm dialogs with the Enter key.
+- Polished the workspace sidebar headers, now color-coded per project.
+
 ## 1.0.1
 
 - Hold Cmd to reveal a ⌘R badge next to the Run/Relaunch button.
@@ -50,7 +56,3 @@
 - Added a hide/show control for projects in the sidebar.
 - Moved Remove-from-sidebar into the project header menu.
 - Long branch chips and state captions now elide in the agents list.
-
-## 0.7.1
-
-- Commit-message generation now follows the project's conventions.
