@@ -282,7 +282,12 @@ pub fn repo_sidebar(
         ui.label(crate::ui::section_label(palette, "Helm"));
     });
     if !items.is_empty() {
-        agents_entry(ui, palette, agents_badge, agents_active, out);
+        // Wrapped like the repo rows: the `⌃⌘0` badge's `new_child` only exists while
+        // Cmd is held, so a stable id scope keeps it from shifting the following
+        // header/scroll auto-ids when Cmd toggles (see the row loop below).
+        ui.push_id("agents_entry", |ui| {
+            agents_entry(ui, palette, agents_badge, agents_active, cmd_digits, out);
+        });
     }
 
     sidebar_header(
@@ -632,6 +637,10 @@ fn agents_entry(
     palette: &Palette,
     badge: AgentBadge,
     is_active: bool,
+    // While Cmd is held, the `⌃⌘0` shortcut badge takes the right column from the
+    // activity badge — slot 0 of the positional family, like the repo rows' ⌃⌘N
+    // (keybindings §5).
+    cmd_held: bool,
     out: &mut SidebarAction,
 ) {
     let width = ui.available_width();
@@ -665,25 +674,41 @@ fn agents_entry(
         label,
         color,
     );
-    let dot_center = egui::pos2(
-        rect.right() - ROW_PAD_X - AGENT_DOT_RADIUS - 2.0,
-        rect.center().y,
-    );
-    match badge {
-        AgentBadge::Working => {
-            paint_pinwheel(
-                ui,
-                dot_center,
-                AGENT_SPINNER_SIZE,
-                3,
-                &palette.lane_colors,
-                Some(palette.accent),
-            );
+    if cmd_held {
+        let mut shortcut = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    egui::pos2(rect.right() - ROW_PAD_X - BADGE_COL_W, rect.top()),
+                    egui::pos2(rect.right() - ROW_PAD_X, rect.bottom()),
+                ))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        shortcut.label(
+            egui::RichText::new("⌃⌘0")
+                .size(SHORTCUT_BADGE_SIZE)
+                .color(palette.text_muted),
+        );
+    } else {
+        let dot_center = egui::pos2(
+            rect.right() - ROW_PAD_X - AGENT_DOT_RADIUS - 2.0,
+            rect.center().y,
+        );
+        match badge {
+            AgentBadge::Working => {
+                paint_pinwheel(
+                    ui,
+                    dot_center,
+                    AGENT_SPINNER_SIZE,
+                    3,
+                    &palette.lane_colors,
+                    Some(palette.accent),
+                );
+            }
+            AgentBadge::Done => {
+                paint_done_dot(ui, dot_center, AGENT_DOT_RADIUS, palette.git_added);
+            }
+            AgentBadge::Idle | AgentBadge::None => {}
         }
-        AgentBadge::Done => {
-            paint_done_dot(ui, dot_center, AGENT_DOT_RADIUS, palette.git_added);
-        }
-        AgentBadge::Idle | AgentBadge::None => {}
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_active, "Agents")
