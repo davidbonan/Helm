@@ -69,6 +69,7 @@ fn harness(
                     badge: r.badge,
                     detail: r.detail.to_owned(),
                     worktree_id: r.worktree_id,
+                    lane: 0,
                     stats: r.stats,
                 })
                 .collect();

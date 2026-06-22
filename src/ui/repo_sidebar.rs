@@ -25,6 +25,9 @@ pub struct ProjectHeader<'a> {
     pub name: &'a str,
     pub path: &'a str,
     pub collapsed: bool,
+    /// Project color index (rank among root projects): tints the header icon to
+    /// match this project's column in the Agents view.
+    pub lane: usize,
     /// The root is present on disk and can host a new linked worktree.
     pub can_create_worktree: bool,
     /// Aggregate agent activity over the project's worktrees (max), shown at the
@@ -187,12 +190,15 @@ const ROW_HEIGHT_TWO_LINE: f32 = 44.0;
 /// Project header band (worktrees.md §1): a touch shorter than a row so the
 /// header reads as a heading, not a selectable line.
 const HEADER_HEIGHT: f32 = 28.0;
+/// Breathing room above every project header but the first, separating one
+/// project block from the previous one (worktrees.md §1).
+const PROJECT_GAP: f32 = 8.0;
 /// Width of the primary bar marking the active row, drawn at the panel's left edge.
 const ROW_ACCENT_BAR: f32 = 2.0;
 const ROW_PAD_X: f32 = 8.0;
-/// Slight extra inset for worktree rows so they nest under the project header,
-/// whose icon sits at the bare `ROW_PAD_X` (worktrees.md §1).
-const ROW_INDENT: f32 = 12.0;
+/// Inset for worktree rows so their icon lines up with the project header's name
+/// column — one icon plus its gap past the header icon (worktrees.md §1).
+const ROW_INDENT: f32 = ICON_SIZE + ICON_GAP;
 const CHEVRON_SIZE: f32 = 12.0;
 const ICON_SIZE: f32 = 13.0;
 const ICON_RING_WIDTH: f32 = 1.5;
@@ -209,9 +215,10 @@ const TWO_LINE_GAP: f32 = 1.0;
 const HEADER_NAME_SIZE: f32 = 13.5;
 const BADGE_COL_W: f32 = 38.0;
 const CREATE_COL_W: f32 = 24.0;
-/// Right-edge columns of the project header: the collapse chevron sits in the slot
-/// the ⋯ overflow menu used to hold, the `+` create-worktree button left of it.
+/// Width reserved after the project name for the collapse chevron that trails it.
 const CHEVRON_COL_W: f32 = 22.0;
+/// Gap between the project name and the chevron that follows it.
+const HEADER_CHEVRON_GAP: f32 = 6.0;
 /// Width reserved at the header's right edge for the aggregate agent dot.
 const HEADER_AGENT_COL_W: f32 = 14.0;
 const PLUS_SIZE: f32 = 15.0;
@@ -313,17 +320,17 @@ pub fn repo_sidebar(
             // The `⌘1..9` numbering counts rows only — project headers are skipped
             // (worktrees.md §7).
             let mut visible_pos = 0usize;
-            for (pos, item) in items.iter().enumerate() {
+            let mut seen_header = false;
+            for item in items.iter() {
                 // A stable id_salt per item: without it, the ⌃⌘N badge's `new_child`
                 // (created only while Cmd is held) shifts the auto-ids of the following
                 // items, which egui flags in debug with a red box + a relayout pass.
                 let (anchor, response) = match item {
                     SidebarItem::Header(header) => {
-                        // A separator sits between project blocks, above every header
-                        // but the first (worktrees.md §1).
-                        if pos != 0 {
-                            project_separator(ui, palette);
+                        if seen_header {
+                            ui.add_space(PROJECT_GAP);
                         }
+                        seen_header = true;
                         let response = ui
                             .push_id(("header", header.root), |ui| {
                                 project_header(ui, palette, header, out)
@@ -362,6 +369,7 @@ pub fn repo_sidebar(
                 }
                 placed.push((anchor, response.rect));
             }
+            draw_project_guides(ui, palette, items, &placed);
             if let Some((from, anchor, after)) = released {
                 if crate::workspace::resolve_reorder(child_flags, from, anchor, after).is_some() {
                     out.reorder = Some(Reorder {
@@ -381,19 +389,51 @@ pub fn repo_sidebar(
     ui.data_mut(|d| d.insert_temp(scroll_id, cur));
 }
 
-/// 1px `border.subtle` rule between one project block and the next (worktrees.md
-/// §1), with a little breathing room above and below. Inset from the panel edges
-/// by the row padding so it reads as a divider rather than a full-width cut.
-fn project_separator(ui: &mut egui::Ui, palette: &Palette) {
-    ui.add_space(4.0);
-    let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
-    ui.painter().hline(
-        (rect.left() + ROW_PAD_X)..=(rect.right() - ROW_PAD_X),
-        rect.center().y,
-        egui::Stroke::new(1.0, palette.border_subtle),
-    );
-    ui.add_space(4.0);
+/// Light tree guide tying each project header to its nested worktree rows: a faint
+/// vertical spine in the indent gutter, dropping from below the header icon with a
+/// short square tick branching to each row, ending at the last row — so the
+/// grouping reads as a tree rather than a bare indent. Drawn in one pass after the
+/// loop from the laid-out rects (`placed` mirrors `items`).
+fn draw_project_guides(
+    ui: &egui::Ui,
+    palette: &Palette,
+    items: &[SidebarItem],
+    placed: &[(usize, egui::Rect)],
+) {
+    // Gap left between the guide tick and the row icon it points at: a short tick
+    // branching off the spine, stopping well before the icon.
+    const GUIDE_ICON_GAP: f32 = 15.0;
+    // Breathing room below the header icon box before the spine starts.
+    const GUIDE_SPINE_GAP: f32 = 9.0;
+    let stroke = egui::Stroke::new(1.0, palette.border_subtle);
+    let painter = ui.painter();
+    let mut i = 0;
+    while i < items.len() {
+        if !matches!(items[i], SidebarItem::Header(_)) {
+            i += 1;
+            continue;
+        }
+        let header_rect = placed[i].1;
+        // Spine sits at the header icon's left edge so it reads as a bracket beside
+        // the icon column, not a line through it; the tick stops short of the row
+        // icon so the guide stays clearly detached from it.
+        let guide_x = header_rect.left() + ROW_PAD_X;
+        let tick_x = header_rect.left() + ROW_PAD_X + ROW_INDENT - GUIDE_ICON_GAP;
+        let mut centers = Vec::new();
+        let mut j = i + 1;
+        while j < items.len() && matches!(items[j], SidebarItem::Row(_)) {
+            centers.push(placed[j].1.center().y);
+            j += 1;
+        }
+        if let Some(&last) = centers.last() {
+            let spine_top = header_rect.center().y + HEADER_ICON_BOX / 2.0 + GUIDE_SPINE_GAP;
+            painter.vline(guide_x, spine_top..=last, stroke);
+            for &cy in &centers {
+                painter.hline(guide_x..=tick_x, cy, stroke);
+            }
+        }
+        i = j;
+    }
 }
 
 /// Non-selectable project header (worktrees.md §1): the project name at the shared
@@ -428,13 +468,18 @@ fn project_header(
     } else {
         0.0
     };
-    let chevron_center = egui::pos2(
-        rect.right() - ROW_PAD_X - agent_col - CHEVRON_COL_W / 2.0,
-        cy,
-    );
-    let create_response = header.can_create_worktree.then(|| {
+    // The chevron and the `+` button are affordances revealed only while the header
+    // is hovered; their columns stay reserved unconditionally so the name truncation
+    // — and the chevron's resting place right after it — never shift on hover.
+    let hovered = response.contains_pointer();
+    let create_reserve = if header.can_create_worktree {
+        CREATE_COL_W
+    } else {
+        0.0
+    };
+    let create_response = (header.can_create_worktree && hovered).then(|| {
         let center = egui::pos2(
-            rect.right() - ROW_PAD_X - agent_col - CHEVRON_COL_W - CREATE_COL_W / 2.0,
+            rect.right() - ROW_PAD_X - agent_col - CREATE_COL_W / 2.0,
             cy,
         );
         let response = ui
@@ -455,8 +500,14 @@ fn project_header(
     // header and worktree icons line up; the name follows in the label column.
     let icon_left = rect.left() + ROW_PAD_X;
     let icon_center = egui::pos2(icon_left + ICON_SIZE / 2.0, cy);
+    let icon_box = egui::Rect::from_center_size(icon_center, egui::Vec2::splat(HEADER_ICON_BOX));
+    ui.painter().rect_filled(
+        icon_box,
+        egui::CornerRadius::same(HEADER_ICON_BOX_RADIUS),
+        crate::ui::agents_view::project_header_tint(palette, header.lane),
+    );
     ui.painter().rect_stroke(
-        egui::Rect::from_center_size(icon_center, egui::Vec2::splat(HEADER_ICON_BOX)),
+        icon_box,
         egui::CornerRadius::same(HEADER_ICON_BOX_RADIUS),
         egui::Stroke::new(1.0, palette.border_subtle),
         egui::StrokeKind::Inside,
@@ -469,14 +520,11 @@ fn project_header(
         palette.text_secondary,
     );
     let name_left = icon_left + ICON_SIZE + ICON_GAP;
-    let action_cols = agent_col
-        + CHEVRON_COL_W
-        + if create_response.is_some() {
-            CREATE_COL_W
-        } else {
-            0.0
-        };
-    let name_avail = (rect.right() - ROW_PAD_X - action_cols - name_left).max(0.0);
+    // Reserve room after the name for the trailing chevron, plus the right-edge `+`
+    // and aggregate-dot columns, so a long name truncates instead of colliding.
+    let name_avail =
+        (rect.right() - ROW_PAD_X - agent_col - create_reserve - CHEVRON_COL_W - name_left)
+            .max(0.0);
     let mut job = egui::text::LayoutJob::single_section(
         header.name.to_owned(),
         egui::text::TextFormat::simple(
@@ -486,12 +534,31 @@ fn project_header(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(name_avail);
     let galley = ui.painter().layout_job(job);
+    let name_width = galley.size().x;
     ui.painter().galley(
         egui::pos2(name_left, cy - galley.size().y / 2.0),
         galley,
         palette.text_secondary,
     );
 
+    if hovered {
+        let chevron = if header.collapsed {
+            lucide_icons::Icon::ChevronRight
+        } else {
+            lucide_icons::Icon::ChevronDown
+        };
+        let chevron_center = egui::pos2(
+            name_left + name_width + HEADER_CHEVRON_GAP + CHEVRON_SIZE / 2.0,
+            cy,
+        );
+        crate::ui::paint_icon(
+            ui.painter(),
+            chevron_center,
+            CHEVRON_SIZE,
+            chevron,
+            palette.text_secondary,
+        );
+    }
     if let Some(create_response) = &create_response {
         let color = if create_response.hovered() {
             palette.text_secondary
@@ -506,23 +573,6 @@ fn project_header(
             color,
         );
     }
-    let chevron = if header.collapsed {
-        lucide_icons::Icon::ChevronRight
-    } else {
-        lucide_icons::Icon::ChevronDown
-    };
-    let chevron_color = if response.hovered() {
-        palette.text_secondary
-    } else {
-        palette.text_muted
-    };
-    crate::ui::paint_icon(
-        ui.painter(),
-        chevron_center,
-        CHEVRON_SIZE,
-        chevron,
-        chevron_color,
-    );
     if agent_col > 0.0 {
         paint_agent_dot(
             ui,
@@ -1031,7 +1081,7 @@ fn paint_agent_dot(ui: &mut egui::Ui, palette: &Palette, center: egui::Pos2, bad
 /// width — bleeding into the horizontal padding, square corners — and the active
 /// row carries a primary bar down its left edge. The painter clip is widened by the
 /// sidebar pad so the fill reaches the panel edges (kept tight vertically so a
-/// scrolled-out row stays clipped), mirroring `project_separator`.
+/// scrolled-out row stays clipped).
 fn paint_row_highlight(ui: &egui::Ui, palette: &Palette, rect: egui::Rect, active: bool) {
     let bleed = f32::from(super::SIDEBAR_PAD_X);
     let clip = ui.clip_rect();

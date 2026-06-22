@@ -25,6 +25,7 @@ fn two_projects() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             name: "alpha",
             path: "/tmp/alpha",
             collapsed: false,
+            lane: 0,
             can_create_worktree: false,
             agent: AgentBadge::None,
         }),
@@ -44,6 +45,7 @@ fn two_projects() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             name: "beta",
             path: "/tmp/beta",
             collapsed: false,
+            lane: 0,
             can_create_worktree: false,
             agent: AgentBadge::None,
         }),
@@ -72,6 +74,7 @@ fn grouped_items() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             name: "main",
             path: "/tmp/main",
             collapsed: false,
+            lane: 0,
             can_create_worktree: true,
             agent: AgentBadge::None,
         }),
@@ -374,6 +377,10 @@ fn root_plus_button_requests_create_worktree() {
     let mut harness = grouped_harness();
     harness.run();
 
+    // The `+` create-worktree button reveals on header hover; the header label
+    // ("main") is shared with its row, so hover the first match.
+    harness.get_all_by_label("main").next().unwrap().hover();
+    harness.run();
     harness.get_by_label("Create worktree").click();
     harness.run();
 
@@ -412,6 +419,7 @@ fn a_linked_worktree_row_stacks_its_folder_name_over_its_branch() {
                     name: "superset",
                     path: "/tmp/superset",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: true,
                     agent: AgentBadge::None,
                 }),
@@ -476,6 +484,7 @@ fn a_collapsed_group_hides_its_rows_and_renumbers_shortcuts() {
                     name: "main",
                     path: "/tmp/main",
                     collapsed: true,
+                    lane: 0,
                     can_create_worktree: true,
                     agent: AgentBadge::None,
                 }),
@@ -484,6 +493,7 @@ fn a_collapsed_group_hides_its_rows_and_renumbers_shortcuts() {
                     name: "solo",
                     path: "/tmp/solo",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: false,
                     agent: AgentBadge::None,
                 }),
@@ -761,6 +771,7 @@ fn header_context_menu_offers_reveal_copy_and_remove() {
                     name: "solo",
                     path: "/tmp/solo",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: false,
                     agent: AgentBadge::None,
                 }),
@@ -842,6 +853,7 @@ fn a_deleting_row_is_inert_clicks_and_menu_ignored() {
                     name: "main",
                     path: "/tmp/main",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: true,
                     agent: AgentBadge::None,
                 }),
@@ -992,6 +1004,7 @@ fn bare_root_row_is_not_selectable_but_its_children_are() {
                     name: "proj.git",
                     path: "/tmp/proj.git",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: true,
                     agent: AgentBadge::None,
                 }),
@@ -1052,6 +1065,7 @@ fn agent_badges_expose_their_state_through_the_row_label() {
                         name,
                         path,
                         collapsed: false,
+                        lane: 0,
                         can_create_worktree: false,
                         agent: AgentBadge::None,
                     }),
@@ -1164,6 +1178,7 @@ fn eye_dropdown_lists_every_project_and_toggles_hidden() {
                     name: "alpha",
                     path: "/tmp/alpha",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: false,
                     agent: AgentBadge::None,
                 }),
@@ -1234,6 +1249,7 @@ fn header_context_menu_offers_hide_project() {
                     name: "solo",
                     path: "/tmp/solo",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: false,
                     agent: AgentBadge::None,
                 }),

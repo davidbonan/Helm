@@ -55,6 +55,7 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                     name: "helm",
                     path: "/tmp/helm",
                     collapsed: false,
+                    lane: 0,
                     can_create_worktree: false,
                     agent: AgentBadge::None,
                 }),

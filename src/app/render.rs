@@ -441,6 +441,24 @@ impl HelmApp {
         let child_flags: Vec<bool> = (0..repo_paths.len())
             .map(|i| self.workspace.parent_root(i).is_some())
             .collect();
+        // Each root project gets a stable color index — its rank among roots, with
+        // worktrees inheriting their root's. Shared with the Agents columns view so a
+        // project reads with one color across both surfaces.
+        let lane_of_repo: Vec<usize> = {
+            let mut lane = 0usize;
+            let mut seen_root = false;
+            (0..repo_paths.len())
+                .map(|i| {
+                    if !child_flags[i] {
+                        if seen_root {
+                            lane += 1;
+                        }
+                        seen_root = true;
+                    }
+                    lane
+                })
+                .collect()
+        };
         // The project header surfaces the max activity over its worktrees so a folded
         // group still shows an agent working under it (worktrees.md §1).
         let block_agent: Vec<AgentBadge> = self
@@ -495,6 +513,7 @@ impl HelmApp {
                         name: r.name.as_str(),
                         path: path.as_str(),
                         collapsed: self.workspace.is_collapsed(i),
+                        lane: lane_of_repo[i],
                         can_create_worktree: !missing,
                         agent: block_agent[i],
                     })
@@ -670,6 +689,7 @@ impl HelmApp {
                                 _ => "Idle".to_owned(),
                             },
                             worktree_id,
+                            lane: lane_of_repo.get(worktree_id).copied().unwrap_or(0),
                             stats: self.caches.dirty.get(&e.repo_key).copied(),
                         },
                         (e.repo_key.clone(), e.tab_id, e.pane_id),

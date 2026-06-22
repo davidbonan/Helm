@@ -102,6 +102,9 @@ const STAT_BAR_GAP: f32 = 1.5;
 /// and dark: a faint wash on the column body, a firmer one on the worktree band.
 const COLUMN_TINT_BODY: f32 = 0.10;
 const COLUMN_TINT_BAND: f32 = 0.22;
+/// Sidebar header icon: between body and band — carries the project color
+/// without reading as strong as the columns' worktree band.
+const HEADER_ICON_TINT: f32 = 0.16;
 
 const REPO_ICON_SIZE: f32 = 15.0;
 const NAME_SIZE: f32 = 14.0;
@@ -137,6 +140,9 @@ pub struct AgentRow<'a> {
     /// the workspace): equal ids = same worktree. Splits a project's rows into
     /// worktree sub-cards in the column view; ignored by the list view.
     pub worktree_id: usize,
+    /// Project color index (rank of the group root among root projects): tints this
+    /// row's column and, via the same index, the project's sidebar header icon.
+    pub lane: usize,
     /// Uncommitted line stats `(additions, deletions)` of this row's worktree when
     /// dirty: drives the ratio bar on the column view's worktree header (a
     /// worktree's rows all carry the same value). `None` when clean.
@@ -417,9 +423,9 @@ fn render_columns(
             ui.horizontal_top(|ui| {
                 ui.add_space(COLUMN_EDGE_PAD);
                 for (col_idx, (start, end)) in groups(rows).into_iter().enumerate() {
-                    let hue = palette.lane_colors[col_idx % palette.lane_colors.len()];
+                    let lane = rows[start].lane;
                     let col = egui::Frame::new()
-                        .fill(mix(palette.bg_sidebar, hue, COLUMN_TINT_BODY))
+                        .fill(project_tint(palette, lane))
                         .stroke(egui::Stroke::new(1.0, palette.border_subtle))
                         .corner_radius(egui::CornerRadius::same(COLUMN_RADIUS))
                         .inner_margin(COLUMN_PAD)
@@ -435,7 +441,6 @@ fn render_columns(
                                     start,
                                     end,
                                     selected,
-                                    hue,
                                     terminal_height,
                                     action,
                                     &mut render_terminal,
@@ -491,7 +496,6 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
     start: usize,
     end: usize,
     selected: Option<usize>,
-    hue: egui::Color32,
     terminal_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
@@ -513,7 +517,6 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
             ws,
             we,
             selected,
-            hue,
             terminal_height,
             action,
             render_terminal,
@@ -525,7 +528,6 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
 /// One worktree sub-card: a standalone branch band labelling the group, then one
 /// **bordered card per agent**, each sitting as a distinct island on the column's
 /// tinted lane (the selected one expands to its live terminal).
-/// `hue` tints the band so it carries its column's color.
 #[allow(clippy::too_many_arguments)]
 fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     ui: &mut egui::Ui,
@@ -534,12 +536,11 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     ws: usize,
     we: usize,
     selected: Option<usize>,
-    hue: egui::Color32,
     terminal_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
-    worktree_header(ui, palette, &rows[ws], we - ws, hue);
+    worktree_header(ui, palette, &rows[ws], we - ws);
     for (offset, row) in rows[ws..we].iter().enumerate() {
         let idx = ws + offset;
         ui.add_space(AGENT_CARD_GAP);
@@ -568,14 +569,8 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
 
 /// Branch header of a worktree sub-card: a git-branch icon + branch label, then
 /// (when the worktree is dirty) the uncommitted ratio bar and the agent count.
-/// `hue` is the column's color, washed into the band.
-fn worktree_header(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    first: &AgentRow,
-    count: usize,
-    hue: egui::Color32,
-) {
+/// The band carries the project's color (`project_band_tint`).
+fn worktree_header(ui: &mut egui::Ui, palette: &Palette, first: &AgentRow, count: usize) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), WORKTREE_HEADER_HEIGHT),
         egui::Sense::hover(),
@@ -585,7 +580,7 @@ fn worktree_header(
     ui.painter().rect_filled(
         rect,
         egui::CornerRadius::same(CARD_RADIUS),
-        mix(palette.bg_surface_hover, hue, COLUMN_TINT_BAND),
+        project_band_tint(palette, first.lane),
     );
     let inner = rect.shrink2(egui::vec2(CARD_PAD_X, 0.0));
     paint_icon(
@@ -653,6 +648,36 @@ fn mix(base: egui::Color32, tint: egui::Color32, t: f32) -> egui::Color32 {
         lerp(base.r(), tint.r()),
         lerp(base.g(), tint.g()),
         lerp(base.b(), tint.b()),
+    )
+}
+
+/// The faint column-body wash for project `lane` — the background the Agents
+/// columns view tints each column with.
+pub(crate) fn project_tint(palette: &Palette, lane: usize) -> egui::Color32 {
+    mix(
+        palette.bg_sidebar,
+        palette.lane_color(lane),
+        COLUMN_TINT_BODY,
+    )
+}
+
+/// The firmer worktree-band wash for project `lane` — the salient colored strip
+/// the Agents columns view labels each worktree group with.
+pub(crate) fn project_band_tint(palette: &Palette, lane: usize) -> egui::Color32 {
+    mix(
+        palette.bg_surface_hover,
+        palette.lane_color(lane),
+        COLUMN_TINT_BAND,
+    )
+}
+
+/// The workspace sidebar's header-icon wash for project `lane` — carries the
+/// same hue as the Agents column, a touch softer than its worktree band.
+pub(crate) fn project_header_tint(palette: &Palette, lane: usize) -> egui::Color32 {
+    mix(
+        palette.bg_surface_hover,
+        palette.lane_color(lane),
+        HEADER_ICON_TINT,
     )
 }
 
@@ -1242,6 +1267,7 @@ mod tests {
             badge,
             detail: String::new(),
             worktree_id: 0,
+            lane: 0,
             stats: None,
         }
     }
