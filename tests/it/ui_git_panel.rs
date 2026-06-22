@@ -591,6 +591,19 @@ fn discard_all_requires_confirmation_then_emits_intent() {
 }
 
 #[test]
+fn pressing_enter_confirms_the_discard_modal() {
+    let intents = drive(sample_status(), "", |h| {
+        h.get_by_label("Discard all").click();
+        h.run();
+        h.key_press(egui::Key::Enter);
+    });
+    assert!(
+        intents.contains(&GitIntent::DiscardAll),
+        "Enter confirms the discard modal like the red button"
+    );
+}
+
+#[test]
 fn cancelling_discard_emits_no_intent() {
     let intents = drive(sample_status(), "", |h| {
         h.get_by_label("Discard all").click();
@@ -829,6 +842,17 @@ fn the_abort_modal_confirms_with_the_red_button() {
 
     harness.get_by_label("Abort the merge/rebase in progress?");
     harness.get_by_label("Abort").click();
+    harness.run();
+
+    assert!(harness.state().confirm);
+}
+
+#[test]
+fn the_abort_modal_confirms_with_enter() {
+    let mut harness = abort_modal_harness();
+    harness.run();
+
+    harness.key_press(egui::Key::Enter);
     harness.run();
 
     assert!(harness.state().confirm);

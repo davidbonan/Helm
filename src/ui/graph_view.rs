@@ -1698,6 +1698,9 @@ pub fn delete_branch_modal(
                     }
                 });
             });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
         });
     if modal.should_close() {
         out.dismiss = true;
@@ -1738,6 +1741,9 @@ pub fn delete_stash_modal(
                     }
                 });
             });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
         });
     if modal.should_close() {
         out.dismiss = true;
@@ -1788,6 +1794,9 @@ pub fn delete_tag_modal(
                     }
                 });
             });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
         });
     if modal.should_close() {
         out.dismiss = true;

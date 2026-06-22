@@ -1657,6 +1657,9 @@ pub fn delete_worktree_modal(
                             }
                         });
                     });
+                    if crate::ui::modal_confirm_pressed(ui) {
+                        out.confirm = true;
+                    }
                 }
                 DeletePrompt::Refused { label, reason } => {
                     ui.label(egui::RichText::new(format!("Cannot delete “{label}”")).strong());
@@ -1668,6 +1671,9 @@ pub fn delete_worktree_modal(
                             out.dismiss = true;
                         }
                     });
+                    if crate::ui::modal_confirm_pressed(ui) {
+                        out.dismiss = true;
+                    }
                 }
             }
         });

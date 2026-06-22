@@ -295,6 +295,12 @@ pub(crate) fn modal_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::popup(style).inner_margin(MODAL_PADDING)
 }
 
+/// Confirmation modals treat `Enter`/`Return` as the primary action — the
+/// danger-button equivalent, mirroring `Esc`/click-outside for Cancel.
+pub(crate) fn modal_confirm_pressed(ui: &egui::Ui) -> bool {
+    ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
 /// Applies [`MODAL_CONTROL_RADIUS`] to the interactive widgets (buttons, inputs,
 /// rows) of the modal's content `Ui`.
 pub(crate) fn modal_controls_style(ui: &mut egui::Ui) {

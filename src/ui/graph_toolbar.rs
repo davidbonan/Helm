@@ -551,6 +551,9 @@ pub fn force_push_modal(
                     }
                 });
             });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
         });
     if modal.should_close() {
         out.dismiss = true;
@@ -593,6 +596,9 @@ pub fn reset_hard_modal(
                     }
                 });
             });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
         });
     if modal.should_close() {
         out.dismiss = true;
