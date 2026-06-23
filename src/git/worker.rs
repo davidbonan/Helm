@@ -98,6 +98,10 @@ pub enum GitCommand {
     Checkout(String),
     /// Stashes the entire working tree (untracked included) (M12-4).
     Stash,
+    /// Stashes only the given paths — both staged and unstaged changes of each,
+    /// untracked included (WIP sidebar context menu, git.md §3). One git
+    /// invocation so the selection lands in a **single** stash.
+    StashFiles(Vec<String>),
     /// Applies then drops `stash@{0}`; conflict ⇒ stash kept + error.
     StashPop,
     /// Applies then drops the stash whose **stash commit** is the oid (graph
@@ -632,6 +636,7 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         }
         GitCommand::Checkout(name) => branch::checkout(repo, name)?,
         GitCommand::Stash => stash::stash(repo)?,
+        GitCommand::StashFiles(paths) => stash::stash_paths(repo, paths)?,
         GitCommand::StashPop => stash::pop(repo)?,
         GitCommand::StashPopAt(oid) => stash::pop_at(repo, *oid)?,
         GitCommand::StashApplyAt(oid) => stash::apply_at(repo, *oid)?,

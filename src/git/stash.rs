@@ -1,4 +1,5 @@
 use crate::git::{cli, status};
+use std::path::Path;
 
 pub const STASH_MESSAGE: &str = "helm: stash";
 
@@ -13,10 +14,128 @@ pub fn stash(repo: &git2::Repository) -> Result<(), git2::Error> {
 /// re-hashes the whole worktree single-threaded (~13 s on a 20k-file repo, ~0.6 s
 /// via the CLI).
 pub fn save(repo: &git2::Repository, message: &str) -> Result<(), git2::Error> {
-    let out = run(
+    finish(
         repo,
-        &["stash", "push", "--include-untracked", "--message", message],
+        run(
+            repo,
+            &["stash", "push", "--include-untracked", "--message", message],
+        )?,
+    )
+}
+
+/// Stashes only `paths` — **both** the staged and the unstaged changes of each
+/// (a per-file stash is never partial here), untracked included. WIP sidebar
+/// context menu (git.md §3). Empty paths ⇒ a clean `Err`.
+///
+/// Built by hand rather than via `git stash push -- <paths>`: that form snapshots
+/// the **whole** index, so any *other* staged file leaks into the entry — the
+/// "stashed all my files" bug (D-2026-06-23-scoped-stash-index-leak). Here the
+/// entry is assembled from a scratch index seeded with HEAD, advanced only for
+/// `paths`, leaving every other file untouched.
+pub fn stash_paths(repo: &git2::Repository, paths: &[String]) -> Result<(), git2::Error> {
+    if paths.is_empty() {
+        return Err(git2::Error::from_str("nothing to stash"));
+    }
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| git2::Error::from_str("repository has no working tree"))?;
+
+    // HEAD anchors the entry; an unborn branch has nothing tracked to scope.
+    let head_ref = repo
+        .head()
+        .map_err(|_| git2::Error::from_str("You do not have the initial commit yet"))?;
+    let branch = head_ref.shorthand().unwrap_or("HEAD").to_owned();
+    let head = head_ref
+        .peel_to_commit()
+        .map_err(|_| git2::Error::from_str("You do not have the initial commit yet"))?;
+    let head_oid = head.id().to_string();
+    let head_tree = head.tree()?;
+    let head_tree_oid = head_tree.id().to_string();
+
+    // 1. Worktree tree = HEAD advanced to the worktree state of `paths` only.
+    let index = repo
+        .path()
+        .join(format!("helm-scoped-stash-{}.index", std::process::id()));
+    let env = [("GIT_INDEX_FILE", index.to_string_lossy().into_owned())];
+    plumb(workdir, &["read-tree", &head_oid], &env)?;
+    let mut add: Vec<&str> = vec!["add", "-A", "--"];
+    add.extend(paths.iter().map(String::as_str));
+    plumb(workdir, &add, &env)?;
+    let w_tree = plumb(workdir, &["write-tree"], &env)?;
+    let _ = std::fs::remove_file(&index);
+
+    if w_tree == head_tree_oid {
+        return Err(git2::Error::from_str("nothing to stash"));
+    }
+
+    // 2. Stash commits (clean index commit + worktree commit) and the ref + reflog
+    // entry that `git stash list/show/pop` and the graph rows read.
+    let index_msg = format!("index on {branch}: {STASH_MESSAGE}");
+    let i_commit = plumb(
+        workdir,
+        &[
+            "commit-tree",
+            &head_tree_oid,
+            "-p",
+            &head_oid,
+            "-m",
+            &index_msg,
+        ],
+        &[],
     )?;
+    let stash_msg = format!("On {branch}: {STASH_MESSAGE}");
+    let w_commit = plumb(
+        workdir,
+        &[
+            "commit-tree",
+            &w_tree,
+            "-p",
+            &head_oid,
+            "-p",
+            &i_commit,
+            "-m",
+            &stash_msg,
+        ],
+        &[],
+    )?;
+    plumb(
+        workdir,
+        &[
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            &stash_msg,
+            "refs/stash",
+            &w_commit,
+        ],
+        &[],
+    )?;
+
+    // 3. Roll back only `paths` in the real index + worktree: files in HEAD go back
+    // to their committed state, the rest (untracked / freshly added) are removed —
+    // their content now lives in the stash.
+    let (in_head, fresh): (Vec<&String>, Vec<&String>) = paths
+        .iter()
+        .partition(|path| head_tree.get_path(Path::new(path)).is_ok());
+    if !in_head.is_empty() {
+        let mut checkout: Vec<&str> = vec!["checkout", "HEAD", "--"];
+        checkout.extend(in_head.iter().map(|path| path.as_str()));
+        plumb(workdir, &checkout, &[])?;
+    }
+    if !fresh.is_empty() {
+        let mut remove: Vec<&str> = vec!["rm", "--cached", "--ignore-unmatch", "-q", "--"];
+        remove.extend(fresh.iter().map(|path| path.as_str()));
+        plumb(workdir, &remove, &[])?;
+        for path in fresh {
+            let _ = std::fs::remove_file(workdir.join(path));
+        }
+    }
+    Ok(())
+}
+
+/// Reads `git stash push`'s outcome (shared by the whole-tree and the path-scoped
+/// saves): a real failure surfaces, an empty stash maps to "nothing to stash".
+fn finish(repo: &git2::Repository, out: cli::CliOutput) -> Result<(), git2::Error> {
     if !out.success() {
         // Unborn HEAD on a clean tree fails with "You do not have the initial
         // commit yet": same contract as the dedicated message below. The scan
@@ -98,13 +217,26 @@ fn run(repo: &git2::Repository, args: &[&str]) -> Result<cli::CliOutput, git2::E
     let workdir = repo
         .workdir()
         .ok_or_else(|| git2::Error::from_str("repository has no working tree"))?;
-    cli::run(workdir, args).map_err(|err| match err {
+    cli::run(workdir, args).map_err(map_cli)
+}
+
+fn map_cli(err: cli::CliError) -> git2::Error {
+    match err {
         cli::CliError::NotFound => git2::Error::from_str("git binary not found"),
         cli::CliError::TimedOut(timeout) => {
             git2::Error::from_str(&format!("git timed out after {}s", timeout.as_secs()))
         }
         cli::CliError::Io(err) => git2::Error::from_str(&err.to_string()),
-    })
+    }
+}
+
+/// Runs one plumbing step of the scoped stash and fails on a non-zero exit.
+fn plumb(workdir: &Path, args: &[&str], envs: &[(&str, String)]) -> Result<String, git2::Error> {
+    let out = cli::run_with_env(workdir, args, envs).map_err(map_cli)?;
+    if !out.success() {
+        return Err(failure(&out));
+    }
+    Ok(out.stdout.trim().to_owned())
 }
 
 fn failure(out: &cli::CliOutput) -> git2::Error {

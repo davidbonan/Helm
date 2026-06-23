@@ -92,31 +92,36 @@ pub(crate) struct FileMenuCtx<'a> {
 pub(crate) fn file_context_menu(response: &egui::Response, rel_path: &str, ctx: &mut FileMenuCtx) {
     egui::Popup::context_menu(response)
         .style(crate::theme::menu_style)
-        .show(|ui| {
-            let abs = ctx.root.map(|root| root.join(rel_path));
-            if ui.button("Copy path").clicked() {
-                let text = abs
-                    .as_ref()
-                    .map_or_else(|| rel_path.to_owned(), |p| p.to_string_lossy().into_owned());
-                ui.ctx().copy_text(text);
-                ui.close();
-            }
-            if ui.button("Copy relative path").clicked() {
-                ui.ctx().copy_text(rel_path.to_owned());
-                ui.close();
-            }
-            if let Some(abs) = abs {
-                ui.separator();
-                if ui.button("Reveal in Finder").clicked() {
-                    ctx.out.reveal = Some(abs.clone());
-                    ui.close();
-                }
-                if ui.button("Open in editor").clicked() {
-                    ctx.out.open_in_editor = Some(abs);
-                    ui.close();
-                }
-            }
-        });
+        .show(|ui| file_menu_entries(ui, rel_path, ctx));
+}
+
+/// The clipboard / reveal / open-in-editor entries, shared by the commit-detail
+/// menu and the WIP sidebar menu (which prepends its own stage/discard/stash
+/// actions). Added to an already-open menu `ui`, not its own popup.
+pub(crate) fn file_menu_entries(ui: &mut egui::Ui, rel_path: &str, ctx: &mut FileMenuCtx) {
+    let abs = ctx.root.map(|root| root.join(rel_path));
+    if ui.button("Copy path").clicked() {
+        let text = abs
+            .as_ref()
+            .map_or_else(|| rel_path.to_owned(), |p| p.to_string_lossy().into_owned());
+        ui.ctx().copy_text(text);
+        ui.close();
+    }
+    if ui.button("Copy relative path").clicked() {
+        ui.ctx().copy_text(rel_path.to_owned());
+        ui.close();
+    }
+    if let Some(abs) = abs {
+        ui.separator();
+        if ui.button("Reveal in Finder").clicked() {
+            ctx.out.reveal = Some(abs.clone());
+            ui.close();
+        }
+        if ui.button("Open in editor").clicked() {
+            ctx.out.open_in_editor = Some(abs);
+            ui.close();
+        }
+    }
 }
 
 /// Full-width row × [`ROW_HEIGHT`]: hover/selection background (+ accent bar on

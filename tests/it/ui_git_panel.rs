@@ -1268,6 +1268,201 @@ fn file_row_menu_hides_reveal_and_open_without_a_repo_root() {
     });
 }
 
+#[test]
+fn file_menu_stash_confirms_then_emits_stash_files() {
+    let status = RepoStatus {
+        unstaged: vec![file("src/main.rs", ChangeKind::Modified)],
+        staged: vec![],
+    };
+    let intents = drive(status, "", |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        // The modal confirm, not the menu entry (the menu has closed).
+        h.get_by_label("Stash").click();
+    });
+    assert!(intents.contains(&GitIntent::StashFiles(vec!["src/main.rs".to_owned()])));
+}
+
+#[test]
+fn file_menu_stash_targets_only_the_right_clicked_file() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("a.txt", ChangeKind::Modified),
+            file("b.txt", ChangeKind::Modified),
+            file("c.txt", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let intents = drive(status, "", |h| {
+        h.get_by_label("b.txt").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        h.get_by_label("Stash").click();
+    });
+    assert!(
+        intents.contains(&GitIntent::StashFiles(vec!["b.txt".to_owned()])),
+        "right-click stash with no prior selection targets only that file, got {intents:?}"
+    );
+}
+
+#[test]
+fn file_menu_stash_after_clicking_another_file_targets_only_the_right_clicked() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("a.txt", ChangeKind::Modified),
+            file("b.txt", ChangeKind::Modified),
+            file("c.txt", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let intents = drive(status, "", |h| {
+        // Open a.txt's diff (plain click), then stash b.txt via its menu.
+        h.get_by_label("a.txt").click();
+        h.run();
+        h.get_by_label("b.txt").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        h.get_by_label("Stash").click();
+    });
+    assert!(
+        intents.contains(&GitIntent::StashFiles(vec!["b.txt".to_owned()])),
+        "got {intents:?}"
+    );
+}
+
+#[test]
+fn file_menu_stash_on_a_staged_file_targets_only_that_file() {
+    let status = RepoStatus {
+        unstaged: vec![file("a.txt", ChangeKind::Modified)],
+        staged: vec![
+            file("b.txt", ChangeKind::Modified),
+            file("c.txt", ChangeKind::Modified),
+        ],
+    };
+    let intents = drive(status, "", |h| {
+        h.get_by_label("b.txt").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        h.get_by_label("Stash").click();
+    });
+    assert!(
+        intents.contains(&GitIntent::StashFiles(vec!["b.txt".to_owned()])),
+        "got {intents:?}"
+    );
+}
+
+#[test]
+fn file_menu_stash_cancel_emits_nothing() {
+    let status = RepoStatus {
+        unstaged: vec![file("src/main.rs", ChangeKind::Modified)],
+        staged: vec![],
+    };
+    let intents = drive(status, "", |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        h.get_by_label("Cancel").click();
+    });
+    assert!(intents.is_empty());
+}
+
+#[test]
+fn multi_select_menu_stashes_the_whole_selection_in_one_intent() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("src/main.rs", ChangeKind::Modified),
+            file("src/lib.rs", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let state = GitPanelState {
+        marked_files: vec![
+            GitFileSelection {
+                path: "src/main.rs".into(),
+                staged: false,
+            },
+            GitFileSelection {
+                path: "src/lib.rs".into(),
+                staged: false,
+            },
+        ],
+        ..Default::default()
+    };
+    let intents = drive_with_state(status, state, |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+        h.get_by_label("Stash").click();
+    });
+    assert!(intents.contains(&GitIntent::StashFiles(vec![
+        "src/lib.rs".to_owned(),
+        "src/main.rs".to_owned(),
+    ])));
+}
+
+#[test]
+fn multi_select_menu_stages_every_marked_file() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("src/main.rs", ChangeKind::Modified),
+            file("src/lib.rs", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let state = GitPanelState {
+        marked_files: vec![
+            GitFileSelection {
+                path: "src/main.rs".into(),
+                staged: false,
+            },
+            GitFileSelection {
+                path: "src/lib.rs".into(),
+                staged: false,
+            },
+        ],
+        ..Default::default()
+    };
+    let intents = drive_with_state(status, state, |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        // Move off the rows so their hover "Stage" pill stops shadowing the menu
+        // entry of the same label.
+        h.event(egui::Event::PointerMoved(egui::pos2(2.0, 2.0)));
+        h.run();
+        h.get_by_label("Stage").click();
+    });
+    assert!(intents.contains(&GitIntent::Stage("src/main.rs".to_owned())));
+    assert!(intents.contains(&GitIntent::Stage("src/lib.rs".to_owned())));
+}
+
+#[test]
+fn cmd_click_selects_without_opening_a_diff() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("src/main.rs", ChangeKind::Modified),
+            file("src/lib.rs", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let intents = drive_with_state(status, GitPanelState::default(), |h| {
+        h.get_by_label("src/lib.rs")
+            .click_modifiers(egui::Modifiers::COMMAND);
+    });
+    assert!(
+        !intents
+            .iter()
+            .any(|intent| matches!(intent, GitIntent::OpenDiff { .. })),
+        "Cmd+click toggles the selection, it never opens the diff"
+    );
+}
+
 /// Like [`drive`] but renders the file lists in `view` and keeps the panel state
 /// across frames, so a directory collapse or a tree-order arrow nav settles.
 fn drive_view(

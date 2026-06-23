@@ -118,6 +118,19 @@ keyboard focus (click in the pane, or `Esc` that closes the diff view): the arro
 then belong to the PTY and never reopen a diff; a click on a file
 rearms it.
 
+**Selection & row context menu**: **Cmd+click** toggles a file in/out of a
+multi-selection, **Shift+click** extends the selection to the clicked row from
+the anchor (last plain/Cmd click); a plain click resets the selection to that
+one file and opens its diff. **Right-click** anchors the menu on the clicked
+row (making it the lone target when it sits outside the current selection). One
+file ⇒ the contextual **Stage**/**Unstage** + **Discard** (unstaged rows) +
+**Stash** over the shared **Copy path** / **Copy relative path** / **Reveal in
+Finder** / **Open in editor** entries; a multi-selection ⇒ the batch
+**Stage** / **Unstage** / **Discard** / **Stash** only. **Stash** shelves the
+**whole** file — staged **and** unstaged changes together, untracked included,
+**never a partial stash** — and a multi-file stash lands in a **single** entry;
+behind a confirmation modal that spells this out.
+
 **Discard** (**destructive** action, behind a confirmation modal):
 - *untracked file* → deletion from disk;
 - *tracked file* → restore from the **index** (an already-staged part is

@@ -12,6 +12,7 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
         GitIntent::UnstageAll => Some(GitCommand::UnstageAll),
         GitIntent::Discard(path) => Some(GitCommand::Discard(path)),
         GitIntent::DiscardAll => Some(GitCommand::DiscardAll),
+        GitIntent::StashFiles(paths) => Some(GitCommand::StashFiles(paths)),
         GitIntent::Commit(message) => Some(GitCommand::Commit(message)),
         // AI generation is routed to the `AiRunner` by the app (which carries
         // provider + instructions), not to the git worker.

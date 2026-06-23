@@ -240,6 +240,152 @@ fn pop_at_and_drop_at_on_a_gone_stash_are_clear_errors() {
 }
 
 #[test]
+fn stash_paths_shelves_both_states_of_only_the_listed_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base-a\n");
+    commit_file(&repo, tmp.path(), "b.txt", "base-b\n");
+
+    // a.txt carries a staged change plus a further unstaged edit on top.
+    fs::write(tmp.path().join("a.txt"), "staged-a\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("a.txt")).unwrap();
+    index.write().unwrap();
+    fs::write(tmp.path().join("a.txt"), "worktree-a\n").unwrap();
+    // b.txt is modified but not part of the selection.
+    fs::write(tmp.path().join("b.txt"), "edited-b\n").unwrap();
+
+    stash::stash_paths(&repo, &["a.txt".to_owned()]).unwrap();
+
+    assert_eq!(stash::count(&repo).unwrap(), 1, "a single stash entry");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "base-a\n",
+        "both the staged and the unstaged change of a.txt are stashed"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+        "edited-b\n",
+        "the unlisted file keeps its change"
+    );
+}
+
+#[test]
+fn stash_paths_groups_the_whole_selection_into_one_stash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base-a\n");
+    commit_file(&repo, tmp.path(), "b.txt", "base-b\n");
+    commit_file(&repo, tmp.path(), "c.txt", "base-c\n");
+    fs::write(tmp.path().join("a.txt"), "edited-a\n").unwrap();
+    fs::write(tmp.path().join("b.txt"), "edited-b\n").unwrap();
+    fs::write(tmp.path().join("c.txt"), "edited-c\n").unwrap();
+
+    stash::stash_paths(&repo, &["a.txt".to_owned(), "b.txt".to_owned()]).unwrap();
+
+    assert_eq!(
+        stash::count(&repo).unwrap(),
+        1,
+        "the two files land in a single stash, never one entry each"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("c.txt")).unwrap(),
+        "edited-c\n",
+        "the unlisted file is untouched"
+    );
+}
+
+#[test]
+fn stash_paths_leaves_a_staged_bystander_out_of_the_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base-a\n");
+    commit_file(&repo, tmp.path(), "b.txt", "base-b\n");
+
+    // a.txt: the unstaged target. b.txt: a *staged* bystander preparing a commit.
+    fs::write(tmp.path().join("a.txt"), "edited-a\n").unwrap();
+    fs::write(tmp.path().join("b.txt"), "edited-b\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("b.txt")).unwrap();
+    index.write().unwrap();
+
+    stash::stash_paths(&repo, &["a.txt".to_owned()]).unwrap();
+
+    let status = load_repo(&repo).unwrap();
+    assert!(
+        status.staged.iter().any(|f| f.path == "b.txt"),
+        "the bystander's staged change survives the stash"
+    );
+
+    // The entry must touch a.txt alone — the index-leak baked every staged file in.
+    let stash_oid = repo.reflog("refs/stash").unwrap().get(0).unwrap().id_new();
+    let stash_tree = repo.find_commit(stash_oid).unwrap().tree().unwrap();
+    let head_tree = repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .tree()
+        .unwrap();
+    let diff = repo
+        .diff_tree_to_tree(Some(&head_tree), Some(&stash_tree), None)
+        .unwrap();
+    let mut changed: Vec<String> = diff
+        .deltas()
+        .filter_map(|delta| {
+            delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .collect();
+    changed.sort();
+    changed.dedup();
+    assert_eq!(
+        changed,
+        vec!["a.txt".to_string()],
+        "the stash holds only the selected file"
+    );
+}
+
+#[test]
+fn stash_paths_with_no_paths_is_a_clear_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base\n");
+    fs::write(tmp.path().join("a.txt"), "edited\n").unwrap();
+
+    assert!(stash::stash_paths(&repo, &[]).is_err());
+    assert_eq!(stash::count(&repo).unwrap(), 0);
+}
+
+#[test]
+fn worker_stash_files_shelves_only_the_selection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base-a\n");
+    commit_file(&repo, tmp.path(), "b.txt", "base-b\n");
+    fs::write(tmp.path().join("a.txt"), "edited-a\n").unwrap();
+    fs::write(tmp.path().join("b.txt"), "edited-b\n").unwrap();
+
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    worker.send(GitCommand::StashFiles(vec!["a.txt".to_owned()]));
+    match worker.recv() {
+        Some((
+            _,
+            GitResult::Status {
+                result: Ok(snap), ..
+            },
+        )) => {
+            assert_eq!(snap.stash_count, 1);
+            assert!(snap.status.unstaged.iter().any(|f| f.path == "b.txt"));
+            assert!(!snap.status.unstaged.iter().any(|f| f.path == "a.txt"));
+        }
+        other => panic!("expected snapshot after stash, got {other:?}"),
+    }
+}
+
+#[test]
 fn stash_on_clean_tree_is_a_clear_error() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_with_identity(tmp.path());

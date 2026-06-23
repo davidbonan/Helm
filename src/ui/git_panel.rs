@@ -6,8 +6,8 @@ use crate::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SIZE};
 use crate::ui::file_list::{
-    self, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput, FileViewMode, PATH_SIZE,
-    ROW_HEIGHT,
+    self, file_menu_entries, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput,
+    FileViewMode, PATH_SIZE, ROW_HEIGHT,
 };
 use crate::ui::spinner::Spinner;
 use crate::ui::SECTION_TOP_MARGIN;
@@ -21,6 +21,10 @@ pub enum GitIntent {
     UnstageAll,
     Discard(String),
     DiscardAll,
+    /// Stashes the given paths in a **single** stash — both staged and unstaged
+    /// changes of each (WIP sidebar context menu, git.md §3). Confirmed by a modal
+    /// on the panel side before it is emitted.
+    StashFiles(Vec<String>),
     Commit(String),
     /// Asks the AI to fill the commit inputs (subject + description) — the
     /// generation is asynchronous and never commits.
@@ -68,6 +72,8 @@ pub enum GitIntent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscardTarget {
     File(String),
+    /// Several files selected in the WIP sidebar (multi-select context menu).
+    Files(Vec<String>),
     All,
 }
 
@@ -94,15 +100,24 @@ pub struct GitPanelState {
     // path; toggled here by the directory rows. Empty (and unused) in Flat mode.
     pub unstaged_collapsed_dirs: HashSet<String>,
     pub staged_collapsed_dirs: HashSet<String>,
-    // Discard confirmation modal — armed here by the Discard pills, resolved
-    // here by the modal (confirm ⇒ `GitIntent::Discard*`).
+    // Discard confirmation modal — armed here by the Discard pills / context
+    // menu, resolved here by the modal (confirm ⇒ `GitIntent::Discard*`).
     pub pending_discard: Option<DiscardTarget>,
+    // Stash confirmation modal — armed here by the context-menu Stash entry,
+    // resolved here by the modal (confirm ⇒ `GitIntent::StashFiles`). The whole
+    // file (staged + unstaged) is stashed, never a partial stash (git.md §3).
+    pub pending_stash: Option<Vec<String>>,
     // File selection & ↑/↓ nav — armed here (row click, arrow nav), disarmed
     // here (commit-input click, no-repo reset); the app also reads the pair to
     // route the arrows (sidebar nav vs graph) and disarms the nav when a
     // terminal takes keyboard focus.
     pub selected_file: Option<GitFileSelection>,
     pub file_nav_active: bool,
+    // Multi-selection for the context-menu batch actions (Cmd/Shift+click). A
+    // plain click resets it to the clicked file; the highlight follows it. The
+    // anchor is the last plain/Cmd-clicked row, used by Shift+click ranges.
+    pub marked_files: Vec<GitFileSelection>,
+    pub selection_anchor: Option<GitFileSelection>,
     /// AI generation in progress — per-frame projection of `AiRunner::busy()`
     /// written by the app: spinner on the button, click ignored.
     pub ai_busy: bool,
@@ -233,6 +248,7 @@ pub fn git_panel(
     });
 
     discard_confirm(ui, palette, state, intents);
+    stash_confirm(ui, palette, state, intents);
     if let Some(nav) = file_nav_pressed(ui, state) {
         navigate_selected_file(ui, status, state, intents, nav, view);
     }
@@ -272,6 +288,7 @@ fn conflict_panel(
         conflict_sections(
             ui,
             palette,
+            status,
             &conflicted,
             &status.staged,
             state,
@@ -352,6 +369,7 @@ fn conflict_subline(ui: &mut egui::Ui, palette: &Palette, verb: &str, source: &s
 fn conflict_sections(
     ui: &mut egui::Ui,
     palette: &Palette,
+    status: &RepoStatus,
     conflicted: &[&FileEntry],
     resolved: &[FileEntry],
     state: &mut GitPanelState,
@@ -362,7 +380,7 @@ fn conflict_sections(
     ui.add_space(2.0);
     let half = ((remaining_height(ui) - SECTION_GAP) / 2.0).max(0.0);
     card(ui, half, |ui| {
-        conflicted_section(ui, palette, conflicted, state, intents, menu);
+        conflicted_section(ui, palette, status, conflicted, state, intents, menu);
     });
     ui.add_space(SECTION_GAP);
     card(ui, half, |ui| {
@@ -373,6 +391,7 @@ fn conflict_sections(
 fn conflicted_section(
     ui: &mut egui::Ui,
     palette: &Palette,
+    status: &RepoStatus,
     conflicted: &[&FileEntry],
     state: &mut GitPanelState,
     intents: &mut Vec<GitIntent>,
@@ -407,6 +426,7 @@ fn conflicted_section(
                 file_row(
                     ui,
                     palette,
+                    status,
                     entry,
                     RowSection::Unstaged,
                     0.0,
@@ -414,6 +434,7 @@ fn conflicted_section(
                     state,
                     intents,
                     menu,
+                    FileViewMode::Flat,
                 );
             }
         });
@@ -671,6 +692,9 @@ fn status_loading_placeholder(ui: &mut egui::Ui, palette: &Palette) {
 pub(crate) fn no_repo(ui: &mut egui::Ui, palette: &Palette, state: &mut GitPanelState) {
     state.selected_file = None;
     state.file_nav_active = false;
+    state.marked_files.clear();
+    state.selection_anchor = None;
+    state.pending_stash = None;
     ui.add_space(SECTION_TOP_MARGIN);
     ui.label(
         egui::RichText::new(NO_REPO_LABEL)
@@ -960,6 +984,7 @@ fn unstaged_section(
                 render_files(
                     ui,
                     palette,
+                    status,
                     &status.unstaged,
                     RowSection::Unstaged,
                     state,
@@ -1001,6 +1026,7 @@ fn staged_section(
             render_files(
                 ui,
                 palette,
+                status,
                 &status.staged,
                 RowSection::Staged,
                 state,
@@ -1025,6 +1051,7 @@ fn staged_section(
 fn render_files(
     ui: &mut egui::Ui,
     palette: &Palette,
+    status: &RepoStatus,
     entries: &[FileEntry],
     section: RowSection,
     state: &mut GitPanelState,
@@ -1039,6 +1066,7 @@ fn render_files(
                 file_row(
                     ui,
                     palette,
+                    status,
                     entry,
                     section,
                     0.0,
@@ -1046,6 +1074,7 @@ fn render_files(
                     state,
                     intents,
                     menu,
+                    view,
                 );
             }
         }
@@ -1075,6 +1104,7 @@ fn render_files(
                         file_row(
                             ui,
                             palette,
+                            status,
                             entry,
                             section,
                             indent,
@@ -1082,6 +1112,7 @@ fn render_files(
                             state,
                             intents,
                             menu,
+                            view,
                         );
                     }
                 }
@@ -1449,6 +1480,10 @@ fn discard_confirm(
         DiscardTarget::File(path) => {
             format!("Discard changes to “{path}”? This cannot be undone.")
         }
+        DiscardTarget::Files(paths) => format!(
+            "Discard changes to {} files? This cannot be undone.",
+            paths.len()
+        ),
     };
 
     let mut decided: Option<bool> = None;
@@ -1484,15 +1519,158 @@ fn discard_confirm(
 
     match decided {
         Some(true) => {
-            intents.push(match target {
-                DiscardTarget::All => GitIntent::DiscardAll,
-                DiscardTarget::File(path) => GitIntent::Discard(path),
-            });
+            match target {
+                DiscardTarget::All => intents.push(GitIntent::DiscardAll),
+                DiscardTarget::File(path) => intents.push(GitIntent::Discard(path)),
+                DiscardTarget::Files(paths) => {
+                    for path in paths {
+                        intents.push(GitIntent::Discard(path));
+                    }
+                }
+            }
             state.pending_discard = None;
         }
         Some(false) => state.pending_discard = None,
         None => {}
     }
+}
+
+/// Confirmation for the context-menu **Stash** entry: the whole file is stashed
+/// (staged **and** unstaged), never a partial stash (git.md §3) — the body spells
+/// that out so the action is not mistaken for an index-only stash.
+fn stash_confirm(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &mut GitPanelState,
+    intents: &mut Vec<GitIntent>,
+) {
+    let Some(paths) = state.pending_stash.clone() else {
+        return;
+    };
+    let body = if paths.len() == 1 {
+        format!(
+            "Stash all changes to “{}”? Staged and unstaged changes are stashed together — not a partial stash.",
+            paths[0]
+        )
+    } else {
+        format!(
+            "Stash all changes to {} files? Staged and unstaged changes are stashed together — not a partial stash.",
+            paths.len()
+        )
+    };
+
+    let mut decided: Option<bool> = None;
+    let modal = egui::Modal::new(egui::Id::new("git_stash_confirm"))
+        .frame(crate::ui::modal_frame(ui.style()))
+        .show(ui.ctx(), |ui| {
+            crate::ui::modal_controls_style(ui);
+            ui.set_width(260.0);
+            ui.label(egui::RichText::new("Stash changes?").strong());
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(body).color(palette.text_secondary));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(false);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Stash").clicked() {
+                        decided = Some(true);
+                    }
+                });
+            });
+            if crate::ui::modal_confirm_pressed(ui) {
+                decided = Some(true);
+            }
+        });
+    if modal.should_close() {
+        decided = decided.or(Some(false));
+    }
+
+    match decided {
+        Some(true) => {
+            intents.push(GitIntent::StashFiles(paths));
+            state.pending_stash = None;
+        }
+        Some(false) => state.pending_stash = None,
+        None => {}
+    }
+}
+
+/// Right-click menu of a WIP file row. One selected file shows the contextual
+/// stage/unstage + discard + stash actions over the shared clipboard entries;
+/// a multi-selection shows only the batch actions (git.md §3). `staged` is the
+/// clicked row's section.
+fn wip_file_context_menu(
+    response: &egui::Response,
+    rel_path: &str,
+    staged: bool,
+    state: &mut GitPanelState,
+    intents: &mut Vec<GitIntent>,
+    menu: &mut FileMenuCtx,
+) {
+    let marked = state.marked_files.clone();
+    egui::Popup::context_menu(response)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            if marked.len() >= 2 {
+                let unstaged: Vec<String> = marked
+                    .iter()
+                    .filter(|f| !f.staged)
+                    .map(|f| f.path.clone())
+                    .collect();
+                let to_unstage: Vec<String> = marked
+                    .iter()
+                    .filter(|f| f.staged)
+                    .map(|f| f.path.clone())
+                    .collect();
+                let mut all: Vec<String> = marked.iter().map(|f| f.path.clone()).collect();
+                all.sort();
+                all.dedup();
+                if !unstaged.is_empty() && ui.button("Stage").clicked() {
+                    for path in &unstaged {
+                        intents.push(GitIntent::Stage(path.clone()));
+                    }
+                    ui.close();
+                }
+                if !to_unstage.is_empty() && ui.button("Unstage").clicked() {
+                    for path in &to_unstage {
+                        intents.push(GitIntent::Unstage(path.clone()));
+                    }
+                    ui.close();
+                }
+                if !unstaged.is_empty() && ui.button("Discard").clicked() {
+                    state.pending_discard = Some(DiscardTarget::Files(unstaged.clone()));
+                    ui.close();
+                }
+                if ui.button("Stash").clicked() {
+                    state.pending_stash = Some(all.clone());
+                    ui.close();
+                }
+            } else {
+                if staged {
+                    if ui.button("Unstage").clicked() {
+                        intents.push(GitIntent::Unstage(rel_path.to_owned()));
+                        ui.close();
+                    }
+                } else {
+                    if ui.button("Stage").clicked() {
+                        intents.push(GitIntent::Stage(rel_path.to_owned()));
+                        ui.close();
+                    }
+                    if ui.button("Discard").clicked() {
+                        state.pending_discard = Some(DiscardTarget::File(rel_path.to_owned()));
+                        ui.close();
+                    }
+                }
+                if ui.button("Stash").clicked() {
+                    state.pending_stash = Some(vec![rel_path.to_owned()]);
+                    ui.close();
+                }
+                ui.separator();
+                file_menu_entries(ui, rel_path, menu);
+            }
+        });
 }
 
 /// The Commit binding (keybindings §3, `Cmd+Enter` by default) — equivalent to
@@ -1573,10 +1751,45 @@ fn navigate_selected_file(
     file_list::request_row_scroll(ui, file_scroll_id(), selected.clone());
     state.selected_file = Some(selected.clone());
     state.file_nav_active = true;
+    state.marked_files = vec![selected.clone()];
+    state.selection_anchor = Some(selected.clone());
     intents.push(GitIntent::OpenDiff {
         path: selected.path,
         staged: selected.staged,
     });
+}
+
+/// Cmd+click: add/remove the file from the multi-selection.
+fn toggle_marked(state: &mut GitPanelState, sel: &GitFileSelection) {
+    if let Some(pos) = state.marked_files.iter().position(|f| f == sel) {
+        state.marked_files.remove(pos);
+    } else {
+        state.marked_files.push(sel.clone());
+    }
+}
+
+/// Shift+click: select every visible row between the anchor (last plain/Cmd
+/// click, or the open-diff cursor) and the target, inclusive.
+fn range_select(
+    status: &RepoStatus,
+    state: &mut GitPanelState,
+    view: FileViewMode,
+    target: &GitFileSelection,
+) {
+    let files = visible_files(status, state, view);
+    let anchor = state
+        .selection_anchor
+        .as_ref()
+        .or(state.selected_file.as_ref())
+        .and_then(|a| files.iter().position(|f| f == a));
+    let target_index = files.iter().position(|f| f == target);
+    match (anchor, target_index) {
+        (Some(a), Some(t)) => {
+            let (lo, hi) = if a <= t { (a, t) } else { (t, a) };
+            state.marked_files = files[lo..=hi].to_vec();
+        }
+        _ => state.marked_files = vec![target.clone()],
+    }
 }
 
 /// ↑/↓ navigation order: the openable rows in **display order**. Tree mode
@@ -1695,6 +1908,7 @@ fn section_toggle(
 fn file_row(
     ui: &mut egui::Ui,
     palette: &Palette,
+    status: &RepoStatus,
     entry: &FileEntry,
     section: RowSection,
     indent: f32,
@@ -1702,12 +1916,15 @@ fn file_row(
     state: &mut GitPanelState,
     intents: &mut Vec<GitIntent>,
     menu: &mut FileMenuCtx,
+    view: FileViewMode,
 ) {
     let staged = matches!(section, RowSection::Staged);
-    let selected = state
-        .selected_file
-        .as_ref()
-        .is_some_and(|s| s.staged == staged && s.path == entry.path);
+    let sel = GitFileSelection {
+        path: entry.path.clone(),
+        staged,
+    };
+    // Highlighted when in the batch multi-selection or the open-diff cursor.
+    let selected = state.marked_files.contains(&sel) || state.selected_file.as_ref() == Some(&sel);
     // Stats hidden on hover: the action pills take their place
     // (D-2026-06-03-git-sidebar-redesign).
     let row = file_list::file_row(
@@ -1741,26 +1958,34 @@ fn file_row(
                 egui::Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let modifiers = ui.input(|i| i.modifiers);
         if path_response.clicked() {
-            state.selected_file = Some(GitFileSelection {
-                path: entry.path.clone(),
-                staged,
-            });
-            state.file_nav_active = true;
-            path_response.request_focus();
-            intents.push(GitIntent::OpenDiff {
-                path: entry.path.clone(),
-                staged,
-            });
+            if modifiers.command || modifiers.mac_cmd {
+                toggle_marked(state, &sel);
+                state.selection_anchor = Some(sel.clone());
+            } else if modifiers.shift {
+                range_select(status, state, view, &sel);
+            } else {
+                state.marked_files = vec![sel.clone()];
+                state.selected_file = Some(sel.clone());
+                state.file_nav_active = true;
+                state.selection_anchor = Some(sel.clone());
+                path_response.request_focus();
+                intents.push(GitIntent::OpenDiff {
+                    path: entry.path.clone(),
+                    staged,
+                });
+            }
+        }
+        // Right-click on a row outside the current selection makes it the lone
+        // target before the menu opens (Finder behaviour).
+        if path_response.secondary_clicked() && !state.marked_files.contains(&sel) {
+            state.marked_files = vec![sel.clone()];
         }
         if selected {
-            let target = GitFileSelection {
-                path: entry.path.clone(),
-                staged,
-            };
-            file_list::consume_row_scroll(ui, &path_response, file_scroll_id(), &target);
+            file_list::consume_row_scroll(ui, &path_response, file_scroll_id(), &sel);
         }
-        file_list::file_context_menu(&path_response, &entry.path, menu);
+        wip_file_context_menu(&path_response, &entry.path, staged, state, intents, menu);
         path_response
             .on_hover_text(&entry.path)
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &entry.path));
@@ -2012,5 +2237,78 @@ mod tests {
         let (g, r) = ratio_bar_widths(10_000, 1, 56.0, 2.0, 6.0);
         assert_eq!(r, 6.0, "a tiny side is clamped to the minimum, not erased");
         assert!((g + r - 54.0).abs() < 0.01);
+    }
+
+    fn unstaged(paths: &[&str]) -> RepoStatus {
+        RepoStatus {
+            unstaged: paths
+                .iter()
+                .map(|p| entry(p, ChangeKind::Modified))
+                .collect(),
+            staged: vec![],
+        }
+    }
+
+    fn sel(path: &str, staged: bool) -> GitFileSelection {
+        GitFileSelection {
+            path: path.to_owned(),
+            staged,
+        }
+    }
+
+    #[test]
+    fn toggle_marked_adds_then_removes() {
+        let mut state = GitPanelState::default();
+        toggle_marked(&mut state, &sel("a.txt", false));
+        assert_eq!(state.marked_files, vec![sel("a.txt", false)]);
+        toggle_marked(&mut state, &sel("a.txt", false));
+        assert!(state.marked_files.is_empty());
+    }
+
+    #[test]
+    fn range_select_spans_anchor_to_target_inclusive() {
+        let status = unstaged(&["a.txt", "b.txt", "c.txt"]);
+        let mut state = GitPanelState {
+            selection_anchor: Some(sel("a.txt", false)),
+            ..Default::default()
+        };
+        range_select(
+            &status,
+            &mut state,
+            FileViewMode::Flat,
+            &sel("c.txt", false),
+        );
+        let paths: Vec<&str> = state.marked_files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn range_select_is_order_independent() {
+        let status = unstaged(&["a.txt", "b.txt", "c.txt"]);
+        let mut state = GitPanelState {
+            selection_anchor: Some(sel("c.txt", false)),
+            ..Default::default()
+        };
+        range_select(
+            &status,
+            &mut state,
+            FileViewMode::Flat,
+            &sel("a.txt", false),
+        );
+        let paths: Vec<&str> = state.marked_files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "b.txt", "c.txt"], "anchor below target");
+    }
+
+    #[test]
+    fn range_select_without_anchor_falls_back_to_the_target() {
+        let status = unstaged(&["a.txt", "b.txt"]);
+        let mut state = GitPanelState::default();
+        range_select(
+            &status,
+            &mut state,
+            FileViewMode::Flat,
+            &sel("b.txt", false),
+        );
+        assert_eq!(state.marked_files, vec![sel("b.txt", false)]);
     }
 }

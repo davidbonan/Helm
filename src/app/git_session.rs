@@ -840,7 +840,7 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
             "Discard failed"
         }
         GitCommand::Commit(_) => "Commit failed",
-        GitCommand::Stash => "Stash failed",
+        GitCommand::Stash | GitCommand::StashFiles(_) => "Stash failed",
         GitCommand::StashPop | GitCommand::StashPopAt(_) => "Stash pop failed",
         GitCommand::StashApplyAt(_) => "Applying stash failed",
         GitCommand::StashDropAt(_) => "Deleting stash failed",
