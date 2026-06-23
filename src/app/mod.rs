@@ -63,6 +63,10 @@ const INITIAL_COLS: u16 = 80;
 /// Git status refresh cadence: the worker is re-queried at a fixed interval to
 /// reflect external changes (editing, git from the terminal).
 const GIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Worktree discovery/purge cadence while the window is focused (worktrees.md §4):
+/// a 4th sync trigger so a worktree created from a terminal appears without a
+/// defocus/refocus round-trip. Off-focus the focus-regain trigger already covers it.
+const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 type Panes = HashMap<PaneId, TerminalState>;
 
 mod keys;
@@ -377,6 +381,7 @@ pub struct HelmApp {
     /// modes — the old banner was only visible in Graph.
     toasts: Toasts,
     last_agent_poll: f64,
+    last_group_poll: f64,
     /// Prefs file to rewrite. `None` (constructors) = ephemeral app: tests and headless
     /// verification must never touch the user's real TOML; only `run()` injects the
     /// persisted path.
@@ -515,6 +520,7 @@ impl HelmApp {
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             toasts: Toasts::default(),
             last_agent_poll: 0.0,
+            last_group_poll: 0.0,
             prefs_path: None,
             keymap: snapshot.keymap(),
             prefs: snapshot,
@@ -2119,15 +2125,26 @@ impl eframe::App for HelmApp {
         self.poll_update_runner(&ctx);
         self.poll_group_refresh();
 
-        // Sync triggers on focus regain (M11-6): active even with the Preferences page
-        // open — the app keeps living behind the page.
+        // Sync triggers on focus regain (M11-6) and on a periodic tick while focused
+        // (worktrees.md §4): active even with the Preferences page open — the app keeps
+        // living behind the page. The tick is gated on focus because off-focus the
+        // focus-regain trigger already covers the user coming back, and an unfocused app
+        // should sleep rather than poll.
         let focus_regained = ctx.input(|i| {
             i.events
                 .iter()
                 .any(|e| matches!(e, egui::Event::WindowFocused(true)))
         });
-        if focus_regained {
+        let now = ctx.input(|i| i.time);
+        let focused = ctx.input(|i| i.focused);
+        if focused {
+            // Wake the idle-but-focused app so the next tick fires (reactive mode).
+            ctx.request_repaint_after(GROUP_POLL_INTERVAL);
+        }
+        let tick_due = focused && now - self.last_group_poll >= GROUP_POLL_INTERVAL.as_secs_f64();
+        if focus_regained || tick_due {
             self.run_group_sync(&ctx);
+            self.last_group_poll = now;
         }
 
         // While the Keyboard recorder is armed, the toggle is captured as a combo

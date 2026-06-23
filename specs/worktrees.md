@@ -91,8 +91,11 @@ below it.
 A group's worktree list is **synchronized with the disk**, both
 ways, and **persisted** on every change:
 
-- **Triggers**: startup · the window **regains focus** · after a
-  **Delete worktree** (§6). No FS watcher for discovery (v1).
+- **Triggers**: startup · the window **regains focus** · a **5 s periodic tick
+  while the window is focused** (so a worktree created from a terminal appears
+  without a defocus/refocus round-trip) · after a **Delete worktree** (§6). The
+  tick is gated on focus: off-focus, the focus-regain trigger covers the user
+  coming back and the app sleeps. No FS watcher for discovery (v1).
 - **Discovery**: a worktree created outside the app (terminal, another tool) appears in
   the group (**appended** after the existing manual order, since there is no
   alphabetical slot to honour anymore) and is added to the prefs.
@@ -250,7 +253,8 @@ The sidebar order is user-controlled and **persisted** (§5):
 ## 10. Out of scope (v1)
 
 - Worktree lock / move from the app.
-- FS watcher for discovery (the §4 triggers are sufficient).
+- FS watcher for discovery (the §4 triggers — including the focused 5 s tick —
+  are sufficient).
 - Choosing the base of a branch created on the fly (always the root HEAD; a
   git-graph context menu entry could later create branch + worktree from any
   commit).
