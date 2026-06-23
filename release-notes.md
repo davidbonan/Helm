@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.0.3
+
+- Select individual files in the WIP sidebar and stash them one at a time.
+- Newly created worktrees now show up in the sidebar on their own while the app is focused.
+
 ## 1.0.2
 
 - Jump to the Agents pane with ⌃⌘0; hold Cmd to reveal its shortcut badge.
@@ -49,10 +54,3 @@
 
 - Agents columns are now resizable in both width and height.
 - General performance work across the app.
-
-## 0.8.0
-
-- Added List and Columns view modes to the agents dashboard.
-- Added a hide/show control for projects in the sidebar.
-- Moved Remove-from-sidebar into the project header menu.
-- Long branch chips and state captions now elide in the agents list.
