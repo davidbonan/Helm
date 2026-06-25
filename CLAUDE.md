@@ -18,6 +18,7 @@ UI locked on `eframe`/`egui` (overview §4). Dependencies in place (`eframe`,
 - `specs/conflicts.md` — in-app conflict editor: 3 zones, take checkboxes, resolve + Continue, fallbacks.
 - `specs/worktrees.md` — worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree.
 - `specs/agents.md` — AI agent detection in terminals: sidebar activity badge (states, heuristic, limits).
+- `specs/pull-requests.md` — workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud, list/detail/checkout.
 - `specs/preferences.md` — full-window Preferences page: left nav + settings cards.
 - `specs/update.md` — distribution (.app bundle, GitHub releases) + integrated app update.
 - `specs/keybindings.md` — complete keybinding reference.

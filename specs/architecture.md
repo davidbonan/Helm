@@ -51,6 +51,7 @@ New components follow this shape; existing deviations converge on it (notably
 | `workspace` | Repository model, ordered list, active repository; **per repo: a set of tabs** (each a tree of splits) + active tab | `terminal`, `git` |
 | `terminal` | Split tree, pane, `alacritty_terminal` + `portable-pty` integration | — |
 | `git` | Repo, status model, hunk/line staging, commit, branch (wraps `git2`) | — |
+| `pull_requests` | Workspace PR model + sources (GitHub via `gh`, Bitbucket Cloud via `curl`), `PrRunner`; pure parsers I/O-free ([`pull-requests.md`](pull-requests.md)) | `git` (forge parse) |
 | `persistence` | Load/save preferences & repository list (serde) | `workspace`, `theme` |
 
 Anticipated submodules: `terminal::{pty, emu, layout}`, `git::{status, diff, stage, commit}`.
@@ -102,7 +103,7 @@ Two thread-lifetime families, both deliberate (review finding 15):
 |---------|----------|-----|
 | Git worker (`git::worker`) | **Joined** on `Drop` (closing the command channel ends the loop) | Owns the `git2::Repository`; a clean exit point exists |
 | PTY readers (`terminal::emu`) | **Detached** at drop; exit on PTY EOF | A `setsid` survivor still holding the slave would block the join — and the UI thread with it |
-| One-shot runners — `ai::AiRunner`, `git::worker::SyncRunner`, `git::worktree::DeleteRunner`, `update::UpdateRunner` | **Detached**, one thread per request | Abandoning the session/repo lets the subprocess finish on its own; the late reply is discarded |
+| One-shot runners — `ai::AiRunner`, `git::worker::SyncRunner`, `git::worktree::DeleteRunner`, `update::UpdateRunner`, `pull_requests::PrRunner` | **Detached**, one thread per request | Abandoning the session/repo lets the subprocess finish on its own; the late reply is discarded |
 
 All UI ⇄ thread channels are **unbounded** (`crossbeam_channel::unbounded`).
 This is sound only under the standing invariant:

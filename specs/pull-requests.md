@@ -1,0 +1,179 @@
+# helm — Pull Requests (workspace PR cockpit)
+
+A **Pull Requests** entry under the Helm section of the left sidebar, **below
+Agents**, opens a cross-repo cockpit listing the open PRs that concern the user
+across the workspace's repositories: **the PRs they authored** and **the PRs
+awaiting their review**. Sources: **GitHub** (via the `gh` CLI) and **Bitbucket
+Cloud** (via the REST API). Modules: `pull_requests` (domain) +
+`ui::pull_requests_view` (rendering). Mirrors the Agents entry's wiring
+(`CentralMode`, sidebar-stays / git-panel-hidden) — see [`agents.md`](agents.md) §5.
+
+## 1. Scope & identity
+
+- **Workspace-scoped.** Only the repositories present in the left sidebar are
+  queried. Each repo's `origin` is parsed by `git::forge::parse_remote`
+  ([`git/forge.rs`](../src/git/forge.rs)) into a `Forge`
+  (`GitHub {owner, repo}` / `Bitbucket {workspace, repo}`); an unrecognized or
+  self-hosted host is **skipped silently**. Worktrees of one root share a remote
+  ⇒ **deduped by `Forge`** (queried once per remote).
+- **Two roles, "me"-relative.** Per forge, "me" is resolved **once per session**
+  and cached (GitHub: `gh api user --jq .login`; Bitbucket: `GET /2.0/user`). A
+  PR is **Mine** when authored by me, **To review** when I'm a requested
+  reviewer. The two are exclusive (no self-review); the list is deduped by
+  `(forge, number)`, **Mine wins** if a source ever returns a PR under both.
+- Only **open** PRs (including **draft**) are listed; merged/closed are out of
+  the list's scope.
+
+## 2. Sidebar entry & badge
+
+A **Pull Requests** row sits **directly below the Agents row** under the Helm
+section ([`agents.md`](agents.md) §5), shown once the workspace has a project
+(hidden on the empty first-launch state). Icon: `Icon::GitPullRequest`.
+Selecting it sets `CentralMode::PullRequests`: the central area shows the
+cockpit, the **project sidebar stays** (the row highlighted), the **per-repo git
+panel hides** — the same handshake as Agents (`!agents_active` guard generalized
+to "a Helm central mode is open"). Reachable by **click** — **no keyboard
+shortcut** (unlike Agents' `⌃⌘0`).
+
+**Badge** = the count of **To review** PRs (the actionable ones) as a small count
+pill; **0 ⇒ nothing**. Authored PRs do **not** raise the badge (informational,
+not a call to action). The badge reads the cached aggregate, so showing it costs
+no extra fetch.
+
+## 3. Sources & authentication
+
+| Source | Transport | Auth | Availability probe |
+|---|---|---|---|
+| **GitHub** | `gh` CLI (`gh pr list` / `gh pr view` / `gh pr checkout`, `--json`) | gh's own (`gh auth login`) | `gh auth status` exit 0 |
+| **Bitbucket Cloud** | `curl` → `api.bitbucket.org/2.0` (the `update.rs` idiom) | Basic `email:token` | token present + `GET /2.0/user` → 200 |
+
+Consistent with the repo's **no-HTTP-crate** convention (architecture §5):
+GitHub data comes from `gh … --json` (auth, pagination and fork handling for
+free), Bitbucket from a `curl` shell-out parsed with the already-present
+`serde_json`. **No new runtime dependency.**
+
+- **GitHub** carries **no stored secret** — `gh` owns the token. `gh` absent or
+  unauthenticated ⇒ the GitHub source contributes nothing and the page shows a
+  one-line hint (*"Install gh and run `gh auth login`"*).
+- **Bitbucket** needs an **API token / app password**. The non-secret **email**
+  is stored in `Prefs.bitbucket_email`; the **token** lives in the macOS
+  **Keychain** (`security` CLI, service `helm.bitbucket`) — **never** in
+  `prefs.toml`. Both are set from Preferences → **Pull Requests**
+  ([`preferences.md`](preferences.md)). Missing creds ⇒ one-line hint; 401 ⇒
+  *"Bitbucket token invalid or expired"*.
+
+## 4. Data model (`pull_requests::model`)
+
+```
+PullRequest {
+  forge_kind, repo_label, number, title,
+  role: Mine | ToReview,
+  state: Open | Draft,
+  author, source_branch, dest_branch, url, updated_at,
+  checks: Passing | Failing | Pending | None,
+  review: Approved | ChangesRequested | Pending | None,
+  reviewers: Vec<Reviewer>,
+}
+PrDetail { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun> }  // lazy, on selection
+```
+
+Pure mappers `github::parse_list` / `parse_detail` and
+`bitbucket::parse_list` / `parse_detail` turn raw JSON into these — **I/O-free,
+unit-tested on fixtures**; the runner (§6) owns the shell-out. `forge_kind` /
+`repo_label` come from the `Forge` that produced the query.
+
+## 5. The cockpit (`ui::pull_requests_view::pull_requests_page`)
+
+Two-pane, mirroring the Agents List cockpit (left list flush to the edge, right
+detail panel, resizable split persisted in `Prefs.pr_detail_width`):
+
+- **List**, grouped **To review** then **Mine** (each header carries a count).
+  One row per PR: forge glyph, state icon (open / draft), title (truncated), a
+  **repo chip** + **branch chip**, author, relative age, and compact **checks**
+  (✓ / ✗ / •) + **review** indicators. Clicking a row **selects** it.
+- **Detail** of the selection: header (title · `#number` · state), `source →
+  dest`, author, the **description** (body, scrollable), the **checks** list
+  (name + status), **reviewers** + their state, and the **comments** thread
+  **read-only**. Actions: **Open in browser** (reuses `terminal::links::open_url`
+  on the PR's `url`) and **Checkout** (§7). Posting comments / approving /
+  merging are **out of scope** — those open the browser.
+
+Empty / edge states: no recognized-forge repo ⇒ *"No GitHub or Bitbucket
+repository in your workspace"*; a source unavailable ⇒ its inline hint (§3) while
+the other source still lists.
+
+## 6. Fetching, refresh & threading
+
+A one-shot **`PrRunner`** (detached thread per request, gated by `in_flight`)
+follows the established runner contract (architecture §3): **one reply per
+request**, drained every frame, `request_repaint` on each event — no streaming,
+so the unbounded channel stays sound. It fans the per-`Forge` queries, classifies
+roles against the cached identity, and returns a `Vec<PullRequest>` + per-source
+status. **Detail** (on selection) and **checkout** (§7) are separate gated
+requests.
+
+Refresh happens on **first entry** to the page (cold / stale cache), on a
+**manual Refresh** button, and on a **slow background tick** (~60 s) while the
+page is open **and the window is focused** — network is heavier than the
+worktree / git ticks, so the cadence is deliberately conservative (rate limits).
+A change to the workspace repo set re-queries. Network error / offline ⇒ keep the
+last good cache, flag it **stale**; **never wipe rows** on a failed refresh.
+
+## 7. Checkout (open the PR branch as a worktree)
+
+From the detail panel, **Checkout** brings the PR's **source branch** up as a
+**worktree** of the **matched workspace repo** (the repo whose `Forge` owns the
+PR), reusing the worktree machinery ([`worktrees.md`](worktrees.md) §6,
+`git::worktree`):
+
+- **Already checked out** — if a worktree of the project (main or a linked one)
+  already sits on the PR's source branch, **Checkout just activates that row**
+  (no git write): the sidebar selects it and the central area returns to its
+  terminal.
+- **Otherwise** — helm **creates a new worktree** on that branch under the
+  project's worktrees base (`<root>.worktrees/<branch>` by default, honoring the
+  per-project base — worktrees.md §6), then activates it. The branch is **fetched
+  first** so a not-yet-local PR branch resolves, **forks included**: GitHub
+  `git fetch origin pull/<number>/head:<branch>`, Bitbucket
+  `git fetch origin <source>`. An existing same-name local branch is reused.
+
+Runs off-thread via the existing `git::worktree::CreateRunner` (architecture §3
+runner contract). On failure a one-line error surfaces and no partial worktree is
+left (the create path already rolls back, worktrees.md §6); on success the new
+worktree row appears and is selected, and discovery (worktrees.md §4) keeps it in
+sync.
+
+## 8. Persistence
+
+New `Prefs` scalars (architecture §4), placed **before** the `keybindings` /
+`projects` tables: `bitbucket_email: String` (default `""`) and
+`pr_detail_width: f32`. The Bitbucket **token is not persisted in TOML** —
+Keychain only (§3). Identity and PR lists are **session caches**, not persisted.
+
+## 9. Tests (testing.md — 3 levels)
+
+- **Unit (pure)**: `github::parse_list` / `parse_detail` and
+  `bitbucket::parse_list` / `parse_detail` on captured JSON fixtures (open /
+  draft, checks, review decision, reviewers); role classification + dedupe by
+  `(forge, number)`; badge = To-review count; the `gh` / `curl` arg & URL
+  builders.
+- **Business e2e**: command & URL construction against the model (no live
+  network — no creds in CI; live calls are out of scope).
+- **UI e2e (`egui_kittest`)**: `pull_requests_page` on a fixture list renders the
+  two groups + rows; selecting a row emits `select`; **Open in browser** /
+  **Checkout** emit their actions; the sidebar entry renders and its click sets
+  `CentralMode::PullRequests`.
+
+## 10. Accepted limitations / out of scope (v1)
+
+- **Read + checkout + open** only — no posting comments, approving, requesting
+  changes, or merging from the app (those open the browser).
+- **Bitbucket Cloud only** — no Server / Data Center (different API base & auth).
+- **Workspace-scoped** — no global account search (a PR to review on a repo not
+  in the sidebar is not shown).
+- **GitHub via `gh` only** (no raw-PAT path); **Bitbucket via email + token**
+  (no OAuth).
+- Checkout opens/creates a **worktree** on the PR branch; a **Bitbucket
+  cross-fork** source (branch on another workspace) isn't fetchable from `origin`
+  ⇒ Checkout falls back to **Open in browser**.
+- **GitLab / self-hosted** forges unsupported (`parse_remote` ⇒ skipped).

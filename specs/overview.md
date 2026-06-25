@@ -12,6 +12,7 @@
 | [`conflicts.md`](conflicts.md) | In-app 3-zone merge/rebase conflict editor: read stages, take checkboxes, resolve + Continue |
 | [`worktrees.md`](worktrees.md) | Worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree |
 | [`agents.md`](agents.md) | AI agent detection in terminals: sidebar activity badge (states, heuristic, limits) |
+| [`pull-requests.md`](pull-requests.md) | Workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud sources, list/detail/checkout |
 | [`preferences.md`](preferences.md) | Full-window Preferences page: left nav + settings cards, Appearance/Git sections |
 | [`update.md`](update.md) | Distribution (.app bundle, GitHub releases) + built-in update: check, download, replace, relaunch |
 | [`keybindings.md`](keybindings.md) | Complete shortcut reference |
