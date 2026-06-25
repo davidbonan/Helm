@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **6/9**.
+workspace repos. Counter: **7/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -44,11 +44,12 @@ workspace repos. Counter: **6/9**.
   `Prefs.pr_detail_width`. *Files*: `src/ui/pull_requests_view.rs`, `src/ui/mod.rs`,
   `src/persistence.rs`, `src/app/{mod,render}.rs`.
   *Tests*: UI e2e on a fixture list (groups, rows, select, action intents).
-- ☐ **PR7 — Checkout = worktree.** If a worktree already sits on the PR source
+- ☑ **PR7 — Checkout = worktree.** If a worktree already sits on the PR source
   branch ⇒ activate that row (no git write); else fetch the branch (GitHub
   `pull/<n>/head`, Bitbucket `origin/<source>`) and create a worktree on it via
   `git::worktree::CreateRunner`, then activate it. *Files*:
-  `src/pull_requests/runner.rs`, `src/app/render.rs`; reuse `src/git/worktree.rs`.
+  `src/pull_requests/runner.rs` (`CheckoutRunner` + `fetch_refspec`/`match_pr_root`/
+  `matching_worktree`), `src/app/{mod,render}.rs`; reuse `src/git/worktree.rs`.
   *Tests*: unit on fetch-ref/argv build + existing-worktree match.
 - ☐ **PR8 — Preferences section.** Preferences → **Pull Requests**: Bitbucket
   email field + Set token (Keychain), GitHub `gh` status line; persist
@@ -59,11 +60,10 @@ workspace repos. Counter: **6/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR7** (Checkout = worktree) — wire the cockpit's `action.checkout` in
-  `render.rs`: existing worktree on the PR source branch ⇒ activate that row (no
-  git write); else fetch the branch (GitHub `pull/<n>/head`, Bitbucket
-  `origin/<source>`) and create a worktree via `git::worktree::CreateRunner`,
-  then activate it. Unit on fetch-ref/argv build + existing-worktree match.
+- Start **PR8** (Preferences section) — Preferences → **Pull Requests**:
+  Bitbucket email field + Set token (Keychain), GitHub `gh` status line; persist
+  `bitbucket_email`, `pr_detail_width`. *Files*: `src/ui/preferences*.rs`,
+  `src/persistence.rs`, `specs/preferences.md`. UI e2e on the section.
 
 ### Blockers
 - none

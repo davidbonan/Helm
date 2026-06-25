@@ -340,6 +340,7 @@ impl HelmApp {
         self.update_agent_watch(ctx);
         self.drain_worktree_sources();
         self.drain_worktree_create(ctx);
+        self.drain_worktree_checkout(ctx);
         self.drain_worktree_delete(ctx);
         self.poll_pr_runner();
         self.git_panel_state.ai_busy = self.git.as_ref().is_some_and(|g| g.ai.busy());
@@ -748,6 +749,7 @@ impl HelmApp {
         let pr_detail_width = self.pr_detail_width;
         let mut pr_select = None;
         let mut pr_open_url: Option<String> = None;
+        let mut pr_checkout: Option<usize> = None;
         let mut pr_set_detail_width = None;
 
         // A stale active index makes these accessors return None; degrade to the
@@ -1040,6 +1042,7 @@ impl HelmApp {
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
+                            pr_checkout = action.checkout;
                             pr_set_detail_width = action.set_detail_width;
                         } else {
                             let (project, worktree) = match &project_reminder {
@@ -1854,6 +1857,7 @@ impl HelmApp {
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
+                            pr_checkout = action.checkout;
                             pr_set_detail_width = action.set_detail_width;
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
@@ -2081,6 +2085,9 @@ impl HelmApp {
         }
         if let Some(index) = pr_select {
             self.pr_selected = Some(index);
+        }
+        if let Some(pr) = pr_checkout.and_then(|index| pr_list.get(index).cloned()) {
+            self.request_pr_checkout(&pr, ctx);
         }
         if let Some(url) = pr_open_url {
             let now = ctx.input(|i| i.time);

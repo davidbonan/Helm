@@ -8,7 +8,7 @@
 //! The command/URL *construction* is the pure `plan` below — unit-tested without
 //! the network; the thread merely runs the plan and parses the replies.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -127,12 +127,149 @@ pub fn forges_of_roots(roots: &[PathBuf]) -> Vec<(Forge, String)> {
     out
 }
 
-fn forge_of_root(root: &PathBuf) -> Option<(Forge, String)> {
+fn forge_of_root(root: &Path) -> Option<(Forge, String)> {
     let repo = git2::Repository::open(root).ok()?;
     let remote = repo.find_remote("origin").ok()?;
     let forge = parse_remote(remote.url().ok()?)?;
     let (_, label) = ForgeKind::of(&forge);
     Some((forge, label))
+}
+
+/// `(forge_kind, repo_label)` of a project root's `origin`, or `None` when it has
+/// no recognized cloud remote — the reverse map a PR uses to find its repo (§7).
+pub fn forge_kind_of_root(root: &Path) -> Option<(ForgeKind, String)> {
+    let (forge, label) = forge_of_root(root)?;
+    Some((ForgeKind::of(&forge).0, label))
+}
+
+/// The workspace project root whose `origin` forge owns this PR (§7), out of the
+/// precomputed `(root, forge_kind, repo_label)` of each project. `None` ⇒ no
+/// workspace repo matches and Checkout has nothing to fetch into.
+pub fn match_pr_root(
+    roots: &[(PathBuf, ForgeKind, String)],
+    forge_kind: ForgeKind,
+    repo_label: &str,
+) -> Option<PathBuf> {
+    roots
+        .iter()
+        .find(|(_, kind, label)| *kind == forge_kind && label == repo_label)
+        .map(|(root, _, _)| root.clone())
+}
+
+/// Index of the workspace row already sitting on `source_branch` within the
+/// matched project (§7 "already checked out"): `rows` are
+/// `(index, project_root, branch_label)` for every workspace repo, and only rows
+/// of `project_root` count — the first match wins, else `None` ⇒ a fetch+create.
+pub fn matching_worktree(
+    rows: &[(usize, PathBuf, String)],
+    project_root: &Path,
+    source_branch: &str,
+) -> Option<usize> {
+    rows.iter()
+        .find(|(_, root, branch)| root == project_root && branch == source_branch)
+        .map(|(index, _, _)| *index)
+}
+
+/// The `git fetch origin <refspec>` argument that brings a PR's source branch up
+/// as a **local** branch (§7) so `CreateRunner` can put a worktree on it. GitHub
+/// fetches the PR head (forks included) into a same-named local branch; Bitbucket
+/// fetches `origin`'s source branch into a same-named local one. A bare remote
+/// ref (`<source>`) would land only `refs/remotes/origin/<source>`, which
+/// `CreateSource::Existing(<source>)` can't resolve — hence the `<dst>` half.
+pub fn fetch_refspec(forge_kind: ForgeKind, number: u64, source_branch: &str) -> String {
+    match forge_kind {
+        ForgeKind::GitHub => format!("pull/{number}/head:{source_branch}"),
+        ForgeKind::Bitbucket => format!("{source_branch}:{source_branch}"),
+    }
+}
+
+/// What the UI asks the checkout runner to make available before creating a
+/// worktree (§7): a PR's source branch, local in `root`'s repo.
+#[derive(Debug, Clone)]
+pub struct CheckoutRequest {
+    pub root: PathBuf,
+    pub forge_kind: ForgeKind,
+    pub number: u64,
+    pub source_branch: String,
+}
+
+/// The single reply: `Ok` once the branch is local, else a one-line error.
+#[derive(Debug, Clone)]
+pub struct CheckoutReply {
+    pub request: CheckoutRequest,
+    pub result: Result<(), String>,
+}
+
+/// Detached one-shot fetch for Checkout (§7, architecture §3 runner contract):
+/// ensures the PR source branch is local — reusing an existing same-name branch,
+/// else fetching it from `origin` — so the worktree create can follow. Network
+/// I/O, off the UI thread; one in-flight at a time.
+pub struct CheckoutRunner {
+    on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
+    results_tx: Sender<CheckoutReply>,
+    results_rx: Receiver<CheckoutReply>,
+    in_flight: bool,
+}
+
+impl CheckoutRunner {
+    pub fn new(on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        Self {
+            on_event: std::sync::Arc::new(on_event),
+            results_tx,
+            results_rx,
+            in_flight: false,
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.in_flight
+    }
+
+    /// Spawn the detached fetch; `false` when one is already running.
+    pub fn request(&mut self, request: CheckoutRequest) -> bool {
+        if self.in_flight {
+            return false;
+        }
+        self.in_flight = true;
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = ensure_branch_local(&request);
+            let _ = tx.send(CheckoutReply { request, result });
+            on_event();
+        });
+        true
+    }
+
+    pub fn try_recv(&mut self) -> Option<CheckoutReply> {
+        let reply = self.results_rx.try_recv().ok()?;
+        self.in_flight = false;
+        Some(reply)
+    }
+}
+
+/// Reuse an existing same-name local branch, else `git fetch origin <refspec>` to
+/// create it. The reuse path also avoids a non-fast-forward fetch onto a branch
+/// the user already has locally (§7 "existing same-name local branch is reused").
+fn ensure_branch_local(request: &CheckoutRequest) -> Result<(), String> {
+    // A ref name beginning with '-' must never reach the CLI as a flag.
+    if request.source_branch.starts_with('-') {
+        return Err(format!("invalid branch name '{}'", request.source_branch));
+    }
+    let repo = git2::Repository::open(&request.root).map_err(|err| err.message().to_owned())?;
+    if repo
+        .find_branch(&request.source_branch, git2::BranchType::Local)
+        .is_ok()
+    {
+        return Ok(());
+    }
+    let refspec = fetch_refspec(request.forge_kind, request.number, &request.source_branch);
+    match crate::git::cli::run(&request.root, &["fetch", "origin", &refspec]) {
+        Ok(out) if out.success() => Ok(()),
+        Ok(out) => Err(out.stderr.trim().to_owned()),
+        Err(err) => Err(format!("{err:?}")),
+    }
 }
 
 pub struct PrRunner {
@@ -424,5 +561,56 @@ mod tests {
             PrQuery::Bitbucket { url, .. }
             if url == "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?state=OPEN&pagelen=50"
         ));
+    }
+
+    #[test]
+    fn fetch_refspec_lands_a_local_branch_per_forge() {
+        assert_eq!(
+            fetch_refspec(ForgeKind::GitHub, 128, "feature/login"),
+            "pull/128/head:feature/login"
+        );
+        assert_eq!(
+            fetch_refspec(ForgeKind::Bitbucket, 7, "feature/login"),
+            "feature/login:feature/login"
+        );
+    }
+
+    #[test]
+    fn match_pr_root_keys_on_forge_kind_and_label() {
+        let roots = vec![
+            (
+                PathBuf::from("/ws/web"),
+                ForgeKind::GitHub,
+                "acme/web".to_owned(),
+            ),
+            (
+                PathBuf::from("/ws/web-bb"),
+                ForgeKind::Bitbucket,
+                "acme/web".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            match_pr_root(&roots, ForgeKind::Bitbucket, "acme/web"),
+            Some(PathBuf::from("/ws/web-bb"))
+        );
+        assert_eq!(match_pr_root(&roots, ForgeKind::GitHub, "acme/api"), None);
+    }
+
+    #[test]
+    fn matching_worktree_finds_a_row_on_the_branch_within_the_project() {
+        let rows = vec![
+            (0, PathBuf::from("/ws/web"), "main".to_owned()),
+            (1, PathBuf::from("/ws/web"), "feature/login".to_owned()),
+            // Same branch name, different project ⇒ must not match.
+            (2, PathBuf::from("/ws/api"), "feature/login".to_owned()),
+        ];
+        assert_eq!(
+            matching_worktree(&rows, Path::new("/ws/web"), "feature/login"),
+            Some(1)
+        );
+        assert_eq!(
+            matching_worktree(&rows, Path::new("/ws/web"), "absent"),
+            None
+        );
     }
 }

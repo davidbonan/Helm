@@ -347,6 +347,9 @@ pub struct HelmApp {
     /// Worktree creation also runs off the UI thread: checking out a branch can touch
     /// many files and must not freeze rendering.
     worktree_create: Option<crate::git::worktree::CreateRunner>,
+    /// PR Checkout's off-thread fetch (pull-requests.md §7): brings the PR source
+    /// branch local, then hands off to `worktree_create`.
+    worktree_checkout: Option<crate::pull_requests::runner::CheckoutRunner>,
     /// One-shot post-create script injected into a freshly created worktree's first
     /// terminal (worktrees.md §6).
     pending_post_create: Option<PendingPostCreate>,
@@ -533,6 +536,7 @@ impl HelmApp {
             worktree_delete: None,
             worktree_sources: None,
             worktree_create: None,
+            worktree_checkout: None,
             pending_post_create: None,
             project_settings_edit: None,
             selected_project: None,
@@ -1384,6 +1388,90 @@ impl HelmApp {
     fn create_runner(&mut self, ctx: &egui::Context) -> &mut crate::git::worktree::CreateRunner {
         self.worktree_create
             .get_or_insert_with(|| crate::git::worktree::CreateRunner::new(repainter(ctx)))
+    }
+
+    fn checkout_runner(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> &mut crate::pull_requests::runner::CheckoutRunner {
+        self.worktree_checkout.get_or_insert_with(|| {
+            crate::pull_requests::runner::CheckoutRunner::new(repainter(ctx))
+        })
+    }
+
+    /// Checkout a PR (pull-requests.md §7): activate an existing worktree already
+    /// on the source branch, else fetch the branch off-thread then create one.
+    fn request_pr_checkout(
+        &mut self,
+        pr: &crate::pull_requests::model::PullRequest,
+        ctx: &egui::Context,
+    ) {
+        use crate::pull_requests::runner::{forge_kind_of_root, match_pr_root, matching_worktree};
+        let now = ctx.input(|i| i.time);
+        let roots: Vec<(PathBuf, crate::pull_requests::model::ForgeKind, String)> = self
+            .workspace_project_roots()
+            .into_iter()
+            .filter_map(|root| forge_kind_of_root(&root).map(|(kind, label)| (root, kind, label)))
+            .collect();
+        let Some(root) = match_pr_root(&roots, pr.forge_kind, &pr.repo_label) else {
+            self.toasts
+                .error("No workspace repo matches this pull request", now);
+            return;
+        };
+        let rows: Vec<(usize, PathBuf, String)> = (0..self.workspace.len())
+            .filter_map(|index| {
+                let project = self.project_root_for_index(index)?;
+                let key = RepoKey::of(&self.workspace.repo(index)?.path);
+                let branch = self.caches.branch_labels.get(&key)?.clone();
+                Some((index, project, branch))
+            })
+            .collect();
+        if let Some(index) = matching_worktree(&rows, &root, &pr.source_branch) {
+            self.workspace.set_active(index);
+            let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+            self.persist(move |_| next);
+            self.central_mode = CentralMode::Terminal;
+            ctx.request_repaint();
+            return;
+        }
+        let request = crate::pull_requests::runner::CheckoutRequest {
+            root,
+            forge_kind: pr.forge_kind,
+            number: pr.number,
+            source_branch: pr.source_branch.clone(),
+        };
+        if !self.checkout_runner(ctx).request(request) {
+            self.toasts
+                .error("Another checkout is already in progress", now);
+        }
+    }
+
+    /// The fetch landed: hand the now-local branch to `CreateRunner`, whose drain
+    /// then activates the new worktree (pull-requests.md §7); leaving the cockpit
+    /// for that worktree's terminal. A fetch failure surfaces one line.
+    fn drain_worktree_checkout(&mut self, ctx: &egui::Context) {
+        let Some(reply) = self
+            .worktree_checkout
+            .as_mut()
+            .and_then(crate::pull_requests::runner::CheckoutRunner::try_recv)
+        else {
+            return;
+        };
+        let crate::pull_requests::runner::CheckoutReply { request, result } = reply;
+        match result {
+            Ok(()) => {
+                let base = self.project_worktree_base(&request.root);
+                let source = crate::git::worktree::CreateSource::Existing(request.source_branch);
+                self.request_create_worktree(request.root, source, None, base, ctx);
+                self.central_mode = CentralMode::Terminal;
+            }
+            Err(message) => {
+                self.toasts.error(
+                    format!("Checkout failed — {message}"),
+                    ctx.input(|i| i.time),
+                );
+            }
+        }
     }
 
     fn pr_runner(&mut self, ctx: &egui::Context) -> &mut crate::pull_requests::runner::PrRunner {
