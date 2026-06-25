@@ -27,6 +27,7 @@ struct PageProbe {
     ai_provider: Rc<RefCell<AiProvider>>,
     ai_instructions: Rc<RefCell<String>>,
     ai_rebase_provider: Rc<RefCell<AiProvider>>,
+    review_agent: Rc<RefCell<String>>,
     editor: Rc<RefCell<Editor>>,
     notify: Rc<RefCell<bool>>,
     keymap: Rc<RefCell<Keymap>>,
@@ -83,6 +84,7 @@ fn page_harness_full(
         ai_provider: Rc::new(RefCell::new(AiProvider::default())),
         ai_instructions: Rc::new(RefCell::new(String::new())),
         ai_rebase_provider: Rc::new(RefCell::new(AiProvider::default())),
+        review_agent: Rc::new(RefCell::new(String::new())),
         editor: Rc::new(RefCell::new(Editor::default())),
         notify: Rc::new(RefCell::new(true)),
         keymap: Rc::new(RefCell::new(Keymap::default())),
@@ -105,6 +107,7 @@ fn page_harness_full(
     let ai_provider = probe.ai_provider.clone();
     let ai_instructions = probe.ai_instructions.clone();
     let ai_rebase_provider = probe.ai_rebase_provider.clone();
+    let review_agent = probe.review_agent.clone();
     let editor = probe.editor.clone();
     let notify = probe.notify.clone();
     let keymap = probe.keymap.clone();
@@ -132,6 +135,7 @@ fn page_harness_full(
             &mut ai_provider.borrow_mut(),
             &mut ai_instructions.borrow_mut(),
             &mut ai_rebase_provider.borrow_mut(),
+            &mut review_agent.borrow_mut(),
             &mut editor.borrow_mut(),
             &mut notify.borrow_mut(),
             &mut keymap.borrow_mut(),
@@ -657,6 +661,35 @@ fn typing_instructions_mutates_the_text_and_reports_changes() {
     );
 }
 
+// ---- Git section: in-diff review agent (M-RC) ----
+
+#[test]
+fn the_git_section_shows_the_review_agent_row() {
+    let (harness, _probe) = git_section(PullDefault::default());
+    harness.get_by_label("Review agent");
+    harness.get_by_label("CLI the in-diff review's Send button launches with your comments");
+}
+
+#[test]
+fn typing_a_review_agent_command_mutates_it_and_reports_a_change() {
+    let (mut harness, probe) = git_section(PullDefault::default());
+    // The section's only singleline input is the Review agent command field.
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .focus();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .type_text("claude --model opus");
+    harness.run();
+
+    assert_eq!(*probe.review_agent.borrow(), "claude --model opus");
+    assert!(
+        *probe.ai_changes.borrow() >= 1,
+        "the input reports at least one change (to persist)"
+    );
+}
+
 // ---- Terminal section (M30-4) ----
 
 #[test]
@@ -904,6 +937,7 @@ fn project_harness(
                 &mut AiProvider::default(),
                 &mut String::new(),
                 &mut AiProvider::default(),
+                &mut String::new(),
                 &mut Editor::default(),
                 &mut notify,
                 &mut Keymap::default(),
@@ -1352,6 +1386,7 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut AiProvider::default(),
                 &mut String::new(),
                 &mut AiProvider::default(),
+                &mut String::new(),
                 &mut Editor::default(),
                 &mut true,
                 &mut Keymap::default(),

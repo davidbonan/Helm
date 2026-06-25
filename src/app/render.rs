@@ -140,6 +140,7 @@ impl HelmApp {
             &mut self.ai_provider,
             &mut self.ai_instructions,
             &mut self.ai_rebase_provider,
+            &mut self.review_agent_command,
             &mut self.editor,
             &mut self.notify_on_agent_completion,
             &mut self.keymap,
@@ -175,15 +176,17 @@ impl HelmApp {
             });
         }
         if action.ai_changed {
-            let (ai_provider, ai_instructions, ai_rebase_provider) = (
+            let (ai_provider, ai_instructions, ai_rebase_provider, review_agent_command) = (
                 self.ai_provider,
                 self.ai_instructions.clone(),
                 self.ai_rebase_provider,
+                self.review_agent_command.clone(),
             );
             self.persist(move |prefs| Prefs {
                 ai_provider,
                 ai_instructions,
                 ai_rebase_provider,
+                review_agent_command,
                 ..prefs
             });
         }

@@ -184,6 +184,7 @@ pub fn preferences_page(
     ai_provider: &mut AiProvider,
     ai_instructions: &mut String,
     ai_rebase_provider: &mut AiProvider,
+    review_agent_command: &mut String,
     editor: &mut Editor,
     notify_on_agent_completion: &mut bool,
     keymap: &mut Keymap,
@@ -355,6 +356,17 @@ pub fn preferences_page(
                             }
                         },
                     );
+                    setting_divider(ui, palette);
+                    if run_command_row(
+                        ui,
+                        palette,
+                        "Review agent",
+                        "CLI the in-diff review's Send button launches with your comments",
+                        "claude",
+                        review_agent_command,
+                    ) {
+                        action.ai_changed = true;
+                    }
                 });
             }
             PreferencesSection::Keyboard => {
@@ -398,7 +410,14 @@ pub fn preferences_page(
                             action.project_changed = true;
                         }
                         setting_divider(ui, palette);
-                        if run_command_row(ui, palette, p.run_command) {
+                        if run_command_row(
+                            ui,
+                            palette,
+                            "Run command",
+                            "Launched by the sidebar Run strip; empty auto-detects",
+                            "npm run dev",
+                            p.run_command,
+                        ) {
                             action.project_changed = true;
                         }
                         setting_divider(ui, palette);
@@ -842,23 +861,30 @@ fn post_create_row(ui: &mut egui::Ui, palette: &Palette, text: &mut String) -> b
     changed
 }
 
-/// Full-width Run command row (git.md §3): the command the sidebar's Run strip
-/// launches, shared by the project's worktrees. Empty falls back to auto-detection
-/// (Cargo/npm/go). Returns `true` on every edit.
-fn run_command_row(ui: &mut egui::Ui, palette: &Palette, text: &mut String) -> bool {
+/// Full-width labeled monospace singleline command row, shared by the project Run
+/// command (git.md §3) and the in-diff review agent (M-RC). Returns `true` on every
+/// edit.
+fn run_command_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    label: &str,
+    description: &str,
+    hint: &str,
+    text: &mut String,
+) -> bool {
     let mut changed = false;
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = LABEL_GAP;
             ui.label(
-                egui::RichText::new("Run command")
+                egui::RichText::new(label)
                     .size(LABEL_SIZE)
                     .family(theme::medium_family(ui.ctx()))
                     .color(palette.text_primary),
             );
             ui.label(
-                egui::RichText::new("Launched by the sidebar Run strip; empty auto-detects")
+                egui::RichText::new(description)
                     .size(DESCRIPTION_SIZE)
                     .color(palette.text_muted),
             );
@@ -867,7 +893,7 @@ fn run_command_row(ui: &mut egui::Ui, palette: &Palette, text: &mut String) -> b
                 egui::TextEdit::singleline(text)
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace)
-                    .hint_text(egui::RichText::new("npm run dev").color(palette.text_muted)),
+                    .hint_text(egui::RichText::new(hint).color(palette.text_muted)),
             );
             changed = response.changed();
         });

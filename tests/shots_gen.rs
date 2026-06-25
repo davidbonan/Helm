@@ -1449,6 +1449,7 @@ fn gen_preferences() {
                 &mut ai,
                 &mut ai_instr,
                 &mut ai_rebase,
+                &mut String::from("claude"),
                 &mut editor,
                 &mut notify,
                 &mut keymap,

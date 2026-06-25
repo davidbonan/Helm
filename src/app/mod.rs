@@ -359,6 +359,9 @@ pub struct HelmApp {
     /// Provider of the AI rebase (git.md §9), configured separately from the
     /// commit-message one — the rebase invocation is agentic (runs git itself).
     ai_rebase_provider: AiProvider,
+    /// CLI the in-diff review's "Send to {agent}" button launches (M-RC),
+    /// persisted in `prefs.toml`: loaded at boot, saved on change in Preferences.
+    review_agent_command: String,
     /// IDE opening terminal Cmd+click file links (terminal.md §12), persisted in
     /// `prefs.toml`: loaded at boot, saved on change in Preferences.
     editor: Editor,
@@ -513,6 +516,7 @@ impl HelmApp {
             ai_provider: prefs.ai_provider,
             ai_instructions: prefs.ai_instructions,
             ai_rebase_provider: prefs.ai_rebase_provider,
+            review_agent_command: prefs.review_agent_command,
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             branch_editor: BranchEditor::default(),

@@ -1808,6 +1808,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         run_panel_collapsed: false,
         workspace_opener: WorkspaceOpener::default(),
         last_seen_version: String::new(),
+        review_agent_command: "claude".to_owned(),
         keybindings: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };

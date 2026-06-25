@@ -47,6 +47,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn default_review_agent_command() -> String {
+    "claude".to_owned()
+}
+
 /// Per-project settings keyed by the **project root** (shared across its
 /// worktrees), kept apart from `Project` because the latter is rebuilt from the
 /// workspace on every mutation (worktrees.md §6).
@@ -137,6 +141,10 @@ pub struct Prefs {
     /// (update.md §9.3): the boot trigger shows the What's new modal once when
     /// `current_version()` exceeds it. Empty on a first install ⇒ silent baseline.
     pub last_seen_version: String,
+    /// CLI the in-diff review's "Send to {agent}" button launches in a new
+    /// terminal tab (M-RC): `<command> "<prompt>"`. Default `claude`.
+    #[serde(default = "default_review_agent_command")]
+    pub review_agent_command: String,
     /// Rebindable-action deviations (`action-id = "combo"`, keybindings.md §6):
     /// only deviations from the defaults, `""` = unbound; unknown ids are kept
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
@@ -173,6 +181,7 @@ impl Default for Prefs {
             run_panel_collapsed: false,
             workspace_opener: WorkspaceOpener::default(),
             last_seen_version: String::new(),
+            review_agent_command: default_review_agent_command(),
             keybindings: BTreeMap::new(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -509,6 +518,7 @@ mod tests {
             run_panel_collapsed: true,
             workspace_opener: WorkspaceOpener::GitKraken,
             last_seen_version: "0.8.4".to_owned(),
+            review_agent_command: "claude --model opus".to_owned(),
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),
@@ -1013,6 +1023,24 @@ mod tests {
             "table must come before the arrays-of-tables:\n{text}"
         );
         assert_eq!(Prefs::from_toml(&text).unwrap(), prefs);
+    }
+
+    #[test]
+    fn review_agent_command_round_trips_default_empty_custom() {
+        assert_eq!(Prefs::default().review_agent_command, "claude");
+
+        for value in ["claude", "", "claude --model opus"] {
+            let prefs = Prefs {
+                review_agent_command: value.to_owned(),
+                ..Prefs::default()
+            };
+            let round = Prefs::from_toml(&prefs.to_toml().unwrap()).unwrap();
+            assert_eq!(round.review_agent_command, value);
+        }
+
+        // Absent from older TOML ⇒ defaults to "claude".
+        let upgraded = Prefs::from_toml("show_git = true").unwrap();
+        assert_eq!(upgraded.review_agent_command, "claude");
     }
 
     #[test]
