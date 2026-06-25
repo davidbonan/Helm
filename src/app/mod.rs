@@ -67,6 +67,10 @@ const GIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1)
 /// a 4th sync trigger so a worktree created from a terminal appears without a
 /// defocus/refocus round-trip. Off-focus the focus-regain trigger already covers it.
 const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Workspace PR refresh cadence while the cockpit is open and focused
+/// (pull-requests.md §6): network-bound (`gh`/`curl`), so far coarser than the
+/// git/worktree ticks.
+const PR_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 type Panes = HashMap<PaneId, TerminalState>;
 
 mod keys;
@@ -97,6 +101,10 @@ pub enum CentralMode {
     /// Cross-repo agents dashboard in the central area (specs/agents.md §5): the
     /// project sidebar stays, the per-repo git panel is hidden.
     Agents,
+    /// Workspace pull-requests cockpit in the central area
+    /// (specs/pull-requests.md §6): my PRs and PRs to review across the
+    /// workspace repos, fetched on entry and on a focused tick.
+    PullRequests,
 }
 
 /// Target of a pending Delete worktree: what's needed to re-run with force after the
@@ -388,6 +396,13 @@ pub struct HelmApp {
     toasts: Toasts,
     last_agent_poll: f64,
     last_group_poll: f64,
+    /// Workspace PR fetch running off the UI thread (pull-requests.md §6): `gh`
+    /// and `curl` calls plus libgit2 remote resolution must not freeze rendering.
+    /// Created lazily on the first refresh (it carries the `ctx` repaint).
+    pr_runner: Option<crate::pull_requests::runner::PrRunner>,
+    /// Last PR fetch result shown in the cockpit, refreshed in place each reply.
+    pr_cache: crate::pull_requests::runner::PrCache,
+    last_pr_poll: f64,
     /// Prefs file to rewrite. `None` (constructors) = ephemeral app: tests and headless
     /// verification must never touch the user's real TOML; only `run()` injects the
     /// persisted path.
@@ -529,6 +544,9 @@ impl HelmApp {
             toasts: Toasts::default(),
             last_agent_poll: 0.0,
             last_group_poll: 0.0,
+            pr_runner: None,
+            pr_cache: crate::pull_requests::runner::PrCache::default(),
+            last_pr_poll: 0.0,
             prefs_path: None,
             keymap: snapshot.keymap(),
             prefs: snapshot,
@@ -1355,6 +1373,32 @@ impl HelmApp {
     fn create_runner(&mut self, ctx: &egui::Context) -> &mut crate::git::worktree::CreateRunner {
         self.worktree_create
             .get_or_insert_with(|| crate::git::worktree::CreateRunner::new(repainter(ctx)))
+    }
+
+    fn pr_runner(&mut self, ctx: &egui::Context) -> &mut crate::pull_requests::runner::PrRunner {
+        self.pr_runner
+            .get_or_insert_with(|| crate::pull_requests::runner::PrRunner::new(repainter(ctx)))
+    }
+
+    /// Kick a workspace PR fetch (pull-requests.md §6): the detached runner resolves
+    /// each project's `origin` and queries the forges against the cached identity.
+    /// A no-op while one is already in flight.
+    fn refresh_pull_requests(&mut self, ctx: &egui::Context) {
+        let request = crate::pull_requests::runner::PrRequest {
+            roots: self.workspace_project_roots(),
+            bitbucket_email: self.prefs.bitbucket_email.clone(),
+        };
+        self.pr_runner(ctx).request(request);
+    }
+
+    fn poll_pr_runner(&mut self) {
+        if let Some(reply) = self
+            .pr_runner
+            .as_mut()
+            .and_then(crate::pull_requests::runner::PrRunner::try_recv)
+        {
+            self.pr_cache.apply(reply);
+        }
     }
 
     fn request_delete_worktree(&mut self, index: usize, ctx: &egui::Context) {
@@ -2248,6 +2292,21 @@ impl eframe::App for HelmApp {
             self.last_group_poll = now;
         }
 
+        // PR cockpit refresh (pull-requests.md §6): a cold fetch on entry, then a
+        // focused tick — same focus rationale as the group sync. Reuses
+        // `focus_regained` so coming back to the app refreshes the open cockpit.
+        if self.central_mode == CentralMode::PullRequests {
+            let cold = !self.pr_cache.loaded;
+            let pr_due = focused && now - self.last_pr_poll >= PR_POLL_INTERVAL.as_secs_f64();
+            if cold || focus_regained || pr_due {
+                self.refresh_pull_requests(&ctx);
+                self.last_pr_poll = now;
+            }
+            if focused {
+                ctx.request_repaint_after(PR_POLL_INTERVAL);
+            }
+        }
+
         // While the Keyboard recorder is armed, the toggle is captured as a combo
         // instead of acting (preferences.md §4).
         let recording_shortcut =
@@ -2344,6 +2403,7 @@ impl eframe::App for HelmApp {
                 CentralMode::Terminal => "term",
                 CentralMode::Graph => "graph",
                 CentralMode::Agents => "agents",
+                CentralMode::PullRequests => "prs",
             });
         }
     }

@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **3/9**.
+workspace repos. Counter: **4/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -27,7 +27,7 @@ workspace repos. Counter: **3/9**.
   in `Prefs`. *Files*: `src/pull_requests/bitbucket.rs`,
   `src/pull_requests/creds.rs`, `src/persistence.rs`. *Tests*: unit on JSON
   fixtures + URL/header builders.
-- ☐ **PR4 — PrRunner + cache.** Detached one-shot runner (architecture §3
+- ☑ **PR4 — PrRunner + cache.** Detached one-shot runner (architecture §3
   contract: one reply/request, `in_flight`, drain+repaint each frame); fans
   per-`Forge` queries, classifies roles vs cached identity → `Vec<PullRequest>`
   + per-source status; app cache + refresh cadence (entry / manual / ~60 s
@@ -58,7 +58,9 @@ workspace repos. Counter: **3/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR4** (PrRunner + cache) — detached one-shot runner fanning per-`Forge` queries; app cache + refresh cadence. Business e2e on command/URL construction.
+- Start **PR5** (Sidebar entry + central mode) — `Pull Requests` row below Agents,
+  To-review badge, click sets `CentralMode::PullRequests` (variant + 60 s refresh
+  tick already wired in PR4; hide the git panel + sidebar action remain). UI e2e.
 
 ### Blockers
 - none

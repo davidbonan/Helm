@@ -341,6 +341,7 @@ impl HelmApp {
         self.drain_worktree_sources();
         self.drain_worktree_create(ctx);
         self.drain_worktree_delete(ctx);
+        self.poll_pr_runner();
         self.git_panel_state.ai_busy = self.git.as_ref().is_some_and(|g| g.ai.busy());
         self.git_panel_state.commit_busy = self
             .git
@@ -1105,6 +1106,7 @@ impl HelmApp {
                                     }
                                 }
                                 CentralMode::Agents => {}
+                                CentralMode::PullRequests => {}
                             }
                         }
                     },
