@@ -1,0 +1,12 @@
+{
+  "body": "This adds the login page.\n\nDetails here.",
+  "comments": [
+    { "author": { "login": "dave" }, "authorAssociation": "MEMBER", "body": "Looks good to me", "createdAt": "2026-06-20T12:00:00Z" },
+    { "author": { "login": "erin" }, "authorAssociation": "CONTRIBUTOR", "body": "One nit on naming", "createdAt": "2026-06-20T13:00:00Z" }
+  ],
+  "statusCheckRollup": [
+    { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS" },
+    { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE" },
+    { "__typename": "StatusContext", "context": "ci/circleci: deploy", "state": "PENDING" }
+  ]
+}

@@ -10,13 +10,13 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **1/9**.
+workspace repos. Counter: **2/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
   `git::forge::{Forge, parse_remote}`. *Files*: `src/pull_requests/model.rs`,
   `src/lib.rs`. *Tests*: unit on role/dedupe-by-`(forge,number)` helpers.
-- ☐ **PR2 — GitHub source (pure).** `pull_requests::github`: `gh` arg builders
+- ☑ **PR2 — GitHub source (pure).** `pull_requests::github`: `gh` arg builders
   (`pr list/view/checkout`, `api user`) + I/O-free `parse_list`/`parse_detail`
   over `--json` fixtures; `gh auth status` availability probe shape. *Files*:
   `src/pull_requests/github.rs`, `tests/fixtures/`. *Tests*: unit on captured
@@ -58,7 +58,7 @@ workspace repos. Counter: **1/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR2** (GitHub source, pure) — `gh` arg builders + `parse_list`/`parse_detail` on JSON fixtures.
+- Start **PR3** (Bitbucket source, pure) — `2.0` URL builders + Basic-auth header + `parse_list`/`parse_detail`; Keychain creds; `bitbucket_email` in `Prefs`.
 
 ### Blockers
 - none

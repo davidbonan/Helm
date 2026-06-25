@@ -1,0 +1,56 @@
+[
+  {
+    "number": 42,
+    "title": "Add login page",
+    "author": { "id": "u1", "is_bot": false, "login": "alice", "name": "Alice" },
+    "headRefName": "feature/login",
+    "baseRefName": "main",
+    "url": "https://github.com/acme/webapp/pull/42",
+    "updatedAt": "2026-06-20T10:00:00Z",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "reviewRequests": [{ "__typename": "User", "login": "bob" }],
+    "latestReviews": [
+      { "author": { "login": "carol" }, "state": "APPROVED" }
+    ],
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS" },
+      { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SKIPPED" },
+      { "__typename": "StatusContext", "context": "ci/circleci", "state": "SUCCESS" }
+    ]
+  },
+  {
+    "number": 7,
+    "title": "WIP: refactor parser",
+    "author": { "id": "u2", "is_bot": false, "login": "bob", "name": "Bob" },
+    "headRefName": "refactor/parser",
+    "baseRefName": "develop",
+    "url": "https://github.com/acme/webapp/pull/7",
+    "updatedAt": "2026-06-19T08:30:00Z",
+    "isDraft": true,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewRequests": [{ "__typename": "User", "login": "alice" }],
+    "latestReviews": [],
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS" },
+      { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE" }
+    ]
+  },
+  {
+    "number": 9,
+    "title": "Unrelated PR I only commented on",
+    "author": { "id": "u3", "is_bot": false, "login": "dave", "name": "Dave" },
+    "headRefName": "chore/cleanup",
+    "baseRefName": "main",
+    "url": "https://github.com/acme/webapp/pull/9",
+    "updatedAt": "2026-06-18T12:00:00Z",
+    "isDraft": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewRequests": [{ "__typename": "User", "login": "erin" }],
+    "latestReviews": [],
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "build", "status": "IN_PROGRESS", "conclusion": null },
+      { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS" }
+    ]
+  }
+]
