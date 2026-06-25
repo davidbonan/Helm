@@ -65,3 +65,58 @@ workspace repos. Counter: **0/9**.
 
 ### Open questions
 - none
+
+---
+
+## Planned milestone — M-RC · In-diff code review → Send to Claude
+
+In-diff annotation flow: **Review mode → click a line → text field + Validate
+under the line → annotate across multiple files (comments accumulate per repo) →
+header button `Send to {agent} (N)`** opens a **new terminal tab** running
+`claude "<prompt>"` in the active worktree, prompt = aggregated file/line/code/note.
+Works on **both** Git WIP and Commit Détail (read-only lines made annotable in
+review mode). Locked: multi-file accumulation (app-level store), **dedicated**
+pref `review_agent_command` (default `claude`), launch in a **new tab**.
+In-memory only except `review_agent_command` (persisted). Counter: **0/6**.
+
+- ☐ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
+  pure markdown grouped by file (BTreeMap), line-ref `new_lineno` else
+  `old_lineno`, code + note. *Files*: `src/review.rs`, `src/lib.rs`. *Tests*:
+  unit (grouping order, line-ref fallback, multi-file aggregation).
+- ☐ **RC2 — Pref `review_agent_command`.** Scalar in `Prefs` before
+  `keybindings`, `#[serde(default = "…")]` → `"claude"`; Preferences AI card row
+  (reuse `run_command_row` singleline, persist via `action.ai_changed`). *Files*:
+  `src/persistence.rs`, `src/ui/preferences.rs`, `src/app/render.rs`. *Tests*:
+  round-trip (default/empty/custom) + UI e2e on the row.
+- ☐ **RC3 — Store + view-state + intents.** `HelmApp.{review:
+  HashMap<RepoKey, BTreeMap<String, Vec<LineComment>>>, review_mode,
+  review_agent_command}`; `DiffViewState.{active_comment, comment_buffer}` (+
+  `clear()`); `enum ReviewIntent`; `struct DiffReview<'a>` new param of
+  `diff_view()` (both call-sites). *Files*: `src/app/mod.rs`,
+  `src/ui/diff_view.rs`. *Tests*: unit on store add/delete/purge helpers.
+- ☐ **RC4 — diff_view rendering.** Header: Review toggle + `Send (N)` + Clear.
+  `diff_line` returns `{rect, on_screen, action}`; per-line loop renders saved
+  note block + inline `TextEdit` editor at `content_left`, height reserved even
+  off-screen. Click in review mode → `DiffLineAction::OpenComment` (incl.
+  read-only lines), stage hover-pill suppressed; first `Esc` cancels editor.
+  *Files*: `src/ui/diff_view.rs`, `src/app/render.rs` (build `DiffReview`).
+  *Tests*: UI e2e (click line → type → Validate → comment stored; badge count).
+- ☐ **RC5 — Apply + spawn.** `apply_review_intent` (mirror `apply_run_intent`):
+  toggle/add/delete/clear + `SendToAgent` = build prompt → `add_tab` →
+  pre-insert pane via `or_insert_with(open_agent_terminal(...))` → rename tab →
+  `central_mode = Terminal`, `diff = None`. `pty::agent_command` (program + prompt
+  argv, no `-c`) + `open_agent_terminal`. *Files*: `src/app/{mod,render}.rs`,
+  `src/terminal/pty.rs`. *Tests*: unit pty argv/cwd/TERM; business e2e on
+  add_tab + pre-insert with a stub program.
+- ☐ **RC6 — End-to-end verify.** `headless-verify`: review WIP + Commit Détail,
+  multi-file, Send opens a new tab with a live pane (stub agent in test).
+  Demonstrable milestone scenario (DoD).
+
+### Next actions (M-RC)
+- Start **RC1** (domain + prompt) — pure, no egui, unblocks the rest.
+- Confirm at RC5: `claude "<prompt>"` seeds an interactive session (vs `-p`);
+  fallback `pane.feed` / temp file if not.
+
+### Open questions (M-RC)
+- Keep comments after Send (current plan) vs clear automatically — Clear button
+  provided either way.
