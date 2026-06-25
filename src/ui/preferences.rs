@@ -1,6 +1,7 @@
 use crate::ai::AiProvider;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Group, Keymap, Shortcut};
+use crate::pull_requests::runner::SourceStatus;
 use crate::terminal::links::Editor;
 use crate::theme::{self, Palette, ThemeMode, RADIUS_PILL};
 use crate::ui::spinner::Spinner;
@@ -56,16 +57,18 @@ pub enum PreferencesSection {
     Keyboard,
     Terminal,
     Agents,
+    PullRequests,
     Project,
     Updates,
 }
 
-const SECTIONS: [PreferencesSection; 7] = [
+const SECTIONS: [PreferencesSection; 8] = [
     PreferencesSection::Appearance,
     PreferencesSection::Git,
     PreferencesSection::Keyboard,
     PreferencesSection::Terminal,
     PreferencesSection::Agents,
+    PreferencesSection::PullRequests,
     PreferencesSection::Project,
     PreferencesSection::Updates,
 ];
@@ -78,6 +81,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => "Keyboard",
             PreferencesSection::Terminal => "Terminal",
             PreferencesSection::Agents => "Agents",
+            PreferencesSection::PullRequests => "Pull Requests",
             PreferencesSection::Project => "Project",
             PreferencesSection::Updates => "Updates",
         }
@@ -90,6 +94,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => lucide_icons::Icon::Keyboard,
             PreferencesSection::Terminal => lucide_icons::Icon::SquareTerminal,
             PreferencesSection::Agents => lucide_icons::Icon::Bot,
+            PreferencesSection::PullRequests => lucide_icons::Icon::GitPullRequest,
             PreferencesSection::Project => lucide_icons::Icon::FolderGit2,
             PreferencesSection::Updates => lucide_icons::Icon::Download,
         }
@@ -113,6 +118,16 @@ pub struct UpdatesView {
     pub state: UpdateState,
     /// `false` outside an `.app` bundle (`cargo run`): updater disabled.
     pub bundled: bool,
+}
+
+/// Read-only snapshot of the PR sources rendered by the Pull Requests section
+/// (pull-requests.md §3) — each source's usability from the last fetch. Built by
+/// the app from `pr_cache`; the page only reads it and raises creds intents.
+pub struct PrSourcesView {
+    pub github: SourceStatus,
+    pub bitbucket: SourceStatus,
+    /// `false` until the first fetch replies — the status lines read "Checking…".
+    pub loaded: bool,
 }
 
 /// Signals raised by the page: the app closes (`back`) or applies + persists the
@@ -148,6 +163,12 @@ pub struct PreferencesAction {
     /// The agent completion-notification toggle flipped — the app persists it
     /// (specs/agents.md).
     pub agent_notify_changed: bool,
+    /// The Bitbucket email field was edited — the app persists it
+    /// (pull-requests.md §3); the token stays out of `prefs`.
+    pub bitbucket_email_changed: bool,
+    /// The "Save" button asked to store the typed Bitbucket token in the Keychain
+    /// (pull-requests.md §3) — the page never touches the Keychain itself.
+    pub save_bitbucket_token: bool,
 }
 
 /// Settings of the project the Project section configures (worktrees.md §6): the
@@ -186,6 +207,9 @@ pub fn preferences_page(
     ai_rebase_provider: &mut AiProvider,
     review_agent_command: &mut String,
     editor: &mut Editor,
+    bitbucket_email: &mut String,
+    bitbucket_token: &mut String,
+    pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
@@ -401,6 +425,16 @@ pub fn preferences_page(
                         },
                     );
                 });
+            }
+            PreferencesSection::PullRequests => {
+                pull_requests_section(
+                    ui,
+                    palette,
+                    bitbucket_email,
+                    bitbucket_token,
+                    pr_sources,
+                    &mut action,
+                );
             }
             PreferencesSection::Project => match project.as_mut() {
                 Some(p) => {
@@ -898,6 +932,129 @@ fn run_command_row(
             changed = response.changed();
         });
     changed
+}
+
+/// Pull Requests section (pull-requests.md §3): GitHub authenticates through the
+/// `gh` CLI (no stored secret — a read-only status line), Bitbucket needs the
+/// account email plus a token kept in the macOS Keychain.
+fn pull_requests_section(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    email: &mut String,
+    token: &mut String,
+    sources: &PrSourcesView,
+    action: &mut PreferencesAction,
+) {
+    settings_card(ui, palette, |ui| {
+        setting_row(
+            ui,
+            palette,
+            "GitHub",
+            Some("Pull requests are read through the gh CLI"),
+            |ui| source_status(ui, palette, &sources.github, sources.loaded),
+        );
+    });
+    ui.add_space(CARD_GAP);
+    settings_card(ui, palette, |ui| {
+        setting_row(
+            ui,
+            palette,
+            "Bitbucket",
+            Some("Connection status of the Bitbucket source"),
+            |ui| source_status(ui, palette, &sources.bitbucket, sources.loaded),
+        );
+        setting_divider(ui, palette);
+        if bitbucket_email_row(ui, palette, email) {
+            action.bitbucket_email_changed = true;
+        }
+        setting_divider(ui, palette);
+        if bitbucket_token_row(ui, palette, token) {
+            action.save_bitbucket_token = true;
+        }
+    });
+}
+
+/// Inline usability of one PR source in a setting row's right slot: the last
+/// fetch's status, or "Checking…" until the first reply lands.
+fn source_status(ui: &mut egui::Ui, palette: &Palette, status: &SourceStatus, loaded: bool) {
+    if !loaded {
+        inline_status(ui, "Checking…", palette.text_secondary);
+        return;
+    }
+    match status {
+        SourceStatus::Ok => inline_status(ui, "Connected", palette.text_secondary),
+        SourceStatus::Unavailable(hint) => inline_status(ui, hint, palette.git_deleted),
+        SourceStatus::Absent => {
+            inline_status(ui, "No repository in your workspace", palette.text_muted)
+        }
+    }
+}
+
+/// Full-width Bitbucket email row (pull-requests.md §3): the non-secret account
+/// email, persisted in `prefs`. Returns `true` on every edit.
+fn bitbucket_email_row(ui: &mut egui::Ui, palette: &Palette, email: &mut String) -> bool {
+    let mut changed = false;
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = LABEL_GAP;
+            ui.label(
+                egui::RichText::new("Email")
+                    .size(LABEL_SIZE)
+                    .family(theme::medium_family(ui.ctx()))
+                    .color(palette.text_primary),
+            );
+            ui.label(
+                egui::RichText::new("Bitbucket account email used for Basic auth")
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
+            );
+            ui.add_space(4.0);
+            let response = ui.add(
+                egui::TextEdit::singleline(email)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(egui::RichText::new("you@example.com").color(palette.text_muted)),
+            );
+            changed = response.changed();
+        });
+    changed
+}
+
+/// Full-width Bitbucket token row (pull-requests.md §3): a masked field plus a
+/// "Save" button that stores the token in the Keychain (never in `prefs`).
+/// Returns `true` when Save is clicked.
+fn bitbucket_token_row(ui: &mut egui::Ui, palette: &Palette, token: &mut String) -> bool {
+    let mut save = false;
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = LABEL_GAP;
+            ui.label(
+                egui::RichText::new("API token")
+                    .size(LABEL_SIZE)
+                    .family(theme::medium_family(ui.ctx()))
+                    .color(palette.text_primary),
+            );
+            ui.label(
+                egui::RichText::new("Stored in the macOS Keychain, never written to disk")
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let field_w = (ui.available_width() - 80.0).max(120.0);
+                ui.add_sized(
+                    [field_w, SEGMENT_SIZE.y],
+                    egui::TextEdit::singleline(token).password(true).hint_text(
+                        egui::RichText::new("Bitbucket API token").color(palette.text_muted),
+                    ),
+                );
+                if pill_button(ui, palette, "Save", !token.trim().is_empty(), true) {
+                    save = true;
+                }
+            });
+        });
+    save
 }
 
 /// Base port row (git.md §3): the project's first `$PORT`; each worktree adds its
@@ -1641,6 +1798,7 @@ mod tests {
                 "Keyboard",
                 "Terminal",
                 "Agents",
+                "Pull Requests",
                 "Project",
                 "Updates"
             ]

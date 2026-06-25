@@ -129,6 +129,11 @@ impl HelmApp {
                     base_port: &mut e.base_port,
                     base_hint: &base_hint,
                 });
+        let pr_sources = crate::ui::preferences::PrSourcesView {
+            github: self.pr_cache.github.clone(),
+            bitbucket: self.pr_cache.bitbucket.clone(),
+            loaded: self.pr_cache.loaded,
+        };
         let action = preferences_page(
             ui,
             &palette,
@@ -142,6 +147,9 @@ impl HelmApp {
             &mut self.ai_rebase_provider,
             &mut self.review_agent_command,
             &mut self.editor,
+            &mut self.bitbucket_email,
+            &mut self.bitbucket_token_input,
+            &pr_sources,
             &mut self.notify_on_agent_completion,
             &mut self.keymap,
             &mut self.keyboard_prefs,
@@ -200,6 +208,18 @@ impl HelmApp {
                 notify_on_agent_completion,
                 ..prefs
             });
+        }
+        // Bitbucket email persists like any scalar; the token never touches prefs
+        // — "Save" stores it in the Keychain and re-fetches (pull-requests.md §3).
+        if action.bitbucket_email_changed {
+            let bitbucket_email = self.bitbucket_email.clone();
+            self.persist(move |prefs| Prefs {
+                bitbucket_email,
+                ..prefs
+            });
+        }
+        if action.save_bitbucket_token {
+            self.save_bitbucket_token(ctx);
         }
         // Per-project settings (worktrees.md §6): the edit buffers are written
         // back to prefs (an emptied entry is dropped by `set_project_settings`).

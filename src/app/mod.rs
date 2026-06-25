@@ -412,6 +412,13 @@ pub struct HelmApp {
     /// Width of the cockpit's detail panel (pull-requests.md §5); live source for
     /// rendering, mirrored into `Prefs` on drag (persisted).
     pr_detail_width: f32,
+    /// Bitbucket account email bound to the Preferences field (pull-requests.md
+    /// §3): live mirror of `prefs.bitbucket_email`, persisted on edit.
+    bitbucket_email: String,
+    /// Transient Bitbucket token typed in Preferences, before "Save" writes it to
+    /// the Keychain (pull-requests.md §3) — never persisted, cleared after a save
+    /// and each time the page opens.
+    bitbucket_token_input: String,
     /// Prefs file to rewrite. `None` (constructors) = ephemeral app: tests and headless
     /// verification must never touch the user's real TOML; only `run()` injects the
     /// persisted path.
@@ -559,6 +566,8 @@ impl HelmApp {
             last_pr_poll: 0.0,
             pr_selected: None,
             pr_detail_width: prefs.pr_detail_width,
+            bitbucket_email: prefs.bitbucket_email.clone(),
+            bitbucket_token_input: String::new(),
             prefs_path: None,
             keymap: snapshot.keymap(),
             prefs: snapshot,
@@ -1057,6 +1066,7 @@ impl HelmApp {
                 .workspace
                 .active()
                 .and_then(|index| self.project_root_for_index(index));
+            self.bitbucket_token_input.clear();
         }
     }
 
@@ -1497,6 +1507,30 @@ impl HelmApp {
             .and_then(crate::pull_requests::runner::PrRunner::try_recv)
         {
             self.pr_cache.apply(reply);
+        }
+    }
+
+    /// Store the typed Bitbucket token in the Keychain (pull-requests.md §3) under
+    /// the configured email, then re-fetch so the source status reflects the new
+    /// creds. The token never reaches `prefs`; the input is cleared on success.
+    fn save_bitbucket_token(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let email = self.bitbucket_email.trim().to_owned();
+        if email.is_empty() {
+            self.toasts.error("Enter your Bitbucket email first", now);
+            return;
+        }
+        let token = self.bitbucket_token_input.trim().to_owned();
+        if token.is_empty() {
+            return;
+        }
+        if crate::pull_requests::creds::store_token(&email, &token) {
+            self.bitbucket_token_input.clear();
+            self.toasts.success("Bitbucket token saved", now);
+            self.refresh_pull_requests(ctx);
+        } else {
+            self.toasts
+                .error("Couldn't save the Bitbucket token to the Keychain", now);
         }
     }
 
@@ -2394,7 +2428,12 @@ impl eframe::App for HelmApp {
         // PR cockpit refresh (pull-requests.md §6): a cold fetch on entry, then a
         // focused tick — same focus rationale as the group sync. Reuses
         // `focus_regained` so coming back to the app refreshes the open cockpit.
-        if self.central_mode == CentralMode::PullRequests {
+        // The Preferences "Pull Requests" section warms the same cache to show
+        // each source's live status (pull-requests.md §3).
+        let pr_surface_open = self.central_mode == CentralMode::PullRequests
+            || (self.page == Page::Preferences
+                && self.preferences_section == PreferencesSection::PullRequests);
+        if pr_surface_open {
             let cold = !self.pr_cache.loaded;
             let pr_due = focused && now - self.last_pr_poll >= PR_POLL_INTERVAL.as_secs_f64();
             if cold || focus_regained || pr_due {

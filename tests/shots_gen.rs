@@ -31,7 +31,10 @@ use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::{GitIntent, GitPanelState};
 use helm::ui::graph_toolbar::{graph_toolbar, ToolbarState};
 use helm::ui::graph_view::{graph_view, BranchEditor, GraphSearch, GraphViewState};
-use helm::ui::preferences::{preferences_page, KeyboardState, PreferencesSection, UpdatesView};
+use helm::pull_requests::runner::SourceStatus;
+use helm::ui::preferences::{
+    preferences_page, KeyboardState, PreferencesSection, PrSourcesView, UpdatesView,
+};
 use helm::ui::repo_sidebar::{
     create_worktree_modal, repo_sidebar, CreateSelection, CreateWorktreeModalAction,
     CreateWorktreePrompt, CreateWorktreeState, ProjectHeader, ProjectVisibility, RepoRow,
@@ -1453,6 +1456,13 @@ fn gen_preferences() {
                 bundled: true,
             };
             let mut release_notes_cache = egui_commonmark::CommonMarkCache::default();
+            let mut bitbucket_email = String::new();
+            let mut bitbucket_token = String::new();
+            let pr_sources = PrSourcesView {
+                github: SourceStatus::Absent,
+                bitbucket: SourceStatus::Absent,
+                loaded: false,
+            };
             let _ = preferences_page(
                 ui,
                 &palette,
@@ -1466,6 +1476,9 @@ fn gen_preferences() {
                 &mut ai_rebase,
                 &mut String::from("claude"),
                 &mut editor,
+                &mut bitbucket_email,
+                &mut bitbucket_token,
+                &pr_sources,
                 &mut notify,
                 &mut keymap,
                 &mut keyboard,

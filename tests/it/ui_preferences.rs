@@ -7,10 +7,11 @@ use egui_kittest::Harness;
 use helm::ai::AiProvider;
 use helm::git::sync::PullDefault;
 use helm::keybindings::{Action, Keymap, Shortcut};
+use helm::pull_requests::runner::SourceStatus;
 use helm::terminal::links::Editor;
 use helm::theme::{Palette, ThemeMode};
 use helm::ui::preferences::{
-    preferences_page, setting_divider, setting_row, settings_card, KeyboardState,
+    preferences_page, setting_divider, setting_row, settings_card, KeyboardState, PrSourcesView,
     PreferencesSection, ProjectView, UpdatesView,
 };
 use helm::update::{UpdateState, Version};
@@ -49,6 +50,16 @@ fn idle_updates() -> UpdatesView {
         version: "0.1.0".to_owned(),
         state: UpdateState::Idle,
         bundled: true,
+    }
+}
+
+/// PR-source snapshot for the harnesses that do not target the Pull Requests
+/// section (both sources absent, nothing fetched yet).
+fn idle_pr_sources() -> PrSourcesView {
+    PrSourcesView {
+        github: SourceStatus::Absent,
+        bitbucket: SourceStatus::Absent,
+        loaded: false,
     }
 }
 
@@ -124,6 +135,9 @@ fn page_harness_full(
 
     let cache = RefCell::new(egui_commonmark::CommonMarkCache::default());
     let mut harness = Harness::builder().with_size(size).build_ui(move |ui| {
+        let mut bitbucket_email = String::new();
+        let mut bitbucket_token = String::new();
+        let pr_sources = idle_pr_sources();
         let action = preferences_page(
             ui,
             &palette,
@@ -137,6 +151,9 @@ fn page_harness_full(
             &mut ai_rebase_provider.borrow_mut(),
             &mut review_agent.borrow_mut(),
             &mut editor.borrow_mut(),
+            &mut bitbucket_email,
+            &mut bitbucket_token,
+            &pr_sources,
             &mut notify.borrow_mut(),
             &mut keymap.borrow_mut(),
             &mut keyboard.borrow_mut(),
@@ -939,6 +956,9 @@ fn project_harness(
                 &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
+                &mut String::new(),
+                &mut String::new(),
+                &idle_pr_sources(),
                 &mut notify,
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
@@ -1003,6 +1023,144 @@ fn without_a_repository_the_section_invites_opening_one() {
     assert!(
         harness.query_by_label("Worktrees base").is_none(),
         "no fields render until a repository is open"
+    );
+}
+
+// ---- Pull Requests section (M-PR / PR8) ----
+
+struct PrProbe {
+    email: Rc<RefCell<String>>,
+    token: Rc<RefCell<String>>,
+    email_changes: Rc<RefCell<usize>>,
+    token_saves: Rc<RefCell<usize>>,
+}
+
+/// Drives `preferences_page` with the Pull Requests section active and the given
+/// (already-loaded) source statuses. Real email/token buffers so edits and the
+/// "Save" intent can be observed.
+fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static>, PrProbe) {
+    let palette = Palette::light();
+    let probe = PrProbe {
+        email: Rc::new(RefCell::new(String::new())),
+        token: Rc::new(RefCell::new(String::new())),
+        email_changes: Rc::new(RefCell::new(0)),
+        token_saves: Rc::new(RefCell::new(0)),
+    };
+    let email = probe.email.clone();
+    let token = probe.token.clone();
+    let email_changes = probe.email_changes.clone();
+    let token_saves = probe.token_saves.clone();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            let pr_sources = PrSourcesView {
+                github: github.clone(),
+                bitbucket: bitbucket.clone(),
+                loaded: true,
+            };
+            let mut release_notes_cache = egui_commonmark::CommonMarkCache::default();
+            let action = preferences_page(
+                ui,
+                &palette,
+                &mut PreferencesSection::PullRequests,
+                &mut ThemeMode::Auto,
+                &mut "helm".to_owned(),
+                &mut "helm".to_owned(),
+                &mut PullDefault::default(),
+                &mut AiProvider::default(),
+                &mut String::new(),
+                &mut AiProvider::default(),
+                &mut String::new(),
+                &mut Editor::default(),
+                &mut email.borrow_mut(),
+                &mut token.borrow_mut(),
+                &pr_sources,
+                &mut true,
+                &mut Keymap::default(),
+                &mut KeyboardState::default(),
+                &idle_updates(),
+                &mut release_notes_cache,
+                None,
+            );
+            if action.bitbucket_email_changed {
+                *email_changes.borrow_mut() += 1;
+            }
+            if action.save_bitbucket_token {
+                *token_saves.borrow_mut() += 1;
+            }
+        });
+    harness.run();
+    (harness, probe)
+}
+
+/// Focuses then types into the section's sole field of the given accesskit role
+/// (email = "TextInput", masked token = "PasswordInput") — `type_text` only sends
+/// the text event, so focus must land first.
+fn type_into_field(harness: &mut Harness<'_>, role: &str, text: &str) {
+    harness
+        .get_all_by(|n| format!("{:?}", n.role()) == role)
+        .next()
+        .unwrap_or_else(|| panic!("{role} field missing"))
+        .focus();
+    harness.run();
+    harness
+        .get_all_by(|n| format!("{:?}", n.role()) == role)
+        .next()
+        .unwrap_or_else(|| panic!("{role} field missing"))
+        .type_text(text);
+    harness.run();
+}
+
+#[test]
+fn the_pull_requests_nav_opens_the_section_with_both_sources() {
+    let (mut harness, probe) = page_harness(ThemeMode::Auto);
+    harness.get_by_label("Pull Requests").click();
+    harness.run();
+    assert_eq!(*probe.section.borrow(), PreferencesSection::PullRequests);
+    harness.get_by_label("GitHub");
+    harness.get_by_label("Bitbucket");
+    harness.get_by_label("Email");
+    harness.get_by_label("API token");
+    harness.get_by_label("Save");
+}
+
+#[test]
+fn each_source_surfaces_its_status() {
+    let (harness, _probe) = pr_harness(
+        SourceStatus::Unavailable("Install gh and run `gh auth login`".to_owned()),
+        SourceStatus::Ok,
+    );
+    harness.get_by_label("Install gh and run `gh auth login`");
+    harness.get_by_label("Connected");
+}
+
+#[test]
+fn editing_the_bitbucket_email_reports_a_change() {
+    let (mut harness, probe) = pr_harness(SourceStatus::Ok, SourceStatus::Absent);
+    type_into_field(&mut harness, "TextInput", "me@corp.com");
+    assert_eq!(*probe.email.borrow(), "me@corp.com");
+    assert!(
+        *probe.email_changes.borrow() >= 1,
+        "every keystroke flags the email as changed for the app to persist"
+    );
+}
+
+#[test]
+fn saving_the_bitbucket_token_signals_without_a_field_edit() {
+    let (mut harness, probe) = pr_harness(
+        SourceStatus::Ok,
+        SourceStatus::Unavailable("Set a Bitbucket email and token in Preferences".to_owned()),
+    );
+    type_into_field(&mut harness, "TextInput", "me@corp.com");
+    type_into_field(&mut harness, "PasswordInput", "secret-token");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(*probe.token.borrow(), "secret-token");
+    assert_eq!(
+        *probe.token_saves.borrow(),
+        1,
+        "clicking Save raises exactly one store-token intent"
     );
 }
 
@@ -1388,6 +1546,9 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
+                &mut String::new(),
+                &mut String::new(),
+                &idle_pr_sources(),
                 &mut true,
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),

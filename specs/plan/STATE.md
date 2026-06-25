@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **7/9**.
+workspace repos. Counter: **8/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -51,19 +51,20 @@ workspace repos. Counter: **7/9**.
   `src/pull_requests/runner.rs` (`CheckoutRunner` + `fetch_refspec`/`match_pr_root`/
   `matching_worktree`), `src/app/{mod,render}.rs`; reuse `src/git/worktree.rs`.
   *Tests*: unit on fetch-ref/argv build + existing-worktree match.
-- ☐ **PR8 — Preferences section.** Preferences → **Pull Requests**: Bitbucket
-  email field + Set token (Keychain), GitHub `gh` status line; persist
-  `bitbucket_email`, `pr_detail_width`. *Files*: `src/ui/preferences*.rs`,
-  `src/persistence.rs`, `specs/preferences.md`. *Tests*: UI e2e on the section.
+- ☑ **PR8 — Preferences section.** Preferences → **Pull Requests**: Bitbucket
+  email field + Save token (Keychain), GitHub/Bitbucket `gh` status lines from the
+  PR cache (section-open tick warms it); persist `bitbucket_email`,
+  `pr_detail_width`. *Files*: `src/ui/preferences.rs`, `src/app/{mod,render}.rs`,
+  `specs/preferences.md`. *Tests*: UI e2e on the section (nav opens it, statuses
+  surface, email change + Save intents).
 - ☐ **PR9 — End-to-end verify.** `headless-verify`: open the cockpit on a fixture,
   confirm groups + detail + Open/Checkout actions render and route. Demonstrable
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR8** (Preferences section) — Preferences → **Pull Requests**:
-  Bitbucket email field + Set token (Keychain), GitHub `gh` status line; persist
-  `bitbucket_email`, `pr_detail_width`. *Files*: `src/ui/preferences*.rs`,
-  `src/persistence.rs`, `specs/preferences.md`. UI e2e on the section.
+- Start **PR9** (End-to-end verify) — `headless-verify`: open the cockpit on a
+  fixture, confirm groups + detail + Open/Checkout actions render and route.
+  Closes the milestone (DoD demo scenario).
 
 ### Blockers
 - none

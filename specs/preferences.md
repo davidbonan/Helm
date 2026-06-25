@@ -116,6 +116,21 @@ action shows a muted `unbound` placeholder.
 |---------|------------------|----------|--------------|
 | **Editor** | IDE opened by a Cmd+click on a file link in the terminal ([`terminal.md`](terminal.md) §12) | Dropdown, 3 options: **VS Code** / **Cursor** / **Zed** (`links::Editor` domain, product names from `label`, default VS Code) | Opens the file (with its line) in the chosen IDE's CLI — `code`/`cursor -g {file}:{line}`, `zed {file}:{line}` — spawned detached; a CLI that fails surfaces an error toast naming it (no silent fallback). Persisted on change (`editor`); **never opens** anything by itself. |
 
+### Pull Requests
+
+Sources and credentials of the PR cockpit ([`pull-requests.md`](pull-requests.md)
+§3). Two cards: **GitHub** (read-only status, `gh` owns the token) and
+**Bitbucket** (status + the email/token creds). Opening the section warms the
+same cache the cockpit uses, so the status lines show live state; while the
+first fetch is in flight they read **Checking…**.
+
+| Setting | Description (UI) | Control | Behavior |
+|---------|------------------|----------|--------------|
+| **GitHub** | Pull requests are read through the gh CLI | Read-only status line | The last fetch's GitHub status: **Connected** when `gh auth status` succeeds, else the inline hint (*"Install gh and run `gh auth login`"*). No secret is stored — `gh` owns the token. |
+| **Bitbucket** | Connection status of the Bitbucket source | Read-only status line | **Connected** when the email + Keychain token authenticate, else the hint (missing creds, *"Bitbucket token invalid or expired"*, unreachable). |
+| **Email** | Bitbucket account email used for Basic auth | Full-width text field | The non-secret account email; persisted (`bitbucket_email`). Empty ⇒ the Bitbucket source stays off. |
+| **API token** | Stored in the macOS Keychain, never written to disk | Masked field + **Save** button | **Save** writes the token to the Keychain (`security`, service `helm.bitbucket`) and re-fetches; the token never reaches `prefs.toml`. |
+
 ### Project
 
 A **project picker** replaces the section title: a title-sized dropdown of every
@@ -149,7 +164,10 @@ both settings are cleared.
   `open` — [`terminal.md`](terminal.md) §12) + `keybindings` (table `action-id = "combo"`,
   e.g. `split-right = "cmd+shift+x"`: **only deviations** from the defaults,
   `""` = unbound, unknown id / unparsable combo ignored at resolution without
-  rewriting the TOML — keybindings.md §6) + `project_settings` (array-of-tables
+  rewriting the TOML — keybindings.md §6) + `bitbucket_email` (Bitbucket account
+  email, default empty; the paired token lives in the macOS Keychain, **never**
+  in the TOML — [`pull-requests.md`](pull-requests.md) §3) + `pr_detail_width`
+  (PR cockpit detail-panel width) + `project_settings` (array-of-tables
   keyed by project `root`: optional `worktree_base` + `post_create`; an entry
   with neither is dropped, orphans whose project left the workspace are purged).
 - The rendering logic stays as pure `fn(&mut egui::Ui, …)` functions
