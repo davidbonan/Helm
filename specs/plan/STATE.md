@@ -10,9 +10,9 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **0/9**.
+workspace repos. Counter: **1/9**.
 
-- ☐ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
+- ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
   `git::forge::{Forge, parse_remote}`. *Files*: `src/pull_requests/model.rs`,
   `src/lib.rs`. *Tests*: unit on role/dedupe-by-`(forge,number)` helpers.
@@ -58,7 +58,7 @@ workspace repos. Counter: **0/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR1** (model) — no I/O, unblocks PR2/PR3 parsers.
+- Start **PR2** (GitHub source, pure) — `gh` arg builders + `parse_list`/`parse_detail` on JSON fixtures.
 
 ### Blockers
 - none

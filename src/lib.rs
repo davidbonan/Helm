@@ -7,6 +7,7 @@ pub mod git;
 pub mod keybindings;
 pub mod notify;
 pub mod persistence;
+pub mod pull_requests;
 pub mod release_notes;
 pub mod review;
 pub mod run;
