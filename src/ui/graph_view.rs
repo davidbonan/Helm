@@ -2451,28 +2451,6 @@ fn paint_row(ui: &egui::Ui, palette: &Palette, paint: &RowPaint<'_>) -> ChipInte
             );
         }
     }
-    if selected {
-        // Square ring around the stash square — a circular ring would clip its
-        // corners.
-        if commit.stash {
-            lane_painter.rect_stroke(
-                egui::Rect::from_center_size(
-                    node_center,
-                    egui::Vec2::splat((node_radius + RING_GAP) * 2.0),
-                ),
-                0,
-                egui::Stroke::new(RING_WIDTH, palette.accent),
-                egui::StrokeKind::Middle,
-            );
-        } else {
-            lane_painter.circle_stroke(
-                node_center,
-                node_radius + RING_GAP,
-                egui::Stroke::new(RING_WIDTH, palette.accent),
-            );
-        }
-    }
-
     let mut cursor = rect.left() + REFS_COL_WIDTH + graph_zone + TEXT_GAP;
     // Lane-colored accent bar at the head of the message column (M10-6).
     painter.rect_filled(
@@ -2593,14 +2571,6 @@ fn paint_wip_row(
         NODE_RADIUS,
         egui::Stroke::new(RING_WIDTH, palette.lane_color(lane)),
     );
-    if wip.selected {
-        lane_painter.circle_stroke(
-            center,
-            NODE_RADIUS + RING_GAP,
-            egui::Stroke::new(RING_WIDTH, palette.accent),
-        );
-    }
-
     let cursor = rect.left() + REFS_COL_WIDTH + graph_zone + TEXT_GAP;
     let galley = painter.layout_job(single_line(
         &wip_label(wip.files),
