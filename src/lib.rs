@@ -8,6 +8,7 @@ pub mod keybindings;
 pub mod notify;
 pub mod persistence;
 pub mod release_notes;
+pub mod review;
 pub mod run;
 pub mod terminal;
 pub mod theme;

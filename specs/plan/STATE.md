@@ -77,9 +77,9 @@ header button `Send to {agent} (N)`** opens a **new terminal tab** running
 Works on **both** Git WIP and Commit Détail (read-only lines made annotable in
 review mode). Locked: multi-file accumulation (app-level store), **dedicated**
 pref `review_agent_command` (default `claude`), launch in a **new tab**.
-In-memory only except `review_agent_command` (persisted). Counter: **0/6**.
+In-memory only except `review_agent_command` (persisted). Counter: **1/6**.
 
-- ☐ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
+- ☑ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
   pure markdown grouped by file (BTreeMap), line-ref `new_lineno` else
   `old_lineno`, code + note. *Files*: `src/review.rs`, `src/lib.rs`. *Tests*:
   unit (grouping order, line-ref fallback, multi-file aggregation).
@@ -113,7 +113,7 @@ In-memory only except `review_agent_command` (persisted). Counter: **0/6**.
   Demonstrable milestone scenario (DoD).
 
 ### Next actions (M-RC)
-- Start **RC1** (domain + prompt) — pure, no egui, unblocks the rest.
+- Start **RC2** (pref `review_agent_command`) — scalar in `Prefs` + AI card row.
 - Confirm at RC5: `claude "<prompt>"` seeds an interactive session (vs `-p`);
   fallback `pane.feed` / temp file if not.
 
