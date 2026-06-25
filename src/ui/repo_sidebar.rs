@@ -61,6 +61,16 @@ pub struct RepoRow<'a> {
     pub stats: Option<(usize, usize)>,
 }
 
+/// An indented child row under the Agents entry: one agent pane currently in the
+/// `Done` state (specs/agents.md §5). `index` is its position in `caches.agents`,
+/// consumed by `HelmApp::focus_agent` to jump to that pane.
+pub struct DoneAgentRow {
+    pub index: usize,
+    /// Worktree branch (the row's locator), or `None` when detached/unreadable.
+    pub branch: Option<String>,
+    pub tab: String,
+}
+
 /// One project (group root) in the "Projects" eye dropdown that toggles sidebar
 /// visibility. Every project is listed — hidden ones included — so a hidden
 /// project can be brought back from the only surface that still shows it.
@@ -91,6 +101,9 @@ pub struct SidebarAction {
     /// The cross-repo Agents entry was clicked: switches the central area to the
     /// dashboard (specs/agents.md §5).
     pub open_agents: bool,
+    /// A Done-state agent child row under the Agents entry was clicked, carrying its
+    /// index in `caches.agents`: focus that pane (specs/agents.md §5).
+    pub focus_agent: Option<usize>,
 }
 
 /// A drag-and-drop reorder: move the block rooted at `from` to land relative to
@@ -259,6 +272,9 @@ pub fn repo_sidebar(
     active: Option<usize>,
     agents_badge: AgentBadge,
     agents_active: bool,
+    // Agent panes in the `Done` state, shown as indented child rows under the Agents
+    // entry (specs/agents.md §5).
+    done_agents: &[DoneAgentRow],
     keymap: &Keymap,
     out: &mut SidebarAction,
 ) {
@@ -288,6 +304,9 @@ pub fn repo_sidebar(
         ui.push_id("agents_entry", |ui| {
             agents_entry(ui, palette, agents_badge, agents_active, cmd_digits, out);
         });
+        for row in done_agents {
+            agent_child_row(ui, palette, row, out);
+        }
     }
 
     sidebar_header(
@@ -715,6 +734,54 @@ fn agents_entry(
     });
     if response.clicked() {
         out.open_agents = true;
+    }
+}
+
+/// Indented child row under the Agents entry: one `Done`-state agent pane
+/// (specs/agents.md §5). Clicking it focuses that pane — which acknowledges the
+/// green, so the row clears on the next watch tick (an inbox of finished turns).
+fn agent_child_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    row: &DoneAgentRow,
+    out: &mut SidebarAction,
+) {
+    let width = ui.available_width();
+    let (rect, response, hovered) = crate::ui::clickable(ui, egui::vec2(width, ROW_HEIGHT), true);
+    if hovered {
+        paint_row_highlight(ui, palette, rect, false);
+    }
+    let icon_left = rect.left() + ROW_PAD_X + ROW_INDENT;
+    let dot_center = egui::pos2(icon_left + ICON_SIZE / 2.0, rect.center().y);
+    paint_done_dot(ui, dot_center, AGENT_DOT_RADIUS, palette.git_added);
+
+    let label_left = icon_left + ICON_SIZE + ICON_GAP;
+    let label_avail = (rect.right() - ROW_PAD_X - label_left).max(0.0);
+    let text = match &row.branch {
+        Some(branch) => format!("{branch} · {}", row.tab),
+        None => row.tab.clone(),
+    };
+    let label = text.clone();
+    response.widget_info(move || {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+    });
+    let mut job = egui::text::LayoutJob::single_section(
+        text,
+        egui::text::TextFormat::simple(
+            egui::FontId::proportional(NAME_SIZE),
+            palette.text_secondary,
+        ),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(label_avail);
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(label_left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        palette.text_secondary,
+    );
+
+    if response.clicked() {
+        out.focus_agent = Some(row.index);
     }
 }
 

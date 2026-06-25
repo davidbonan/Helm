@@ -29,7 +29,9 @@ use crate::theme::{Palette, RADIUS_MENU_ITEM, RADIUS_PILL, SHORTCUT_BADGE_SIZE};
 use crate::ui::commit_detail::commit_detail_panel;
 use crate::ui::file_list::{FileMenuOutput, FileViewMode};
 use crate::ui::git_panel::{git_panel, GitIntent, GitPanelState};
-use crate::ui::repo_sidebar::{repo_sidebar, ProjectVisibility, SidebarAction, SidebarItem};
+use crate::ui::repo_sidebar::{
+    repo_sidebar, DoneAgentRow, ProjectVisibility, SidebarAction, SidebarItem,
+};
 use crate::workspace_launcher::WorkspaceOpener;
 
 const LEFT_SIDEBAR_ID: &str = "repos";
@@ -739,6 +741,7 @@ pub fn root_layout(
     open_feedback: &mut bool,
     agents_badge: AgentBadge,
     agents_active: bool,
+    done_agents: &[DoneAgentRow],
     sidebar: &mut SidebarAction,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
@@ -777,6 +780,7 @@ pub fn root_layout(
                 active_repo,
                 agents_badge,
                 agents_active,
+                done_agents,
                 keymap,
                 sidebar,
             );

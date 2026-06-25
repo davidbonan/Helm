@@ -457,6 +457,7 @@ fn render_hero(out: &str) {
                 &mut open_feedback,
                 AgentBadge::None,
                 false,
+                &[],
                 &mut sidebar,
                 248.0,
                 300.0,
@@ -669,6 +670,7 @@ fn app_shell(
         &mut open_feedback,
         AgentBadge::None,
         false,
+        &[],
         &mut sidebar,
         248.0,
         300.0,
@@ -1401,6 +1403,7 @@ fn gen_agents() {
                         Some(0),
                         AgentBadge::None,
                         false,
+                        &[],
                         &keymap,
                         &mut sidebar,
                     );

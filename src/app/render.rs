@@ -640,6 +640,21 @@ impl HelmApp {
         let mut toggle_preferences_request = false;
         let agents_badge =
             crate::agent_watch::aggregate(self.caches.agents.iter().map(|e| e.badge));
+        // Done-state agents shown as indented child rows under the Agents entry
+        // (specs/agents.md §5): `index` is the position in `caches.agents` consumed by
+        // `focus_agent` when a row is clicked.
+        let done_agents: Vec<crate::ui::repo_sidebar::DoneAgentRow> = self
+            .caches
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.badge == crate::agent_watch::AgentBadge::Done)
+            .map(|(index, e)| crate::ui::repo_sidebar::DoneAgentRow {
+                index,
+                branch: e.branch.clone(),
+                tab: e.tab_name.clone(),
+            })
+            .collect();
         // Dashboard rows borrow `self.caches.agents` (disjoint from `panes`, mutably
         // borrowed in the central closure), so they're built up-front — but only when
         // the dashboard is on screen, to skip the per-frame allocation otherwise.
@@ -841,6 +856,7 @@ impl HelmApp {
                     &mut open_feedback_request,
                     agents_badge,
                     agents_active,
+                    &done_agents,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1710,6 +1726,7 @@ impl HelmApp {
                     &mut open_feedback_request,
                     agents_badge,
                     agents_active,
+                    &done_agents,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1934,6 +1951,11 @@ impl HelmApp {
         if sidebar.open_agents {
             self.central_mode = CentralMode::Agents;
             ctx.request_repaint();
+        }
+        // A Done child row under the Agents entry was clicked: jump to that pane (the
+        // focus then acknowledges its green, clearing the row).
+        if let Some(index) = sidebar.focus_agent {
+            self.focus_agent(index, ctx);
         }
         if let Some(index) = agents_select {
             if let Some(entry) = self.caches.agents.get(index) {

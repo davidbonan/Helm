@@ -12,7 +12,8 @@ use helm::theme::palette;
 use helm::ui::repo_sidebar::{
     create_worktree_modal, delete_worktree_modal, repo_sidebar, CreateSelection,
     CreateWorktreeModalAction, CreateWorktreePrompt, CreateWorktreeState, DeleteModalAction,
-    DeletePrompt, ProjectHeader, ProjectVisibility, RepoRow, SidebarAction, SidebarItem,
+    DeletePrompt, DoneAgentRow, ProjectHeader, ProjectVisibility, RepoRow, SidebarAction,
+    SidebarItem,
 };
 
 /// Two standalone projects (alpha present, beta missing): each contributes a
@@ -118,6 +119,7 @@ fn grouped_harness() -> Harness<'static, SidebarAction> {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -214,6 +216,7 @@ fn harness_with_agents(
                 active,
                 AgentBadge::None,
                 agents_active,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -290,6 +293,71 @@ fn agents_dashboard_clears_the_active_repo_highlight() {
         ),
         "Some(False)",
         "the active repo row must not stay highlighted under the Agents dashboard"
+    );
+}
+
+fn done_agents_harness(rows: Vec<DoneAgentRow>) -> Harness<'static, SidebarAction> {
+    Harness::new_ui_state(
+        move |ui, state| {
+            let palette = palette(Theme::Light);
+            let (items, child_flags) = grouped_items();
+            repo_sidebar(
+                ui,
+                &palette,
+                &items,
+                &child_flags,
+                &[],
+                Some(0),
+                AgentBadge::None,
+                false,
+                &rows,
+                &Keymap::default(),
+                state,
+            );
+        },
+        SidebarAction::default(),
+    )
+}
+
+#[test]
+fn done_agents_listed_under_the_agents_entry_and_clickable() {
+    let rows = vec![
+        DoneAgentRow {
+            index: 3,
+            branch: Some("feat/login".to_owned()),
+            tab: "claude".to_owned(),
+        },
+        DoneAgentRow {
+            index: 7,
+            branch: None,
+            tab: "shell".to_owned(),
+        },
+    ];
+    let mut harness = done_agents_harness(rows);
+    harness.run();
+
+    // A branch carries `branch · tab`; a detached pane falls back to the tab name.
+    harness.get_by_label("feat/login · claude");
+    harness.get_by_label("shell");
+
+    harness.get_by_label("feat/login · claude").click();
+    harness.run();
+    assert_eq!(
+        harness.state().focus_agent,
+        Some(3),
+        "clicking a Done child row focuses that agent's pane index in caches.agents"
+    );
+}
+
+#[test]
+fn no_done_child_rows_when_the_list_is_empty() {
+    let mut harness = done_agents_harness(vec![]);
+    harness.run();
+
+    harness.get_by_label("Agents");
+    assert!(
+        harness.query_by_label("feat/login · claude").is_none(),
+        "no child rows render when no agent is in the Done state"
     );
 }
 
@@ -456,6 +524,7 @@ fn a_linked_worktree_row_stacks_its_folder_name_over_its_branch() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -521,6 +590,7 @@ fn a_collapsed_group_hides_its_rows_and_renumbers_shortcuts() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -797,6 +867,7 @@ fn header_context_menu_offers_reveal_copy_and_remove() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -890,6 +961,7 @@ fn a_deleting_row_is_inert_clicks_and_menu_ignored() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -1030,6 +1102,7 @@ fn bare_root_row_is_not_selectable_but_its_children_are() {
                 Some(1),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -1115,6 +1188,7 @@ fn agent_badges_expose_their_state_through_the_row_label() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -1148,6 +1222,7 @@ fn empty_sidebar_open_prompt_is_clickable() {
                 None,
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -1216,6 +1291,7 @@ fn eye_dropdown_lists_every_project_and_toggles_hidden() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
@@ -1280,6 +1356,7 @@ fn header_context_menu_offers_hide_project() {
                 Some(0),
                 AgentBadge::None,
                 false,
+                &[],
                 &Keymap::default(),
                 state,
             );
