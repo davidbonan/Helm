@@ -363,6 +363,8 @@ impl HelmApp {
         self.drain_worktree_checkout(ctx);
         self.drain_worktree_delete(ctx);
         self.poll_pr_runner();
+        self.poll_pr_review(ctx);
+        self.poll_pr_post(ctx);
         self.git_panel_state.ai_busy = self.git.as_ref().is_some_and(|g| g.ai.busy());
         self.git_panel_state.commit_busy = self
             .git
@@ -767,10 +769,19 @@ impl HelmApp {
         };
         let pr_selected = self.pr_selected;
         let pr_detail_width = self.pr_detail_width;
+        // Taken out for the frame so the review surface can borrow its diff state
+        // `&mut` inside the central closure; restored before actions are applied.
+        let mut pr_review_local = self.pr_review.take();
         let mut pr_select = None;
         let mut pr_open_url: Option<String> = None;
         let mut pr_checkout: Option<usize> = None;
         let mut pr_set_detail_width = None;
+        let mut pr_back = false;
+        let mut pr_select_file: Option<usize> = None;
+        let mut pr_ask_claude = false;
+        let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
+        let mut pr_submit_review = false;
+        let pr_agent = self.review_agent_command.clone();
 
         // A stale active index makes these accessors return None; degrade to the
         // empty state below instead of panicking mid-frame (M17-4).
@@ -835,6 +846,8 @@ impl HelmApp {
                 // and applied after the layout closure.
                 let empty_comments = crate::review::FileComments::new();
                 let review_comments = self.review.get(&run_key).unwrap_or(&empty_comments);
+                // Working-tree / commit diffs carry no posted PR threads.
+                let no_threads = crate::review::ForgeThreads::new();
                 let review_agent = self.review_agent_command.clone();
                 let pane_ids = layout.pane_ids();
                 // In Agents mode the per-repo terminal tree isn't rendered (the
@@ -1043,6 +1056,7 @@ impl HelmApp {
                                 &mut diff_intents,
                                 Some(&mut crate::ui::diff_view::DiffReview {
                                     comments: review_comments,
+                                    existing: &no_threads,
                                     agent: &review_agent,
                                     intents: &mut review_intents,
                                 }),
@@ -1052,18 +1066,46 @@ impl HelmApp {
                         // the term/graph switch is suppressed; its two-pane body is
                         // drawn by `pull_requests_view`.
                         else if central_mode == CentralMode::PullRequests {
+                            let mut review_view = pr_review_local.as_mut().map(|r| {
+                                crate::ui::pull_requests_view::PrReviewView {
+                                    index: r.index,
+                                    pr: &r.pr,
+                                    detail: r.detail.as_ref(),
+                                    detail_error: r.detail_error.as_deref(),
+                                    files: &r.files,
+                                    files_loading: r.files_loading,
+                                    files_error: r.files_error.as_deref(),
+                                    selected_file: r.selected_file,
+                                    diff: r.diff.as_ref(),
+                                    diff_loading: r.diff_loading,
+                                    diff_error: r.diff_error.as_deref(),
+                                    diff_view: &mut r.diff_view,
+                                    existing: &r.existing,
+                                    draft: &r.draft,
+                                    agent: &pr_agent,
+                                    verdict: &mut r.verdict,
+                                    summary: &mut r.summary,
+                                    posting: r.posting,
+                                    post_error: r.post_error.as_deref(),
+                                }
+                            });
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
                                 &palette,
                                 &pr_list,
                                 pr_selected,
-                                None,
+                                review_view.as_mut(),
                                 pr_detail_width,
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
                             pr_checkout = action.checkout;
                             pr_set_detail_width = action.set_detail_width;
+                            pr_back = pr_back || action.back;
+                            pr_select_file = pr_select_file.or(action.select_file);
+                            pr_ask_claude = pr_ask_claude || action.ask_claude;
+                            pr_review_intents = action.review_intents;
+                            pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -1141,6 +1183,7 @@ impl HelmApp {
                                             &mut diff_intents,
                                             Some(&mut crate::ui::diff_view::DiffReview {
                                                 comments: review_comments,
+                                                existing: &no_threads,
                                                 agent: &review_agent,
                                                 intents: &mut review_intents,
                                             }),
@@ -1867,18 +1910,46 @@ impl HelmApp {
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
                         } else if pr_active {
+                            let mut review_view = pr_review_local.as_mut().map(|r| {
+                                crate::ui::pull_requests_view::PrReviewView {
+                                    index: r.index,
+                                    pr: &r.pr,
+                                    detail: r.detail.as_ref(),
+                                    detail_error: r.detail_error.as_deref(),
+                                    files: &r.files,
+                                    files_loading: r.files_loading,
+                                    files_error: r.files_error.as_deref(),
+                                    selected_file: r.selected_file,
+                                    diff: r.diff.as_ref(),
+                                    diff_loading: r.diff_loading,
+                                    diff_error: r.diff_error.as_deref(),
+                                    diff_view: &mut r.diff_view,
+                                    existing: &r.existing,
+                                    draft: &r.draft,
+                                    agent: &pr_agent,
+                                    verdict: &mut r.verdict,
+                                    summary: &mut r.summary,
+                                    posting: r.posting,
+                                    post_error: r.post_error.as_deref(),
+                                }
+                            });
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
                                 &palette,
                                 &pr_list,
                                 pr_selected,
-                                None,
+                                review_view.as_mut(),
                                 pr_detail_width,
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
                             pr_checkout = action.checkout;
                             pr_set_detail_width = action.set_detail_width;
+                            pr_back = pr_back || action.back;
+                            pr_select_file = pr_select_file.or(action.select_file);
+                            pr_ask_claude = pr_ask_claude || action.ask_claude;
+                            pr_review_intents = action.review_intents;
+                            pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             open_dialog_requested = central_empty_state(ui, &palette, keymap);
@@ -2103,8 +2174,26 @@ impl HelmApp {
                 ..prefs
             });
         }
+        // Restore the review surface (taken out for the frame) before the actions
+        // that open / close / mutate it run.
+        self.pr_review = pr_review_local;
+        if !pr_review_intents.is_empty() {
+            self.apply_pr_review_intents(pr_review_intents, ctx);
+        }
+        if pr_back {
+            self.pr_review = None;
+        }
         if let Some(index) = pr_select {
-            self.pr_selected = Some(index);
+            self.open_pr_review(index, ctx);
+        }
+        if let Some(idx) = pr_select_file {
+            self.select_pr_file(idx, ctx);
+        }
+        if pr_ask_claude {
+            self.ask_claude_on_pr(ctx);
+        }
+        if pr_submit_review {
+            self.submit_pr_review(ctx);
         }
         if let Some(pr) = pr_checkout.and_then(|index| pr_list.get(index).cloned()) {
             self.request_pr_checkout(&pr, ctx);

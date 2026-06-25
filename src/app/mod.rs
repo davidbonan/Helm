@@ -107,6 +107,44 @@ pub enum CentralMode {
     PullRequests,
 }
 
+/// Open PR review surface state (pull-requests.md §11): the PR being reviewed, the
+/// workspace repo its diff is fetched into, and the lazily-loaded forge detail +
+/// git diff (each with its own loading/error slot). Adopted replies are matched on
+/// `key` so a stale fetch for a closed surface is dropped.
+struct PrReview {
+    key: crate::pull_requests::runner::PrReviewKey,
+    /// Index of the PR in `pr_cache.pull_requests` when opened (echoed to Checkout).
+    index: usize,
+    pr: crate::pull_requests::model::PullRequest,
+    /// Local repo the PR refs are fetched into for the read-only diff.
+    root: PathBuf,
+    detail: Option<crate::pull_requests::model::PrDetail>,
+    detail_error: Option<String>,
+    files: Vec<crate::git::commit_detail::CommitFile>,
+    base: Option<git2::Oid>,
+    head: Option<git2::Oid>,
+    files_loading: bool,
+    files_error: Option<String>,
+    selected_file: Option<usize>,
+    diff: Option<crate::git::diff::FileDiff>,
+    /// Path the loaded `diff` belongs to (guards adoption against a stale reply).
+    diff_path: Option<String>,
+    diff_loading: bool,
+    diff_error: Option<String>,
+    diff_view: crate::ui::diff_view::DiffViewState,
+    /// Inline comments already posted on the PR, grouped per file/line (read-only),
+    /// rebuilt from `detail.comments` when the detail lands.
+    existing: crate::review::ForgeThreads,
+    /// The user's in-progress draft notes for this PR (posted on submit — §11).
+    draft: crate::review::FileComments,
+    /// Composer state for the review submission (pull-requests.md §11): the chosen
+    /// verdict and the overall summary, plus the in-flight / error feedback.
+    verdict: crate::pull_requests::model::ReviewVerdict,
+    summary: String,
+    posting: bool,
+    post_error: Option<String>,
+}
+
 /// Target of a pending Delete worktree: what's needed to re-run with force after the
 /// dirty modal (the libgit2 name is re-resolved by path in the thread).
 struct PendingDelete {
@@ -406,11 +444,21 @@ pub struct HelmApp {
     /// Last PR fetch result shown in the cockpit, refreshed in place each reply.
     pr_cache: crate::pull_requests::runner::PrCache,
     last_pr_poll: f64,
-    /// Selected PR row in the cockpit, indexing `pr_cache.pull_requests`; drives
-    /// the detail panel. Session-only, like the cache itself.
+    /// Selected PR row in the cockpit, indexing `pr_cache.pull_requests`. Drives
+    /// the list highlight; the open review surface (if any) is `pr_review`.
+    /// Session-only, like the cache itself.
     pr_selected: Option<usize>,
-    /// Width of the cockpit's detail panel (pull-requests.md §5); live source for
-    /// rendering, mirrored into `Prefs` on drag (persisted).
+    /// Open PR review surface (pull-requests.md §11): the PR being reviewed plus
+    /// its lazily-fetched detail/diff. `None` ⇒ the cockpit shows the browse list.
+    pr_review: Option<PrReview>,
+    /// Off-thread review fetch (changed files + per-file diffs, §5).
+    pr_review_runner: Option<crate::pull_requests::runner::PrReviewRunner>,
+    /// Off-thread per-PR detail fetch (body / comments / checks, §5).
+    pr_detail_runner: Option<crate::pull_requests::runner::PrDetailRunner>,
+    /// Off-thread review submission (verdict + draft line comments, §11).
+    pr_post_runner: Option<crate::pull_requests::runner::PrPostRunner>,
+    /// Width of the review surface's changed-files rail (pull-requests.md §11);
+    /// live source for rendering, mirrored into `Prefs` on drag (persisted).
     pr_detail_width: f32,
     /// Bitbucket account email bound to the Preferences field (pull-requests.md
     /// §3): live mirror of `prefs.bitbucket_email`, persisted on edit.
@@ -565,6 +613,10 @@ impl HelmApp {
             pr_cache: crate::pull_requests::runner::PrCache::default(),
             last_pr_poll: 0.0,
             pr_selected: None,
+            pr_review: None,
+            pr_review_runner: None,
+            pr_detail_runner: None,
+            pr_post_runner: None,
             pr_detail_width: prefs.pr_detail_width,
             bitbucket_email: prefs.bitbucket_email.clone(),
             bitbucket_token_input: String::new(),
@@ -1229,6 +1281,9 @@ impl HelmApp {
                 }
             }
             ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
+            // No forge threads exist in the working-tree / commit review; this is
+            // only raised on the PR surface (handled by `apply_pr_review_intents`).
+            ReviewIntent::AskAgentOnThread { .. } => {}
         }
     }
 
@@ -1409,6 +1464,463 @@ impl HelmApp {
         })
     }
 
+    /// Workspace repo whose `origin` matches the PR's forge/repo (the local clone
+    /// its refs are fetched into), or `None` if none is open.
+    fn pr_repo_root(&self, pr: &crate::pull_requests::model::PullRequest) -> Option<PathBuf> {
+        use crate::pull_requests::runner::{forge_kind_of_root, match_pr_root};
+        let roots: Vec<(PathBuf, crate::pull_requests::model::ForgeKind, String)> = self
+            .workspace_project_roots()
+            .into_iter()
+            .filter_map(|root| forge_kind_of_root(&root).map(|(kind, label)| (root, kind, label)))
+            .collect();
+        match_pr_root(&roots, pr.forge_kind, &pr.repo_label)
+    }
+
+    /// `(index, project_root, branch_label)` for every workspace repo — the input
+    /// `matching_worktree` scans for a row already on a PR's source branch.
+    fn workspace_branch_rows(&self) -> Vec<(usize, PathBuf, String)> {
+        (0..self.workspace.len())
+            .filter_map(|index| {
+                let project = self.project_root_for_index(index)?;
+                let key = RepoKey::of(&self.workspace.repo(index)?.path);
+                let branch = self.caches.branch_labels.get(&key)?.clone();
+                Some((index, project, branch))
+            })
+            .collect()
+    }
+
+    fn pr_review_runner(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> &mut crate::pull_requests::runner::PrReviewRunner {
+        self.pr_review_runner.get_or_insert_with(|| {
+            crate::pull_requests::runner::PrReviewRunner::new(repainter(ctx))
+        })
+    }
+
+    fn pr_detail_runner(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> &mut crate::pull_requests::runner::PrDetailRunner {
+        self.pr_detail_runner.get_or_insert_with(|| {
+            crate::pull_requests::runner::PrDetailRunner::new(repainter(ctx))
+        })
+    }
+
+    fn pr_post_runner(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> &mut crate::pull_requests::runner::PrPostRunner {
+        self.pr_post_runner
+            .get_or_insert_with(|| crate::pull_requests::runner::PrPostRunner::new(repainter(ctx)))
+    }
+
+    /// Open the review surface for the PR at `index` (pull-requests.md §11): resolve
+    /// the local repo, then fire the off-thread detail (forge) and changed-files
+    /// (git) fetches. No-op with a toast when no workspace repo matches the PR.
+    fn open_pr_review(&mut self, index: usize, ctx: &egui::Context) {
+        let Some(pr) = self.pr_cache.pull_requests.get(index).cloned() else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let Some(root) = self.pr_repo_root(&pr) else {
+            self.toasts
+                .error("No workspace repo matches this pull request", now);
+            return;
+        };
+        let key = crate::pull_requests::runner::PrReviewKey {
+            forge_kind: pr.forge_kind,
+            repo_label: pr.repo_label.clone(),
+            number: pr.number,
+        };
+        self.pr_selected = Some(index);
+        self.pr_review = Some(PrReview {
+            key: key.clone(),
+            index,
+            pr: pr.clone(),
+            root: root.clone(),
+            detail: None,
+            detail_error: None,
+            files: Vec::new(),
+            base: None,
+            head: None,
+            files_loading: true,
+            files_error: None,
+            selected_file: None,
+            diff: None,
+            diff_path: None,
+            diff_loading: false,
+            diff_error: None,
+            diff_view: crate::ui::diff_view::DiffViewState::default(),
+            existing: crate::review::ForgeThreads::new(),
+            draft: crate::review::FileComments::new(),
+            verdict: crate::pull_requests::model::ReviewVerdict::default(),
+            summary: String::new(),
+            posting: false,
+            post_error: None,
+        });
+
+        let bitbucket_email = self.prefs.bitbucket_email.clone();
+        self.pr_detail_runner(ctx)
+            .request(crate::pull_requests::runner::PrDetailRequest {
+                key: key.clone(),
+                forge_kind: pr.forge_kind,
+                repo_label: pr.repo_label.clone(),
+                number: pr.number,
+                bitbucket_email,
+            });
+        self.pr_review_runner(ctx)
+            .request(crate::pull_requests::runner::PrReviewRequest::Files(
+                crate::pull_requests::runner::PrFilesRequest {
+                    key,
+                    root,
+                    forge_kind: pr.forge_kind,
+                    number: pr.number,
+                    source_branch: pr.source_branch.clone(),
+                    dest_branch: pr.dest_branch.clone(),
+                },
+            ));
+    }
+
+    /// Select a changed file in the open review and clear the stale diff so the
+    /// loader shows; `ensure_selected_diff` then fetches it.
+    fn select_pr_file(&mut self, idx: usize, ctx: &egui::Context) {
+        if let Some(review) = self.pr_review.as_mut() {
+            if review.selected_file != Some(idx) {
+                review.selected_file = Some(idx);
+                review.diff = None;
+                review.diff_error = None;
+            }
+        }
+        self.ensure_selected_diff(ctx);
+    }
+
+    /// Request the selected file's diff if it isn't loaded/in flight yet. Drives the
+    /// initial auto-selected file and every later selection; idempotent per frame.
+    fn ensure_selected_diff(&mut self, ctx: &egui::Context) {
+        let Some(review) = self.pr_review.as_ref() else {
+            return;
+        };
+        let (Some(base), Some(head)) = (review.base, review.head) else {
+            return;
+        };
+        let Some(path) = review
+            .selected_file
+            .and_then(|i| review.files.get(i))
+            .map(|f| f.path.clone())
+        else {
+            return;
+        };
+        if review.diff_loading || review.diff_path.as_deref() == Some(path.as_str()) {
+            return;
+        }
+        let key = review.key.clone();
+        let root = review.root.clone();
+        if let Some(review) = self.pr_review.as_mut() {
+            review.diff_loading = true;
+        }
+        self.pr_review_runner(ctx).request(
+            crate::pull_requests::runner::PrReviewRequest::FileDiff {
+                key,
+                root,
+                base,
+                head,
+                path,
+            },
+        );
+    }
+
+    /// Drain the detail and review runners into the open surface, adopting only
+    /// replies whose `key` (and, for a diff, path) still matches the selection.
+    fn poll_pr_review(&mut self, ctx: &egui::Context) {
+        use crate::pull_requests::runner::PrReviewReply;
+        let mut details = Vec::new();
+        if let Some(runner) = self.pr_detail_runner.as_ref() {
+            while let Some(reply) = runner.try_recv() {
+                details.push(reply);
+            }
+        }
+        for reply in details {
+            if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == reply.key) {
+                match reply.result {
+                    Ok(detail) => {
+                        review.existing =
+                            crate::pull_requests::model::forge_threads(&detail.comments);
+                        review.detail = Some(detail);
+                        review.detail_error = None;
+                    }
+                    Err(message) => review.detail_error = Some(message),
+                }
+            }
+        }
+
+        let mut replies = Vec::new();
+        if let Some(runner) = self.pr_review_runner.as_ref() {
+            while let Some(reply) = runner.try_recv() {
+                replies.push(reply);
+            }
+        }
+        for reply in replies {
+            match reply {
+                PrReviewReply::Files { key, result } => {
+                    if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == key) {
+                        review.files_loading = false;
+                        match result {
+                            Ok(loaded) => {
+                                review.base = Some(loaded.base);
+                                review.head = Some(loaded.head);
+                                review.files = loaded.files;
+                                review.files_error = None;
+                                if review.selected_file.is_none() && !review.files.is_empty() {
+                                    review.selected_file = Some(0);
+                                }
+                            }
+                            Err(message) => review.files_error = Some(message),
+                        }
+                    }
+                }
+                PrReviewReply::FileDiff { key, path, result } => {
+                    if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == key) {
+                        // The in-flight request is done regardless; adopt the diff
+                        // only if this is still the selected file.
+                        review.diff_loading = false;
+                        let still_selected = review
+                            .selected_file
+                            .and_then(|i| review.files.get(i))
+                            .map(|f| f.path.as_str())
+                            == Some(path.as_str());
+                        if still_selected {
+                            review.diff_path = Some(path);
+                            match result {
+                                Ok(diff) => {
+                                    review.diff = Some(diff);
+                                    review.diff_error = None;
+                                }
+                                Err(message) => {
+                                    review.diff = None;
+                                    review.diff_error = Some(message);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.ensure_selected_diff(ctx);
+    }
+
+    /// Submit the open PR's review (pull-requests.md §11): flatten the draft line
+    /// comments and fire the off-thread post with the verdict + summary. A wholly
+    /// empty review (no comments, no summary, plain Comment verdict) is a no-op.
+    fn submit_pr_review(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let Some(review) = self.pr_review.as_ref() else {
+            return;
+        };
+        if review.posting {
+            return;
+        }
+        let comments = crate::pull_requests::model::draft_comments(&review.draft);
+        let summary = review.summary.trim().to_owned();
+        let verdict = review.verdict;
+        if comments.is_empty()
+            && summary.is_empty()
+            && verdict == crate::pull_requests::model::ReviewVerdict::Comment
+        {
+            self.toasts
+                .error("Add a comment or pick a verdict before submitting", now);
+            return;
+        }
+        let request = crate::pull_requests::runner::PrPostRequest {
+            key: review.key.clone(),
+            forge_kind: review.pr.forge_kind,
+            repo_label: review.pr.repo_label.clone(),
+            number: review.pr.number,
+            bitbucket_email: self.prefs.bitbucket_email.clone(),
+            verdict,
+            summary,
+            comments,
+        };
+        if let Some(review) = self.pr_review.as_mut() {
+            review.posting = true;
+            review.post_error = None;
+        }
+        self.pr_post_runner(ctx).request(request);
+    }
+
+    /// Drain the post runner: on success clear the draft + composer and re-fetch the
+    /// detail so the new comments appear inline; on failure surface the error.
+    fn poll_pr_post(&mut self, ctx: &egui::Context) {
+        let mut replies = Vec::new();
+        if let Some(runner) = self.pr_post_runner.as_ref() {
+            while let Some(reply) = runner.try_recv() {
+                replies.push(reply);
+            }
+        }
+        let now = ctx.input(|i| i.time);
+        for reply in replies {
+            if self.pr_review.as_ref().map(|r| &r.key) != Some(&reply.key) {
+                continue;
+            }
+            match reply.result {
+                Ok(()) => {
+                    if let Some(review) = self.pr_review.as_mut() {
+                        review.posting = false;
+                        review.post_error = None;
+                        review.draft.clear();
+                        review.summary.clear();
+                        review.verdict = crate::pull_requests::model::ReviewVerdict::default();
+                    }
+                    self.toasts.success("Review submitted", now);
+                    self.refresh_pr_detail(ctx);
+                }
+                Err(message) => {
+                    if let Some(review) = self.pr_review.as_mut() {
+                        review.posting = false;
+                        review.post_error = Some(message.clone());
+                    }
+                    self.toasts.error(message, now);
+                }
+            }
+        }
+    }
+
+    /// Re-fetch the open PR's detail (after a successful submit) so freshly-posted
+    /// comments reappear inline once the forge serves them.
+    fn refresh_pr_detail(&mut self, ctx: &egui::Context) {
+        let Some((key, pr)) = self
+            .pr_review
+            .as_ref()
+            .map(|r| (r.key.clone(), r.pr.clone()))
+        else {
+            return;
+        };
+        let bitbucket_email = self.prefs.bitbucket_email.clone();
+        self.pr_detail_runner(ctx)
+            .request(crate::pull_requests::runner::PrDetailRequest {
+                key,
+                forge_kind: pr.forge_kind,
+                repo_label: pr.repo_label,
+                number: pr.number,
+                bitbucket_email,
+            });
+    }
+
+    /// Apply the draft-review actions the embedded diff raised: save / delete a
+    /// line note in the PR's draft store, or send the draft to the agent (§11).
+    fn apply_pr_review_intents(
+        &mut self,
+        intents: Vec<crate::review::ReviewIntent>,
+        ctx: &egui::Context,
+    ) {
+        use crate::review::ReviewIntent;
+        let mut send_to_agent = false;
+        let mut ask_thread: Option<(String, u32)> = None;
+        for intent in intents {
+            match intent {
+                ReviewIntent::SaveComment { file, comment } => {
+                    if let Some(review) = self.pr_review.as_mut() {
+                        crate::review::add_comment(&mut review.draft, &file, comment);
+                    }
+                }
+                ReviewIntent::DeleteComment { file, line } => {
+                    if let Some(review) = self.pr_review.as_mut() {
+                        crate::review::delete_comment(&mut review.draft, &file, line);
+                    }
+                }
+                ReviewIntent::SendToAgent => send_to_agent = true,
+                ReviewIntent::AskAgentOnThread { file, line } => ask_thread = Some((file, line)),
+            }
+        }
+        if let Some((file, line)) = ask_thread {
+            self.ask_claude_on_thread(&file, line, ctx);
+        } else if send_to_agent {
+            self.ask_claude_on_pr(ctx);
+        }
+    }
+
+    /// Launch the review agent on the whole PR (pull-requests.md §11): the generic
+    /// "review this branch" prompt, plus the user's draft line notes when present.
+    fn ask_claude_on_pr(&mut self, ctx: &egui::Context) {
+        let Some((pr, draft_notes)) = self.pr_review.as_ref().map(|r| {
+            let notes = (crate::review::count(&r.draft) > 0)
+                .then(|| crate::review::build_review_prompt(&r.draft));
+            (r.pr.clone(), notes)
+        }) else {
+            return;
+        };
+        let prompt = match draft_notes {
+            Some(notes) => format!("{}\n\n{notes}", pr_review_prompt(&pr)),
+            None => pr_review_prompt(&pr),
+        };
+        self.launch_pr_agent(&pr, prompt, ctx);
+    }
+
+    /// Launch the review agent on one existing PR comment thread (pull-requests.md
+    /// §11): the prompt carries the anchor and the posted comments so the agent can
+    /// address the reviewer's feedback directly.
+    fn ask_claude_on_thread(&mut self, file: &str, line: u32, ctx: &egui::Context) {
+        let Some((pr, prompt)) = self.pr_review.as_ref().and_then(|r| {
+            let thread = r.existing.get(file)?.get(&line)?;
+            Some((r.pr.clone(), thread_agent_prompt(file, line, thread)))
+        }) else {
+            return;
+        };
+        self.launch_pr_agent(&pr, prompt, ctx);
+    }
+
+    /// Shared launch path: if a worktree already sits on the PR's source branch,
+    /// open an agent terminal there with `prompt`; otherwise kick the checkout and
+    /// tell the user to retry once it lands.
+    fn launch_pr_agent(
+        &mut self,
+        pr: &crate::pull_requests::model::PullRequest,
+        prompt: String,
+        ctx: &egui::Context,
+    ) {
+        use crate::pull_requests::runner::matching_worktree;
+        let now = ctx.input(|i| i.time);
+        let Some(root) = self.pr_repo_root(pr) else {
+            self.toasts
+                .error("No workspace repo matches this pull request", now);
+            return;
+        };
+        let rows = self.workspace_branch_rows();
+        let Some(index) = matching_worktree(&rows, &root, &pr.source_branch) else {
+            self.request_pr_checkout(pr, ctx);
+            self.toasts.success(
+                "Checking out the PR — click Ask Claude again once it opens",
+                now,
+            );
+            return;
+        };
+        self.workspace.set_active(index);
+        let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+        self.persist(move |_| next);
+        let Some(cwd) = self.workspace.repo(index).map(|r| r.path.clone()) else {
+            return;
+        };
+        let Some(tab) = self.workspace.add_tab() else {
+            return;
+        };
+        let (Some(tab_id), Some(pane_id), Some(key)) = (
+            self.workspace.tab_id(index, tab),
+            self.workspace.active_layout().map(|l| l.focus()),
+            self.caches.keys.get(index).cloned(),
+        ) else {
+            return;
+        };
+        self.workspace.rename_tab(tab, &self.review_agent_command);
+        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, &prompt);
+        self.caches
+            .panes
+            .entry((key, tab_id))
+            .or_default()
+            .insert(pane_id, pane);
+        self.pr_review = None;
+        self.central_mode = CentralMode::Terminal;
+    }
+
     /// Checkout a PR (pull-requests.md §7): activate an existing worktree already
     /// on the source branch, else fetch the branch off-thread then create one.
     fn request_pr_checkout(
@@ -1416,26 +1928,14 @@ impl HelmApp {
         pr: &crate::pull_requests::model::PullRequest,
         ctx: &egui::Context,
     ) {
-        use crate::pull_requests::runner::{forge_kind_of_root, match_pr_root, matching_worktree};
+        use crate::pull_requests::runner::matching_worktree;
         let now = ctx.input(|i| i.time);
-        let roots: Vec<(PathBuf, crate::pull_requests::model::ForgeKind, String)> = self
-            .workspace_project_roots()
-            .into_iter()
-            .filter_map(|root| forge_kind_of_root(&root).map(|(kind, label)| (root, kind, label)))
-            .collect();
-        let Some(root) = match_pr_root(&roots, pr.forge_kind, &pr.repo_label) else {
+        let Some(root) = self.pr_repo_root(pr) else {
             self.toasts
                 .error("No workspace repo matches this pull request", now);
             return;
         };
-        let rows: Vec<(usize, PathBuf, String)> = (0..self.workspace.len())
-            .filter_map(|index| {
-                let project = self.project_root_for_index(index)?;
-                let key = RepoKey::of(&self.workspace.repo(index)?.path);
-                let branch = self.caches.branch_labels.get(&key)?.clone();
-                Some((index, project, branch))
-            })
-            .collect();
+        let rows = self.workspace_branch_rows();
         if let Some(index) = matching_worktree(&rows, &root, &pr.source_branch) {
             self.workspace.set_active(index);
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
@@ -2223,6 +2723,34 @@ fn open_run_terminal(ctx: &egui::Context, cwd: &Path, command: &str) -> Terminal
 /// which the configured CLI invocation is fed. Running the agent as a job of the
 /// shell — not as the pane's root process — keeps the terminal usable after the
 /// agent exits (Ctrl+C returns to the shell prompt instead of a dead pane).
+/// The instruction handed to the agent CLI when reviewing a PR branch
+/// (pull-requests.md §11): the source branch is already checked out in `cwd`.
+fn pr_review_prompt(pr: &crate::pull_requests::model::PullRequest) -> String {
+    format!(
+        "Review the changes on this branch ({src}), which is the pull request \
+         \"{title}\" (#{number}) targeting {dest}. Read the diff against {dest}, \
+         then summarize the key changes and flag any bugs, risks, or improvements.",
+        src = pr.source_branch,
+        title = pr.title,
+        number = pr.number,
+        dest = pr.dest_branch,
+    )
+}
+
+/// The instruction handed to the agent for one PR comment thread (pull-requests.md
+/// §11): the file/line anchor plus the posted comments, so the agent can act on the
+/// reviewer's feedback in the already-checked-out branch.
+fn thread_agent_prompt(file: &str, line: u32, thread: &[crate::review::ThreadComment]) -> String {
+    let mut out = format!(
+        "A reviewer left feedback on `{file}` around line {line}. Make the changes \
+         they ask for and explain what you did. The comments are:\n"
+    );
+    for c in thread {
+        out.push_str(&format!("\n{}: {}", c.author, c.body));
+    }
+    out
+}
+
 fn open_agent_terminal(
     ctx: &egui::Context,
     cwd: &Path,

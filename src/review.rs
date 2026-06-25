@@ -18,6 +18,19 @@ impl LineComment {
 /// and the badge count are deterministic.
 pub type FileComments = BTreeMap<String, Vec<LineComment>>;
 
+/// One read-only comment already posted on a PR thread (pull-requests.md §11):
+/// author + body, anchored elsewhere by `ForgeThreads`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadComment {
+    pub author: String,
+    pub body: String,
+}
+
+/// Existing PR threads of one repo, keyed by file path then anchor line, each a
+/// chronologically-ordered thread. Read-only: the diff view renders these but
+/// never edits them (the editable draft store stays `FileComments`).
+pub type ForgeThreads = BTreeMap<String, BTreeMap<u32, Vec<ThreadComment>>>;
+
 /// Adds `comment` under `file`, replacing in place a comment already anchored at
 /// the same line (one note per line).
 pub fn add_comment(store: &mut FileComments, file: &str, comment: LineComment) {
@@ -48,9 +61,21 @@ pub fn count(store: &FileComments) -> usize {
 /// Review action raised by the diff view, applied by the app (RC5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewIntent {
-    SaveComment { file: String, comment: LineComment },
-    DeleteComment { file: String, line: Option<u32> },
+    SaveComment {
+        file: String,
+        comment: LineComment,
+    },
+    DeleteComment {
+        file: String,
+        line: Option<u32>,
+    },
     SendToAgent,
+    /// Launch the agent to address an existing PR comment thread anchored at
+    /// `file`:`line` (pull-requests.md §11). Only raised on the PR review surface.
+    AskAgentOnThread {
+        file: String,
+        line: u32,
+    },
 }
 
 pub fn build_review_prompt(comments: &FileComments) -> String {

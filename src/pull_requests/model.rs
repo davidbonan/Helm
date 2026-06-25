@@ -90,11 +90,17 @@ pub struct PullRequest {
     pub reviewers: Vec<Reviewer>,
 }
 
-/// A single comment in a PR's read-only thread.
+/// A single comment in a PR's thread. Conversation comments leave `path`/`line`
+/// empty; **inline** review comments anchor to a file line, and `parent_id` links
+/// a reply to the comment it answers (pull-requests.md §11).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrComment {
     pub author: String,
     pub body: String,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub id: Option<u64>,
+    pub parent_id: Option<u64>,
 }
 
 /// A single CI check run shown in the detail panel.
@@ -110,6 +116,65 @@ pub struct PrDetail {
     pub body: String,
     pub comments: Vec<PrComment>,
     pub check_runs: Vec<CheckRun>,
+}
+
+/// The verdict a submitted review carries (pull-requests.md §11). `Comment` posts
+/// the line notes without an approval state; the other two set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewVerdict {
+    #[default]
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+/// One drafted line comment ready to post: file path, new-side line, and text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftComment {
+    pub path: String,
+    pub line: u32,
+    pub body: String,
+}
+
+/// Flatten the draft store into postable line comments — only notes anchored to a
+/// line with non-blank text. Files stay in path order, comments in stored order.
+pub fn draft_comments(store: &crate::review::FileComments) -> Vec<DraftComment> {
+    let mut out = Vec::new();
+    for (path, comments) in store {
+        for c in comments {
+            if let Some(line) = c.line_ref() {
+                if !c.note.trim().is_empty() {
+                    out.push(DraftComment {
+                        path: path.clone(),
+                        line,
+                        body: c.note.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Group a PR's **inline** comments into the diff overlay's `ForgeThreads`,
+/// keyed by file path then anchor line and kept in source (chronological) order.
+/// Conversation comments (no `path`/`line`) are excluded — they stay in the rail.
+pub fn forge_threads(comments: &[PrComment]) -> crate::review::ForgeThreads {
+    let mut threads = crate::review::ForgeThreads::new();
+    for c in comments {
+        if let (Some(path), Some(line)) = (c.path.as_deref(), c.line) {
+            threads
+                .entry(path.to_owned())
+                .or_default()
+                .entry(line)
+                .or_default()
+                .push(crate::review::ThreadComment {
+                    author: c.author.clone(),
+                    body: c.body.clone(),
+                });
+        }
+    }
+    threads
 }
 
 /// The `(forge, repo, number)` identity a PR is deduped on. Two worktrees of one
@@ -243,6 +308,34 @@ mod tests {
         ]);
         assert_eq!(mine_first.len(), 1);
         assert_eq!(mine_first[0].role, PrRole::Mine);
+    }
+
+    fn comment(author: &str, body: &str, path: Option<&str>, line: Option<u32>) -> PrComment {
+        PrComment {
+            author: author.to_owned(),
+            body: body.to_owned(),
+            path: path.map(str::to_owned),
+            line,
+            id: None,
+            parent_id: None,
+        }
+    }
+
+    #[test]
+    fn forge_threads_groups_inline_by_file_and_line_skipping_conversation() {
+        let comments = vec![
+            comment("alice", "general note", None, None),
+            comment("bob", "nit", Some("a.rs"), Some(3)),
+            comment("carol", "reply", Some("a.rs"), Some(3)),
+            comment("dave", "other file", Some("b.rs"), Some(9)),
+        ];
+        let threads = forge_threads(&comments);
+        assert_eq!(threads.len(), 2, "conversation comment is excluded");
+        let a_line3 = &threads["a.rs"][&3];
+        assert_eq!(a_line3.len(), 2);
+        assert_eq!(a_line3[0].author, "bob");
+        assert_eq!(a_line3[1].body, "reply");
+        assert_eq!(threads["b.rs"][&9][0].author, "dave");
     }
 
     #[test]

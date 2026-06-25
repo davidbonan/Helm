@@ -4,7 +4,7 @@
 //! (the `update.rs` idiom); this module only builds the URLs/header and reads
 //! the replies. Roles are derived from the cached account uuid (§1).
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
     Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
@@ -45,6 +45,33 @@ pub fn pull_request_url(workspace: &str, repo: &str, id: u64) -> String {
 /// A PR's comment thread (read-only in the cockpit).
 pub fn comments_url(workspace: &str, repo: &str, id: u64) -> String {
     format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/comments?pagelen=100")
+}
+
+/// `…/pullrequests/{id}/comments` — the POST target for a new comment (no query,
+/// unlike the read `comments_url`). Used for both summary and inline comments.
+pub fn post_comment_url(workspace: &str, repo: &str, id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/comments")
+}
+
+/// `…/pullrequests/{id}/approve` — POST records the caller's approval (§11).
+pub fn approve_url(workspace: &str, repo: &str, id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/approve")
+}
+
+/// `…/pullrequests/{id}/request-changes` — POST records "changes requested" (§11).
+pub fn request_changes_url(workspace: &str, repo: &str, id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/request-changes")
+}
+
+/// POST body for an inline comment: the text plus a `{path, to}` anchor on the
+/// new side of the diff (matches how `parse_detail` reads `inline.to`).
+pub fn inline_comment_body(path: &str, line: u32, raw: &str) -> String {
+    json!({ "content": { "raw": raw }, "inline": { "path": path, "to": line } }).to_string()
+}
+
+/// POST body for a top-level (summary) comment — text only, no anchor.
+pub fn summary_comment_body(raw: &str) -> String {
+    json!({ "content": { "raw": raw } }).to_string()
 }
 
 /// `Authorization: Basic base64(email:token)` for the `curl` requests (§3).
@@ -104,12 +131,20 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
                 .iter()
                 .filter_map(|c| {
                     let body = c["content"]["raw"].as_str()?.to_owned();
+                    let inline = &c["inline"];
                     Some(PrComment {
                         author: c["user"]["display_name"]
                             .as_str()
                             .unwrap_or_default()
                             .to_owned(),
                         body,
+                        path: inline["path"].as_str().map(str::to_owned),
+                        line: inline["to"]
+                            .as_u64()
+                            .or_else(|| inline["from"].as_u64())
+                            .map(|n| n as u32),
+                        id: c["id"].as_u64(),
+                        parent_id: c["parent"]["id"].as_u64(),
                     })
                 })
                 .collect()
@@ -235,6 +270,35 @@ mod tests {
     }
 
     #[test]
+    fn write_url_builders_target_the_post_endpoints() {
+        assert_eq!(
+            post_comment_url("team", "repo", 101),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests/101/comments"
+        );
+        assert_eq!(
+            approve_url("team", "repo", 101),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests/101/approve"
+        );
+        assert_eq!(
+            request_changes_url("team", "repo", 101),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests/101/request-changes"
+        );
+    }
+
+    #[test]
+    fn comment_bodies_anchor_inline_and_omit_anchor_for_summary() {
+        let inline: Value =
+            serde_json::from_str(&inline_comment_body("src/a.rs", 42, "nit")).unwrap();
+        assert_eq!(inline["content"]["raw"], "nit");
+        assert_eq!(inline["inline"]["path"], "src/a.rs");
+        assert_eq!(inline["inline"]["to"], 42);
+
+        let summary: Value = serde_json::from_str(&summary_comment_body("looks good")).unwrap();
+        assert_eq!(summary["content"]["raw"], "looks good");
+        assert!(summary.get("inline").is_none());
+    }
+
+    #[test]
     fn basic_auth_header_base64_encodes_email_and_token() {
         // base64("user:pass") == "dXNlcjpwYXNz".
         assert_eq!(basic_auth_header("user", "pass"), "Basic dXNlcjpwYXNz");
@@ -294,9 +358,18 @@ mod tests {
     fn parse_detail_reads_description_and_comments_no_checks() {
         let detail = parse_detail(DETAIL, COMMENTS).unwrap();
         assert!(detail.body.starts_with("This adds billing."));
-        assert_eq!(detail.comments.len(), 2);
+        assert_eq!(detail.comments.len(), 3);
         assert_eq!(detail.comments[0].author, "Bob");
         assert_eq!(detail.comments[0].body, "Nice work");
+        // A conversation comment carries no anchor.
+        assert_eq!(detail.comments[0].path, None);
+        assert_eq!(detail.comments[0].line, None);
+        // The inline reply anchors to its file line and links to its parent.
+        let inline = &detail.comments[2];
+        assert_eq!(inline.path.as_deref(), Some("src/billing.rs"));
+        assert_eq!(inline.line, Some(42));
+        assert_eq!(inline.id, Some(3));
+        assert_eq!(inline.parent_id, Some(2));
         assert!(detail.check_runs.is_empty());
     }
 }

@@ -139,7 +139,10 @@ pub fn load_repo(repo: &git2::Repository, oid: git2::Oid) -> Result<CommitDetail
 
 /// Lines (added, removed) of delta `idx` — `from_diff` ⇒ None and a binary stays
 /// at 0/0, same rule as `status::diff_line_stats` (M13-2).
-fn delta_line_stats(diff: &git2::Diff, idx: usize) -> Result<(usize, usize), git2::Error> {
+pub(crate) fn delta_line_stats(
+    diff: &git2::Diff,
+    idx: usize,
+) -> Result<(usize, usize), git2::Error> {
     let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
         return Ok((0, 0));
     };
@@ -150,7 +153,7 @@ fn delta_line_stats(diff: &git2::Diff, idx: usize) -> Result<(usize, usize), git
     Ok((additions, deletions))
 }
 
-fn delta_kind(status: git2::Delta) -> Option<ChangeKind> {
+pub(crate) fn delta_kind(status: git2::Delta) -> Option<ChangeKind> {
     use git2::Delta as D;
     match status {
         D::Added | D::Copied | D::Untracked => Some(ChangeKind::Added),

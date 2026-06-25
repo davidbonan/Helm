@@ -5,7 +5,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
-use helm::review::{FileComments, LineComment, ReviewIntent};
+use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent};
 use helm::theme::Palette;
 use helm::ui::diff_view::{content_x_offset, diff_view, DiffReview, DiffViewState};
 use helm::ui::git_panel::GitIntent;
@@ -865,6 +865,7 @@ fn drive_review(
     let state_in_ui = state.clone();
     let comments = Rc::new(comments);
     let comments_in_ui = comments.clone();
+    let threads_in_ui = ForgeThreads::new();
 
     let mut harness = Harness::new_ui(move |ui| {
         diff_view(
@@ -877,6 +878,7 @@ fn drive_review(
             &mut git.borrow_mut(),
             Some(&mut DiffReview {
                 comments: comments_in_ui.as_ref(),
+                existing: &threads_in_ui,
                 agent: "claude",
                 intents: &mut review_sink.borrow_mut(),
             }),
@@ -911,6 +913,104 @@ fn clicking_the_note_icon_then_validating_emits_save_comment() {
                     && comment.note == "needs rename"
         )),
         "Validate must emit SaveComment for the annotated line, got {intents:?}",
+    );
+}
+
+#[test]
+fn existing_pr_thread_renders_anchored_read_only() {
+    let palette = Palette::light();
+    let diff = review_diff();
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            2u32,
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename work()".into(),
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let mut intents: Vec<ReviewIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            false,
+            true,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents,
+            }),
+        );
+    });
+    harness.run();
+    // The posted comment shows anchored under its line (author + body), read-only.
+    harness.get_by_label("octocat");
+    harness.get_by_label("please rename work()");
+}
+
+#[test]
+fn ask_agent_pill_on_a_thread_emits_the_intent() {
+    let palette = Palette::light();
+    let diff = review_diff();
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            2u32,
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename work()".into(),
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let intents = Rc::new(RefCell::new(Vec::<ReviewIntent>::new()));
+    let intents_in_ui = intents.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            false,
+            true,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents_in_ui.borrow_mut(),
+            }),
+        );
+    });
+    harness.run();
+    harness.get_by_label("Ask claude").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::AskAgentOnThread { file, line }
+                if file == "src/main.rs" && *line == 2
+        )),
+        "the Ask pill must emit AskAgentOnThread anchored at the thread, got {:?}",
+        intents.borrow(),
     );
 }
 

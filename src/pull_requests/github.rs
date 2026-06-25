@@ -7,11 +7,11 @@
 //! because GitHub's `involves` qualifier excludes requested reviewers; roles are
 //! re-derived from the cached login so an overlap collapses through `dedupe`.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
-    CheckRun, Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
-    Reviewer,
+    CheckRun, Checks, DraftComment, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest,
+    Review, ReviewVerdict, Reviewer,
 };
 
 const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup";
@@ -65,6 +65,82 @@ pub fn view_args(repo: &str, number: u64) -> Vec<String> {
     ]
 }
 
+/// `gh api repos/{repo}/pulls/{n}/comments` — the REST **review** (line-level)
+/// comments, which `gh pr view` omits. `--paginate` walks every page.
+pub fn review_comments_args(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "api".into(),
+        format!("repos/{repo}/pulls/{number}/comments"),
+        "--paginate".into(),
+    ]
+}
+
+/// Map the REST `pulls/{n}/comments` array onto inline `PrComment`s. `line` falls
+/// back to `original_line` for comments on an outdated diff; `in_reply_to_id`
+/// becomes `parent_id`.
+pub fn parse_review_comments(json: &str) -> serde_json::Result<Vec<PrComment>> {
+    let value: Value = serde_json::from_str(json)?;
+    let comments = value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|c| PrComment {
+                    author: c["user"]["login"].as_str().unwrap_or_default().to_owned(),
+                    body: c["body"].as_str().unwrap_or_default().to_owned(),
+                    path: c["path"].as_str().map(str::to_owned),
+                    line: c["line"]
+                        .as_u64()
+                        .or_else(|| c["original_line"].as_u64())
+                        .map(|n| n as u32),
+                    id: c["id"].as_u64(),
+                    parent_id: c["in_reply_to_id"].as_u64(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(comments)
+}
+
+/// `gh api repos/{repo}/pulls/{n}/reviews --method POST --input -` — submit a
+/// review in one call (verdict + summary + inline comments); the body is fed on
+/// stdin so paths and text never touch the argv.
+pub fn submit_review_args(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "api".into(),
+        format!("repos/{repo}/pulls/{number}/reviews"),
+        "--method".into(),
+        "POST".into(),
+        "--input".into(),
+        "-".into(),
+    ]
+}
+
+/// JSON body for the reviews endpoint: the `event` for the verdict, an optional
+/// summary `body`, and one `{path, line, body}` per drafted line comment.
+pub fn submit_review_body(
+    verdict: ReviewVerdict,
+    summary: &str,
+    comments: &[DraftComment],
+) -> String {
+    let event = match verdict {
+        ReviewVerdict::Approve => "APPROVE",
+        ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
+        ReviewVerdict::Comment => "COMMENT",
+    };
+    let mut body = json!({ "event": event });
+    if !summary.trim().is_empty() {
+        body["body"] = json!(summary);
+    }
+    if !comments.is_empty() {
+        body["comments"] = json!(comments
+            .iter()
+            .map(|c| json!({ "path": c.path, "line": c.line, "body": c.body }))
+            .collect::<Vec<_>>());
+    }
+    body.to_string()
+}
+
 /// `gh pr checkout <number>` (the plain-checkout path; PR7 prefers a worktree).
 pub fn checkout_args(repo: &str, number: u64) -> Vec<String> {
     vec![
@@ -107,6 +183,10 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
                 .map(|c| PrComment {
                     author: c["author"]["login"].as_str().unwrap_or_default().to_owned(),
                     body: c["body"].as_str().unwrap_or_default().to_owned(),
+                    path: None,
+                    line: None,
+                    id: None,
+                    parent_id: None,
                 })
                 .collect()
         })
@@ -386,6 +466,85 @@ mod tests {
         assert_eq!(detail.check_runs[1].status, Checks::Failing);
         assert_eq!(detail.check_runs[2].name, "ci/circleci: deploy");
         assert_eq!(detail.check_runs[2].status, Checks::Pending);
+    }
+
+    #[test]
+    fn parse_review_comments_reads_inline_anchors_and_replies() {
+        let json = r#"[
+          {"id": 1, "user": {"login": "dave"}, "body": "nit: rename", "path": "src/a.rs", "line": 12},
+          {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}, "body": "done", "path": "src/a.rs", "original_line": 9}
+        ]"#;
+        let comments = parse_review_comments(json).unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].path.as_deref(), Some("src/a.rs"));
+        assert_eq!(comments[0].line, Some(12));
+        assert_eq!(comments[0].id, Some(1));
+        assert_eq!(comments[0].parent_id, None);
+        // line falls back to original_line; the reply links to its parent.
+        assert_eq!(comments[1].line, Some(9));
+        assert_eq!(comments[1].parent_id, Some(1));
+    }
+
+    #[test]
+    fn review_comments_args_target_the_rest_endpoint() {
+        assert_eq!(
+            review_comments_args("acme/web", 42),
+            vec!["api", "repos/acme/web/pulls/42/comments", "--paginate"]
+        );
+    }
+
+    #[test]
+    fn submit_review_args_post_the_reviews_endpoint_via_stdin() {
+        assert_eq!(
+            submit_review_args("acme/web", 42),
+            vec![
+                "api",
+                "repos/acme/web/pulls/42/reviews",
+                "--method",
+                "POST",
+                "--input",
+                "-"
+            ]
+        );
+    }
+
+    #[test]
+    fn submit_review_body_carries_event_summary_and_line_comments() {
+        let comments = vec![
+            DraftComment {
+                path: "src/a.rs".to_owned(),
+                line: 12,
+                body: "rename this".to_owned(),
+            },
+            DraftComment {
+                path: "src/b.rs".to_owned(),
+                line: 3,
+                body: "drop the clone".to_owned(),
+            },
+        ];
+        let body = submit_review_body(
+            ReviewVerdict::RequestChanges,
+            "overall looks close",
+            &comments,
+        );
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["event"], "REQUEST_CHANGES");
+        assert_eq!(parsed["body"], "overall looks close");
+        let arr = parsed["comments"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["path"], "src/a.rs");
+        assert_eq!(arr[0]["line"], 12);
+        assert_eq!(arr[0]["body"], "rename this");
+        assert_eq!(arr[1]["path"], "src/b.rs");
+    }
+
+    #[test]
+    fn submit_review_body_omits_empty_summary_and_comments() {
+        let body = submit_review_body(ReviewVerdict::Approve, "  ", &[]);
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["event"], "APPROVE");
+        assert!(parsed.get("body").is_none());
+        assert!(parsed.get("comments").is_none());
     }
 
     #[test]

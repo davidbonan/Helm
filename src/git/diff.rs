@@ -230,6 +230,88 @@ pub fn commit_file_diff(
     Ok(file)
 }
 
+/// Files changed between two commits (PR review: `merge-base(dest, head)..head`,
+/// pull-requests.md §5) — mirrors `commit_detail::load_repo` but tree-to-tree
+/// with no commit meta, reusing its delta→kind / line-stats mappers.
+pub fn pr_changed_files(
+    repo: &git2::Repository,
+    base: git2::Oid,
+    head: git2::Oid,
+) -> Result<Vec<crate::git::commit_detail::CommitFile>, git2::Error> {
+    use crate::git::commit_detail::{delta_kind, delta_line_stats, CommitFile};
+
+    let base_tree = repo.find_commit(base)?.tree()?;
+    let head_tree = repo.find_commit(head)?.tree()?;
+    let mut opts = git2::DiffOptions::new();
+    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut opts))?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true);
+    diff.find_similar(Some(&mut find))?;
+
+    let mut files = Vec::with_capacity(diff.deltas().len());
+    for (idx, delta) in diff.deltas().enumerate() {
+        let Some(kind) = delta_kind(delta.status()) else {
+            continue;
+        };
+        let path = delta_path(&delta)
+            .and_then(|p| p.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let (additions, deletions) = delta_line_stats(&diff, idx)?;
+        files.push(CommitFile {
+            path,
+            kind,
+            additions,
+            deletions,
+        });
+    }
+    Ok(files)
+}
+
+/// Line-by-line diff of one file between two commits (PR review: `base..head`) —
+/// `pr_changed_files`'s per-file counterpart, mirroring `commit_file_diff` with
+/// the two ends being arbitrary commits rather than a commit and its parent.
+pub fn pr_file_diff(
+    repo: &git2::Repository,
+    base: git2::Oid,
+    head: git2::Oid,
+    path: &str,
+) -> Result<FileDiff, git2::Error> {
+    let base_tree = repo.find_commit(base)?.tree()?;
+    let head_tree = repo.find_commit(head)?.tree()?;
+    let mut opts = git2::DiffOptions::new();
+    opts.show_binary(true);
+    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut opts))?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true);
+    diff.find_similar(Some(&mut find))?;
+
+    let Some(idx) = delta_index(&diff, path) else {
+        return Ok(FileDiff {
+            path: path.to_string(),
+            binary: false,
+            oversize: false,
+            hunks: Vec::new(),
+            source_lines: Vec::new(),
+            image: None,
+        });
+    };
+    let mut file = patch_to_file_diff(&diff, idx, path)?;
+    if file.binary {
+        if is_image_path(path) {
+            file.image = tree_blob_bytes(repo, &head_tree, path).and_then(|b| image_blob(path, b));
+        }
+    } else if !file.hunks.is_empty() {
+        file.source_lines = head_tree
+            .get_path(Path::new(path))
+            .ok()
+            .and_then(|entry| repo.find_blob(entry.id()).ok())
+            .map(|blob| source_lines_from(blob.content()))
+            .unwrap_or_default();
+    }
+    Ok(file)
+}
+
 /// Diff of one file of a stash's **untracked commit** (3rd parent) against the
 /// empty tree — all additions, like the untracked working-tree diff. `None`
 /// when the commit is not a stash or the file is not in its untracked tree.

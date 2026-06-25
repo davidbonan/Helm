@@ -6,6 +6,54 @@
 
 ---
 
+## ☑ Milestone — M-PR2 · In-app PR review (diff · line comments · submit · Ask Claude)
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §11. Turns the read-only
+detail panel into a **diff-centric review surface**: PR diff without cloning,
+in-diff line comments, **Submit review** (Comment / Approve / Request changes) on
+GitHub **and** Bitbucket Cloud, and **Ask Claude** on an existing thread. Reuses
+the M-RC review engine (`review.rs`, `ui::diff_view`). Counter: **7/7** — complete,
+pending review + merge of the `m-pr` worktree branch.
+
+- ☑ **T1 — PR diff producer (domain).** `git::diff::pr_changed_files` +
+  `pr_file_diff` over the three-dot `merge-base(base,head)..head` range (I/O-free).
+  *Files*: `src/git/diff.rs`. *Tests*: business e2e on a throwaway repo (delta +
+  three-dot isolation).
+- ☑ **T2 — Wire PR detail fetch.** Base/head resolution in the matched workspace
+  repo; changed-files + per-file diff as gated requests on the detail runner path.
+  *Files*: `src/app/*`, `src/pull_requests/runner.rs`.
+- ☑ **T3 — Detail panel → diff-centric.** Rail of changed files + lazy diff via
+  `ui::diff_view`; header keeps Open / Checkout / Ask Claude. *Files*:
+  `src/ui/pull_requests_view.rs`, `src/app/{mod,render}.rs`.
+- ☑ **T4 — Inline existing comments.** Posted threads overlay the diff anchored at
+  their line, read-only, via `review::ForgeThreads`. *Files*: `src/review.rs`,
+  `src/ui/diff_view.rs`.
+- ☑ **T5 — Draft + post review (write).** Footer composer (verdict + summary +
+  Submit (N)); `model::draft_comments` flattens the draft store; gated
+  `PrPostRunner` posts GitHub `…/reviews` (`gh api --input -`) and Bitbucket inline
+  comments + `approve`/`request-changes` (`curl`, Keychain auth); success resets
+  the draft and refetches. *Files*: `src/pull_requests/{model,github,bitbucket,
+  runner}.rs`, `src/ui/{pull_requests_view,diff_view}.rs`, `src/app/{mod,render}.rs`.
+  *Tests*: builder units + 2 business e2e (GitHub payload, Bitbucket bodies/URLs) +
+  UI e2e (Submit emits the intent).
+- ☑ **T6 — Ask Claude on a thread.** `ReviewIntent::AskAgentOnThread { file, line }`
+  from a per-thread **Ask {agent}** pill; the app builds the prompt from that
+  thread and launches the agent in the PR worktree (shared `launch_pr_agent`).
+  *Files*: `src/review.rs`, `src/ui/diff_view.rs`, `src/app/mod.rs`. *Tests*: UI
+  e2e (pill emits the anchored intent).
+- ☑ **T7 — Spec + STATE + verify.** `specs/pull-requests.md` §11 (+ §4/§5/§9/§10
+  reconciled); this block; full `cargo fmt` + `clippy --all-targets -D warnings` +
+  `cargo test` green.
+
+### Next actions (M-PR2)
+- **Review then merge** the `m-pr` worktree branch into `main` (the milestone loop
+  does not merge/push — user's call).
+
+### Blockers / Open questions (M-PR2)
+- none
+
+---
+
 ## ☑ Milestone — M-PR · Pull Requests cockpit
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing

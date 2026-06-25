@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::git::diff::{FileDiff, Hunk, ImageBlob, LineOrigin};
-use crate::review::{count, FileComments, LineComment, ReviewIntent};
+use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
 use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
@@ -497,6 +497,10 @@ fn char_byte_index(text: &str, char_idx: usize) -> usize {
 /// raises. When `None` the diff view is a plain viewer (no review chrome).
 pub struct DiffReview<'a> {
     pub comments: &'a FileComments,
+    /// Read-only comments already posted on the PR, anchored per line. Empty for
+    /// the working-tree / commit diffs; populated only on the PR review surface
+    /// (pull-requests.md §11). Rendered below the line, never editable.
+    pub existing: &'a ForgeThreads,
     pub agent: &'a str,
     pub intents: &'a mut Vec<ReviewIntent>,
 }
@@ -522,10 +526,15 @@ pub fn diff_view(
     review: Option<&mut DiffReview<'_>>,
 ) -> bool {
     let empty = FileComments::new();
+    let empty_threads = ForgeThreads::new();
     let review_available = review.is_some();
     let review_comments: &FileComments = match &review {
         Some(r) => r.comments,
         None => &empty,
+    };
+    let review_existing: &ForgeThreads = match &review {
+        Some(r) => r.existing,
+        None => &empty_threads,
     };
     let review_agent = review.as_ref().map(|r| r.agent).unwrap_or_default();
     let mut review_out: Vec<ReviewIntent> = Vec::new();
@@ -746,6 +755,16 @@ pub fn diff_view(
                         } else {
                             apply_line_action(state, intents, action);
                         }
+                        existing_block(
+                            ui,
+                            palette,
+                            &diff.path,
+                            line.new_lineno.or(line.old_lineno),
+                            review_existing,
+                            review_agent,
+                            &mut review_out,
+                            layout.content_left(0.0),
+                        );
                         comment_block(
                             ui,
                             palette,
@@ -1002,6 +1021,75 @@ fn comment_block(
     }
 }
 
+/// Renders the read-only PR thread anchored at `line` of `path` (if any) below the
+/// diff line, one card per comment, plus an "Ask {agent}" pill when `agent` is set.
+#[allow(clippy::too_many_arguments)]
+fn existing_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    path: &str,
+    line: Option<u32>,
+    existing: &ForgeThreads,
+    agent: &str,
+    out: &mut Vec<ReviewIntent>,
+    indent: f32,
+) {
+    let Some(l) = line else { return };
+    let Some(thread) = existing.get(path).and_then(|f| f.get(&l)) else {
+        return;
+    };
+    for comment in thread {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            thread_card(ui, palette, &comment.author, &comment.body);
+        });
+    }
+    if !agent.is_empty() {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            if agent_pill(
+                ui,
+                palette,
+                lucide_icons::Icon::Bot,
+                &format!("Ask {agent}"),
+            ) {
+                out.push(ReviewIntent::AskAgentOnThread {
+                    file: path.to_owned(),
+                    line: l,
+                });
+            }
+        });
+    }
+    ui.add_space(2.0);
+}
+
+/// One posted PR comment: a muted card (no accent edge, not clickable) with the
+/// author in bold above the body — distinct from the user's editable note card.
+fn thread_card(ui: &mut egui::Ui, palette: &Palette, author: &str, body: &str) {
+    egui::Frame::new()
+        .fill(palette.bg_sidebar)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .corner_radius(egui::CornerRadius::same(6))
+        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(author)
+                        .size(LINE_SIZE)
+                        .color(palette.text_muted)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(body)
+                        .size(LINE_SIZE)
+                        .color(palette.text_secondary),
+                );
+            });
+        });
+}
+
 /// Saved note rendered as a subtle card with an accent edge, the whole surface
 /// clickable to re-open its editor. Returns `true` on click.
 fn note_card(ui: &mut egui::Ui, palette: &Palette, note: &str, line: Option<u32>) -> bool {
@@ -1228,7 +1316,17 @@ fn review_popover(
 /// Recap footer action: a Sparkles glyph and a "Send to {agent}" label in a pill
 /// (the AI-call icon used by the commit message), hover-tinted to the accent.
 fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
-    let label = format!("Send to {agent}");
+    agent_pill(
+        ui,
+        palette,
+        lucide_icons::Icon::Sparkles,
+        &format!("Send to {agent}"),
+    )
+}
+
+/// A hover-tinted pill with a leading glyph and `label`; returns `true` on click.
+fn agent_pill(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, label: &str) -> bool {
+    let label = label.to_owned();
     let font = egui::FontId::proportional(PILL_SIZE);
     let galley =
         ui.painter()
@@ -1252,7 +1350,7 @@ fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
         ui.painter(),
         egui::pos2(rect.left() + 8.0 + icon_w / 2.0, rect.center().y),
         icon_w,
-        lucide_icons::Icon::Sparkles,
+        icon,
         content,
     );
     ui.painter().text(

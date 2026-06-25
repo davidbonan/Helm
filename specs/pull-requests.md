@@ -75,6 +75,8 @@ PullRequest {
   reviewers: Vec<Reviewer>,
 }
 PrDetail { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun> }  // lazy, on selection
+ReviewVerdict = Comment | Approve | RequestChanges            // submit composer (§11)
+DraftComment  { path, line, body }                            // a postable line comment (§11)
 ```
 
 Pure mappers `github::parse_list` / `parse_detail` and
@@ -92,11 +94,11 @@ detail panel, resizable split persisted in `Prefs.pr_detail_width`):
   **repo chip** + **branch chip**, author, relative age, and compact **checks**
   (✓ / ✗ / •) + **review** indicators. Clicking a row **selects** it.
 - **Detail** of the selection: header (title · `#number` · state), `source →
-  dest`, author, the **description** (body, scrollable), the **checks** list
-  (name + status), **reviewers** + their state, and the **comments** thread
-  **read-only**. Actions: **Open in browser** (reuses `terminal::links::open_url`
-  on the PR's `url`) and **Checkout** (§7). Posting comments / approving /
-  merging are **out of scope** — those open the browser.
+  dest`, author, **checks** + **reviewers**, and the **diff-centric review
+  surface** (§11) — the PR's changed files and their diffs, with in-diff comments
+  and a submit composer. Header actions: **Open in browser** (reuses
+  `terminal::links::open_url` on the PR's `url`), **Checkout** (§7), and **Ask
+  Claude** (§11). **Merging** stays out of scope (opens the browser).
 
 Empty / edge states: no recognized-forge repo ⇒ *"No GitHub or Bitbucket
 repository in your workspace"*; a source unavailable ⇒ its inline hint (§3) while
@@ -161,13 +163,19 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
   network — no creds in CI; live calls are out of scope).
 - **UI e2e (`egui_kittest`)**: `pull_requests_page` on a fixture list renders the
   two groups + rows; selecting a row emits `select`; **Open in browser** /
-  **Checkout** emit their actions; the sidebar entry renders and its click sets
-  `CentralMode::PullRequests`.
+  **Checkout** / **Ask Claude** / **Submit review** emit their actions; clicking a
+  changed file emits `select_file`; the diff renders an existing thread read-only
+  and its **Ask {agent}** pill emits `AskAgentOnThread`; the sidebar entry renders
+  and its click sets `CentralMode::PullRequests`.
+- **M-PR2 (write)**: the three-dot `pr_changed_files` / `pr_file_diff` delta on a
+  throwaway repo; `draft_comments` flattening (blank notes dropped) into the
+  GitHub review payload and the Bitbucket inline-comment / verdict-URL builders.
 
 ## 10. Accepted limitations / out of scope (v1)
 
-- **Read + checkout + open** only — no posting comments, approving, requesting
-  changes, or merging from the app (those open the browser).
+- **No merging** and **no threaded reply** to a specific existing comment from the
+  app (those open the browser). Line comments, approve / request-changes / comment
+  reviews **are** supported in-app (§11).
 - **Bitbucket Cloud only** — no Server / Data Center (different API base & auth).
 - **Workspace-scoped** — no global account search (a PR to review on a repo not
   in the sidebar is not shown).
@@ -177,3 +185,51 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
   cross-fork** source (branch on another workspace) isn't fetchable from `origin`
   ⇒ Checkout falls back to **Open in browser**.
 - **GitLab / self-hosted** forges unsupported (`parse_remote` ⇒ skipped).
+
+## 11. In-app review (M-PR2 — diff, line comments, submit, Ask Claude)
+
+The detail panel is a **diff-centric review surface**: the changed files of the
+PR shown **without cloning the branch**, each diff annotatable, with a composer to
+**submit a review** and a way to **hand a thread to the agent**. It reuses the
+M-RC review engine (`review.rs`, `ui::diff_view`) so the in-diff comment UX is the
+same one as commit/working-tree review.
+
+- **Diff producer (domain, I/O-free).** `git::diff::pr_changed_files(repo, base,
+  head)` + `pr_file_diff(...)` compute the PR delta over the **three-dot**
+  `merge-base(base, head)..head` range — only the PR's own changes, never the
+  destination branch's drift. Base/head are the PR's `dest`/`source` tips resolved
+  in the matched workspace repo; an unfetched head ⇒ the diff is unavailable with
+  a one-line hint (Checkout §7 fetches it).
+- **Changed files + diff (read).** The rail lists the changed files (path, kind,
+  ±counts); selecting one loads its diff lazily (its own gated request). Binary /
+  oversize blobs degrade as elsewhere (git.md).
+- **Existing threads (read).** Posted PR comments overlay the diff **anchored at
+  their line**, read-only, via `review::ForgeThreads` (author + body cards). They
+  are **never edited** locally; the editable draft store stays `FileComments`.
+- **Draft line comments + review (write).** In-diff notes accumulate in the draft
+  store; the rail footer composer carries a **verdict** (`ReviewVerdict`:
+  Comment · Approve · Request changes), an optional **summary**, and **Submit
+  review (N)**. On submit, `model::draft_comments` flattens the store to
+  `DraftComment { path, line, body }` (blank notes dropped) and a gated
+  **`PrPostRunner`** posts off-thread:
+  - **GitHub** — one call to `POST repos/{repo}/pulls/{n}/reviews` via
+    `gh api … --input -`, body `{event, body?, comments[]}` (event
+    `APPROVE`/`REQUEST_CHANGES`/`COMMENT`; summary & comments omitted when empty).
+  - **Bitbucket** — one `curl` per inline comment
+    (`POST …/pullrequests/{id}/comments`, `{content.raw, inline{path,to}}`), then
+    the summary comment if any, then the verdict (`…/approve` /
+    `…/request-changes`; Comment posts nothing extra). Basic `email:token` from
+    the Keychain (§3).
+
+  On success the draft/summary/verdict reset and the detail **refetches** so the
+  posted thread reappears; on failure a one-line error surfaces and the draft is
+  kept.
+- **Ask Claude on a thread.** Each existing thread shows an **Ask {agent}** pill
+  emitting `ReviewIntent::AskAgentOnThread { file, line }`. The app builds a
+  prompt from that thread's comments and launches the agent in the PR's worktree
+  (resolved/created as in §7) — the same launch path as the whole-PR **Ask
+  Claude**, scoped to one thread.
+
+This supersedes the §10 "no posting / approving / requesting changes" limitation
+for **GitHub + Bitbucket Cloud line-level reviews**; **merging** and threaded
+*replies* to a specific existing comment remain out of scope (open the browser).

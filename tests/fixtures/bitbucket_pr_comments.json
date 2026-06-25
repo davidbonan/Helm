@@ -9,8 +9,15 @@
       "id": 2,
       "content": { "raw": "Please rebase on main", "markup": "markdown", "html": "<p>Please rebase on main</p>" },
       "user": { "display_name": "Carol", "uuid": "{carol}" }
+    },
+    {
+      "id": 3,
+      "content": { "raw": "extract this branch", "markup": "markdown", "html": "<p>extract this branch</p>" },
+      "user": { "display_name": "Dave", "uuid": "{dave}" },
+      "inline": { "path": "src/billing.rs", "from": null, "to": 42 },
+      "parent": { "id": 2 }
     }
   ],
   "pagelen": 100,
-  "size": 2
+  "size": 3
 }

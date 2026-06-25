@@ -14,7 +14,9 @@ use std::process::Command;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::git::forge::{parse_remote, Forge};
-use crate::pull_requests::model::{dedupe, ForgeKind, PrRole, PullRequest};
+use crate::pull_requests::model::{
+    dedupe, DraftComment, ForgeKind, PrRole, PullRequest, ReviewVerdict,
+};
 use crate::pull_requests::{bitbucket, creds, github};
 
 /// Usability of one source for the cockpit's inline hints (spec §3/§5).
@@ -286,6 +288,410 @@ fn ensure_branch_local(request: &CheckoutRequest) -> Result<(), String> {
     }
 }
 
+/// Identity a review reply is matched against so the UI adopts only the data for
+/// the PR still selected (the runner is fire-and-forget, several may be in flight).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewKey {
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+}
+
+/// Ask the review runner to resolve a PR's `merge-base(dest, head)..head` and list
+/// its changed files (pull-requests.md §5). Network: fetches the PR head and the
+/// base branch into `FETCH_HEAD` — **no local branch is written** (read-only).
+#[derive(Debug, Clone)]
+pub struct PrFilesRequest {
+    pub key: PrReviewKey,
+    pub root: PathBuf,
+    pub forge_kind: ForgeKind,
+    pub number: u64,
+    pub source_branch: String,
+    pub dest_branch: String,
+}
+
+/// The resolved review base/head and the changed-files list.
+#[derive(Debug, Clone)]
+pub struct PrFilesLoaded {
+    pub base: git2::Oid,
+    pub head: git2::Oid,
+    pub files: Vec<crate::git::commit_detail::CommitFile>,
+}
+
+/// A review fetch: the changed-files list (network) or one file's diff (local).
+#[derive(Debug, Clone)]
+pub enum PrReviewRequest {
+    Files(PrFilesRequest),
+    FileDiff {
+        key: PrReviewKey,
+        root: PathBuf,
+        base: git2::Oid,
+        head: git2::Oid,
+        path: String,
+    },
+}
+
+/// The single reply per review request, echoing the key (and path) for adoption.
+pub enum PrReviewReply {
+    Files {
+        key: PrReviewKey,
+        result: Result<PrFilesLoaded, String>,
+    },
+    FileDiff {
+        key: PrReviewKey,
+        path: String,
+        result: Result<crate::git::diff::FileDiff, String>,
+    },
+}
+
+/// The bare `git fetch origin <ref>` that lands a PR's head in `FETCH_HEAD`
+/// without writing a local branch (the read-only review path, vs `fetch_refspec`
+/// which Checkout uses to materialize a branch). GitHub fetches the PR head ref
+/// (forks included); Bitbucket the source branch on `origin`.
+pub fn review_head_ref(forge_kind: ForgeKind, number: u64, source_branch: &str) -> String {
+    match forge_kind {
+        ForgeKind::GitHub => format!("pull/{number}/head"),
+        ForgeKind::Bitbucket => source_branch.to_owned(),
+    }
+}
+
+/// Off-thread PR review fetch (pull-requests.md §5, architecture §3 runner
+/// contract). Fire-and-forget — unlike the gated list/checkout runners, several
+/// requests may be in flight (the file-list load then per-file diffs), each
+/// adopted by its echoed `PrReviewKey`/path.
+pub struct PrReviewRunner {
+    on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
+    results_tx: Sender<PrReviewReply>,
+    results_rx: Receiver<PrReviewReply>,
+}
+
+impl PrReviewRunner {
+    pub fn new(on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        Self {
+            on_event: std::sync::Arc::new(on_event),
+            results_tx,
+            results_rx,
+        }
+    }
+
+    pub fn request(&self, request: PrReviewRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let reply = run_review(request);
+            let _ = tx.send(reply);
+            on_event();
+        });
+    }
+
+    pub fn try_recv(&self) -> Option<PrReviewReply> {
+        self.results_rx.try_recv().ok()
+    }
+}
+
+fn run_review(request: PrReviewRequest) -> PrReviewReply {
+    match request {
+        PrReviewRequest::Files(req) => PrReviewReply::Files {
+            key: req.key.clone(),
+            result: load_pr_files(&req),
+        },
+        PrReviewRequest::FileDiff {
+            key,
+            root,
+            base,
+            head,
+            path,
+        } => {
+            let result = git2::Repository::open(&root)
+                .map_err(|e| e.message().to_owned())
+                .and_then(|repo| {
+                    crate::git::diff::pr_file_diff(&repo, base, head, &path)
+                        .map_err(|e| e.message().to_owned())
+                });
+            PrReviewReply::FileDiff { key, path, result }
+        }
+    }
+}
+
+fn load_pr_files(req: &PrFilesRequest) -> Result<PrFilesLoaded, String> {
+    // A ref name beginning with '-' must never reach the CLI as a flag.
+    if req.source_branch.starts_with('-') || req.dest_branch.starts_with('-') {
+        return Err("invalid branch name".to_owned());
+    }
+    let head_ref = review_head_ref(req.forge_kind, req.number, &req.source_branch);
+    fetch_origin(&req.root, &head_ref)?;
+    let repo = git2::Repository::open(&req.root).map_err(|e| e.message().to_owned())?;
+    let head = revparse_commit(&repo, "FETCH_HEAD")
+        .ok_or_else(|| format!("cannot resolve PR head '{head_ref}'"))?;
+
+    // The base branch tip: prefer a fresh fetch into FETCH_HEAD, else the
+    // remote-tracking ref or a same-name local branch already present.
+    let dest_fetched = fetch_origin(&req.root, &req.dest_branch).is_ok();
+    let dest = dest_fetched
+        .then(|| revparse_commit(&repo, "FETCH_HEAD"))
+        .flatten()
+        .or_else(|| revparse_commit(&repo, &format!("origin/{}", req.dest_branch)))
+        .or_else(|| revparse_commit(&repo, &req.dest_branch))
+        .ok_or_else(|| format!("cannot resolve base branch '{}'", req.dest_branch))?;
+
+    // Three-dot base: the merge-base, so the diff excludes commits already on the
+    // destination. Unrelated histories ⇒ fall back to the destination tip.
+    let base = repo.merge_base(dest, head).unwrap_or(dest);
+    let files = crate::git::diff::pr_changed_files(&repo, base, head)
+        .map_err(|e| e.message().to_owned())?;
+    Ok(PrFilesLoaded { base, head, files })
+}
+
+fn fetch_origin(root: &Path, refspec: &str) -> Result<(), String> {
+    match crate::git::cli::run(root, &["fetch", "origin", refspec]) {
+        Ok(out) if out.success() => Ok(()),
+        Ok(out) => Err(out.stderr.trim().to_owned()),
+        Err(err) => Err(format!("{err:?}")),
+    }
+}
+
+fn revparse_commit(repo: &git2::Repository, name: &str) -> Option<git2::Oid> {
+    repo.revparse_single(name)
+        .ok()?
+        .peel_to_commit()
+        .ok()
+        .map(|c| c.id())
+}
+
+/// Ask the detail runner for one PR's body / comments / check runs (the forge
+/// API data the cockpit lazily loads on selection, pull-requests.md §5).
+#[derive(Debug, Clone)]
+pub struct PrDetailRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+}
+
+/// The single reply per detail request, echoing the key for adoption.
+#[derive(Debug, Clone)]
+pub struct PrDetailReply {
+    pub key: PrReviewKey,
+    pub result: Result<crate::pull_requests::model::PrDetail, String>,
+}
+
+/// Off-thread per-PR detail fetch (`gh pr view` / Bitbucket REST). Fire-and-forget
+/// like `PrReviewRunner` — replies are adopted by their echoed `PrReviewKey`, so a
+/// fast switch between PRs never drops the new selection's fetch.
+pub struct PrDetailRunner {
+    on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
+    results_tx: Sender<PrDetailReply>,
+    results_rx: Receiver<PrDetailReply>,
+}
+
+impl PrDetailRunner {
+    pub fn new(on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        Self {
+            on_event: std::sync::Arc::new(on_event),
+            results_tx,
+            results_rx,
+        }
+    }
+
+    pub fn request(&self, request: PrDetailRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = fetch_detail(&request);
+            let _ = tx.send(PrDetailReply {
+                key: request.key,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn try_recv(&self) -> Option<PrDetailReply> {
+        self.results_rx.try_recv().ok()
+    }
+}
+
+fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::PrDetail, String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            let json = run_stdout("gh", &github::view_args(&req.repo_label, req.number))
+                .ok_or_else(|| format!("gh pr view {} failed", req.number))?;
+            let mut detail = github::parse_detail(&json).map_err(|e| e.to_string())?;
+            // Inline review comments are a separate REST resource; missing them is
+            // non-fatal (the conversation + diff still render).
+            if let Some(inline) = run_stdout(
+                "gh",
+                &github::review_comments_args(&req.repo_label, req.number),
+            )
+            .and_then(|j| github::parse_review_comments(&j).ok())
+            {
+                detail.comments.extend(inline);
+            }
+            Ok(detail)
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let detail_json = curl_body(
+                &bitbucket::pull_request_url(workspace, repo, req.number),
+                &header,
+            )?;
+            let comments_json = curl_body(
+                &bitbucket::comments_url(workspace, repo, req.number),
+                &header,
+            )?;
+            bitbucket::parse_detail(&detail_json, &comments_json).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// `curl_get` reduced to `Result<body, message>` for the single-PR detail fetch.
+fn curl_body(url: &str, auth_header: &str) -> Result<String, String> {
+    match curl_get(url, auth_header) {
+        CurlResult::Ok(body) => Ok(body),
+        CurlResult::Unauthorized => Err("Bitbucket token invalid or expired".to_owned()),
+        CurlResult::HttpError(message) => Err(message),
+        CurlResult::Failed => Err("Bitbucket unreachable".to_owned()),
+    }
+}
+
+/// Submit one review from the cockpit (pull-requests.md §11): the verdict plus the
+/// drafted line comments and optional summary, posted in one request.
+#[derive(Debug, Clone)]
+pub struct PrPostRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+    pub verdict: ReviewVerdict,
+    pub summary: String,
+    pub comments: Vec<DraftComment>,
+}
+
+/// The single reply per post request, echoing the key for adoption.
+#[derive(Debug, Clone)]
+pub struct PrPostReply {
+    pub key: PrReviewKey,
+    pub result: Result<(), String>,
+}
+
+/// Off-thread review submission, fire-and-forget like `PrDetailRunner`. The reply
+/// carries the echoed key so the UI re-fetches the right PR's detail on success.
+pub struct PrPostRunner {
+    on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
+    results_tx: Sender<PrPostReply>,
+    results_rx: Receiver<PrPostReply>,
+}
+
+impl PrPostRunner {
+    pub fn new(on_event: impl Fn() + Send + Sync + 'static) -> Self {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        Self {
+            on_event: std::sync::Arc::new(on_event),
+            results_tx,
+            results_rx,
+        }
+    }
+
+    pub fn request(&self, request: PrPostRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = post_review(&request);
+            let _ = tx.send(PrPostReply {
+                key: request.key,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn try_recv(&self) -> Option<PrPostReply> {
+        self.results_rx.try_recv().ok()
+    }
+}
+
+fn post_review(req: &PrPostRequest) -> Result<(), String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            let body = github::submit_review_body(req.verdict, &req.summary, &req.comments);
+            run_stdin(
+                "gh",
+                &github::submit_review_args(&req.repo_label, req.number),
+                &body,
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                let e = e.trim();
+                if e.is_empty() {
+                    "gh review submit failed".to_owned()
+                } else {
+                    e.to_owned()
+                }
+            })
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let comments_url = bitbucket::post_comment_url(workspace, repo, req.number);
+            for c in &req.comments {
+                curl_post_ok(
+                    &comments_url,
+                    &header,
+                    &bitbucket::inline_comment_body(&c.path, c.line, &c.body),
+                )?;
+            }
+            if !req.summary.trim().is_empty() {
+                curl_post_ok(
+                    &comments_url,
+                    &header,
+                    &bitbucket::summary_comment_body(&req.summary),
+                )?;
+            }
+            match req.verdict {
+                ReviewVerdict::Approve => curl_post_ok(
+                    &bitbucket::approve_url(workspace, repo, req.number),
+                    &header,
+                    "",
+                )?,
+                ReviewVerdict::RequestChanges => curl_post_ok(
+                    &bitbucket::request_changes_url(workspace, repo, req.number),
+                    &header,
+                    "",
+                )?,
+                ReviewVerdict::Comment => {}
+            }
+            Ok(())
+        }
+    }
+}
+
 pub struct PrRunner {
     on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
     results_tx: Sender<PrReply>,
@@ -488,6 +894,43 @@ fn run_stdout(program: &str, args: &[String]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run `program` feeding `input` on stdin (the `gh api --input -` path); returns
+/// stdout on success, else stderr (so the forge's own error reaches the UI).
+fn run_stdin(program: &str, args: &[String], input: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open stdin".to_owned())?
+        .write_all(input.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// `curl_post` reduced to `Result<(), message>` for the write path; the success
+/// body is discarded (we re-fetch the detail afterwards).
+fn curl_post_ok(url: &str, auth_header: &str, body: &str) -> Result<(), String> {
+    match curl_post(url, auth_header, body) {
+        CurlResult::Ok(_) => Ok(()),
+        CurlResult::Unauthorized => Err("Bitbucket token invalid or expired".to_owned()),
+        CurlResult::HttpError(message) => Err(message),
+        CurlResult::Failed => Err("Bitbucket unreachable".to_owned()),
+    }
+}
+
 enum CurlResult {
     Ok(String),
     Unauthorized,
@@ -520,6 +963,39 @@ fn curl_get(url: &str, auth_header: &str) -> CurlResult {
         "000" | "" => CurlResult::Failed,
         code => CurlResult::HttpError(
             bitbucket::parse_error_message(body)
+                .unwrap_or_else(|| format!("Bitbucket error (HTTP {code})")),
+        ),
+    }
+}
+
+/// `curl -X POST` the URL with the Basic-auth header and a JSON body; comment
+/// creation returns 201 and approve/request-changes return 200, so both pass.
+fn curl_post(url: &str, auth_header: &str, body: &str) -> CurlResult {
+    let args = [
+        "-s".to_owned(),
+        "-X".to_owned(),
+        "POST".to_owned(),
+        "-H".to_owned(),
+        format!("Authorization: {auth_header}"),
+        "-H".to_owned(),
+        "Content-Type: application/json".to_owned(),
+        "-d".to_owned(),
+        body.to_owned(),
+        "-w".to_owned(),
+        "\n%{http_code}".to_owned(),
+        url.to_owned(),
+    ];
+    let Ok(out) = Command::new("curl").args(args).output() else {
+        return CurlResult::Failed;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (resp, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
+    match code.trim() {
+        "200" | "201" => CurlResult::Ok(resp.to_owned()),
+        "401" => CurlResult::Unauthorized,
+        "000" | "" => CurlResult::Failed,
+        code => CurlResult::HttpError(
+            bitbucket::parse_error_message(resp)
                 .unwrap_or_else(|| format!("Bitbucket error (HTTP {code})")),
         ),
     }
