@@ -850,7 +850,8 @@ fn review_diff() -> FileDiff {
     }
 }
 
-/// Drives `diff_view` in review mode with shared state, returns emitted review intents.
+/// Drives `diff_view` with review enabled and shared state, returns the emitted
+/// review intents after the scripted actions.
 fn drive_review(
     diff: FileDiff,
     comments: FileComments,
@@ -875,8 +876,8 @@ fn drive_review(
             &mut state_in_ui.borrow_mut(),
             &mut git.borrow_mut(),
             Some(&mut DiffReview {
-                mode: true,
                 comments: comments_in_ui.as_ref(),
+                agent: "claude",
                 intents: &mut review_sink.borrow_mut(),
             }),
         );
@@ -890,17 +891,15 @@ fn drive_review(
 }
 
 #[test]
-fn review_mode_click_line_then_validate_emits_save_comment() {
+fn clicking_the_note_icon_then_validating_emits_save_comment() {
     let intents = drive_review(review_diff(), FileComments::new(), |h| {
-        h.get_by_label_contains("work()").click();
-        h.run();
-        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
-            .focus();
+        // The note (✦) icon for the added line opens its inline editor.
+        h.get_all_by_label("Comment line").last().unwrap().click();
         h.run();
         h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
             .type_text("needs rename");
         h.run();
-        h.get_by_label("Validate").click();
+        h.get_by_label("Validate note").click();
     });
 
     assert!(
@@ -911,12 +910,12 @@ fn review_mode_click_line_then_validate_emits_save_comment() {
                     && comment.new_lineno == Some(2)
                     && comment.note == "needs rename"
         )),
-        "Validate must emit SaveComment for the clicked line, got {intents:?}",
+        "Validate must emit SaveComment for the annotated line, got {intents:?}",
     );
 }
 
 #[test]
-fn review_header_send_badge_counts_stored_comments() {
+fn review_chip_opens_a_popover_listing_comments_with_send() {
     let mut comments = FileComments::new();
     helm::review::add_comment(
         &mut comments,
@@ -929,8 +928,82 @@ fn review_header_send_badge_counts_stored_comments() {
         },
     );
 
-    drive_review(review_diff(), comments, |h| {
-        h.get_by_label("Send (1)");
-        h.get_by_label_contains("needs rename");
+    let intents = drive_review(review_diff(), comments, |h| {
+        // The recap chip carries the count and toggles the popover.
+        h.get_by_label("Review notes").click();
+        h.run();
+        assert!(
+            h.query_all_by_label_contains("needs rename")
+                .next()
+                .is_some(),
+            "the popover lists the stored note",
+        );
+        h.get_by_label("Delete review note");
+        h.get_by_label("Send to claude").click();
     });
+
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, ReviewIntent::SendToAgent)),
+        "the popover Send button must emit SendToAgent, got {intents:?}",
+    );
+}
+
+#[test]
+fn the_editor_delete_icon_removes_the_comment() {
+    let mut comments = FileComments::new();
+    helm::review::add_comment(
+        &mut comments,
+        "src/main.rs",
+        LineComment {
+            old_lineno: None,
+            new_lineno: Some(2),
+            code: "    work();".into(),
+            note: "needs rename".into(),
+        },
+    );
+
+    let intents = drive_review(review_diff(), comments, |h| {
+        // Click the saved note card to re-open its editor, then ✕ deletes it.
+        h.get_by_label("Edit review note").click();
+        h.run();
+        h.get_by_label("Delete note").click();
+    });
+
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::DeleteComment { file, line }
+                if file == "src/main.rs" && *line == Some(2)
+        )),
+        "the editor ✕ must emit DeleteComment for the line, got {intents:?}",
+    );
+}
+
+#[test]
+fn clicking_outside_the_editor_validates_the_note() {
+    let intents = drive_review(review_diff(), FileComments::new(), |h| {
+        // Open the added line's editor, type, then click outside (the header
+        // Close button): the field loses focus, which validates.
+        h.get_all_by_label("Comment line").last().unwrap().click();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("outside save");
+        h.run();
+        h.get_by_label("Close").click();
+        h.run();
+        h.run();
+    });
+
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::SaveComment { file, comment }
+                if file == "src/main.rs"
+                    && comment.new_lineno == Some(2)
+                    && comment.note == "outside save"
+        )),
+        "losing focus must emit SaveComment for the annotated line, got {intents:?}",
+    );
 }

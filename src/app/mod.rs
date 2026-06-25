@@ -365,8 +365,6 @@ pub struct HelmApp {
     /// In-diff review comments accumulated per repo (M-RC), in memory only: the
     /// active repo's set feeds the diff view and the `Send` prompt.
     review: HashMap<RepoKey, crate::review::FileComments>,
-    /// Diff view in review (annotate) mode (M-RC); global toggle, in memory only.
-    review_mode: bool,
     /// IDE opening terminal Cmd+click file links (terminal.md §12), persisted in
     /// `prefs.toml`: loaded at boot, saved on change in Preferences.
     editor: Editor,
@@ -523,7 +521,6 @@ impl HelmApp {
             ai_rebase_provider: prefs.ai_rebase_provider,
             review_agent_command: prefs.review_agent_command,
             review: HashMap::new(),
-            review_mode: false,
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             branch_editor: BranchEditor::default(),
@@ -1176,7 +1173,6 @@ impl HelmApp {
     fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent, ctx: &egui::Context) {
         use crate::review::ReviewIntent;
         match intent {
-            ReviewIntent::ToggleMode => self.review_mode = !self.review_mode,
             ReviewIntent::SaveComment { file, comment } => {
                 if let Some(key) = self.active_repo_key() {
                     crate::review::add_comment(self.review.entry(key).or_default(), &file, comment);
@@ -1189,11 +1185,6 @@ impl HelmApp {
                     }
                 }
             }
-            ReviewIntent::Clear => {
-                if let Some(key) = self.active_repo_key() {
-                    self.review.remove(&key);
-                }
-            }
             ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
         }
     }
@@ -1201,7 +1192,8 @@ impl HelmApp {
     /// Opens the aggregated review of the active repo in a fresh terminal tab
     /// running the agent CLI (M-RC). The pane is pre-inserted under the new tab's
     /// key so the render loop adopts it instead of spawning a plain shell, then
-    /// the central area switches to the terminal to surface it.
+    /// the central area switches to the terminal to surface it. The repo's
+    /// comments are cleared once handed off — the new tab is the only signal.
     fn send_review_to_agent(&mut self, ctx: &egui::Context) {
         let Some(index) = self.workspace.active() else {
             return;
@@ -1232,9 +1224,10 @@ impl HelmApp {
         let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, &prompt);
         self.caches
             .panes
-            .entry((key, tab_id))
+            .entry((key.clone(), tab_id))
             .or_default()
             .insert(pane_id, pane);
+        self.review.remove(&key);
         self.central_mode = CentralMode::Terminal;
         self.diff = None;
     }
@@ -2048,17 +2041,25 @@ fn open_run_terminal(ctx: &egui::Context, cwd: &Path, command: &str) -> Terminal
     }
 }
 
-/// Agent pane behind a Send-to-agent action (M-RC): the configured CLI launched
-/// directly in `cwd` with the aggregated review prompt as its initial argument.
+/// Agent pane behind a Send-to-agent action (M-RC): an interactive login shell in
+/// `cwd` with the aggregated review prompt exported (`HELM_REVIEW_PROMPT`), into
+/// which the configured CLI invocation is fed. Running the agent as a job of the
+/// shell — not as the pane's root process — keeps the terminal usable after the
+/// agent exits (Ctrl+C returns to the shell prompt instead of a dead pane).
 fn open_agent_terminal(
     ctx: &egui::Context,
     cwd: &Path,
     program: &str,
     prompt: &str,
 ) -> TerminalState {
-    let cmd = crate::terminal::pty::agent_command(program, cwd, prompt);
+    let mut cmd =
+        crate::terminal::pty::login_shell_command(crate::terminal::pty::shell_program(), cwd);
+    cmd.env(crate::terminal::pty::REVIEW_PROMPT_ENV, prompt);
     match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
-        Ok(pane) => TerminalState::Live(pane),
+        Ok(pane) => {
+            let _ = pane.feed(crate::terminal::pty::agent_invocation(program).as_bytes());
+            TerminalState::Live(pane)
+        }
         Err(err) => TerminalState::Failed(err.to_string()),
     }
 }

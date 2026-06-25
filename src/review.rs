@@ -48,10 +48,8 @@ pub fn count(store: &FileComments) -> usize {
 /// Review action raised by the diff view, applied by the app (RC5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewIntent {
-    ToggleMode,
     SaveComment { file: String, comment: LineComment },
     DeleteComment { file: String, line: Option<u32> },
-    Clear,
     SendToAgent,
 }
 

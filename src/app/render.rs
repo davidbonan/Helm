@@ -786,12 +786,12 @@ impl HelmApp {
                 let run_status = run_status_of(self.caches.run_panes.get_mut(&run_key));
                 let run_collapsed = self.run_panel_collapsed;
                 let run_panel_height = self.run_panel_height;
-                // In-diff review (M-RC): the active repo's stored comments and the
-                // global review toggle feed the diff view; the actions it raises are
-                // drained into `review_intents` and applied after the layout closure.
-                let review_mode = self.review_mode;
+                // In-diff review (M-RC): the active repo's stored comments feed the
+                // diff view; the actions it raises are drained into `review_intents`
+                // and applied after the layout closure.
                 let empty_comments = crate::review::FileComments::new();
                 let review_comments = self.review.get(&run_key).unwrap_or(&empty_comments);
+                let review_agent = self.review_agent_command.clone();
                 let pane_ids = layout.pane_ids();
                 // In Agents mode the per-repo terminal tree isn't rendered (the
                 // dashboard owns the central area). The list view mirrors the SELECTED
@@ -996,8 +996,8 @@ impl HelmApp {
                                 view,
                                 &mut diff_intents,
                                 Some(&mut crate::ui::diff_view::DiffReview {
-                                    mode: review_mode,
                                     comments: review_comments,
+                                    agent: &review_agent,
                                     intents: &mut review_intents,
                                 }),
                             );
@@ -1077,8 +1077,8 @@ impl HelmApp {
                                             view,
                                             &mut diff_intents,
                                             Some(&mut crate::ui::diff_view::DiffReview {
-                                                mode: review_mode,
                                                 comments: review_comments,
+                                                agent: &review_agent,
                                                 intents: &mut review_intents,
                                             }),
                                         );

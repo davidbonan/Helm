@@ -27,9 +27,16 @@ pub struct DiffViewState {
     image: Option<ImagePreview>,
     /// Line whose review note editor is open (M-RC), keyed by its `(old, new)`
     /// line numbers; `comment_buffer` holds the in-progress text. Cleared on
-    /// Validate, `Esc`, or when the open file changes.
+    /// validate, `Esc`, or when the open file changes.
     active_comment: Option<(Option<u32>, Option<u32>)>,
     comment_buffer: String,
+    /// Comment being edited from the review recap popover (M-RC), keyed by
+    /// `(file, line_ref)`; `popover_buffer` holds its in-progress text.
+    popover_edit: Option<(String, Option<u32>)>,
+    popover_buffer: String,
+    /// One-shot: focus the note editor on its next frame (set when an editor
+    /// opens so the caret lands in the field without an extra click).
+    note_focus: bool,
 }
 
 impl DiffViewState {
@@ -42,6 +49,9 @@ impl DiffViewState {
         self.image = None;
         self.active_comment = None;
         self.comment_buffer.clear();
+        self.popover_edit = None;
+        self.popover_buffer.clear();
+        self.note_focus = false;
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -147,8 +157,11 @@ const CONTENT_TRAILING_PAD: f32 = 24.0;
 const LINE_HEIGHT: f32 = 17.0;
 const LINE_ACTION_SIZE: f32 = 14.0;
 const LINE_ACTION_LEFT: f32 = 4.0;
-/// Column reserved for the line stage/unstage button, left of the numbers.
-const LINE_ACTION_W: f32 = 22.0;
+/// Gap between the stage and review-note icons sharing the gutter.
+const LINE_ACTION_GAP: f32 = 4.0;
+/// Column reserved for the per-line stage/unstage button and, beside it, the
+/// review-note (✦) button — left of the numbers.
+const LINE_ACTION_W: f32 = 40.0;
 /// Size of the gutter line numbers (more subdued than the content).
 const NUM_SIZE: f32 = 11.0;
 /// Inner padding of each number column.
@@ -479,12 +492,12 @@ fn char_byte_index(text: &str, char_idx: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-/// In-diff review context (M-RC): the active repo's stored comments, the global
-/// review-mode toggle, and the sink for the actions the diff view raises. When
-/// `None` the diff view is a plain viewer (no review chrome).
+/// In-diff review context (M-RC): the active repo's stored comments, the agent
+/// CLI label for the Send button, and the sink for the actions the diff view
+/// raises. When `None` the diff view is a plain viewer (no review chrome).
 pub struct DiffReview<'a> {
-    pub mode: bool,
     pub comments: &'a FileComments,
+    pub agent: &'a str,
     pub intents: &'a mut Vec<ReviewIntent>,
 }
 
@@ -495,8 +508,8 @@ pub struct DiffReview<'a> {
 ///
 /// `read_only` (full-screen commit diff, M9-7 / git.md §9) removes every staging
 /// control: no hunk buttons, no line-by-line actions, no line selection — it's
-/// history, not the current index. In review mode every line (read-only ones
-/// included) becomes annotable instead.
+/// history, not the current index. Review annotation (the per-line note icon)
+/// stays available on every line, read-only ones included.
 #[allow(clippy::too_many_arguments)]
 pub fn diff_view(
     ui: &mut egui::Ui,
@@ -509,22 +522,23 @@ pub fn diff_view(
     review: Option<&mut DiffReview<'_>>,
 ) -> bool {
     let empty = FileComments::new();
-    let review_mode = match &review {
-        Some(r) => r.mode,
-        None => false,
-    };
+    let review_available = review.is_some();
     let review_comments: &FileComments = match &review {
         Some(r) => r.comments,
         None => &empty,
     };
+    let review_agent = review.as_ref().map(|r| r.agent).unwrap_or_default();
     let mut review_out: Vec<ReviewIntent> = Vec::new();
 
-    // First `Esc` cancels an open note editor; a second one closes the diff.
+    // First `Esc` cancels an open note editor (inline or popover); a second one
+    // closes the diff.
     let mut close = false;
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if state.active_comment.is_some() {
+        if state.active_comment.is_some() || state.popover_edit.is_some() {
             state.active_comment = None;
             state.comment_buffer.clear();
+            state.popover_edit = None;
+            state.popover_buffer.clear();
         } else {
             close = true;
         }
@@ -579,24 +593,21 @@ pub fn diff_view(
                 if close_button(ui, palette) {
                     close = true;
                 }
-                let review_color = if review_mode {
-                    palette.accent
-                } else {
-                    palette.text_secondary
-                };
-                if intent_pill(ui, palette, "Review", review_color, true) {
-                    review_out.push(ReviewIntent::ToggleMode);
-                }
-                if review_mode {
-                    let n = count(review_comments);
-                    if n > 0 {
-                        if intent_pill(ui, palette, &format!("Send ({n})"), palette.accent, true) {
-                            review_out.push(ReviewIntent::SendToAgent);
-                        }
-                        if intent_pill(ui, palette, "Clear", palette.text_muted, true) {
-                            review_out.push(ReviewIntent::Clear);
-                        }
-                    }
+                let n = count(review_comments);
+                if review_available && n > 0 {
+                    let chip = review_chip(ui, palette, n);
+                    egui::Popup::from_toggle_button_response(&chip)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            review_popover(
+                                ui,
+                                palette,
+                                review_agent,
+                                review_comments,
+                                state,
+                                &mut review_out,
+                            );
+                        });
                 }
             });
         });
@@ -718,7 +729,7 @@ pub fn diff_view(
                                 palette,
                                 staged,
                                 read_only,
-                                review_mode,
+                                review: review_available,
                                 selected: state.selected(hunk_idx, line_idx),
                                 highlighted: state.syntax_line(hunk_idx, line_idx),
                                 text_range: state.text_range_for_row(text_row, text),
@@ -730,14 +741,10 @@ pub fn diff_view(
                             diff_line(ui, &row, hunk_idx, line_idx, &line_ctx, &mut text_rows)
                         };
                         text_row += 1;
-                        match action {
-                            Some(DiffLineAction::OpenComment { old, new }) => {
-                                state.comment_buffer =
-                                    note_at(review_comments, &diff.path, new.or(old))
-                                        .unwrap_or_default();
-                                state.active_comment = Some((old, new));
-                            }
-                            other => apply_line_action(state, intents, other),
+                        if let Some(DiffLineAction::OpenComment { old, new }) = action {
+                            open_inline_editor(state, review_comments, &diff.path, old, new);
+                        } else {
+                            apply_line_action(state, intents, action);
                         }
                         comment_block(
                             ui,
@@ -746,7 +753,6 @@ pub fn diff_view(
                             line.old_lineno,
                             line.new_lineno,
                             text,
-                            review_mode,
                             review_comments,
                             state,
                             &mut review_out,
@@ -800,8 +806,134 @@ fn note_at(comments: &FileComments, path: &str, line: Option<u32>) -> Option<Str
         .map(|c| c.note.clone())
 }
 
-/// Saved note (display + Delete) or the open editor (text field + Validate)
-/// rendered under a diff line in review mode, aligned to the code column.
+/// Opens the inline note editor on a diff line, prefilled with its stored note,
+/// and focuses the field. Closes any popover edit so a single editor is live.
+fn open_inline_editor(
+    state: &mut DiffViewState,
+    comments: &FileComments,
+    path: &str,
+    old: Option<u32>,
+    new: Option<u32>,
+) {
+    state.comment_buffer = note_at(comments, path, new.or(old)).unwrap_or_default();
+    state.active_comment = Some((old, new));
+    state.popover_edit = None;
+    state.note_focus = true;
+}
+
+/// Outcome of a note editor frame.
+enum NoteEdit {
+    Idle,
+    Delete,
+    Save,
+}
+
+/// Shared note editor: a multiline field (Enter validates, Shift+Enter inserts a
+/// newline) with a Delete (✕) / Validate (✓) icon row underneath. Clicking
+/// outside the field also validates. `focus` is a one-shot that lands the caret
+/// in the field the frame the editor opens.
+fn note_editor(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    buffer: &mut String,
+    focus: &mut bool,
+    width: f32,
+) -> NoteEdit {
+    // Consume the bare Enter before the field sees it so it validates instead of
+    // inserting a newline; Shift+Enter falls through to the field as a newline.
+    let submit_key = ui.input_mut(|i| {
+        let mut submit = false;
+        i.events.retain(|e| {
+            let is_submit = matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.shift
+            );
+            submit |= is_submit;
+            !is_submit
+        });
+        submit
+    });
+    let response = ui
+        .scope(|ui| {
+            let radius = egui::CornerRadius::same(4);
+            let w = &mut ui.visuals_mut().widgets;
+            w.inactive.corner_radius = radius;
+            w.hovered.corner_radius = radius;
+            w.active.corner_radius = radius;
+            ui.add(
+                egui::TextEdit::multiline(buffer)
+                    .desired_rows(2)
+                    .desired_width(width)
+                    .hint_text("Review note"),
+            )
+        })
+        .inner;
+    if *focus {
+        response.request_focus();
+        *focus = false;
+    }
+    // A click outside the field (it loses focus) validates, like Enter or ✓.
+    let mut edit = if submit_key || response.lost_focus() {
+        NoteEdit::Save
+    } else {
+        NoteEdit::Idle
+    };
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        if icon_button(
+            ui,
+            palette,
+            lucide_icons::Icon::X,
+            palette.git_deleted,
+            "Delete note",
+        ) {
+            edit = NoteEdit::Delete;
+        }
+        if icon_button(
+            ui,
+            palette,
+            lucide_icons::Icon::Check,
+            palette.accent,
+            "Validate note",
+        ) {
+            edit = NoteEdit::Save;
+        }
+    });
+    edit
+}
+
+/// Small square icon button (hover-tinted) used for the note editor and popover
+/// controls; `label` is its accessibility name.
+fn icon_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: lucide_icons::Icon,
+    color: egui::Color32,
+    label: &str,
+) -> bool {
+    let (rect, response, hovered) =
+        crate::ui::clickable(ui, egui::vec2(LINE_HEIGHT, LINE_HEIGHT), true);
+    if hovered {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(RADIUS_PILL),
+            with_alpha(color, 36),
+        );
+    }
+    let tint = if hovered { color } else { palette.text_muted };
+    crate::ui::paint_icon(ui.painter(), rect.center(), LINE_SIZE, icon, tint);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.clicked()
+}
+
+/// Either the open inline editor (when this line is active) or the saved note as
+/// a clickable card (clicking it re-opens the editor), rendered under a diff line
+/// and aligned to the code column.
 #[allow(clippy::too_many_arguments)]
 fn comment_block(
     ui: &mut egui::Ui,
@@ -810,7 +942,6 @@ fn comment_block(
     old: Option<u32>,
     new: Option<u32>,
     code: &str,
-    review_mode: bool,
     comments: &FileComments,
     state: &mut DiffViewState,
     review_out: &mut Vec<ReviewIntent>,
@@ -819,50 +950,333 @@ fn comment_block(
     let line = new.or(old);
     if state.active_comment == Some((old, new)) {
         ui.add_space(2.0);
-        let mut validated = false;
+        let mut edit = NoteEdit::Idle;
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            ui.add(
-                egui::TextEdit::multiline(&mut state.comment_buffer)
-                    .desired_rows(2)
-                    .desired_width((ui.available_width() - PILL_SIZE * 8.0).max(120.0))
-                    .hint_text("Review note"),
-            );
-            if intent_pill(ui, palette, "Validate", palette.accent, true) {
-                validated = true;
-            }
+            ui.vertical(|ui| {
+                let width = (ui.available_width() - 8.0).max(160.0);
+                edit = note_editor(
+                    ui,
+                    palette,
+                    &mut state.comment_buffer,
+                    &mut state.note_focus,
+                    width,
+                );
+            });
         });
         ui.add_space(2.0);
-        if validated {
-            review_out.push(ReviewIntent::SaveComment {
-                file: path.to_owned(),
-                comment: LineComment {
-                    old_lineno: old,
-                    new_lineno: new,
-                    code: code.to_owned(),
-                    note: state.comment_buffer.clone(),
-                },
-            });
-            state.active_comment = None;
-            state.comment_buffer.clear();
+        match edit {
+            NoteEdit::Save => {
+                save_note(
+                    review_out,
+                    path,
+                    old,
+                    new,
+                    code,
+                    state.comment_buffer.trim(),
+                );
+                state.active_comment = None;
+                state.comment_buffer.clear();
+            }
+            NoteEdit::Delete => {
+                review_out.push(ReviewIntent::DeleteComment {
+                    file: path.to_owned(),
+                    line,
+                });
+                state.active_comment = None;
+                state.comment_buffer.clear();
+            }
+            NoteEdit::Idle => {}
         }
     } else if let Some(note) = note_at(comments, path, line) {
         ui.add_space(2.0);
+        let mut clicked = false;
         ui.horizontal(|ui| {
             ui.add_space(indent);
+            clicked = note_card(ui, palette, &note, line);
+        });
+        ui.add_space(2.0);
+        if clicked {
+            open_inline_editor(state, comments, path, old, new);
+        }
+    }
+}
+
+/// Saved note rendered as a subtle card with an accent edge, the whole surface
+/// clickable to re-open its editor. Returns `true` on click.
+fn note_card(ui: &mut egui::Ui, palette: &Palette, note: &str, line: Option<u32>) -> bool {
+    let inner = egui::Frame::new()
+        .fill(palette.bg_surface)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .corner_radius(egui::CornerRadius::same(6))
+        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(note)
                     .size(LINE_SIZE)
                     .color(palette.text_secondary),
             );
-            if review_mode && intent_pill(ui, palette, "Delete", palette.git_deleted, true) {
-                review_out.push(ReviewIntent::DeleteComment {
-                    file: path.to_owned(),
-                    line,
-                });
+        });
+    let rect = inner.response.rect;
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height())),
+        egui::CornerRadius::same(6),
+        palette.accent,
+    );
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with(("note_card", line, rect.min.y.to_bits())),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Edit review note")
+    });
+    response.clicked()
+}
+
+/// Pushes a save (or a delete when the note is blank) for the line `(old, new)`.
+fn save_note(
+    out: &mut Vec<ReviewIntent>,
+    path: &str,
+    old: Option<u32>,
+    new: Option<u32>,
+    code: &str,
+    note: &str,
+) {
+    if note.is_empty() {
+        out.push(ReviewIntent::DeleteComment {
+            file: path.to_owned(),
+            line: new.or(old),
+        });
+        return;
+    }
+    out.push(ReviewIntent::SaveComment {
+        file: path.to_owned(),
+        comment: LineComment {
+            old_lineno: old,
+            new_lineno: new,
+            code: code.to_owned(),
+            note: note.to_owned(),
+        },
+    });
+}
+
+/// Header chip — a Sparkles glyph and the comment count — that toggles the review
+/// recap popover. Returns its response so the popover can anchor to it.
+fn review_chip(ui: &mut egui::Ui, palette: &Palette, n: usize) -> egui::Response {
+    let label = n.to_string();
+    let font = egui::FontId::proportional(PILL_SIZE);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
+    let icon_w = LINE_SIZE;
+    let size = egui::vec2(icon_w + 4.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
+    let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
+    let (fill, content) = if hovered {
+        (with_alpha(palette.accent, 36), palette.accent)
+    } else {
+        (palette.bg_surface, palette.text_secondary)
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_PILL),
+        fill,
+        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    crate::ui::paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + 8.0 + icon_w / 2.0, rect.center().y),
+        icon_w,
+        lucide_icons::Icon::Sparkles,
+        content,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 8.0 + icon_w + 4.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font,
+        content,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Review notes"));
+    response
+}
+
+/// Review recap popover: every stored note grouped by file, each editable in
+/// place (click) and deletable (✕), with a Send-to-agent footer.
+fn review_popover(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    agent: &str,
+    comments: &FileComments,
+    state: &mut DiffViewState,
+    out: &mut Vec<ReviewIntent>,
+) {
+    ui.set_max_width(360.0);
+    ui.spacing_mut().item_spacing.y = 6.0;
+    egui::ScrollArea::vertical()
+        .max_height(360.0)
+        .show(ui, |ui| {
+            for (file, file_comments) in comments {
+                ui.label(
+                    egui::RichText::new(file)
+                        .size(PILL_SIZE)
+                        .color(palette.text_muted),
+                );
+                for c in file_comments {
+                    let line = c.line_ref();
+                    let editing = state
+                        .popover_edit
+                        .as_ref()
+                        .is_some_and(|(f, l)| f == file && *l == line);
+                    if editing {
+                        let edit = note_editor(
+                            ui,
+                            palette,
+                            &mut state.popover_buffer,
+                            &mut state.note_focus,
+                            ui.available_width(),
+                        );
+                        match edit {
+                            NoteEdit::Save => {
+                                save_note(
+                                    out,
+                                    file,
+                                    c.old_lineno,
+                                    c.new_lineno,
+                                    &c.code,
+                                    state.popover_buffer.trim(),
+                                );
+                                state.popover_edit = None;
+                                state.popover_buffer.clear();
+                            }
+                            NoteEdit::Delete => {
+                                out.push(ReviewIntent::DeleteComment {
+                                    file: file.clone(),
+                                    line,
+                                });
+                                state.popover_edit = None;
+                                state.popover_buffer.clear();
+                            }
+                            NoteEdit::Idle => {}
+                        }
+                    } else {
+                        let loc = match line {
+                            Some(n) => format!("L{n}"),
+                            None => "·".to_owned(),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(loc)
+                                    .monospace()
+                                    .size(PILL_SIZE)
+                                    .color(palette.text_muted),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(truncate_code(&c.code))
+                                        .monospace()
+                                        .size(PILL_SIZE)
+                                        .color(palette.text_muted),
+                                )
+                                .truncate(),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            if icon_button(
+                                ui,
+                                palette,
+                                lucide_icons::Icon::Trash2,
+                                palette.git_deleted,
+                                "Delete review note",
+                            ) {
+                                out.push(ReviewIntent::DeleteComment {
+                                    file: file.clone(),
+                                    line,
+                                });
+                            }
+                            let note = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&c.note)
+                                        .size(LINE_SIZE)
+                                        .color(palette.text_secondary),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if note.clicked() {
+                                state.popover_edit = Some((file.clone(), line));
+                                state.popover_buffer = c.note.clone();
+                                state.active_comment = None;
+                                state.note_focus = true;
+                            }
+                        });
+                    }
+                }
             }
         });
-        ui.add_space(2.0);
+    ui.add_space(4.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if send_pill(ui, palette, agent) {
+            out.push(ReviewIntent::SendToAgent);
+        }
+    });
+}
+
+/// Recap footer action: a Sparkles glyph and a "Send to {agent}" label in a pill
+/// (the AI-call icon used by the commit message), hover-tinted to the accent.
+fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
+    let label = format!("Send to {agent}");
+    let font = egui::FontId::proportional(PILL_SIZE);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
+    let icon_w = LINE_SIZE;
+    let size = egui::vec2(icon_w + 6.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
+    let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
+    let (fill, content) = if hovered {
+        (with_alpha(palette.accent, 36), palette.accent)
+    } else {
+        (palette.bg_surface, palette.text_secondary)
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_PILL),
+        fill,
+        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    crate::ui::paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + 8.0 + icon_w / 2.0, rect.center().y),
+        icon_w,
+        lucide_icons::Icon::Sparkles,
+        content,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 8.0 + icon_w + 6.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label.clone(),
+        font,
+        content,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    response.clicked()
+}
+
+/// Single-line, trimmed-and-capped code snippet used as the anchor shown beside a
+/// note in the recap popover.
+fn truncate_code(code: &str) -> String {
+    const MAX: usize = 40;
+    let trimmed = code.trim();
+    if trimmed.chars().count() > MAX {
+        let head: String = trimmed.chars().take(MAX).collect();
+        format!("{head}…")
+    } else {
+        trimmed.to_owned()
     }
 }
 
@@ -919,7 +1333,7 @@ fn extension_line(
         palette,
         staged: ext.staged,
         read_only: ext.read_only,
-        review_mode: false,
+        review: false,
         selected: false,
         highlighted: None,
         text_range: state.text_range_for_row(ext.text_row, text),
@@ -1177,7 +1591,9 @@ struct DiffLineCtx<'a> {
     palette: &'a Palette,
     staged: bool,
     read_only: bool,
-    review_mode: bool,
+    /// Review annotation available (the note icon shows on hover; a click opens
+    /// the inline editor). `false` only at the non-review call sites (tests).
+    review: bool,
     selected: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     text_range: Option<(usize, usize)>,
@@ -1273,11 +1689,11 @@ fn diff_line(
 
     let click_position =
         text_click_position(&response, content_left, ctx.char_w, ctx.text_row, text_len);
-    // The stage/unstage line button is hidden in review mode — a click annotates
-    // the line instead of staging it.
-    let line_action_clicked = !ctx.review_mode
-        && selectable
-        && line_action_button(ui, ctx.palette, rect, response.hovered(), ctx.staged);
+    let line_action_clicked =
+        selectable && line_action_button(ui, ctx.palette, rect, response.hovered(), ctx.staged);
+    // The review-note (✦) icon sits beside the stage button on every line; a
+    // click opens the inline editor without leaving a "review mode".
+    let comment_clicked = ctx.review && comment_button(ui, ctx.palette, rect, response.hovered());
     let action = if response.triple_clicked() {
         click_position.map(|at| {
             DiffLineAction::SelectText(TextSelection {
@@ -1294,7 +1710,7 @@ fn diff_line(
                 mode: TextSelectionMode::Word,
             })
         })
-    } else if ctx.review_mode && response.clicked() {
+    } else if comment_clicked {
         Some(DiffLineAction::OpenComment {
             old: row.old_lineno,
             new: row.new_lineno,
@@ -1587,6 +2003,60 @@ fn line_action_button(
         );
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.clicked()
+}
+
+/// Review-note (✦) button in the gutter, beside the stage button. Painted on row
+/// hover; a click opens the inline note editor for the line. Returns `true` on
+/// click.
+fn comment_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    row: egui::Rect,
+    row_hovered: bool,
+) -> bool {
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(
+            row.left()
+                + LINE_ACTION_LEFT
+                + LINE_ACTION_SIZE
+                + LINE_ACTION_GAP
+                + LINE_ACTION_SIZE / 2.0,
+            row.center().y,
+        ),
+        egui::vec2(LINE_ACTION_SIZE, LINE_ACTION_SIZE),
+    );
+    let response = ui
+        .interact(
+            rect,
+            ui.id()
+                .with(("line_comment", row.min.x.to_bits(), row.min.y.to_bits())),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if row_hovered || response.hovered() {
+        if response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same(RADIUS_PILL),
+                palette.bg_surface_hover,
+            );
+        }
+        let color = if response.hovered() {
+            palette.accent
+        } else {
+            palette.text_muted
+        };
+        crate::ui::paint_icon(
+            ui.painter(),
+            rect.center(),
+            LINE_SIZE,
+            lucide_icons::Icon::Sparkles,
+            color,
+        );
+    }
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Comment line"));
     response.clicked()
 }
 

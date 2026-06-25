@@ -40,17 +40,18 @@ pub fn run_command(program: impl Into<OsString>, cwd: &Path, command: &str) -> C
     cmd
 }
 
-/// Agent CLI launched directly (no shell) with the review prompt as a single
-/// argv (M-RC): the program (`claude`) gets `[prompt]`, so the interactive
-/// session opens seeded with the prompt — `-c`/`-l` would route it through a
-/// shell and treat the prompt as a script.
-pub fn agent_command(program: impl Into<OsString>, cwd: &Path, prompt: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(program.into());
-    cmd.arg(prompt);
-    cmd.cwd(cwd);
-    cmd.env("TERM", TERM);
-    cmd.env("COLORTERM", COLORTERM);
-    cmd
+/// Env var the review prompt is exported under (M-RC): [`agent_invocation`]
+/// expands it as a single argv, so the prompt is never shell-escaped nor echoed
+/// into the terminal.
+pub const REVIEW_PROMPT_ENV: &str = "HELM_REVIEW_PROMPT";
+
+/// Command fed into the agent pane's interactive login shell (M-RC): runs the
+/// configured CLI with the review prompt (`$HELM_REVIEW_PROMPT`) as a single
+/// argument. Running the agent as a job of the shell — rather than as the pane's
+/// root process — keeps the terminal usable once the agent exits: Ctrl+C drops
+/// back to the shell prompt instead of leaving a dead "[process exited]" pane.
+pub fn agent_invocation(program: &str) -> String {
+    format!("{program} \"${REVIEW_PROMPT_ENV}\"\n")
 }
 
 pub struct Pty {
@@ -181,17 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn agent_command_passes_prompt_as_single_argv() {
-        let cmd = agent_command(
-            "claude",
-            Path::new("/tmp"),
-            "review this\n## a.rs\n- L1: fix",
+    fn agent_invocation_runs_the_cli_with_the_prompt_env() {
+        assert_eq!(
+            agent_invocation("claude"),
+            "claude \"$HELM_REVIEW_PROMPT\"\n"
         );
-        let argv = cmd.get_argv();
-        assert_eq!(argv[0], OsString::from("claude"));
-        assert_eq!(argv[1], OsString::from("review this\n## a.rs\n- L1: fix"));
-        assert_eq!(argv.len(), 2);
-        assert_eq!(cmd.get_cwd(), Some(&OsString::from("/tmp")));
-        assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(TERM)));
+        // Configured flags are preserved before the quoted prompt argument.
+        assert_eq!(
+            agent_invocation("claude --model opus"),
+            "claude --model opus \"$HELM_REVIEW_PROMPT\"\n"
+        );
     }
 }

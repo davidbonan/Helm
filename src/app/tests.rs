@@ -1929,8 +1929,9 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
     let mut ws = Workspace::new();
     ws.add(Repo::new(tmp.path().to_path_buf()));
     let mut app = HelmApp::with_workspace(ws);
-    // Stub agent that always resolves and exits cleanly: the spawn succeeds, so
-    // the pre-inserted pane is `Live`, proving the agent path (not a plain shell).
+    // The agent runs as a job of an interactive login shell (so the terminal
+    // survives the agent exiting): the pane is the shell, and the configured
+    // command is fed into it rather than exec'd as the pane's root process.
     app.review_agent_command = "/bin/echo".to_owned();
     app.central_mode = CentralMode::Graph;
 
@@ -1952,6 +1953,10 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
     let ctx = egui::Context::default();
     app.send_review_to_agent(&ctx);
 
+    assert!(
+        !app.review.contains_key(&key),
+        "the repo's comments are cleared once handed off to the agent"
+    );
     assert_eq!(app.workspace.tab_count().unwrap(), tabs_before + 1);
     let active_tab = app.workspace.active_tab().unwrap();
     assert_eq!(
@@ -1966,7 +1971,7 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
         .and_then(|p| p.get(&PaneId(0)));
     assert!(
         matches!(pane, Some(TerminalState::Live(_))),
-        "the new tab must carry a live agent pane spawned with the prompt"
+        "the new tab must carry a live agent pane (the login shell running the CLI)"
     );
     assert_eq!(app.central_mode, CentralMode::Terminal);
     assert!(app.diff.is_none());

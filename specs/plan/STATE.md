@@ -70,13 +70,20 @@ workspace repos. Counter: **0/9**.
 
 ## Completed milestone — ☑ M-RC · In-diff code review → Send to Claude
 
-In-diff annotation flow: **Review mode → click a line → text field + Validate
-under the line → annotate across multiple files (comments accumulate per repo) →
-header button `Send to {agent} (N)`** opens a **new terminal tab** running
-`claude "<prompt>"` in the active worktree, prompt = aggregated file/line/code/note.
-Works on **both** Git WIP and Commit Détail (read-only lines made annotable in
-review mode). Locked: multi-file accumulation (app-level store), **dedicated**
-pref `review_agent_command` (default `claude`), launch in a **new tab**.
+In-diff annotation flow (no review "mode"): each diff line carries a borderless
+**note (✦) icon** beside its stage `+`; clicking it opens an **inline editor**
+(Enter / click-outside validates, Shift+Enter newline; ✕ deletes the comment, ✓
+validates), a saved note shows as a **clickable card** (click re-opens its
+editor) → annotate across multiple files (comments accumulate per repo). The
+header **recap chip (✦ N)** opens a **popover** listing every note grouped by file
+(each shows its truncated code anchor, edits in place, deletes) with a
+right-anchored **✦ Send to {agent}** footer that opens a **new terminal tab**
+running
+`claude "<prompt>"` in the active worktree (prompt = aggregated
+file/line/code/note) and **clears** the repo's comments (the tab is the only
+signal). Works on **both** Git WIP and Commit Détail (every line annotable).
+Locked: multi-file accumulation (app-level store), **dedicated** pref
+`review_agent_command` (default `claude`), launch in a **new tab**.
 In-memory only except `review_agent_command` (persisted). Counter: **6/6**.
 
 - ☑ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
@@ -93,29 +100,37 @@ In-memory only except `review_agent_command` (persisted). Counter: **6/6**.
   delete+purge empty file, total count). *Files*: `src/review.rs`. *Tests*: unit
   on add/delete/purge/count. (HelmApp/DiffViewState/DiffReview wiring folded into
   RC4 — those private fields only become live with RC4's rendering.)
-- ☑ **RC4 — diff_view rendering + wiring.** Introduces `HelmApp.{review:
-  HashMap<RepoKey, FileComments>, review_mode}` + `apply_review_intent`
-  (toggle/save/delete/clear; `SendToAgent` no-op stub → RC5),
-  `DiffViewState.{active_comment, comment_buffer}` (+ `clear()`), `struct
-  DiffReview<'a>` 8th param of `diff_view()` as `Option<&mut DiffReview>` (both
-  call-sites; `None` at the test sites). Header: Review toggle + `Send (N)` +
-  Clear. `diff_line` returns `Option<DiffLineAction>`; rows allocate height
-  before the clip check (reserved off-screen); per-line loop renders saved note
-  block (+ Delete pill) + inline `TextEdit` editor at `content_left`. Click in
-  review mode → `DiffLineAction::OpenComment` (incl. read-only lines), per-line
-  stage hover-pill suppressed; first `Esc` cancels editor. *Files*:
-  `src/app/mod.rs`, `src/ui/diff_view.rs`, `src/app/render.rs`. *Tests*: UI e2e
-  (click line → type → Validate → `SaveComment` intent; `Send (1)` badge count) +
-  `headless-verify` (toggle → click → type → Validate → saved note + badge).
+- ☑ **RC4 — diff_view rendering + wiring (no review "mode").** Introduces
+  `HelmApp.review: HashMap<RepoKey, FileComments>` + `apply_review_intent`
+  (save/delete; `SendToAgent` no-op stub → RC5), `DiffViewState.{active_comment,
+  popover_edit, popover_buffer, note_focus}` (+ `clear()`), `struct
+  DiffReview<'a> { comments, agent, intents }` 8th param of `diff_view()` as
+  `Option<&mut DiffReview>` (both call-sites; `None` at the test sites). Each
+  diff line carries a per-line note (✦) icon beside its stage `+` (gutter widened
+  via `LINE_ACTION_W`/`LINE_ACTION_GAP`); click → `DiffLineAction::OpenComment`
+  (incl. read-only lines). `diff_line` returns `Option<DiffLineAction>`; rows
+  allocate height before the clip check. Per-line loop renders an inline
+  `note_editor` (Enter validates, Shift+Enter newline via `input_mut` event
+  filtering; ✕/✓ icons under the field) or a saved-note `note_card` (clickable →
+  re-opens its editor); `note_focus` one-shot autofocus. Header: recap chip
+  (✦ N) → `CloseOnClickOutside` popover (per-file notes, each edit-in-place +
+  delete, `Send to {agent}` footer). First `Esc` cancels editor/popover-edit.
+  *Files*: `src/app/mod.rs`, `src/ui/diff_view.rs`, `src/app/render.rs`. *Tests*:
+  UI e2e (click ✦ → type → Validate → `SaveComment`; chip → popover lists notes,
+  delete, `Send to {agent}` → `SendToAgent`).
 - ☑ **RC5 — Apply + spawn.** `apply_review_intent::SendToAgent` →
   `send_review_to_agent(ctx)`: build prompt (`build_review_prompt`) → `add_tab`
   → pre-insert the agent pane under `(run_key, new_tab_id)` at the fresh tab's
   focus `PaneId` (render's `or_insert_with` then a no-op) → rename tab to the
-  agent command → `central_mode = Terminal`, `diff = None`. `pty::agent_command`
-  (program + prompt argv, no `-l`/`-c`) + `open_agent_terminal`. *Files*:
-  `src/app/{mod,render}.rs`, `src/terminal/pty.rs`. *Tests*: unit pty
-  argv/cwd/TERM; in-crate e2e (seeded comments → `send_review_to_agent` adds an
-  active tab carrying a `Live` agent pane + flips central mode, clears diff).
+  agent command → **clear the repo's comments** (`self.review.remove(&key)`) →
+  `central_mode = Terminal`, `diff = None`. `open_agent_terminal` spawns an
+  **interactive login shell** with the prompt exported (`HELM_REVIEW_PROMPT`)
+  then feeds `pty::agent_invocation` (`{program} "$HELM_REVIEW_PROMPT"`): the
+  agent runs as a **shell job**, so Ctrl+C / exit drops back to a usable prompt
+  instead of a dead pane. *Files*: `src/app/{mod,render}.rs`,
+  `src/terminal/pty.rs`. *Tests*: unit on the fed invocation; in-crate e2e
+  (seeded comments → `send_review_to_agent` adds an active tab carrying a `Live`
+  agent pane + flips central mode, clears diff).
 - ☑ **RC6 — End-to-end verify.** `headless-verify`: review WIP + Commit Détail,
   multi-file, Send opens a new tab with a live pane (stub agent in test).
   Demonstrable milestone scenario (DoD).
@@ -125,5 +140,5 @@ In-memory only except `review_agent_command` (persisted). Counter: **6/6**.
   `main`.
 
 ### Open questions (M-RC)
-- Keep comments after Send (current plan) vs clear automatically — Clear button
-  provided either way.
+- none — Send now clears the repo's comments automatically (opening the tab is
+  the only signal); the standalone Clear control was dropped.
