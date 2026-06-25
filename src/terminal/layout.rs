@@ -137,6 +137,48 @@ impl Layout {
         adjust_exact_split(&mut self.root, first, second, delta, area, cell_w, cell_h);
     }
 
+    /// Drag-and-drop reorg: re-homes the dragged pane `src` next to `target`,
+    /// splitting `target` so `src` lands on the `side` half (ratio reset to 0.5).
+    /// `src` keeps its `PaneId`, so its live pane follows; focus moves with it.
+    /// No-op if `src == target` or either pane is gone.
+    pub fn move_pane(&mut self, src: PaneId, target: PaneId, side: Dir) {
+        if src == target || !contains(&self.root, src) || !contains(&self.root, target) {
+            return;
+        }
+        remove_leaf(&mut self.root, src);
+        let orient = match side {
+            Dir::Left | Dir::Right => Orient::Vertical,
+            Dir::Up | Dir::Down => Orient::Horizontal,
+        };
+        let src_first = matches!(side, Dir::Left | Dir::Up);
+        replace_leaf(&mut self.root, target, |leaf| {
+            let moved = Node::Leaf(src);
+            let (first, second) = if src_first {
+                (moved, leaf)
+            } else {
+                (leaf, moved)
+            };
+            Node::Split {
+                orient,
+                ratio: 0.5,
+                first: Box::new(first),
+                second: Box::new(second),
+            }
+        });
+        self.focus = src;
+    }
+
+    /// Drag-and-drop reorg: swaps the on-screen positions of `src` and `target`,
+    /// leaving the tree topology untouched. Focus follows the dragged `src`.
+    /// No-op if the two ids are equal or either is gone.
+    pub fn swap_panes(&mut self, src: PaneId, target: PaneId) {
+        if src == target || !contains(&self.root, src) || !contains(&self.root, target) {
+            return;
+        }
+        swap_ids(&mut self.root, src, target);
+        self.focus = src;
+    }
+
     pub fn focus_neighbor(&mut self, dir: Dir, area: Rect) {
         let rects = self.rects(area);
         let Some(current) = rects.iter().find(|(id, _)| *id == self.focus) else {
@@ -217,6 +259,22 @@ fn contains(node: &Node, target: PaneId) -> bool {
     match node {
         Node::Leaf(id) => *id == target,
         Node::Split { first, second, .. } => contains(first, target) || contains(second, target),
+    }
+}
+
+fn swap_ids(node: &mut Node, a: PaneId, b: PaneId) {
+    match node {
+        Node::Leaf(id) => {
+            if *id == a {
+                *id = b;
+            } else if *id == b {
+                *id = a;
+            }
+        }
+        Node::Split { first, second, .. } => {
+            swap_ids(first, a, b);
+            swap_ids(second, a, b);
+        }
     }
 }
 
@@ -703,5 +761,76 @@ mod tests {
         assert_eq!(layout.focus(), left);
         layout.focus_neighbor(Dir::Up, AREA);
         assert_eq!(layout.focus(), left);
+    }
+
+    #[test]
+    fn move_pane_resplits_target_on_the_given_side() {
+        // A | B (vertical). Moving A below B detaches A, then re-splits B so B
+        // sits on top of A (horizontal); the dragged pane keeps focus.
+        let mut layout = Layout::new();
+        let a = layout.focus();
+        let b = layout.split(Orient::Vertical);
+
+        layout.move_pane(a, b, Dir::Down);
+
+        match layout.root() {
+            Node::Split {
+                orient: Orient::Horizontal,
+                first,
+                second,
+                ..
+            } => {
+                assert_eq!(**first, Node::Leaf(b));
+                assert_eq!(**second, Node::Leaf(a));
+            }
+            other => panic!("expected a horizontal split, got {other:?}"),
+        }
+        assert_eq!(layout.focus(), a);
+    }
+
+    #[test]
+    fn move_pane_onto_self_or_a_missing_pane_is_a_noop() {
+        let mut layout = Layout::new();
+        let a = layout.focus();
+        let b = layout.split(Orient::Vertical);
+        let before = layout.root().clone();
+
+        layout.move_pane(a, a, Dir::Left);
+        assert_eq!(*layout.root(), before);
+        layout.move_pane(a, PaneId(999), Dir::Left);
+        assert_eq!(*layout.root(), before);
+        layout.move_pane(PaneId(999), b, Dir::Left);
+        assert_eq!(*layout.root(), before);
+    }
+
+    #[test]
+    fn swap_panes_exchanges_the_two_leaf_positions_and_focuses_the_dragged() {
+        let mut layout = Layout::new();
+        let a = layout.focus();
+        let b = layout.split(Orient::Vertical);
+
+        layout.swap_panes(a, b);
+
+        match layout.root() {
+            Node::Split { first, second, .. } => {
+                assert_eq!(**first, Node::Leaf(b));
+                assert_eq!(**second, Node::Leaf(a));
+            }
+            other => panic!("expected a split, got {other:?}"),
+        }
+        assert_eq!(layout.focus(), a);
+    }
+
+    #[test]
+    fn swap_panes_onto_self_or_a_missing_pane_is_a_noop() {
+        let mut layout = Layout::new();
+        let a = layout.focus();
+        layout.split(Orient::Vertical);
+        let before = layout.root().clone();
+
+        layout.swap_panes(a, a);
+        assert_eq!(*layout.root(), before);
+        layout.swap_panes(a, PaneId(999));
+        assert_eq!(*layout.root(), before);
     }
 }

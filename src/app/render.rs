@@ -1674,6 +1674,16 @@ impl HelmApp {
                                 cell_h,
                             );
                         }
+                        if let Some(drop) = output.drop {
+                            match drop.zone {
+                                crate::ui::terminal_view::DropZone::Swap => {
+                                    active_layout.swap_panes(drop.src, drop.target)
+                                }
+                                crate::ui::terminal_view::DropZone::Side(side) => {
+                                    active_layout.move_pane(drop.src, drop.target, side)
+                                }
+                            }
+                        }
                     }
                     if zone.terminal_shortcuts_active() {
                         route_layout_keys(

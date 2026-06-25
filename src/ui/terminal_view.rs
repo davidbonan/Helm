@@ -10,17 +10,32 @@ use crate::terminal::emu::{
     ScrollKind, SharedTerm,
 };
 use crate::terminal::layout::{
-    first_leaf, split_rects, Layout, Node, Orient, PaneId, Rect as PaneRect, MIN_COLS, MIN_LINES,
+    first_leaf, split_rects, Dir, Layout, Node, Orient, PaneId, Rect as PaneRect, MIN_COLS,
+    MIN_LINES,
 };
 use crate::terminal::links::{link_at, LinkAction};
 use crate::terminal::palette::{Rgb, TermPalette};
 use crate::terminal::selection::{covers, selected_text, Cell, Selection, SelectionMode};
 use crate::theme::Palette;
+use crate::ui::{paint_icon, with_alpha};
 
 const SELECTION_ALPHA: u8 = 110;
 
 const SEPARATOR_THICKNESS: f32 = 1.0;
 const SEPARATOR_HANDLE: f32 = 6.0;
+
+/// Drag-grip pill revealed at the top of each pane on hover (terminal.md §5):
+/// grabbing it starts a drag-and-drop reorg of the splits.
+const GRIP_W: f32 = 26.0;
+const GRIP_H: f32 = 14.0;
+const GRIP_TOP: f32 = 3.0;
+const GRIP_ICON: f32 = 13.0;
+/// Half-extent (per axis, as a fraction of the target pane) of the central
+/// "swap" zone of a drop target; outside it the nearest edge picks the re-split
+/// side.
+const DROP_SWAP_HALF: f32 = 0.18;
+/// Fill translucency of the drop-zone highlight overlay.
+const DROP_OVERLAY_ALPHA: u8 = 64;
 
 /// Breathing room below the last line: the grid is sized to the area minus this
 /// margin so the bottom doesn't touch the window edge.
@@ -1768,10 +1783,31 @@ pub struct ResizeDrag {
     pub delta: f32,
 }
 
+/// Drag payload carried while a pane grip is dragged: the pane being relocated.
+#[derive(Clone, Copy)]
+struct DragPane(PaneId);
+
+/// Where a pane drag was released over the target pane (terminal.md §5): a
+/// directional edge re-splits the target, the center swaps the two panes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DropZone {
+    Side(Dir),
+    Swap,
+}
+
+/// A completed pane drag-and-drop: relocate `src` onto `target` per `zone`.
+#[derive(Clone, Copy)]
+pub struct PaneDrop {
+    pub src: PaneId,
+    pub target: PaneId,
+    pub zone: DropZone,
+}
+
 #[derive(Default)]
 pub struct TreeOutput {
     pub focus: Option<PaneId>,
     pub resize: Option<ResizeDrag>,
+    pub drop: Option<PaneDrop>,
 }
 
 pub fn terminal_tree(
@@ -1789,17 +1825,165 @@ pub fn terminal_tree(
     };
 
     let mut output = TreeOutput::default();
-    for (id, rect) in layout.rects(pane_area) {
-        let egui_rect = to_egui_rect(rect);
+    let rects = layout.rects(pane_area);
+    for (id, rect) in &rects {
+        let egui_rect = to_egui_rect(*rect);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui_rect).id_salt(id.0));
-        let focused = id == layout.focus();
-        if leaf(&mut child, id, focused) {
-            output.focus = Some(id);
+        let focused = *id == layout.focus();
+        if leaf(&mut child, *id, focused) {
+            output.focus = Some(*id);
         }
+    }
+
+    // Pane reorg drag-and-drop (terminal.md §5): a hover grip starts the drag,
+    // the hovered pane shows a drop overlay, release emits the reorg. Only
+    // meaningful with more than one pane.
+    if rects.len() > 1 {
+        pane_drag_grips(ui, &rects, chrome);
+        detect_pane_drop(ui, &rects, chrome, &mut output);
     }
 
     paint_separators(ui, layout.root(), pane_area, chrome, &mut output);
     output
+}
+
+/// Reveals a drag grip at the top of each hovered pane and arms it as a
+/// drag-and-drop source. Suppressed mid-drag — the drop overlays carry the
+/// feedback from there on, and the payload persists in egui regardless.
+fn pane_drag_grips(ui: &mut egui::Ui, rects: &[(PaneId, PaneRect)], chrome: &Palette) {
+    if egui::DragAndDrop::has_payload_of_type::<DragPane>(ui.ctx()) {
+        return;
+    }
+    for (id, rect) in rects {
+        let egui_rect = to_egui_rect(*rect);
+        if !ui.rect_contains_pointer(egui_rect) {
+            continue;
+        }
+        // Top-right corner — clear of the left-aligned terminal content and of a
+        // pane click (which still focuses the pane underneath the grip).
+        let grip = egui::Rect::from_min_size(
+            egui::pos2(
+                egui_rect.right() - GRIP_W - GRIP_TOP,
+                egui_rect.top() + GRIP_TOP,
+            ),
+            egui::vec2(GRIP_W, GRIP_H),
+        );
+        // Drag-only: a click on the grip falls through to the terminal below so
+        // it still focuses the pane; only a drag is captured here.
+        let resp = ui
+            .interact(grip, ui.id().with(("pane_grip", id.0)), egui::Sense::drag())
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        resp.dnd_set_drag_payload(DragPane(*id));
+        let active = resp.hovered() || resp.dragged();
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        let bg = if active {
+            chrome.bg_surface_hover
+        } else {
+            with_alpha(chrome.bg_surface, 200)
+        };
+        ui.painter()
+            .rect_filled(grip, egui::CornerRadius::same(4), bg);
+        let ink = if active {
+            chrome.text_primary
+        } else {
+            chrome.text_muted
+        };
+        paint_icon(
+            ui.painter(),
+            grip.center(),
+            GRIP_ICON,
+            lucide_icons::Icon::GripVertical,
+            ink,
+        );
+    }
+}
+
+/// While a pane is being dragged, highlights the drop zone under the pointer and,
+/// on release, records the reorg in `output.drop`. Gated on an active `DragPane`
+/// payload so the hover sensing never steals the terminal's pointer otherwise.
+fn detect_pane_drop(
+    ui: &mut egui::Ui,
+    rects: &[(PaneId, PaneRect)],
+    chrome: &Palette,
+    output: &mut TreeOutput,
+) {
+    if !egui::DragAndDrop::has_payload_of_type::<DragPane>(ui.ctx()) {
+        return;
+    }
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    for (id, rect) in rects {
+        let egui_rect = to_egui_rect(*rect);
+        let resp = ui.interact(
+            egui_rect,
+            ui.id().with(("pane_drop", id.0)),
+            egui::Sense::hover(),
+        );
+        let Some(p) = pointer else { continue };
+        if let Some(drag) = resp.dnd_release_payload::<DragPane>() {
+            if drag.0 != *id {
+                output.drop = Some(PaneDrop {
+                    src: drag.0,
+                    target: *id,
+                    zone: drop_zone(egui_rect, p),
+                });
+            }
+        } else if let Some(drag) = resp.dnd_hover_payload::<DragPane>() {
+            if drag.0 != *id {
+                paint_drop_overlay(ui.painter(), egui_rect, drop_zone(egui_rect, p), chrome);
+            }
+        }
+    }
+}
+
+/// Maps the pointer position within a target pane to a drop zone: the central
+/// band swaps, otherwise the nearest edge selects the re-split side.
+fn drop_zone(rect: egui::Rect, p: egui::Pos2) -> DropZone {
+    let fx = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+    let fy = ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+    if (fx - 0.5).abs() < DROP_SWAP_HALF && (fy - 0.5).abs() < DROP_SWAP_HALF {
+        return DropZone::Swap;
+    }
+    let (left, right, top, bottom) = (fx, 1.0 - fx, fy, 1.0 - fy);
+    let min = left.min(right).min(top).min(bottom);
+    if min == left {
+        DropZone::Side(Dir::Left)
+    } else if min == right {
+        DropZone::Side(Dir::Right)
+    } else if min == top {
+        DropZone::Side(Dir::Up)
+    } else {
+        DropZone::Side(Dir::Down)
+    }
+}
+
+fn paint_drop_overlay(painter: &egui::Painter, rect: egui::Rect, zone: DropZone, chrome: &Palette) {
+    let half_w = egui::vec2(rect.width() / 2.0, rect.height());
+    let half_h = egui::vec2(rect.width(), rect.height() / 2.0);
+    let target = match zone {
+        DropZone::Swap => rect,
+        DropZone::Side(Dir::Left) => egui::Rect::from_min_size(rect.min, half_w),
+        DropZone::Side(Dir::Right) => {
+            egui::Rect::from_min_size(egui::pos2(rect.center().x, rect.top()), half_w)
+        }
+        DropZone::Side(Dir::Up) => egui::Rect::from_min_size(rect.min, half_h),
+        DropZone::Side(Dir::Down) => {
+            egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y), half_h)
+        }
+    };
+    let target = target.shrink(2.0);
+    painter.rect_filled(
+        target,
+        egui::CornerRadius::same(4),
+        with_alpha(chrome.accent, DROP_OVERLAY_ALPHA),
+    );
+    painter.rect_stroke(
+        target,
+        egui::CornerRadius::same(4),
+        egui::Stroke::new(1.5, chrome.accent),
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn paint_separators(
@@ -2610,6 +2794,25 @@ mod tests {
                 rows: MIN_LINES,
                 cols: MIN_COLS
             }
+        );
+    }
+
+    #[test]
+    fn drop_zone_swaps_at_center_and_picks_the_nearest_edge_otherwise() {
+        let r = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        assert_eq!(drop_zone(r, egui::pos2(50.0, 50.0)), DropZone::Swap);
+        assert_eq!(
+            drop_zone(r, egui::pos2(5.0, 50.0)),
+            DropZone::Side(Dir::Left)
+        );
+        assert_eq!(
+            drop_zone(r, egui::pos2(95.0, 50.0)),
+            DropZone::Side(Dir::Right)
+        );
+        assert_eq!(drop_zone(r, egui::pos2(50.0, 5.0)), DropZone::Side(Dir::Up));
+        assert_eq!(
+            drop_zone(r, egui::pos2(50.0, 95.0)),
+            DropZone::Side(Dir::Down)
         );
     }
 }
