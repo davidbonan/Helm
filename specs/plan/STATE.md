@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **5/9**.
+workspace repos. Counter: **6/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -38,10 +38,11 @@ workspace repos. Counter: **5/9**.
   (sidebar stays, git panel hides); `SidebarAction.open_pull_requests`. **No
   keyboard shortcut.** *Files*: `src/ui/repo_sidebar.rs`, `src/ui/mod.rs`,
   `src/app/{mod,render}.rs`. *Tests*: UI e2e (entry renders, click sets mode).
-- ☐ **PR6 — Cockpit page.** `ui::pull_requests_view::pull_requests_page`: two-pane
+- ☑ **PR6 — Cockpit page.** `ui::pull_requests_view::pull_requests_page`: two-pane
   (list grouped To review / Mine + detail panel: description, checks, reviewers,
   read-only comments; actions Open in browser / Checkout), resizable split
-  `Prefs.pr_detail_width`. *Files*: `src/ui/pull_requests_view.rs`, `src/ui/mod.rs`.
+  `Prefs.pr_detail_width`. *Files*: `src/ui/pull_requests_view.rs`, `src/ui/mod.rs`,
+  `src/persistence.rs`, `src/app/{mod,render}.rs`.
   *Tests*: UI e2e on a fixture list (groups, rows, select, action intents).
 - ☐ **PR7 — Checkout = worktree.** If a worktree already sits on the PR source
   branch ⇒ activate that row (no git write); else fetch the branch (GitHub
@@ -58,11 +59,11 @@ workspace repos. Counter: **5/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR6** (Cockpit page) — `ui::pull_requests_view::pull_requests_page`:
-  two-pane (list grouped To review / Mine + detail panel), resizable split
-  `Prefs.pr_detail_width`. Fills the empty `CentralMode::PullRequests` takeover
-  branches in `render.rs` (Some-path ~line 1005, None-path ~line 1803). UI e2e on
-  a fixture list.
+- Start **PR7** (Checkout = worktree) — wire the cockpit's `action.checkout` in
+  `render.rs`: existing worktree on the PR source branch ⇒ activate that row (no
+  git write); else fetch the branch (GitHub `pull/<n>/head`, Bitbucket
+  `origin/<source>`) and create a worktree via `git::worktree::CreateRunner`,
+  then activate it. Unit on fetch-ref/argv build + existing-worktree match.
 
 ### Blockers
 - none

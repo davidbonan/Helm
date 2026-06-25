@@ -22,6 +22,9 @@ const DEFAULT_AGENTS_COLUMN_WIDTH: f32 = 874.0;
 /// Default shared height of an agent's live-terminal card in the columns view;
 /// the user resizes it by dragging a card's bottom edge (specs/agents.md §5).
 const DEFAULT_AGENTS_TERMINAL_HEIGHT: f32 = 360.0;
+/// Default width of the PR cockpit's detail panel; the user resizes it by
+/// dragging the list/detail split (specs/pull-requests.md §5).
+const DEFAULT_PR_DETAIL_WIDTH: f32 = 460.0;
 /// Default height of the Run terminal strip at the bottom of the git sidebar
 /// (git.md §3); the user resizes it by dragging its top edge.
 const DEFAULT_RUN_PANEL_HEIGHT: f32 = 280.0;
@@ -150,6 +153,9 @@ pub struct Prefs {
     /// Bitbucket source stays off.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bitbucket_email: String,
+    /// Width of the PR cockpit's detail panel, set by dragging the list/detail
+    /// split (pull-requests.md §5). Restored on launch; clamped by the view.
+    pub pr_detail_width: f32,
     /// Rebindable-action deviations (`action-id = "combo"`, keybindings.md §6):
     /// only deviations from the defaults, `""` = unbound; unknown ids are kept
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
@@ -188,6 +194,7 @@ impl Default for Prefs {
             last_seen_version: String::new(),
             review_agent_command: default_review_agent_command(),
             bitbucket_email: String::new(),
+            pr_detail_width: DEFAULT_PR_DETAIL_WIDTH,
             keybindings: BTreeMap::new(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -526,6 +533,7 @@ mod tests {
             last_seen_version: "0.8.4".to_owned(),
             review_agent_command: "claude --model opus".to_owned(),
             bitbucket_email: "me@corp.com".to_owned(),
+            pr_detail_width: 480.0,
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),

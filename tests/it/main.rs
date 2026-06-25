@@ -44,6 +44,7 @@ mod ui_graph_toolbar;
 mod ui_graph_view;
 mod ui_layout;
 mod ui_preferences;
+mod ui_pull_requests_view;
 mod ui_rebase_view;
 mod ui_release_notes;
 mod ui_repo_sidebar;

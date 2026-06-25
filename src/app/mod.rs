@@ -403,6 +403,12 @@ pub struct HelmApp {
     /// Last PR fetch result shown in the cockpit, refreshed in place each reply.
     pr_cache: crate::pull_requests::runner::PrCache,
     last_pr_poll: f64,
+    /// Selected PR row in the cockpit, indexing `pr_cache.pull_requests`; drives
+    /// the detail panel. Session-only, like the cache itself.
+    pr_selected: Option<usize>,
+    /// Width of the cockpit's detail panel (pull-requests.md §5); live source for
+    /// rendering, mirrored into `Prefs` on drag (persisted).
+    pr_detail_width: f32,
     /// Prefs file to rewrite. `None` (constructors) = ephemeral app: tests and headless
     /// verification must never touch the user's real TOML; only `run()` injects the
     /// persisted path.
@@ -547,6 +553,8 @@ impl HelmApp {
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
             last_pr_poll: 0.0,
+            pr_selected: None,
+            pr_detail_width: prefs.pr_detail_width,
             prefs_path: None,
             keymap: snapshot.keymap(),
             prefs: snapshot,

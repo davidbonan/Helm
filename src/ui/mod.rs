@@ -9,6 +9,7 @@ pub mod git_panel;
 pub mod graph_toolbar;
 pub mod graph_view;
 pub mod preferences;
+pub mod pull_requests_view;
 pub mod rebase_view;
 pub mod release_notes;
 pub mod repo_sidebar;

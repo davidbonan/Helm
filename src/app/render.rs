@@ -737,6 +737,18 @@ impl HelmApp {
         let mut pull_default_to_persist = None;
         let mut create_worktree_request = None;
         let mut run_intent: Option<RunIntent> = None;
+        // PR cockpit snapshot: the list is cloned only when the cockpit is on
+        // screen (mirrors the agents dashboard's gated build above).
+        let pr_list: Vec<crate::pull_requests::model::PullRequest> = if pr_active {
+            self.pr_cache.pull_requests.clone()
+        } else {
+            Vec::new()
+        };
+        let pr_selected = self.pr_selected;
+        let pr_detail_width = self.pr_detail_width;
+        let mut pr_select = None;
+        let mut pr_open_url: Option<String> = None;
+        let mut pr_set_detail_width = None;
 
         // A stale active index makes these accessors return None; degrade to the
         // empty state below instead of panicking mid-frame (M17-4).
@@ -1018,6 +1030,17 @@ impl HelmApp {
                         // the term/graph switch is suppressed; its two-pane body is
                         // drawn by `pull_requests_view`.
                         else if central_mode == CentralMode::PullRequests {
+                            let action = crate::ui::pull_requests_view::pull_requests_page(
+                                ui,
+                                &palette,
+                                &pr_list,
+                                pr_selected,
+                                None,
+                                pr_detail_width,
+                            );
+                            pr_select = action.select;
+                            pr_open_url = action.open_url;
+                            pr_set_detail_width = action.set_detail_width;
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -1821,8 +1844,17 @@ impl HelmApp {
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
                         } else if pr_active {
-                            // The PR cockpit owns the central area; body in
-                            // `pull_requests_view`.
+                            let action = crate::ui::pull_requests_view::pull_requests_page(
+                                ui,
+                                &palette,
+                                &pr_list,
+                                pr_selected,
+                                None,
+                                pr_detail_width,
+                            );
+                            pr_select = action.select;
+                            pr_open_url = action.open_url;
+                            pr_set_detail_width = action.set_detail_width;
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             open_dialog_requested = central_empty_state(ui, &palette, keymap);
@@ -2044,6 +2076,26 @@ impl HelmApp {
             self.agents_terminal_height = height;
             self.persist(move |prefs| Prefs {
                 agents_terminal_height: height,
+                ..prefs
+            });
+        }
+        if let Some(index) = pr_select {
+            self.pr_selected = Some(index);
+        }
+        if let Some(url) = pr_open_url {
+            let now = ctx.input(|i| i.time);
+            match crate::terminal::links::open_url(&url) {
+                Ok(()) => self.toasts.success("Opening pull request…", now),
+                Err(err) => self.toasts.error(
+                    format!("Couldn't open the pull request — {}", err.message()),
+                    now,
+                ),
+            }
+        }
+        if let Some(width) = pr_set_detail_width {
+            self.pr_detail_width = width;
+            self.persist(move |prefs| Prefs {
+                pr_detail_width: width,
                 ..prefs
             });
         }
