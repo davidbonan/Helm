@@ -18,6 +18,7 @@ use helm::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use helm::git::sync::PullDefault;
 use helm::git::worktree::{WorktreeSource, WorktreeSourceKind};
 use helm::keybindings::Keymap;
+use helm::pull_requests::runner::SourceStatus;
 use helm::terminal::emu::{self, SharedTerm, DEFAULT_FONT_SIZE};
 use helm::terminal::layout::{Layout, Orient, PaneId};
 use helm::terminal::links::Editor;
@@ -31,9 +32,8 @@ use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::{GitIntent, GitPanelState};
 use helm::ui::graph_toolbar::{graph_toolbar, ToolbarState};
 use helm::ui::graph_view::{graph_view, BranchEditor, GraphSearch, GraphViewState};
-use helm::pull_requests::runner::SourceStatus;
 use helm::ui::preferences::{
-    preferences_page, KeyboardState, PreferencesSection, PrSourcesView, UpdatesView,
+    preferences_page, KeyboardState, PrSourcesView, PreferencesSection, UpdatesView,
 };
 use helm::ui::repo_sidebar::{
     create_worktree_modal, repo_sidebar, CreateSelection, CreateWorktreeModalAction,

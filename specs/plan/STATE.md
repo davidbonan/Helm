@@ -6,11 +6,12 @@
 
 ---
 
-## Active milestone — M-PR · Pull Requests cockpit
+## ☑ Milestone — M-PR · Pull Requests cockpit
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **8/9**.
+workspace repos. Counter: **9/9** — complete, pending review + merge of the
+`m-pr` worktree branch.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -57,14 +58,14 @@ workspace repos. Counter: **8/9**.
   `pr_detail_width`. *Files*: `src/ui/preferences.rs`, `src/app/{mod,render}.rs`,
   `specs/preferences.md`. *Tests*: UI e2e on the section (nav opens it, statuses
   surface, email change + Save intents).
-- ☐ **PR9 — End-to-end verify.** `headless-verify`: open the cockpit on a fixture,
-  confirm groups + detail + Open/Checkout actions render and route. Demonstrable
-  milestone scenario (DoD).
+- ☑ **PR9 — End-to-end verify.** `headless-verify` on a fixture cockpit: To
+  review / Mine groups + rows, the selection's detail (description, checks,
+  reviewers, comments) and the Open-in-browser / Checkout actions all render and
+  route their intents. Demonstrable milestone scenario (DoD).
 
 ### Next actions
-- Start **PR9** (End-to-end verify) — `headless-verify`: open the cockpit on a
-  fixture, confirm groups + detail + Open/Checkout actions render and route.
-  Closes the milestone (DoD demo scenario).
+- **Review then merge** the `m-pr` worktree branch into `main` (the milestone
+  loop does not merge/push — user's call). Next milestone afterwards.
 
 ### Blockers
 - none
