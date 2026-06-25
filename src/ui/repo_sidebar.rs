@@ -101,6 +101,9 @@ pub struct SidebarAction {
     /// The cross-repo Agents entry was clicked: switches the central area to the
     /// dashboard (specs/agents.md §5).
     pub open_agents: bool,
+    /// The Pull Requests entry was clicked: switches the central area to the
+    /// cockpit (specs/pull-requests.md §2).
+    pub open_pull_requests: bool,
     /// A Done-state agent child row under the Agents entry was clicked, carrying its
     /// index in `caches.agents`: focus that pane (specs/agents.md §5).
     pub focus_agent: Option<usize>,
@@ -275,12 +278,20 @@ pub fn repo_sidebar(
     // Agent panes in the `Done` state, shown as indented child rows under the Agents
     // entry (specs/agents.md §5).
     done_agents: &[DoneAgentRow],
+    // Count of PRs awaiting my review — the Pull Requests entry's badge; 0 ⇒ none
+    // (specs/pull-requests.md §2).
+    pr_to_review: usize,
+    pr_active: bool,
     keymap: &Keymap,
     out: &mut SidebarAction,
 ) {
-    // While the Agents dashboard owns the central area, the Agents entry is the
-    // selected row — no repo/worktree row may read as active alongside it.
-    let active = if agents_active { None } else { active };
+    // While a Helm central mode (dashboard / PR cockpit) owns the central area, its
+    // entry is the selected row — no repo/worktree row may read as active alongside it.
+    let active = if agents_active || pr_active {
+        None
+    } else {
+        active
+    };
     // Open Folder (header) stays on lone Cmd; the project badge is ⌃⌘N, so it
     // tolerates Ctrl to stay visible throughout the chord (keybindings §1, §5).
     let cmd_held = ui.input(|i| {
@@ -307,6 +318,7 @@ pub fn repo_sidebar(
         for row in done_agents {
             agent_child_row(ui, palette, row, out);
         }
+        pull_requests_entry(ui, palette, pr_to_review, pr_active, out);
     }
 
     sidebar_header(
@@ -734,6 +746,79 @@ fn agents_entry(
     });
     if response.clicked() {
         out.open_agents = true;
+    }
+}
+
+/// Cross-repo Pull Requests nav row, pinned directly below the Agents entry
+/// (specs/pull-requests.md §2): shown once the workspace has a project,
+/// highlighted while the cockpit owns the central area, badged at the right edge
+/// with the count of PRs awaiting my review (0 ⇒ no badge). Click only — no
+/// keyboard shortcut, unlike Agents.
+fn pull_requests_entry(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    to_review: usize,
+    is_active: bool,
+    out: &mut SidebarAction,
+) {
+    const COUNT_BADGE_SIZE: f32 = 11.0;
+    let width = ui.available_width();
+    let (rect, response, hovered) = crate::ui::clickable(ui, egui::vec2(width, ROW_HEIGHT), true);
+    if is_active || hovered {
+        paint_row_highlight(ui, palette, rect, is_active);
+    }
+    let color = if is_active {
+        palette.text_primary
+    } else {
+        palette.text_secondary
+    };
+    let icon_left = rect.left() + ROW_PAD_X;
+    crate::ui::paint_icon(
+        ui.painter(),
+        egui::pos2(icon_left + ICON_SIZE / 2.0, rect.center().y),
+        ICON_SIZE,
+        lucide_icons::Icon::GitPullRequest,
+        color,
+    );
+    let label = ui.painter().layout_no_wrap(
+        "Pull Requests".to_owned(),
+        egui::FontId::proportional(NAME_SIZE),
+        color,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            icon_left + ICON_SIZE + ICON_GAP,
+            rect.center().y - label.size().y / 2.0,
+        ),
+        label,
+        color,
+    );
+    if to_review > 0 {
+        let galley = ui.painter().layout_no_wrap(
+            to_review.to_string(),
+            egui::FontId::proportional(COUNT_BADGE_SIZE),
+            palette.lane_node_text,
+        );
+        let text_size = galley.size();
+        let pill_h = COUNT_BADGE_SIZE + 5.0;
+        let pill_w = (text_size.x + 10.0).max(pill_h);
+        let right = rect.right() - ROW_PAD_X;
+        let pill = egui::Rect::from_min_max(
+            egui::pos2(right - pill_w, rect.center().y - pill_h / 2.0),
+            egui::pos2(right, rect.center().y + pill_h / 2.0),
+        );
+        ui.painter().rect_filled(pill, pill_h / 2.0, palette.accent);
+        ui.painter().galley(
+            pill.center() - text_size / 2.0,
+            galley,
+            palette.lane_node_text,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_active, "Pull Requests")
+    });
+    if response.clicked() {
+        out.open_pull_requests = true;
     }
 }
 

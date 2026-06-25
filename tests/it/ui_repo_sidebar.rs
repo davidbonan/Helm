@@ -120,6 +120,8 @@ fn grouped_harness() -> Harness<'static, SidebarAction> {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -217,6 +219,8 @@ fn harness_with_agents(
                 AgentBadge::None,
                 agents_active,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -296,6 +300,77 @@ fn agents_dashboard_clears_the_active_repo_highlight() {
     );
 }
 
+fn harness_with_prs(
+    active: Option<usize>,
+    pr_to_review: usize,
+    pr_active: bool,
+) -> Harness<'static, SidebarAction> {
+    Harness::new_ui_state(
+        move |ui, state| {
+            let palette = palette(Theme::Light);
+            let (items, child_flags) = two_projects();
+            repo_sidebar(
+                ui,
+                &palette,
+                &items,
+                &child_flags,
+                &[],
+                active,
+                AgentBadge::None,
+                false,
+                &[],
+                pr_to_review,
+                pr_active,
+                &Keymap::default(),
+                state,
+            );
+        },
+        SidebarAction::default(),
+    )
+}
+
+#[test]
+fn pull_requests_entry_renders_and_click_opens_the_cockpit() {
+    let mut harness = harness(Some(0));
+    harness.run();
+
+    harness.get_by_label("Pull Requests").click();
+    harness.run();
+
+    assert!(
+        harness.state().open_pull_requests,
+        "clicking the Pull Requests entry requests the cockpit"
+    );
+}
+
+#[test]
+fn pull_requests_mode_clears_the_active_repo_highlight() {
+    // Active repo stays index 0, but the cockpit owns the central area: only the
+    // Pull Requests entry may read as selected, not the repo row underneath it.
+    let mut harness = harness_with_prs(Some(0), 3, true);
+    harness.run();
+
+    assert_eq!(
+        format!(
+            "{:?}",
+            harness
+                .get_by_label("Pull Requests")
+                .accesskit_node()
+                .toggled()
+        ),
+        "Some(True)",
+        "the Pull Requests entry is the selected row while the cockpit is open"
+    );
+    assert_eq!(
+        format!(
+            "{:?}",
+            harness.get_by_label("main").accesskit_node().toggled()
+        ),
+        "Some(False)",
+        "the active repo row must not stay highlighted under the cockpit"
+    );
+}
+
 fn done_agents_harness(rows: Vec<DoneAgentRow>) -> Harness<'static, SidebarAction> {
     Harness::new_ui_state(
         move |ui, state| {
@@ -311,6 +386,8 @@ fn done_agents_harness(rows: Vec<DoneAgentRow>) -> Harness<'static, SidebarActio
                 AgentBadge::None,
                 false,
                 &rows,
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -525,6 +602,8 @@ fn a_linked_worktree_row_stacks_its_folder_name_over_its_branch() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -591,6 +670,8 @@ fn a_collapsed_group_hides_its_rows_and_renumbers_shortcuts() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -868,6 +949,8 @@ fn header_context_menu_offers_reveal_copy_and_remove() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -962,6 +1045,8 @@ fn a_deleting_row_is_inert_clicks_and_menu_ignored() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -1103,6 +1188,8 @@ fn bare_root_row_is_not_selectable_but_its_children_are() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -1189,6 +1276,8 @@ fn agent_badges_expose_their_state_through_the_row_label() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -1223,6 +1312,8 @@ fn empty_sidebar_open_prompt_is_clickable() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -1292,6 +1383,8 @@ fn eye_dropdown_lists_every_project_and_toggles_hidden() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );
@@ -1357,6 +1450,8 @@ fn header_context_menu_offers_hide_project() {
                 AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &Keymap::default(),
                 state,
             );

@@ -735,7 +735,10 @@ impl HelmApp {
         // Seeing a pane acknowledges its green — but only on the terminal view: the
         // dashboard lists completions, so reading it must not auto-ack them.
         let focused_key = (self.page == Page::Main
-            && self.central_mode != CentralMode::Agents
+            && !matches!(
+                self.central_mode,
+                CentralMode::Agents | CentralMode::PullRequests
+            )
             && ctx.input(|i| i.focused))
         .then(|| {
             let index = self.workspace.active()?;

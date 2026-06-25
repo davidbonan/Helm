@@ -482,6 +482,7 @@ impl HelmApp {
             })
             .collect();
         let agents_active = self.central_mode == CentralMode::Agents;
+        let pr_active = self.central_mode == CentralMode::PullRequests;
         // Resolve the dashboard selection here, before `items` borrows the workspace
         // for the rest of the frame: validates the stored triple against the freshly
         // rebuilt agent list and auto-picks the most urgent agent (panel opens populated).
@@ -645,6 +646,14 @@ impl HelmApp {
         let mut toggle_preferences_request = false;
         let agents_badge =
             crate::agent_watch::aggregate(self.caches.agents.iter().map(|e| e.badge));
+        // Sidebar badge = PRs awaiting my review (the actionable role); authored PRs
+        // stay informational (pull-requests.md §2).
+        let pr_to_review = self
+            .pr_cache
+            .pull_requests
+            .iter()
+            .filter(|pr| pr.role == crate::pull_requests::model::PrRole::ToReview)
+            .count();
         // Done-state agents shown as indented child rows under the Agents entry
         // (specs/agents.md §5): `index` is the position in `caches.agents` consumed by
         // `focus_agent` when a row is clicked.
@@ -868,6 +877,8 @@ impl HelmApp {
                     agents_badge,
                     agents_active,
                     &done_agents,
+                    pr_to_review,
+                    pr_active,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1002,6 +1013,11 @@ impl HelmApp {
                                     intents: &mut review_intents,
                                 }),
                             );
+                        }
+                        // The PR cockpit owns the central area like the dashboard, so
+                        // the term/graph switch is suppressed; its two-pane body is
+                        // drawn by `pull_requests_view`.
+                        else if central_mode == CentralMode::PullRequests {
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -1749,6 +1765,8 @@ impl HelmApp {
                     agents_badge,
                     agents_active,
                     &done_agents,
+                    pr_to_review,
+                    pr_active,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1802,6 +1820,9 @@ impl HelmApp {
                             agents_set_terminal_height = action.set_terminal_height;
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
+                        } else if pr_active {
+                            // The PR cockpit owns the central area; body in
+                            // `pull_requests_view`.
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             open_dialog_requested = central_empty_state(ui, &palette, keymap);
@@ -1966,8 +1987,11 @@ impl HelmApp {
         }
         if let Some(index) = sidebar.select {
             self.workspace.set_active(index);
-            // Picking a project leaves the cross-repo dashboard for its terminal.
-            if self.central_mode == CentralMode::Agents {
+            // Picking a project leaves a cross-repo Helm mode for its terminal.
+            if matches!(
+                self.central_mode,
+                CentralMode::Agents | CentralMode::PullRequests
+            ) {
                 self.central_mode = CentralMode::Terminal;
             }
         }
@@ -1975,6 +1999,11 @@ impl HelmApp {
         // (with no terminal focused — the dashboard owns the area) closes it.
         if sidebar.open_agents {
             self.central_mode = CentralMode::Agents;
+            ctx.request_repaint();
+        }
+        // The Pull Requests entry opens the cockpit; `Esc` closes it (pull-requests.md §2).
+        if sidebar.open_pull_requests {
+            self.central_mode = CentralMode::PullRequests;
             ctx.request_repaint();
         }
         // A Done child row under the Agents entry was clicked: jump to that pane (the
@@ -2024,6 +2053,11 @@ impl HelmApp {
             && !agents_terminal_focused
             && ctx.input(|i| i.key_pressed(egui::Key::Escape))
         {
+            self.central_mode = CentralMode::Terminal;
+            ctx.request_repaint();
+        }
+        // `Esc` leaves the PR cockpit (no mirrored terminal to compete for the key).
+        if pr_active && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.central_mode = CentralMode::Terminal;
             ctx.request_repaint();
         }

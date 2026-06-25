@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **4/9**.
+workspace repos. Counter: **5/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -33,7 +33,7 @@ workspace repos. Counter: **4/9**.
   + per-source status; app cache + refresh cadence (entry / manual / ~60 s
   focused tick). *Files*: `src/pull_requests/runner.rs`, `src/app/*`. *Tests*:
   business e2e on command/URL construction (no live network).
-- ☐ **PR5 — Sidebar entry + central mode.** `Pull Requests` row below Agents
+- ☑ **PR5 — Sidebar entry + central mode.** `Pull Requests` row below Agents
   (`Icon::GitPullRequest`), To-review count badge; `CentralMode::PullRequests`
   (sidebar stays, git panel hides); `SidebarAction.open_pull_requests`. **No
   keyboard shortcut.** *Files*: `src/ui/repo_sidebar.rs`, `src/ui/mod.rs`,
@@ -58,9 +58,11 @@ workspace repos. Counter: **4/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR5** (Sidebar entry + central mode) — `Pull Requests` row below Agents,
-  To-review badge, click sets `CentralMode::PullRequests` (variant + 60 s refresh
-  tick already wired in PR4; hide the git panel + sidebar action remain). UI e2e.
+- Start **PR6** (Cockpit page) — `ui::pull_requests_view::pull_requests_page`:
+  two-pane (list grouped To review / Mine + detail panel), resizable split
+  `Prefs.pr_detail_width`. Fills the empty `CentralMode::PullRequests` takeover
+  branches in `render.rs` (Some-path ~line 1005, None-path ~line 1803). UI e2e on
+  a fixture list.
 
 ### Blockers
 - none

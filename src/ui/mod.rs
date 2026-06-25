@@ -742,6 +742,8 @@ pub fn root_layout(
     agents_badge: AgentBadge,
     agents_active: bool,
     done_agents: &[DoneAgentRow],
+    pr_to_review: usize,
+    pr_active: bool,
     sidebar: &mut SidebarAction,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
@@ -755,6 +757,9 @@ pub fn root_layout(
     run_panel: impl FnOnce(&mut egui::Ui),
     central: impl FnOnce(&mut egui::Ui),
 ) {
+    // A Helm central mode (the dashboard or the PR cockpit) is cross-repo, so the
+    // per-repo git panel has nothing to show — its mount and toggle are dropped.
+    let helm_central = agents_active || pr_active;
     let sidebar_frame = egui::Frame::side_top_panel(ui.style())
         .fill(workspace_sidebar_fill(palette))
         .inner_margin(egui::Margin {
@@ -781,6 +786,8 @@ pub fn root_layout(
                 agents_badge,
                 agents_active,
                 done_agents,
+                pr_to_review,
+                pr_active,
                 keymap,
                 sidebar,
             );
@@ -800,8 +807,7 @@ pub fn root_layout(
         .default_size(right_sidebar_width)
         .min_size(260.0)
         .frame(git_frame)
-        // The dashboard is cross-repo: the per-repo git panel has nothing to show.
-        .show_animated_inside(ui, *show_git && !agents_active, |ui| {
+        .show_animated_inside(ui, *show_git && !helm_central, |ui| {
             ui.set_min_width(ui.available_width());
             // Run terminal strip pinned to the bottom; the status/detail content
             // fills the remaining height above it (git.md §3).
@@ -947,7 +953,7 @@ pub fn root_layout(
                 open_workspace,
                 open_preferences,
                 open_feedback,
-                agents_active,
+                helm_central,
                 show_git,
             )
         });
@@ -988,7 +994,7 @@ fn top_right_actions(
     open_workspace: &mut Option<WorkspaceOpener>,
     open_preferences: &mut bool,
     open_feedback: &mut bool,
-    agents_active: bool,
+    helm_central: bool,
     show_git: &mut bool,
 ) {
     ui.horizontal(|ui| {
@@ -1005,9 +1011,9 @@ fn top_right_actions(
                 open_workspace,
             );
         }
-        // The git panel is forced hidden while the cross-repo dashboard is open,
-        // so its toggle would be inert — drop it.
-        let git = (!agents_active).then(|| git_toggle(ui, palette, show_git));
+        // The git panel is forced hidden while a Helm central mode is open, so its
+        // toggle would be inert — drop it.
+        let git = (!helm_central).then(|| git_toggle(ui, palette, show_git));
         feedback_button(ui, palette, open_feedback);
         let prefs = preferences_button(ui, palette, open_preferences);
         // Badges are painted as an overlay below their icon (not inserted into the

@@ -109,6 +109,8 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                 helm::agent_watch::AgentBadge::None,
                 false,
                 &[],
+                0,
+                false,
                 &mut sidebar,
                 280.0,
                 320.0,
