@@ -77,7 +77,7 @@ header button `Send to {agent} (N)`** opens a **new terminal tab** running
 Works on **both** Git WIP and Commit Détail (read-only lines made annotable in
 review mode). Locked: multi-file accumulation (app-level store), **dedicated**
 pref `review_agent_command` (default `claude`), launch in a **new tab**.
-In-memory only except `review_agent_command` (persisted). Counter: **2/6**.
+In-memory only except `review_agent_command` (persisted). Counter: **3/6**.
 
 - ☑ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
   pure markdown grouped by file (BTreeMap), line-ref `new_lineno` else
@@ -88,19 +88,22 @@ In-memory only except `review_agent_command` (persisted). Counter: **2/6**.
   (reuse `run_command_row` singleline, persist via `action.ai_changed`). *Files*:
   `src/persistence.rs`, `src/ui/preferences.rs`, `src/app/render.rs`. *Tests*:
   round-trip (default/empty/custom) + UI e2e on the row.
-- ☐ **RC3 — Store + view-state + intents.** `HelmApp.{review:
-  HashMap<RepoKey, BTreeMap<String, Vec<LineComment>>>, review_mode,
-  review_agent_command}`; `DiffViewState.{active_comment, comment_buffer}` (+
-  `clear()`); `enum ReviewIntent`; `struct DiffReview<'a>` new param of
-  `diff_view()` (both call-sites). *Files*: `src/app/mod.rs`,
-  `src/ui/diff_view.rs`. *Tests*: unit on store add/delete/purge helpers.
-- ☐ **RC4 — diff_view rendering.** Header: Review toggle + `Send (N)` + Clear.
+- ☑ **RC3 — Review domain store.** `review::{FileComments, add_comment,
+  delete_comment, count, ReviewIntent}` — pure store helpers (upsert by line,
+  delete+purge empty file, total count). *Files*: `src/review.rs`. *Tests*: unit
+  on add/delete/purge/count. (HelmApp/DiffViewState/DiffReview wiring folded into
+  RC4 — those private fields only become live with RC4's rendering.)
+- ☐ **RC4 — diff_view rendering + wiring.** Introduces `HelmApp.{review:
+  HashMap<RepoKey, FileComments>, review_mode}`, `DiffViewState.{active_comment,
+  comment_buffer}` (+ `clear()`), `struct DiffReview<'a>` new param of
+  `diff_view()` (both call-sites). Header: Review toggle + `Send (N)` + Clear.
   `diff_line` returns `{rect, on_screen, action}`; per-line loop renders saved
   note block + inline `TextEdit` editor at `content_left`, height reserved even
   off-screen. Click in review mode → `DiffLineAction::OpenComment` (incl.
   read-only lines), stage hover-pill suppressed; first `Esc` cancels editor.
-  *Files*: `src/ui/diff_view.rs`, `src/app/render.rs` (build `DiffReview`).
-  *Tests*: UI e2e (click line → type → Validate → comment stored; badge count).
+  *Files*: `src/app/mod.rs`, `src/ui/diff_view.rs`, `src/app/render.rs` (build
+  `DiffReview`). *Tests*: UI e2e (click line → type → Validate → `SaveComment`
+  intent; badge count).
 - ☐ **RC5 — Apply + spawn.** `apply_review_intent` (mirror `apply_run_intent`):
   toggle/add/delete/clear + `SendToAgent` = build prompt → `add_tab` →
   pre-insert pane via `or_insert_with(open_agent_terminal(...))` → rename tab →
@@ -113,7 +116,7 @@ In-memory only except `review_agent_command` (persisted). Counter: **2/6**.
   Demonstrable milestone scenario (DoD).
 
 ### Next actions (M-RC)
-- Start **RC3** (store + view-state + intents) — `HelmApp` review map + `DiffReview` param.
+- Start **RC4** (diff_view rendering + wiring) — `HelmApp` review map, `DiffReview` param, per-line editor.
 - Confirm at RC5: `claude "<prompt>"` seeds an interactive session (vs `-p`);
   fallback `pane.feed` / temp file if not.
 

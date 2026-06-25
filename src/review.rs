@@ -14,7 +14,48 @@ impl LineComment {
     }
 }
 
-pub fn build_review_prompt(comments: &BTreeMap<String, Vec<LineComment>>) -> String {
+/// Review comments of a single repo, grouped by file path (sorted) so the prompt
+/// and the badge count are deterministic.
+pub type FileComments = BTreeMap<String, Vec<LineComment>>;
+
+/// Adds `comment` under `file`, replacing in place a comment already anchored at
+/// the same line (one note per line).
+pub fn add_comment(store: &mut FileComments, file: &str, comment: LineComment) {
+    let line = comment.line_ref();
+    let file_comments = store.entry(file.to_owned()).or_default();
+    match file_comments.iter_mut().find(|c| c.line_ref() == line) {
+        Some(existing) => *existing = comment,
+        None => file_comments.push(comment),
+    }
+}
+
+/// Removes the comment anchored at `line` of `file`, purging the file entry when it
+/// becomes empty so the store never keeps blank groups.
+pub fn delete_comment(store: &mut FileComments, file: &str, line: Option<u32>) {
+    if let Some(file_comments) = store.get_mut(file) {
+        file_comments.retain(|c| c.line_ref() != line);
+        if file_comments.is_empty() {
+            store.remove(file);
+        }
+    }
+}
+
+/// Total number of comments across every file — the `Send (N)` badge count.
+pub fn count(store: &FileComments) -> usize {
+    store.values().map(Vec::len).sum()
+}
+
+/// Review action raised by the diff view, applied by the app (RC5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewIntent {
+    ToggleMode,
+    SaveComment { file: String, comment: LineComment },
+    DeleteComment { file: String, line: Option<u32> },
+    Clear,
+    SendToAgent,
+}
+
+pub fn build_review_prompt(comments: &FileComments) -> String {
     let mut out = String::from("Please address the following code review comments.\n");
     for (file, file_comments) in comments {
         if file_comments.is_empty() {
@@ -47,6 +88,47 @@ mod tests {
             code: code.to_string(),
             note: note.to_string(),
         }
+    }
+
+    #[test]
+    fn add_comment_appends_then_replaces_same_line_in_place() {
+        let mut store = FileComments::new();
+        add_comment(&mut store, "a.rs", comment(None, Some(1), "x", "first"));
+        add_comment(&mut store, "a.rs", comment(None, Some(2), "y", "second"));
+        assert_eq!(store["a.rs"].len(), 2);
+
+        // Same line ref ⇒ replace in place, keeping the count and position.
+        add_comment(&mut store, "a.rs", comment(None, Some(1), "x", "edited"));
+        assert_eq!(store["a.rs"].len(), 2);
+        assert_eq!(store["a.rs"][0].note, "edited");
+        assert_eq!(store["a.rs"][1].note, "second");
+    }
+
+    #[test]
+    fn delete_comment_removes_the_line_and_purges_empty_files() {
+        let mut store = FileComments::new();
+        add_comment(&mut store, "a.rs", comment(None, Some(1), "x", "n1"));
+        add_comment(&mut store, "a.rs", comment(None, Some(2), "y", "n2"));
+
+        delete_comment(&mut store, "a.rs", Some(1));
+        assert_eq!(store["a.rs"].len(), 1);
+        assert_eq!(store["a.rs"][0].line_ref(), Some(2));
+
+        delete_comment(&mut store, "a.rs", Some(2));
+        assert!(
+            !store.contains_key("a.rs"),
+            "the file entry is purged once its last comment is gone"
+        );
+    }
+
+    #[test]
+    fn count_sums_comments_across_files() {
+        let mut store = FileComments::new();
+        assert_eq!(count(&store), 0);
+        add_comment(&mut store, "a.rs", comment(None, Some(1), "x", "n"));
+        add_comment(&mut store, "a.rs", comment(None, Some(2), "y", "n"));
+        add_comment(&mut store, "b.rs", comment(None, Some(3), "z", "n"));
+        assert_eq!(count(&store), 3);
     }
 
     #[test]
