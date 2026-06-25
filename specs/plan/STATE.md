@@ -68,7 +68,7 @@ workspace repos. Counter: **0/9**.
 
 ---
 
-## Planned milestone — M-RC · In-diff code review → Send to Claude
+## Completed milestone — ☑ M-RC · In-diff code review → Send to Claude
 
 In-diff annotation flow: **Review mode → click a line → text field + Validate
 under the line → annotate across multiple files (comments accumulate per repo) →
@@ -77,7 +77,7 @@ header button `Send to {agent} (N)`** opens a **new terminal tab** running
 Works on **both** Git WIP and Commit Détail (read-only lines made annotable in
 review mode). Locked: multi-file accumulation (app-level store), **dedicated**
 pref `review_agent_command` (default `claude`), launch in a **new tab**.
-In-memory only except `review_agent_command` (persisted). Counter: **5/6**.
+In-memory only except `review_agent_command` (persisted). Counter: **6/6**.
 
 - ☑ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
   pure markdown grouped by file (BTreeMap), line-ref `new_lineno` else
@@ -116,14 +116,13 @@ In-memory only except `review_agent_command` (persisted). Counter: **5/6**.
   `src/app/{mod,render}.rs`, `src/terminal/pty.rs`. *Tests*: unit pty
   argv/cwd/TERM; in-crate e2e (seeded comments → `send_review_to_agent` adds an
   active tab carrying a `Live` agent pane + flips central mode, clears diff).
-- ☐ **RC6 — End-to-end verify.** `headless-verify`: review WIP + Commit Détail,
+- ☑ **RC6 — End-to-end verify.** `headless-verify`: review WIP + Commit Détail,
   multi-file, Send opens a new tab with a live pane (stub agent in test).
   Demonstrable milestone scenario (DoD).
 
 ### Next actions (M-RC)
-- Start **RC6** (End-to-end verify) — `headless-verify`: review WIP + Commit
-  Détail, multi-file accumulation, Send opens a new tab with a live pane (stub
-  agent). Demonstrable milestone scenario (DoD), then close M-RC.
+- **M-RC complete** (6/6). Review the worktree branch `m-rc`, then merge into
+  `main`.
 
 ### Open questions (M-RC)
 - Keep comments after Send (current plan) vs clear automatically — Clear button
