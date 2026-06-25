@@ -22,6 +22,10 @@ struct Captured {
     set_column_width: Cell<Option<f32>>,
     set_terminal_height: Cell<Option<f32>>,
     drawn: RefCell<Vec<usize>>,
+    /// Rect of the last full (expanded) terminal strip drawn — lets a test assert the
+    /// focused terminal fills the column (height) and locate its resize handle (the
+    /// strip's bottom edge), both of which move once the strip auto-fills.
+    full_rect: Cell<Option<egui::Rect>>,
 }
 
 struct Row {
@@ -84,6 +88,7 @@ fn harness(
                 |idx, term_ui, view| match view {
                     TermView::Full => {
                         sink.drawn.borrow_mut().push(idx);
+                        sink.full_rect.set(Some(term_ui.max_rect()));
                         term_ui.label(format!("TERM-{idx}"));
                     }
                     TermView::Preview => {
@@ -346,15 +351,17 @@ fn clicking_a_collapsed_column_card_selects_it() {
 
 #[test]
 fn horizontal_gesture_over_a_terminal_scrolls_the_columns() {
-    // Three projects ⇒ three 672px columns overflow the 1500px window, so the
-    // grid scrolls horizontally. The hovered terminal owns only the vertical wheel
-    // axis (scrollback); a horizontal gesture must still reach the columns'
-    // horizontal ScrollArea instead of being swallowed on both axes.
+    // Four projects ⇒ an even split would fall below the column minimum, so columns
+    // keep their 672px width and overflow the 1500px window, scrolling horizontally.
+    // The hovered terminal owns only the vertical wheel axis (scrollback); a
+    // horizontal gesture must still reach the columns' horizontal ScrollArea instead
+    // of being swallowed on both axes.
     let (mut harness, _) = harness(
         vec![
             row("helm", "claude", "Tab 1", AgentBadge::Idle),
             row("api", "codex", "Tab 1", AgentBadge::Idle),
             row("web", "aider", "Tab 1", AgentBadge::Idle),
+            row("cli", "fzf", "Tab 1", AgentBadge::Idle),
         ],
         Some(0),
         AgentsViewMode::Columns,
@@ -437,16 +444,21 @@ fn vertical_gesture_scrolls_the_whole_wall() {
 
 #[test]
 fn dragging_a_column_gap_resizes_the_columns() {
-    // One project ⇒ one column; its resize handle sits in the trailing gap just
-    // past the column's right edge. Anchor on the worktree header rect (it spans
-    // the column's inner width) so the grab point survives layout offsets.
+    // Four projects ⇒ columns overflow and stay at their resizable width, so the
+    // trailing gap past column 0 carries a drag handle. Anchor on column 0's agent
+    // card (it spans the column's inner width) so the grab point survives layout.
     let (mut harness, cap) = harness(
-        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Working),
+            row("api", "codex", "Tab 1", AgentBadge::Idle),
+            row("web", "aider", "Tab 1", AgentBadge::Idle),
+            row("cli", "fzf", "Tab 1", AgentBadge::Idle),
+        ],
         None,
         AgentsViewMode::Columns,
     );
-    let header = harness.get_by_label("main").rect();
-    let start = egui::pos2(header.right() + 10.0, header.center().y);
+    let card = harness.get_by_label("Claude in helm — Tab 1").rect();
+    let start = egui::pos2(card.right() + 10.0, card.center().y);
     let end = start + egui::vec2(60.0, 0.0);
     harness.event(egui::Event::PointerMoved(start));
     harness.step();
@@ -470,6 +482,73 @@ fn dragging_a_column_gap_resizes_the_columns() {
     assert!(
         width > 672.0,
         "dragging right widens the column, got {width}"
+    );
+}
+
+#[test]
+fn single_project_column_fills_the_width() {
+    // One project ⇒ its column spans the whole 1500px window rather than sitting at
+    // the persisted 672px width; the agent card (column-wide) reads far past it.
+    let (harness, _) = harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Idle)],
+        None,
+        AgentsViewMode::Columns,
+    );
+    let card = harness.get_by_label("Claude in helm — Tab 1").rect();
+    assert!(
+        card.width() > 1000.0,
+        "a lone column must fill the viewport, got card width {}",
+        card.width()
+    );
+}
+
+#[test]
+fn two_projects_split_the_width_evenly() {
+    // Two projects ⇒ a 50/50 split that fills the window: equal-width columns whose
+    // pair reaches the right edge, not two fixed 672px columns leaving dead space.
+    let (harness, _) = harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Idle),
+            row("api", "codex", "Tab 1", AgentBadge::Idle),
+        ],
+        None,
+        AgentsViewMode::Columns,
+    );
+    let left = harness.get_by_label("Claude in helm — Tab 1").rect();
+    let right = harness.get_by_label("Codex in api — Tab 1").rect();
+    assert!(
+        (left.width() - right.width()).abs() < 2.0,
+        "columns must be equal width, got {} vs {}",
+        left.width(),
+        right.width()
+    );
+    assert!(
+        left.width() > 700.0 && right.right() > 1400.0,
+        "the pair must fill the viewport, got widths {}/{} and right edge {}",
+        left.width(),
+        right.width(),
+        right.right()
+    );
+}
+
+#[test]
+fn three_projects_keep_the_default_width() {
+    // Three projects ⇒ no 33% split: columns stay at the persisted 672px default and
+    // the wall scrolls, so they aren't crushed (which breaks down on a small screen).
+    let (harness, _) = harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Idle),
+            row("api", "codex", "Tab 1", AgentBadge::Idle),
+            row("web", "aider", "Tab 1", AgentBadge::Idle),
+        ],
+        None,
+        AgentsViewMode::Columns,
+    );
+    let card = harness.get_by_label("Claude in helm — Tab 1").rect();
+    assert!(
+        card.width() > 600.0,
+        "three projects keep the ~672px default, not a 33% split, got {}",
+        card.width()
     );
 }
 
@@ -505,15 +584,19 @@ fn clicking_a_column_card_jump_icon_focuses_the_workspace() {
 
 #[test]
 fn dragging_a_card_bottom_resizes_the_terminal_height() {
-    // The height handle sits just below the 360px-tall terminal strip; anchor on the
-    // mirrored terminal's rect (its top is the strip top) so the grab survives layout.
+    // Two agents in the column ⇒ the selected card auto-fills around its collapsed
+    // sibling, and the height handle rides the strip's (now derived) bottom edge.
+    // Dragging it sets the floor, so a new shared height is emitted regardless of fill.
     let (mut harness, cap) = harness(
-        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Working),
+            row("helm", "codex", "Tab 2", AgentBadge::Idle),
+        ],
         Some(0),
         AgentsViewMode::Columns,
     );
-    let strip = harness.get_by_label("TERM-0").rect();
-    let start = egui::pos2(strip.center().x, strip.top() + 365.0);
+    let strip = cap.full_rect.get().expect("the terminal was drawn");
+    let start = egui::pos2(strip.center().x, strip.bottom() + 5.0);
     let end = start + egui::vec2(0.0, 80.0);
     harness.event(egui::Event::PointerMoved(start));
     harness.step();
@@ -540,6 +623,52 @@ fn dragging_a_card_bottom_resizes_the_terminal_height() {
     assert!(
         height > 360.0,
         "dragging down grows the terminal, got {height}"
+    );
+}
+
+#[test]
+fn a_lone_agent_terminal_fills_the_column_height() {
+    // A single agent (auto-expanded) ⇒ its terminal stretches down the full-height
+    // column instead of sitting at the shared 360px, so the card reaches the bottom
+    // of the 1200px window rather than leaving the tinted lane empty below it.
+    let (_harness, cap) = harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
+        Some(0),
+        AgentsViewMode::Columns,
+    );
+    let height = cap
+        .full_rect
+        .get()
+        .expect("the terminal was drawn")
+        .height();
+    assert!(
+        height > 700.0,
+        "a lone terminal must fill the column, got strip height {height}"
+    );
+}
+
+#[test]
+fn a_focused_terminal_fills_around_its_collapsed_siblings() {
+    // Three agents stacked in one column, the middle one focused: its terminal grows
+    // to swallow the lane's leftover height (minus the two collapsed previews and the
+    // chrome) rather than sitting at the shared 360px above an empty lane.
+    let (_harness, cap) = harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Idle),
+            row("helm", "codex", "Tab 2", AgentBadge::Working),
+            row("helm", "aider", "Tab 3", AgentBadge::Idle),
+        ],
+        Some(1),
+        AgentsViewMode::Columns,
+    );
+    let height = cap
+        .full_rect
+        .get()
+        .expect("the terminal was drawn")
+        .height();
+    assert!(
+        height > 600.0,
+        "the focused terminal must fill the column around its siblings, got {height}"
     );
 }
 
