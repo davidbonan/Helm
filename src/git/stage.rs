@@ -70,6 +70,7 @@ fn head_lacks(head: &git2::Object, path: &str) -> bool {
 /// (old path removed with the new one added).
 pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {
     let statuses = status::work_statuses(repo)?;
+    let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut index = fresh_index(repo)?;
     let mut touched = false;
     for entry in statuses.iter() {
@@ -81,6 +82,9 @@ pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {
         };
         let new = delta.new_file().path();
         let old = delta.old_file().path();
+        if new.or(old).is_some_and(|p| nested.contains(p)) {
+            continue;
+        }
         match delta.status() {
             git2::Delta::Untracked | git2::Delta::Modified | git2::Delta::Typechange => {
                 let Some(path) = new.or(old) else { continue };

@@ -130,6 +130,36 @@ fn list_repo(repo: &git2::Repository) -> Result<Listing, git2::Error> {
     })
 }
 
+/// Workdir-relative paths of this repo's linked worktrees that live **inside**
+/// the workdir. libgit2 reports such a nested worktree as a single untracked
+/// directory entry (an embedded repo with a `.git` file): it belongs to the
+/// same repo — helm already groups it in the sidebar — so it must be hidden
+/// from the status and skipped by the batch commands. Otherwise stage all
+/// `add_path`s a `.git`-bearing directory and aborts the whole batch, and
+/// discard all deletes the worktree from disk.
+pub(crate) fn nested_in_workdir(repo: &git2::Repository) -> HashSet<PathBuf> {
+    let mut nested = HashSet::new();
+    let Some(workdir) = repo.workdir() else {
+        return nested;
+    };
+    let workdir = canonical(workdir.to_path_buf());
+    let Ok(names) = repo.worktrees() else {
+        return nested;
+    };
+    for name in names.iter() {
+        let Ok(Some(name)) = name else { continue };
+        let Ok(wt) = repo.find_worktree(name) else {
+            continue;
+        };
+        if let Ok(rel) = canonical(wt.path().to_path_buf()).strip_prefix(&workdir) {
+            if !rel.as_os_str().is_empty() {
+                nested.insert(rel.to_path_buf());
+            }
+        }
+    }
+    nested
+}
+
 pub fn default_base(root: &Path) -> Result<PathBuf, git2::Error> {
     let parent = root
         .parent()

@@ -87,6 +87,40 @@ fn unstage_moves_staged_change_back_to_unstaged() {
 }
 
 #[test]
+fn stage_all_hides_and_skips_a_worktree_nested_in_the_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    let repo = git2::Repository::init(&root).unwrap();
+    commit_file(&repo, "a.txt", "v1\n", "init");
+
+    // A worktree placed INSIDE the repo root is an embedded repo (a directory
+    // with a `.git` file): libgit2 reports it as a single untracked entry.
+    repo.worktree("nested", &root.join("nested"), None).unwrap();
+    fs::write(root.join("b.txt"), "new\n").unwrap();
+
+    let before = status::load_repo(&repo).unwrap();
+    assert!(
+        !before.unstaged.iter().any(|f| f.path.starts_with("nested")),
+        "the nested worktree must not show up in the unstaged list, got {:?}",
+        before.unstaged
+    );
+
+    stage::stage_all(&repo).unwrap();
+
+    let st = status::load_repo(&repo).unwrap();
+    assert!(
+        st.staged.iter().any(|f| f.path == "b.txt"),
+        "stage all still stages the real change, got {:?}",
+        st.staged
+    );
+    assert!(
+        !st.staged.iter().any(|f| f.path.starts_with("nested")),
+        "the nested worktree is never staged, got {:?}",
+        st.staged
+    );
+}
+
+#[test]
 fn stage_a_renamed_file_stages_both_sides() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();
