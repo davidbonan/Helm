@@ -40,6 +40,19 @@ pub fn run_command(program: impl Into<OsString>, cwd: &Path, command: &str) -> C
     cmd
 }
 
+/// Agent CLI launched directly (no shell) with the review prompt as a single
+/// argv (M-RC): the program (`claude`) gets `[prompt]`, so the interactive
+/// session opens seeded with the prompt — `-c`/`-l` would route it through a
+/// shell and treat the prompt as a script.
+pub fn agent_command(program: impl Into<OsString>, cwd: &Path, prompt: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(program.into());
+    cmd.arg(prompt);
+    cmd.cwd(cwd);
+    cmd.env("TERM", TERM);
+    cmd.env("COLORTERM", COLORTERM);
+    cmd
+}
+
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -163,6 +176,21 @@ mod tests {
         assert_eq!(argv[1], OsString::from("-l"));
         assert_eq!(argv[2], OsString::from("-c"));
         assert_eq!(argv[3], OsString::from("cargo run"));
+        assert_eq!(cmd.get_cwd(), Some(&OsString::from("/tmp")));
+        assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(TERM)));
+    }
+
+    #[test]
+    fn agent_command_passes_prompt_as_single_argv() {
+        let cmd = agent_command(
+            "claude",
+            Path::new("/tmp"),
+            "review this\n## a.rs\n- L1: fix",
+        );
+        let argv = cmd.get_argv();
+        assert_eq!(argv[0], OsString::from("claude"));
+        assert_eq!(argv[1], OsString::from("review this\n## a.rs\n- L1: fix"));
+        assert_eq!(argv.len(), 2);
         assert_eq!(cmd.get_cwd(), Some(&OsString::from("/tmp")));
         assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(TERM)));
     }

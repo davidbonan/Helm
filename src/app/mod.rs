@@ -1170,9 +1170,10 @@ impl HelmApp {
         self.caches.keys.get(index).cloned()
     }
 
-    /// Applies a review action raised by the diff view (M-RC). `SendToAgent` is
-    /// wired in RC5; the rest mutate the active repo's in-memory comment store.
-    fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent) {
+    /// Applies a review action raised by the diff view (M-RC): the editing
+    /// intents mutate the active repo's in-memory comment store; `SendToAgent`
+    /// spawns the agent tab.
+    fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent, ctx: &egui::Context) {
         use crate::review::ReviewIntent;
         match intent {
             ReviewIntent::ToggleMode => self.review_mode = !self.review_mode,
@@ -1193,8 +1194,49 @@ impl HelmApp {
                     self.review.remove(&key);
                 }
             }
-            ReviewIntent::SendToAgent => {}
+            ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
         }
+    }
+
+    /// Opens the aggregated review of the active repo in a fresh terminal tab
+    /// running the agent CLI (M-RC). The pane is pre-inserted under the new tab's
+    /// key so the render loop adopts it instead of spawning a plain shell, then
+    /// the central area switches to the terminal to surface it.
+    fn send_review_to_agent(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.workspace.active() else {
+            return;
+        };
+        let Some(key) = self.caches.keys.get(index).cloned() else {
+            return;
+        };
+        let Some(store) = self.review.get(&key) else {
+            return;
+        };
+        if crate::review::count(store) == 0 {
+            return;
+        }
+        let prompt = crate::review::build_review_prompt(store);
+        let Some(cwd) = self.workspace.repo(index).map(|r| r.path.clone()) else {
+            return;
+        };
+        let Some(tab) = self.workspace.add_tab() else {
+            return;
+        };
+        let (Some(tab_id), Some(pane_id)) = (
+            self.workspace.tab_id(index, tab),
+            self.workspace.active_layout().map(|l| l.focus()),
+        ) else {
+            return;
+        };
+        self.workspace.rename_tab(tab, &self.review_agent_command);
+        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, &prompt);
+        self.caches
+            .panes
+            .entry((key, tab_id))
+            .or_default()
+            .insert(pane_id, pane);
+        self.central_mode = CentralMode::Terminal;
+        self.diff = None;
     }
 
     /// Arms the one-shot post-create injection (worktrees.md §6) when the project
@@ -2000,6 +2042,21 @@ fn open_terminal_with_env(
 fn open_run_terminal(ctx: &egui::Context, cwd: &Path, command: &str) -> TerminalState {
     let cmd =
         crate::terminal::pty::run_command(crate::terminal::pty::shell_program(), cwd, command);
+    match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
+        Ok(pane) => TerminalState::Live(pane),
+        Err(err) => TerminalState::Failed(err.to_string()),
+    }
+}
+
+/// Agent pane behind a Send-to-agent action (M-RC): the configured CLI launched
+/// directly in `cwd` with the aggregated review prompt as its initial argument.
+fn open_agent_terminal(
+    ctx: &egui::Context,
+    cwd: &Path,
+    program: &str,
+    prompt: &str,
+) -> TerminalState {
+    let cmd = crate::terminal::pty::agent_command(program, cwd, prompt);
     match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
         Ok(pane) => TerminalState::Live(pane),
         Err(err) => TerminalState::Failed(err.to_string()),

@@ -1826,7 +1826,7 @@ impl HelmApp {
         }
         intents.append(&mut diff_intents);
         for intent in review_intents {
-            self.apply_review_intent(intent);
+            self.apply_review_intent(intent, ctx);
         }
 
         let mut generate_requested = false;
