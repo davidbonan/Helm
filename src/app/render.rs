@@ -638,6 +638,7 @@ impl HelmApp {
 
         let mut intents = Vec::new();
         let mut diff_intents = Vec::new();
+        let mut review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut sidebar = SidebarAction::default();
         let mut open_workspace_request = None;
         let mut toggle_preferences_request = false;
@@ -785,6 +786,12 @@ impl HelmApp {
                 let run_status = run_status_of(self.caches.run_panes.get_mut(&run_key));
                 let run_collapsed = self.run_panel_collapsed;
                 let run_panel_height = self.run_panel_height;
+                // In-diff review (M-RC): the active repo's stored comments and the
+                // global review toggle feed the diff view; the actions it raises are
+                // drained into `review_intents` and applied after the layout closure.
+                let review_mode = self.review_mode;
+                let empty_comments = crate::review::FileComments::new();
+                let review_comments = self.review.get(&run_key).unwrap_or(&empty_comments);
                 let pane_ids = layout.pane_ids();
                 // In Agents mode the per-repo terminal tree isn't rendered (the
                 // dashboard owns the central area). The list view mirrors the SELECTED
@@ -988,6 +995,11 @@ impl HelmApp {
                                 false,
                                 view,
                                 &mut diff_intents,
+                                Some(&mut crate::ui::diff_view::DiffReview {
+                                    mode: review_mode,
+                                    comments: review_comments,
+                                    intents: &mut review_intents,
+                                }),
                             );
                         } else {
                             let (project, worktree) = match &project_reminder {
@@ -1064,6 +1076,11 @@ impl HelmApp {
                                             true,
                                             view,
                                             &mut diff_intents,
+                                            Some(&mut crate::ui::diff_view::DiffReview {
+                                                mode: review_mode,
+                                                comments: review_comments,
+                                                intents: &mut review_intents,
+                                            }),
                                         );
                                     } else {
                                         if let Some(state) = &toolbar_state {
@@ -1808,6 +1825,9 @@ impl HelmApp {
             self.diff = None;
         }
         intents.append(&mut diff_intents);
+        for intent in review_intents {
+            self.apply_review_intent(intent);
+        }
 
         let mut generate_requested = false;
         let mut continue_op_requested = false;

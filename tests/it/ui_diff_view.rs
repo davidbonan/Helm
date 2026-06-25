@@ -5,8 +5,9 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
+use helm::review::{FileComments, LineComment, ReviewIntent};
 use helm::theme::Palette;
-use helm::ui::diff_view::{content_x_offset, diff_view, DiffViewState};
+use helm::ui::diff_view::{content_x_offset, diff_view, DiffReview, DiffViewState};
 use helm::ui::git_panel::GitIntent;
 
 fn line(origin: LineOrigin, content: &str) -> DiffLine {
@@ -128,6 +129,7 @@ fn drive(
             false,
             &mut state_in_ui.borrow_mut(),
             &mut sink.borrow_mut(),
+            None,
         );
         *closed_sink.borrow_mut() |= did_close;
     });
@@ -147,7 +149,9 @@ fn renders_the_path_and_diff_lines() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -182,7 +186,9 @@ fn a_line_longer_than_the_preview_extends_the_row_past_the_viewport() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -209,7 +215,9 @@ fn adjacent_changed_lines_are_contiguous_so_backgrounds_connect() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -422,6 +430,7 @@ fn drive_copy_diff(
             false,
             &mut state_in_ui.borrow_mut(),
             &mut sink,
+            None,
         );
     });
     harness.run();
@@ -452,6 +461,7 @@ fn drive_read_only(
             true,
             &mut state_in_ui.borrow_mut(),
             &mut sink.borrow_mut(),
+            None,
         );
         *closed_sink.borrow_mut() |= did_close;
     });
@@ -555,7 +565,9 @@ fn binary_file_offers_no_line_staging() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -580,7 +592,9 @@ fn oversize_diff_shows_summary_and_no_line_staging() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -631,7 +645,9 @@ fn gutter_shows_old_and_new_line_numbers() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -648,7 +664,9 @@ fn header_shows_addition_and_deletion_totals() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -727,6 +745,7 @@ fn reloading_a_shrunk_diff_drops_a_stale_selection_and_signals_it() {
             false,
             &mut state_in_ui.borrow_mut(),
             &mut sink,
+            None,
         );
     });
     harness.run();
@@ -782,7 +801,9 @@ fn an_image_diff_shows_a_zoomable_preview_instead_of_the_binary_placeholder() {
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
-        diff_view(ui, &palette, &diff, false, false, &mut state, &mut sink);
+        diff_view(
+            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+        );
     });
     harness.run();
 
@@ -794,4 +815,122 @@ fn an_image_diff_shows_a_zoomable_preview_instead_of_the_binary_placeholder() {
         harness.query_by_label_contains("Binary file").is_none(),
         "an image file must render a preview, not the binary placeholder",
     );
+}
+
+/// Addition line carrying a real `new_lineno`, so the inline editor anchors to a
+/// single line (unlike the `None`/`None` lines of `sample_diff`).
+fn review_diff() -> FileDiff {
+    FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,1 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "fn main() {\n".into(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "    work();\n".into(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+            ],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+    }
+}
+
+/// Drives `diff_view` in review mode with shared state, returns emitted review intents.
+fn drive_review(
+    diff: FileDiff,
+    comments: FileComments,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> Vec<ReviewIntent> {
+    let palette = Palette::light();
+    let git = Rc::new(RefCell::new(Vec::new()));
+    let review = Rc::new(RefCell::new(Vec::new()));
+    let review_sink = review.clone();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let comments = Rc::new(comments);
+    let comments_in_ui = comments.clone();
+
+    let mut harness = Harness::new_ui(move |ui| {
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            false,
+            false,
+            &mut state_in_ui.borrow_mut(),
+            &mut git.borrow_mut(),
+            Some(&mut DiffReview {
+                mode: true,
+                comments: comments_in_ui.as_ref(),
+                intents: &mut review_sink.borrow_mut(),
+            }),
+        );
+    });
+    harness.run();
+    actions(&mut harness);
+    harness.run();
+
+    let out = review.borrow().clone();
+    out
+}
+
+#[test]
+fn review_mode_click_line_then_validate_emits_save_comment() {
+    let intents = drive_review(review_diff(), FileComments::new(), |h| {
+        h.get_by_label_contains("work()").click();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .focus();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("needs rename");
+        h.run();
+        h.get_by_label("Validate").click();
+    });
+
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::SaveComment { file, comment }
+                if file == "src/main.rs"
+                    && comment.new_lineno == Some(2)
+                    && comment.note == "needs rename"
+        )),
+        "Validate must emit SaveComment for the clicked line, got {intents:?}",
+    );
+}
+
+#[test]
+fn review_header_send_badge_counts_stored_comments() {
+    let mut comments = FileComments::new();
+    helm::review::add_comment(
+        &mut comments,
+        "src/main.rs",
+        LineComment {
+            old_lineno: None,
+            new_lineno: Some(2),
+            code: "    work();".into(),
+            note: "needs rename".into(),
+        },
+    );
+
+    drive_review(review_diff(), comments, |h| {
+        h.get_by_label("Send (1)");
+        h.get_by_label_contains("needs rename");
+    });
 }

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::git::diff::{FileDiff, Hunk, ImageBlob, LineOrigin};
+use crate::review::{count, FileComments, LineComment, ReviewIntent};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
 use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
@@ -24,6 +25,11 @@ pub struct DiffViewState {
     /// Decoded preview of an image file, kept across frames and re-decoded only when
     /// the underlying blob changes (`ImageBlob::fingerprint`). git.md §4.
     image: Option<ImagePreview>,
+    /// Line whose review note editor is open (M-RC), keyed by its `(old, new)`
+    /// line numbers; `comment_buffer` holds the in-progress text. Cleared on
+    /// Validate, `Esc`, or when the open file changes.
+    active_comment: Option<(Option<u32>, Option<u32>)>,
+    comment_buffer: String,
 }
 
 impl DiffViewState {
@@ -34,6 +40,8 @@ impl DiffViewState {
         self.syntax_cache = None;
         self.stale = false;
         self.image = None;
+        self.active_comment = None;
+        self.comment_buffer.clear();
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -471,6 +479,15 @@ fn char_byte_index(text: &str, char_idx: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// In-diff review context (M-RC): the active repo's stored comments, the global
+/// review-mode toggle, and the sink for the actions the diff view raises. When
+/// `None` the diff view is a plain viewer (no review chrome).
+pub struct DiffReview<'a> {
+    pub mode: bool,
+    pub comments: &'a FileComments,
+    pub intents: &'a mut Vec<ReviewIntent>,
+}
+
 /// Overlay diff view (central zone, design-system §4 card). Renders the file's
 /// `FileDiff`, a Stage/Unstage button per hunk, and a line selection for partial
 /// staging. Returns `true` if the user requested closing (Close button or `Esc`)
@@ -478,7 +495,9 @@ fn char_byte_index(text: &str, char_idx: usize) -> usize {
 ///
 /// `read_only` (full-screen commit diff, M9-7 / git.md §9) removes every staging
 /// control: no hunk buttons, no line-by-line actions, no line selection — it's
-/// history, not the current index.
+/// history, not the current index. In review mode every line (read-only ones
+/// included) becomes annotable instead.
+#[allow(clippy::too_many_arguments)]
 pub fn diff_view(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -487,8 +506,29 @@ pub fn diff_view(
     read_only: bool,
     state: &mut DiffViewState,
     intents: &mut Vec<GitIntent>,
+    review: Option<&mut DiffReview<'_>>,
 ) -> bool {
-    let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let empty = FileComments::new();
+    let review_mode = match &review {
+        Some(r) => r.mode,
+        None => false,
+    };
+    let review_comments: &FileComments = match &review {
+        Some(r) => r.comments,
+        None => &empty,
+    };
+    let mut review_out: Vec<ReviewIntent> = Vec::new();
+
+    // First `Esc` cancels an open note editor; a second one closes the diff.
+    let mut close = false;
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if state.active_comment.is_some() {
+            state.active_comment = None;
+            state.comment_buffer.clear();
+        } else {
+            close = true;
+        }
+    }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(diff) {
             ui.ctx().copy_text(text);
@@ -538,6 +578,25 @@ pub fn diff_view(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if close_button(ui, palette) {
                     close = true;
+                }
+                let review_color = if review_mode {
+                    palette.accent
+                } else {
+                    palette.text_secondary
+                };
+                if intent_pill(ui, palette, "Review", review_color, true) {
+                    review_out.push(ReviewIntent::ToggleMode);
+                }
+                if review_mode {
+                    let n = count(review_comments);
+                    if n > 0 {
+                        if intent_pill(ui, palette, &format!("Send ({n})"), palette.accent, true) {
+                            review_out.push(ReviewIntent::SendToAgent);
+                        }
+                        if intent_pill(ui, palette, "Clear", palette.text_muted, true) {
+                            review_out.push(ReviewIntent::Clear);
+                        }
+                    }
                 }
             });
         });
@@ -647,8 +706,8 @@ pub fn diff_view(
                         apply_line_action(state, intents, action);
                     }
                     for (line_idx, line) in hunk.lines.iter().enumerate() {
+                        let text = display_text(&line.content);
                         let action = {
-                            let text = display_text(&line.content);
                             let row = RowData {
                                 origin: line.origin,
                                 text,
@@ -659,6 +718,7 @@ pub fn diff_view(
                                 palette,
                                 staged,
                                 read_only,
+                                review_mode,
                                 selected: state.selected(hunk_idx, line_idx),
                                 highlighted: state.syntax_line(hunk_idx, line_idx),
                                 text_range: state.text_range_for_row(text_row, text),
@@ -670,7 +730,28 @@ pub fn diff_view(
                             diff_line(ui, &row, hunk_idx, line_idx, &line_ctx, &mut text_rows)
                         };
                         text_row += 1;
-                        apply_line_action(state, intents, action);
+                        match action {
+                            Some(DiffLineAction::OpenComment { old, new }) => {
+                                state.comment_buffer =
+                                    note_at(review_comments, &diff.path, new.or(old))
+                                        .unwrap_or_default();
+                                state.active_comment = Some((old, new));
+                            }
+                            other => apply_line_action(state, intents, other),
+                        }
+                        comment_block(
+                            ui,
+                            palette,
+                            &diff.path,
+                            line.old_lineno,
+                            line.new_lineno,
+                            text,
+                            review_mode,
+                            review_comments,
+                            state,
+                            &mut review_out,
+                            layout.content_left(0.0),
+                        );
                     }
                     for new_no in ext.below {
                         let action = extension_line(
@@ -704,7 +785,85 @@ pub fn diff_view(
         }
     });
 
+    if let Some(r) = review {
+        r.intents.append(&mut review_out);
+    }
     close
+}
+
+/// Stored note anchored at `line` of `path` (`new` line else `old`), if any.
+fn note_at(comments: &FileComments, path: &str, line: Option<u32>) -> Option<String> {
+    comments
+        .get(path)?
+        .iter()
+        .find(|c| c.line_ref() == line)
+        .map(|c| c.note.clone())
+}
+
+/// Saved note (display + Delete) or the open editor (text field + Validate)
+/// rendered under a diff line in review mode, aligned to the code column.
+#[allow(clippy::too_many_arguments)]
+fn comment_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    path: &str,
+    old: Option<u32>,
+    new: Option<u32>,
+    code: &str,
+    review_mode: bool,
+    comments: &FileComments,
+    state: &mut DiffViewState,
+    review_out: &mut Vec<ReviewIntent>,
+    indent: f32,
+) {
+    let line = new.or(old);
+    if state.active_comment == Some((old, new)) {
+        ui.add_space(2.0);
+        let mut validated = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            ui.add(
+                egui::TextEdit::multiline(&mut state.comment_buffer)
+                    .desired_rows(2)
+                    .desired_width((ui.available_width() - PILL_SIZE * 8.0).max(120.0))
+                    .hint_text("Review note"),
+            );
+            if intent_pill(ui, palette, "Validate", palette.accent, true) {
+                validated = true;
+            }
+        });
+        ui.add_space(2.0);
+        if validated {
+            review_out.push(ReviewIntent::SaveComment {
+                file: path.to_owned(),
+                comment: LineComment {
+                    old_lineno: old,
+                    new_lineno: new,
+                    code: code.to_owned(),
+                    note: state.comment_buffer.clone(),
+                },
+            });
+            state.active_comment = None;
+            state.comment_buffer.clear();
+        }
+    } else if let Some(note) = note_at(comments, path, line) {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            ui.label(
+                egui::RichText::new(note)
+                    .size(LINE_SIZE)
+                    .color(palette.text_secondary),
+            );
+            if review_mode && intent_pill(ui, palette, "Delete", palette.git_deleted, true) {
+                review_out.push(ReviewIntent::DeleteComment {
+                    file: path.to_owned(),
+                    line,
+                });
+            }
+        });
+        ui.add_space(2.0);
+    }
 }
 
 fn apply_line_action(
@@ -720,6 +879,8 @@ fn apply_line_action(
             state.text_selection = Some(selection);
         }
         Some(DiffLineAction::ClearTextSelection) => state.text_selection = None,
+        // Handled by the caller (needs the stored comments to prefill the editor).
+        Some(DiffLineAction::OpenComment { .. }) => {}
         None => {}
     }
 }
@@ -758,6 +919,7 @@ fn extension_line(
         palette,
         staged: ext.staged,
         read_only: ext.read_only,
+        review_mode: false,
         selected: false,
         highlighted: None,
         text_range: state.text_range_for_row(ext.text_row, text),
@@ -1015,6 +1177,7 @@ struct DiffLineCtx<'a> {
     palette: &'a Palette,
     staged: bool,
     read_only: bool,
+    review_mode: bool,
     selected: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     text_range: Option<(usize, usize)>,
@@ -1036,10 +1199,19 @@ struct RowData<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DiffLineAction {
-    ToggleSelection { hunk: usize, line: usize },
+    ToggleSelection {
+        hunk: usize,
+        line: usize,
+    },
     SelectText(TextSelection),
     ClearTextSelection,
     Intent(GitIntent),
+    /// Review-mode click on a line (read-only ones included): open its note
+    /// editor, keyed by the line's `(old, new)` numbers.
+    OpenComment {
+        old: Option<u32>,
+        new: Option<u32>,
+    },
 }
 
 fn diff_line(
@@ -1101,8 +1273,11 @@ fn diff_line(
 
     let click_position =
         text_click_position(&response, content_left, ctx.char_w, ctx.text_row, text_len);
-    let line_action_clicked =
-        selectable && line_action_button(ui, ctx.palette, rect, response.hovered(), ctx.staged);
+    // The stage/unstage line button is hidden in review mode — a click annotates
+    // the line instead of staging it.
+    let line_action_clicked = !ctx.review_mode
+        && selectable
+        && line_action_button(ui, ctx.palette, rect, response.hovered(), ctx.staged);
     let action = if response.triple_clicked() {
         click_position.map(|at| {
             DiffLineAction::SelectText(TextSelection {
@@ -1118,6 +1293,11 @@ fn diff_line(
                 head: at,
                 mode: TextSelectionMode::Word,
             })
+        })
+    } else if ctx.review_mode && response.clicked() {
+        Some(DiffLineAction::OpenComment {
+            old: row.old_lineno,
+            new: row.new_lineno,
         })
     } else if line_action_clicked {
         let intent = if ctx.staged {

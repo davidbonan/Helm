@@ -362,6 +362,11 @@ pub struct HelmApp {
     /// CLI the in-diff review's "Send to {agent}" button launches (M-RC),
     /// persisted in `prefs.toml`: loaded at boot, saved on change in Preferences.
     review_agent_command: String,
+    /// In-diff review comments accumulated per repo (M-RC), in memory only: the
+    /// active repo's set feeds the diff view and the `Send` prompt.
+    review: HashMap<RepoKey, crate::review::FileComments>,
+    /// Diff view in review (annotate) mode (M-RC); global toggle, in memory only.
+    review_mode: bool,
     /// IDE opening terminal Cmd+click file links (terminal.md §12), persisted in
     /// `prefs.toml`: loaded at boot, saved on change in Preferences.
     editor: Editor,
@@ -517,6 +522,8 @@ impl HelmApp {
             ai_instructions: prefs.ai_instructions,
             ai_rebase_provider: prefs.ai_rebase_provider,
             review_agent_command: prefs.review_agent_command,
+            review: HashMap::new(),
+            review_mode: false,
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             branch_editor: BranchEditor::default(),
@@ -1155,6 +1162,38 @@ impl HelmApp {
             }
         } else if action.cancel_port_edit {
             self.run_port_edit = None;
+        }
+    }
+
+    fn active_repo_key(&self) -> Option<RepoKey> {
+        let index = self.workspace.active()?;
+        self.caches.keys.get(index).cloned()
+    }
+
+    /// Applies a review action raised by the diff view (M-RC). `SendToAgent` is
+    /// wired in RC5; the rest mutate the active repo's in-memory comment store.
+    fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent) {
+        use crate::review::ReviewIntent;
+        match intent {
+            ReviewIntent::ToggleMode => self.review_mode = !self.review_mode,
+            ReviewIntent::SaveComment { file, comment } => {
+                if let Some(key) = self.active_repo_key() {
+                    crate::review::add_comment(self.review.entry(key).or_default(), &file, comment);
+                }
+            }
+            ReviewIntent::DeleteComment { file, line } => {
+                if let Some(key) = self.active_repo_key() {
+                    if let Some(store) = self.review.get_mut(&key) {
+                        crate::review::delete_comment(store, &file, line);
+                    }
+                }
+            }
+            ReviewIntent::Clear => {
+                if let Some(key) = self.active_repo_key() {
+                    self.review.remove(&key);
+                }
+            }
+            ReviewIntent::SendToAgent => {}
         }
     }
 

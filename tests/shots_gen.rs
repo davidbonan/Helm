@@ -1124,7 +1124,16 @@ fn gen_git_staging() {
                     ui.add_space(40.0); // clear the macOS traffic-light line
                     let mut view = DiffViewState::default();
                     let mut intents: Vec<GitIntent> = Vec::new();
-                    let _ = diff_view(ui, &palette, &file, false, false, &mut view, &mut intents);
+                    let _ = diff_view(
+                        ui,
+                        &palette,
+                        &file,
+                        false,
+                        false,
+                        &mut view,
+                        &mut intents,
+                        None,
+                    );
                 },
             );
         });
