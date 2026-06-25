@@ -10,7 +10,7 @@
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md). Entry below Agents listing
 my PRs + PRs to review, from GitHub (`gh`) and Bitbucket Cloud, scoped to the
-workspace repos. Counter: **2/9**.
+workspace repos. Counter: **3/9**.
 
 - ☑ **PR1 — Domain model.** `pull_requests::model`: `PullRequest`, `PrRole`,
   `PrState`, `Checks`, `Review`, `Reviewer`, `PrDetail`. Reuse
@@ -21,7 +21,7 @@ workspace repos. Counter: **2/9**.
   over `--json` fixtures; `gh auth status` availability probe shape. *Files*:
   `src/pull_requests/github.rs`, `tests/fixtures/`. *Tests*: unit on captured
   JSON (open/draft, checks, review, reviewers).
-- ☐ **PR3 — Bitbucket source (pure).** `pull_requests::bitbucket`: Cloud `2.0`
+- ☑ **PR3 — Bitbucket source (pure).** `pull_requests::bitbucket`: Cloud `2.0`
   URL builders + Basic-auth header + I/O-free `parse_list`/`parse_detail`.
   Keychain creds via `security` CLI (service `helm.bitbucket`); `bitbucket_email`
   in `Prefs`. *Files*: `src/pull_requests/bitbucket.rs`,
@@ -58,7 +58,7 @@ workspace repos. Counter: **2/9**.
   milestone scenario (DoD).
 
 ### Next actions
-- Start **PR3** (Bitbucket source, pure) — `2.0` URL builders + Basic-auth header + `parse_list`/`parse_detail`; Keychain creds; `bitbucket_email` in `Prefs`.
+- Start **PR4** (PrRunner + cache) — detached one-shot runner fanning per-`Forge` queries; app cache + refresh cadence. Business e2e on command/URL construction.
 
 ### Blockers
 - none

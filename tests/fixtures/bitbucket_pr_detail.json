@@ -1,0 +1,11 @@
+{
+  "id": 101,
+  "title": "Add billing module",
+  "state": "OPEN",
+  "summary": {
+    "type": "rendered",
+    "raw": "This adds billing.\n\nMore details here.",
+    "markup": "markdown",
+    "html": "<p>This adds billing.</p>"
+  }
+}

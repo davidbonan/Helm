@@ -1809,6 +1809,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         workspace_opener: WorkspaceOpener::default(),
         last_seen_version: String::new(),
         review_agent_command: "claude".to_owned(),
+        bitbucket_email: String::new(),
         keybindings: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };

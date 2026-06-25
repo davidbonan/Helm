@@ -1,0 +1,50 @@
+{
+  "values": [
+    {
+      "id": 101,
+      "title": "Add billing module",
+      "state": "OPEN",
+      "draft": false,
+      "author": { "type": "user", "display_name": "Alice", "uuid": "{alice}" },
+      "source": { "branch": { "name": "feature/billing" } },
+      "destination": { "branch": { "name": "main" } },
+      "links": { "html": { "href": "https://bitbucket.org/team/repo/pull-requests/101" } },
+      "updated_on": "2026-06-20T10:00:00.000000+00:00",
+      "reviewers": [{ "display_name": "Bob", "uuid": "{bob}" }],
+      "participants": [
+        { "user": { "display_name": "Bob", "uuid": "{bob}" }, "role": "REVIEWER", "approved": false, "state": null },
+        { "user": { "display_name": "Carol", "uuid": "{carol}" }, "role": "REVIEWER", "approved": true, "state": "approved" }
+      ]
+    },
+    {
+      "id": 77,
+      "title": "Fix flaky test",
+      "state": "OPEN",
+      "draft": true,
+      "author": { "type": "user", "display_name": "Bob", "uuid": "{bob}" },
+      "source": { "branch": { "name": "fix/flaky" } },
+      "destination": { "branch": { "name": "develop" } },
+      "links": { "html": { "href": "https://bitbucket.org/team/repo/pull-requests/77" } },
+      "updated_on": "2026-06-19T09:00:00.000000+00:00",
+      "reviewers": [{ "display_name": "Alice", "uuid": "{alice}" }],
+      "participants": [
+        { "user": { "display_name": "Alice", "uuid": "{alice}" }, "role": "REVIEWER", "approved": false, "state": "changes_requested" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Someone else's PR",
+      "state": "OPEN",
+      "draft": false,
+      "author": { "type": "user", "display_name": "Dave", "uuid": "{dave}" },
+      "source": { "branch": { "name": "chore/x" } },
+      "destination": { "branch": { "name": "main" } },
+      "links": { "html": { "href": "https://bitbucket.org/team/repo/pull-requests/5" } },
+      "updated_on": "2026-06-18T09:00:00.000000+00:00",
+      "reviewers": [{ "display_name": "Erin", "uuid": "{erin}" }],
+      "participants": []
+    }
+  ],
+  "pagelen": 50,
+  "size": 3
+}

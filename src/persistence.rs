@@ -145,6 +145,11 @@ pub struct Prefs {
     /// terminal tab (M-RC): `<command> "<prompt>"`. Default `claude`.
     #[serde(default = "default_review_agent_command")]
     pub review_agent_command: String,
+    /// Bitbucket account email for the PR cockpit's Basic auth (pull-requests.md
+    /// §3); the paired token lives in the Keychain, never here. Empty ⇒ the
+    /// Bitbucket source stays off.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bitbucket_email: String,
     /// Rebindable-action deviations (`action-id = "combo"`, keybindings.md §6):
     /// only deviations from the defaults, `""` = unbound; unknown ids are kept
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
@@ -182,6 +187,7 @@ impl Default for Prefs {
             workspace_opener: WorkspaceOpener::default(),
             last_seen_version: String::new(),
             review_agent_command: default_review_agent_command(),
+            bitbucket_email: String::new(),
             keybindings: BTreeMap::new(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -519,6 +525,7 @@ mod tests {
             workspace_opener: WorkspaceOpener::GitKraken,
             last_seen_version: "0.8.4".to_owned(),
             review_agent_command: "claude --model opus".to_owned(),
+            bitbucket_email: "me@corp.com".to_owned(),
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),
