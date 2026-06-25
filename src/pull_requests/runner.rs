@@ -14,7 +14,7 @@ use std::process::Command;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::git::forge::{parse_remote, Forge};
-use crate::pull_requests::model::{dedupe, ForgeKind, PullRequest};
+use crate::pull_requests::model::{dedupe, ForgeKind, PrRole, PullRequest};
 use crate::pull_requests::{bitbucket, creds, github};
 
 /// Usability of one source for the cockpit's inline hints (spec §3/§5).
@@ -38,8 +38,14 @@ pub enum PrQuery {
         repo_label: String,
         args: Vec<String>,
     },
-    /// A Bitbucket REST GET; the Basic-auth header is added at execution.
-    Bitbucket { repo_label: String, url: String },
+    /// A Bitbucket REST GET; the Basic-auth header is added at execution. The
+    /// `role` is the query's filter (author/reviewer), assigned to every PR it
+    /// returns since the list reply carries no reviewer roster to re-derive it.
+    Bitbucket {
+        repo_label: String,
+        url: String,
+        role: PrRole,
+    },
 }
 
 /// What the UI thread asks the runner to fetch.
@@ -82,10 +88,12 @@ impl PrCache {
     }
 }
 
-/// The per-forge list queries, in sidebar order. GitHub needs two searches
-/// (`author:@me`, `review-requested:@me`); Bitbucket one list call, only when
-/// configured. Pure — the worker runs whatever this returns.
-pub fn plan(forges: &[(Forge, String)], bitbucket_configured: bool) -> Vec<PrQuery> {
+/// The per-forge list queries, in sidebar order. Both forges need two searches
+/// (authored + review-requested) because neither list reply lets the other role
+/// be re-derived; Bitbucket needs the resolved account uuid, so its queries are
+/// emitted only once `bitbucket_uuid` is known. Pure — the worker runs whatever
+/// this returns.
+pub fn plan(forges: &[(Forge, String)], bitbucket_uuid: Option<&str>) -> Vec<PrQuery> {
     let mut queries = Vec::new();
     for (forge, label) in forges {
         match forge {
@@ -100,10 +108,16 @@ pub fn plan(forges: &[(Forge, String)], bitbucket_configured: bool) -> Vec<PrQue
                 });
             }
             Forge::Bitbucket { workspace, repo } => {
-                if bitbucket_configured {
+                if let Some(uuid) = bitbucket_uuid {
                     queries.push(PrQuery::Bitbucket {
                         repo_label: label.clone(),
-                        url: bitbucket::pull_requests_url(workspace, repo),
+                        url: bitbucket::authored_url(workspace, repo, uuid),
+                        role: PrRole::Mine,
+                    });
+                    queries.push(PrQuery::Bitbucket {
+                        repo_label: label.clone(),
+                        url: bitbucket::reviewing_url(workspace, repo, uuid),
+                        role: PrRole::ToReview,
                     });
                 }
             }
@@ -344,7 +358,6 @@ fn fetch(
     let has_bitbucket = forges
         .iter()
         .any(|(f, _)| matches!(f, Forge::Bitbucket { .. }));
-    let bitbucket_configured = has_bitbucket && !request.bitbucket_email.is_empty();
 
     let mut pull_requests = Vec::new();
     let mut github = SourceStatus::Absent;
@@ -362,7 +375,7 @@ fn fetch(
             match &github_login {
                 Some(login) if !login.is_empty() => {
                     github = SourceStatus::Ok;
-                    for query in plan(&forges, bitbucket_configured) {
+                    for query in plan(&forges, None) {
                         if let PrQuery::Gh { repo_label, args } = query {
                             if let Some(json) = run_stdout("gh", &args) {
                                 if let Ok(mut prs) = github::parse_list(&json, login, &repo_label) {
@@ -404,6 +417,9 @@ fn fetch(
                                 "Bitbucket token invalid or expired".to_owned(),
                             )
                         }
+                        CurlResult::HttpError(message) => {
+                            bitbucket = SourceStatus::Unavailable(message)
+                        }
                         CurlResult::Failed => {
                             bitbucket =
                                 SourceStatus::Unavailable("Bitbucket unreachable".to_owned())
@@ -412,12 +428,17 @@ fn fetch(
                 }
                 if let Some(uuid) = &bitbucket_uuid {
                     bitbucket = SourceStatus::Ok;
-                    for query in plan(&forges, true) {
-                        if let PrQuery::Bitbucket { repo_label, url } = query {
+                    for query in plan(&forges, Some(uuid.as_str())) {
+                        if let PrQuery::Bitbucket {
+                            repo_label,
+                            url,
+                            role,
+                        } = query
+                        {
                             match curl_get(&url, &header) {
                                 CurlResult::Ok(json) => {
                                     if let Ok(mut prs) =
-                                        bitbucket::parse_list(&json, uuid, &repo_label)
+                                        bitbucket::parse_list(&json, &repo_label, role)
                                     {
                                         pull_requests.append(&mut prs);
                                     }
@@ -426,6 +447,9 @@ fn fetch(
                                     bitbucket = SourceStatus::Unavailable(
                                         "Bitbucket token invalid or expired".to_owned(),
                                     )
+                                }
+                                CurlResult::HttpError(message) => {
+                                    bitbucket = SourceStatus::Unavailable(message)
                                 }
                                 CurlResult::Failed => {
                                     bitbucket = SourceStatus::Unavailable(
@@ -467,11 +491,15 @@ fn run_stdout(program: &str, args: &[String]) -> Option<String> {
 enum CurlResult {
     Ok(String),
     Unauthorized,
+    /// An HTTP error reply (403, 404, 5xx…): authenticated but refused, carrying
+    /// Bitbucket's own reason so the UI can name it (not "unreachable").
+    HttpError(String),
+    /// curl could not produce an HTTP response at all (couldn't run, or `000`).
     Failed,
 }
 
 /// `curl` the URL with a Basic-auth header, splitting the trailing `%{http_code}`
-/// the `update.rs` idiom uses to tell 200 / 401 / other apart.
+/// the `update.rs` idiom uses to tell 200 / 401 / error / no-response apart.
 fn curl_get(url: &str, auth_header: &str) -> CurlResult {
     let args = [
         "-s".to_owned(),
@@ -489,7 +517,11 @@ fn curl_get(url: &str, auth_header: &str) -> CurlResult {
     match code.trim() {
         "200" => CurlResult::Ok(body.to_owned()),
         "401" => CurlResult::Unauthorized,
-        _ => CurlResult::Failed,
+        "000" | "" => CurlResult::Failed,
+        code => CurlResult::HttpError(
+            bitbucket::parse_error_message(body)
+                .unwrap_or_else(|| format!("Bitbucket error (HTTP {code})")),
+        ),
     }
 }
 
@@ -521,7 +553,7 @@ mod tests {
 
     #[test]
     fn plan_fans_two_gh_queries_per_github_repo() {
-        let queries = plan(&[github("acme/web")], false);
+        let queries = plan(&[github("acme/web")], None);
         assert_eq!(
             queries,
             vec![
@@ -538,28 +570,40 @@ mod tests {
     }
 
     #[test]
-    fn plan_emits_bitbucket_list_only_when_configured() {
+    fn plan_emits_two_bitbucket_queries_only_once_the_uuid_is_known() {
         let forges = [bitbucket("team/repo")];
-        assert!(plan(&forges, false).is_empty());
+        // No uuid yet (identity unresolved) ⇒ no Bitbucket query.
+        assert!(plan(&forges, None).is_empty());
         assert_eq!(
-            plan(&forges, true),
-            vec![PrQuery::Bitbucket {
-                repo_label: "team/repo".to_owned(),
-                url: bitbucket::pull_requests_url("team", "repo"),
-            }]
+            plan(&forges, Some("{me}")),
+            vec![
+                PrQuery::Bitbucket {
+                    repo_label: "team/repo".to_owned(),
+                    url: bitbucket::authored_url("team", "repo", "{me}"),
+                    role: PrRole::Mine,
+                },
+                PrQuery::Bitbucket {
+                    repo_label: "team/repo".to_owned(),
+                    url: bitbucket::reviewing_url("team", "repo", "{me}"),
+                    role: PrRole::ToReview,
+                },
+            ]
         );
     }
 
     #[test]
     fn plan_mixes_sources_in_order() {
-        let queries = plan(&[github("acme/web"), bitbucket("team/repo")], true);
-        assert_eq!(queries.len(), 3);
+        let queries = plan(&[github("acme/web"), bitbucket("team/repo")], Some("{me}"));
+        assert_eq!(queries.len(), 4);
         assert!(matches!(queries[0], PrQuery::Gh { .. }));
         assert!(matches!(queries[1], PrQuery::Gh { .. }));
         assert!(matches!(
             &queries[2],
-            PrQuery::Bitbucket { url, .. }
-            if url == "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?state=OPEN&pagelen=50"
+            PrQuery::Bitbucket { role, .. } if *role == PrRole::Mine
+        ));
+        assert!(matches!(
+            &queries[3],
+            PrQuery::Bitbucket { role, .. } if *role == PrRole::ToReview
         ));
     }
 

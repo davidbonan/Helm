@@ -982,10 +982,14 @@ fn source_status(ui: &mut egui::Ui, palette: &Palette, status: &SourceStatus, lo
         return;
     }
     match status {
-        SourceStatus::Ok => inline_status(ui, "Connected", palette.text_secondary),
-        SourceStatus::Unavailable(hint) => inline_status(ui, hint, palette.git_deleted),
+        SourceStatus::Ok => {
+            inline_status(ui, "Connected", palette.text_secondary);
+        }
+        SourceStatus::Unavailable(hint) => {
+            inline_status(ui, hint, palette.git_deleted).on_hover_text(hint);
+        }
         SourceStatus::Absent => {
-            inline_status(ui, "No repository in your workspace", palette.text_muted)
+            inline_status(ui, "No repository in your workspace", palette.text_muted);
         }
     }
 }
@@ -1039,6 +1043,17 @@ fn bitbucket_token_row(ui: &mut egui::Ui, palette: &Palette, token: &mut String)
                 egui::RichText::new("Stored in the macOS Keychain, never written to disk")
                     .size(DESCRIPTION_SIZE)
                     .color(palette.text_muted),
+            );
+            ui.label(
+                egui::RichText::new("Needs read scopes: Account, Repositories, Pull requests")
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
+            );
+            ui.hyperlink_to(
+                egui::RichText::new("Create a Bitbucket API token ↗")
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.accent),
+                "https://id.atlassian.com/manage-profile/security/api-tokens",
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1458,7 +1473,7 @@ fn inline_progress(ui: &mut egui::Ui, palette: &Palette, label: &str) {
 }
 
 /// Inline updater result, truncated to the slot's remaining width.
-fn inline_status(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+fn inline_status(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
     ui.add(
         egui::Label::new(
             egui::RichText::new(text)
@@ -1466,7 +1481,7 @@ fn inline_status(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
                 .color(color),
         )
         .truncate(),
-    );
+    )
 }
 
 /// Pill action button of the setting rows, sized to its label. `primary` paints

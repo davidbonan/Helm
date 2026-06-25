@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use helm::git::forge::Forge;
+use helm::pull_requests::model::PrRole;
 use helm::pull_requests::runner::{forges_of_roots, plan, PrQuery};
 use helm::pull_requests::{bitbucket, github};
 
@@ -35,7 +36,7 @@ fn github_origin_resolves_to_two_gh_search_queries() {
     );
 
     assert_eq!(
-        plan(&forges, false),
+        plan(&forges, None),
         vec![
             PrQuery::Gh {
                 repo_label: "acme/web".to_owned(),
@@ -67,13 +68,21 @@ fn bitbucket_origin_lists_only_when_configured() {
         )]
     );
 
-    assert!(plan(&forges, false).is_empty());
+    assert!(plan(&forges, None).is_empty());
     assert_eq!(
-        plan(&forges, true),
-        vec![PrQuery::Bitbucket {
-            repo_label: "team/repo".to_owned(),
-            url: bitbucket::pull_requests_url("team", "repo"),
-        }]
+        plan(&forges, Some("{me}")),
+        vec![
+            PrQuery::Bitbucket {
+                repo_label: "team/repo".to_owned(),
+                url: bitbucket::authored_url("team", "repo", "{me}"),
+                role: PrRole::Mine,
+            },
+            PrQuery::Bitbucket {
+                repo_label: "team/repo".to_owned(),
+                url: bitbucket::reviewing_url("team", "repo", "{me}"),
+                role: PrRole::ToReview,
+            },
+        ]
     );
 }
 
@@ -87,7 +96,7 @@ fn worktrees_of_one_remote_are_queried_once() {
 
     let forges = forges_of_roots(&[a, b]);
     assert_eq!(forges.len(), 1);
-    assert_eq!(plan(&forges, false).len(), 2);
+    assert_eq!(plan(&forges, None).len(), 2);
 }
 
 #[test]
@@ -100,5 +109,5 @@ fn repos_without_a_known_forge_origin_are_skipped() {
 
     let forges = forges_of_roots(&[gitlab, bare, PathBuf::from("/nonexistent")]);
     assert!(forges.is_empty());
-    assert!(plan(&forges, true).is_empty());
+    assert!(plan(&forges, None).is_empty());
 }

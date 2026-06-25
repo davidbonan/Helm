@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::pull_requests::model::{
-    Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review, Reviewer,
+    Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
 };
 
 const API: &str = "https://api.bitbucket.org/2.0";
@@ -17,9 +17,24 @@ pub fn current_user_url() -> String {
     format!("{API}/user")
 }
 
-/// Open PRs of a repo (drafts included); roles are classified afterwards.
-pub fn pull_requests_url(workspace: &str, repo: &str) -> String {
-    format!("{API}/repositories/{workspace}/{repo}/pullrequests?state=OPEN&pagelen=50")
+/// Open PRs `me_uuid` authored (`role` ⇒ `Mine`). The list endpoint omits
+/// `reviewers`/`participants`, so the role can't be re-derived from the reply —
+/// it comes from which query found the PR, like the GitHub two-query split.
+pub fn authored_url(workspace: &str, repo: &str, me_uuid: &str) -> String {
+    role_filtered_url(workspace, repo, "author.uuid", me_uuid)
+}
+
+/// Open PRs where `me_uuid` is a requested reviewer (`role` ⇒ `ToReview`).
+pub fn reviewing_url(workspace: &str, repo: &str, me_uuid: &str) -> String {
+    role_filtered_url(workspace, repo, "reviewers.uuid", me_uuid)
+}
+
+/// `…/pullrequests?q=<state+role filter>` — the state is folded into `q` (a
+/// separate `state=` param is ignored once `q` is present) and the whole BBQL
+/// expression is percent-encoded, since the runner hands the URL to `curl` raw.
+fn role_filtered_url(workspace: &str, repo: &str, field: &str, me_uuid: &str) -> String {
+    let q = encode(&format!("state=\"OPEN\" AND {field}=\"{me_uuid}\""));
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests?q={q}&pagelen=50")
 }
 
 /// A single PR (carries the rendered description for the detail panel).
@@ -43,12 +58,20 @@ pub fn parse_current_user(json: &str) -> Option<String> {
     value["uuid"].as_str().map(str::to_owned)
 }
 
-/// Map a paginated `pullrequests` page onto domain PRs, dropping any that
-/// concern neither role for `me_uuid`.
+/// The human-readable `message` from a Bitbucket error reply
+/// (`{"error":{"message":"…"}}`) — surfaced verbatim so a 403/404 names its real
+/// cause (e.g. a missing scope) instead of a bare "unreachable".
+pub fn parse_error_message(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json).ok()?;
+    value["error"]["message"].as_str().map(str::to_owned)
+}
+
+/// Map a paginated `pullrequests` page onto domain PRs, all carrying `role` (the
+/// query already filtered by author/reviewer, so every entry concerns that role).
 pub fn parse_list(
     json: &str,
-    me_uuid: &str,
     repo_label: &str,
+    role: PrRole,
 ) -> serde_json::Result<Vec<PullRequest>> {
     let value: Value = serde_json::from_str(json)?;
     let prs = value["values"]
@@ -56,7 +79,7 @@ pub fn parse_list(
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| parse_pr(item, me_uuid, repo_label))
+                .map(|item| parse_pr(item, repo_label, role))
                 .collect()
         })
         .unwrap_or_default();
@@ -100,23 +123,16 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
     })
 }
 
-fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
-    let author_uuid = o["author"]["uuid"].as_str().unwrap_or_default();
-    let reviewer_uuids: Vec<&str> = o["reviewers"]
-        .as_array()
-        .map(|items| items.iter().filter_map(|r| r["uuid"].as_str()).collect())
-        .unwrap_or_default();
-    let is_author = !me.is_empty() && author_uuid == me;
-    let is_requested = reviewer_uuids.contains(&me);
-    let role = PrRole::classify(is_author, is_requested)?;
-
+/// Map one PR object onto the domain. The list reply omits review state and the
+/// reviewer roster (detail-only on Bitbucket), so both stay empty here.
+fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
     let state = if o["draft"].as_bool().unwrap_or(false) {
         PrState::Draft
     } else {
         PrState::Open
     };
 
-    Some(PullRequest {
+    PullRequest {
         forge_kind: ForgeKind::Bitbucket,
         repo_label: repo_label.to_owned(),
         number: o["id"].as_u64().unwrap_or_default(),
@@ -141,66 +157,24 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
             .to_owned(),
         updated_at: o["updated_on"].as_str().unwrap_or_default().to_owned(),
         checks: Checks::None,
-        review: aggregate_review(o),
-        reviewers: collect_reviewers(o),
-    })
-}
-
-/// Aggregate the requested reviewers' decisions: any changes-requested ⇒
-/// ChangesRequested, else any approval ⇒ Approved, else Pending while reviewers
-/// remain, else None.
-fn aggregate_review(o: &Value) -> Review {
-    let Some(participants) = o["participants"].as_array() else {
-        return Review::None;
-    };
-    let states: Vec<&str> = participants
-        .iter()
-        .filter(|p| p["role"].as_str() == Some("REVIEWER"))
-        .map(|p| p["state"].as_str().unwrap_or_default())
-        .collect();
-    if states.is_empty() {
-        return Review::None;
-    }
-    if states.contains(&"changes_requested") {
-        Review::ChangesRequested
-    } else if states.contains(&"approved") {
-        Review::Approved
-    } else {
-        Review::Pending
+        review: Review::None,
+        reviewers: Vec::new(),
     }
 }
 
-/// The requested reviewers and where each stands, looked up from `participants`.
-fn collect_reviewers(o: &Value) -> Vec<Reviewer> {
-    let participants = o["participants"].as_array();
-    o["reviewers"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|r| {
-                    let uuid = r["uuid"].as_str().unwrap_or_default();
-                    let state = participants
-                        .and_then(|ps| ps.iter().find(|p| p["user"]["uuid"].as_str() == Some(uuid)))
-                        .and_then(|p| p["state"].as_str())
-                        .map(map_review_state)
-                        .unwrap_or(Review::Pending);
-                    Reviewer {
-                        name: r["display_name"].as_str().unwrap_or_default().to_owned(),
-                        state,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn map_review_state(state: &str) -> Review {
-    match state {
-        "approved" => Review::Approved,
-        "changes_requested" => Review::ChangesRequested,
-        _ => Review::Pending,
+/// Percent-encode a BBQL `q` value (RFC 3986 unreserved set kept verbatim) so the
+/// spaces/quotes/braces survive being passed to `curl` as a raw URL.
+fn encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() * 3);
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
     }
+    out
 }
 
 /// Standard base64 (no external dep — spec §3 forbids a new runtime crate).
@@ -240,9 +214,15 @@ mod tests {
     #[test]
     fn url_builders_target_the_cloud_2_0_endpoints() {
         assert_eq!(current_user_url(), "https://api.bitbucket.org/2.0/user");
+        // The role filter folds OPEN into a percent-encoded `q` (state= alone is
+        // dropped once q is present), differing only by author/reviewers field.
         assert_eq!(
-            pull_requests_url("team", "repo"),
-            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?state=OPEN&pagelen=50"
+            authored_url("team", "repo", "{me}"),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20author.uuid%3D%22%7Bme%7D%22&pagelen=50"
+        );
+        assert_eq!(
+            reviewing_url("team", "repo", "{me}"),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20reviewers.uuid%3D%22%7Bme%7D%22&pagelen=50"
         );
         assert_eq!(
             pull_request_url("team", "repo", 101),
@@ -273,47 +253,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_classifies_by_uuid_and_drops_uninvolved() {
-        let prs = parse_list(LIST, "{alice}", "team/repo").unwrap();
-        // PR 5 (alice neither author nor reviewer) is dropped.
-        assert_eq!(prs.len(), 2);
-
-        let mine = &prs[0];
-        assert_eq!(mine.number, 101);
-        assert_eq!(mine.role, PrRole::Mine);
-        assert_eq!(mine.state, PrState::Open);
-        assert_eq!(mine.author, "Alice");
-        assert_eq!(mine.source_branch, "feature/billing");
-        assert_eq!(mine.dest_branch, "main");
+    fn parse_error_message_reads_the_reason_else_none() {
+        let forbidden = r#"{"type":"error","error":{"message":"Your credentials lack one or more required privilege scopes."}}"#;
         assert_eq!(
-            mine.url,
+            parse_error_message(forbidden).as_deref(),
+            Some("Your credentials lack one or more required privilege scopes.")
+        );
+        assert_eq!(parse_error_message(r#"{"uuid":"{alice}"}"#), None);
+        assert_eq!(parse_error_message("not json"), None);
+    }
+
+    #[test]
+    fn parse_list_maps_every_entry_under_the_query_role() {
+        // The query already filtered by role, so nothing is dropped and every PR
+        // carries the role passed in (here ToReview).
+        let prs = parse_list(LIST, "team/repo", PrRole::ToReview).unwrap();
+        assert_eq!(prs.len(), 3);
+        assert!(prs.iter().all(|p| p.role == PrRole::ToReview));
+
+        let first = &prs[0];
+        assert_eq!(first.number, 101);
+        assert_eq!(first.state, PrState::Open);
+        assert_eq!(first.author, "Alice");
+        assert_eq!(first.source_branch, "feature/billing");
+        assert_eq!(first.dest_branch, "main");
+        assert_eq!(
+            first.url,
             "https://bitbucket.org/team/repo/pull-requests/101"
         );
+        // The list reply has no reviewer/review data — both stay empty.
+        assert_eq!(first.review, Review::None);
+        assert!(first.reviewers.is_empty());
 
-        let to_review = &prs[1];
-        assert_eq!(to_review.number, 77);
-        assert_eq!(to_review.role, PrRole::ToReview);
-        assert_eq!(to_review.state, PrState::Draft);
-    }
-
-    #[test]
-    fn parse_list_aggregates_review_from_participants() {
-        let prs = parse_list(LIST, "{alice}", "team/repo").unwrap();
-        // PR 101: carol approved, bob undecided ⇒ Approved.
-        assert_eq!(prs[0].review, Review::Approved);
-        // PR 77: alice requested changes ⇒ ChangesRequested.
-        assert_eq!(prs[1].review, Review::ChangesRequested);
-    }
-
-    #[test]
-    fn parse_list_collects_requested_reviewers_with_state() {
-        let prs = parse_list(LIST, "{alice}", "team/repo").unwrap();
-        assert_eq!(prs[0].reviewers.len(), 1);
-        assert_eq!(prs[0].reviewers[0].name, "Bob");
-        assert_eq!(prs[0].reviewers[0].state, Review::Pending);
-
-        assert_eq!(prs[1].reviewers[0].name, "Alice");
-        assert_eq!(prs[1].reviewers[0].state, Review::ChangesRequested);
+        // The same page mapped under Mine carries Mine throughout.
+        let mine = parse_list(LIST, "team/repo", PrRole::Mine).unwrap();
+        assert!(mine.iter().all(|p| p.role == PrRole::Mine));
     }
 
     #[test]
