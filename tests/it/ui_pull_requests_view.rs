@@ -1,7 +1,7 @@
 //! UI E2E for the Pull Requests cockpit (pull-requests.md §5/§11): drives
 //! `pull_requests_page` headless across both surfaces — the browse list (groups,
 //! a row, the empty state, the row → select intent) and the review surface (the
-//! header's Open-in-browser / Checkout intents, Back, a changed-file
+//! detail header's Open-in-browser / Checkout intents, Back, a changed-file
 //! click, and the draggable rail width).
 
 use std::cell::Cell;
@@ -225,7 +225,19 @@ fn clicking_a_row_selects_it() {
 }
 
 #[test]
-fn review_header_open_in_browser_emits_the_url() {
+fn review_detail_header_shows_pr_context() {
+    let (harness, _) = review_harness(
+        pr("acme/web", 42, "PR cockpit", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    harness.get_by_label("PR cockpit");
+    harness.get_by_label("octocat · feature → main");
+    harness.get_by_label("#42");
+}
+
+#[test]
+fn review_detail_open_in_browser_emits_the_url() {
     let (mut harness, cap) = review_harness(
         pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
         Vec::new(),
@@ -240,7 +252,7 @@ fn review_header_open_in_browser_emits_the_url() {
 }
 
 #[test]
-fn review_header_checkout_emits_the_intent() {
+fn review_detail_checkout_emits_the_intent() {
     let (mut harness, cap) = review_harness(
         pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
         Vec::new(),
@@ -368,6 +380,14 @@ fn closing_the_open_file_emits_close_not_back() {
         });
     harness.step();
     harness.step();
+    assert!(
+        harness.query_by_label("Open in browser").is_none(),
+        "PR-level actions live in the central detail and disappear while a file diff is open",
+    );
+    assert!(
+        harness.query_by_label("Checkout").is_none(),
+        "PR-level actions live in the central detail and disappear while a file diff is open",
+    );
     harness.get_by_label("Close").click();
     harness.step();
     assert!(cap.close_file.get(), "Close emits close_file");
@@ -630,8 +650,8 @@ fn dragging_the_split_resizes_the_rail_width() {
 #[test]
 fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
     // The rail toggle now lives in the title bar (outside this view); collapsing it
-    // hides the whole rail — file list, actions and composer — and the center area
-    // (here the PR detail, since no file is open) expands to the full width.
+    // hides the rail file list and composer; the center area (here the PR detail,
+    // since no file is open) expands to the full width and keeps PR-level actions.
     let palette = Palette::light();
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
     let files = vec![changed_file("src/main.rs")];
@@ -684,10 +704,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
         harness.query_by_label("src/main.rs").is_none(),
         "the changed-files rail is hidden when collapsed",
     );
-    assert!(
-        harness.query_by_label("Checkout").is_none(),
-        "the rail's actions are hidden when collapsed",
-    );
+    harness.get_by_label("Checkout");
 }
 
 #[test]

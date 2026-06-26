@@ -130,12 +130,11 @@ pending review + merge of the `m-pr` worktree branch.
   sidebars. `root_layout`/`top_right_actions` thread `pr_rail_collapsed` +
   `&mut pr_toggle_rail`; the in-view header toggle and `PullRequestsPageAction::toggle_rail`
   are gone. *Files*: `src/ui/mod.rs`, `src/app/render.rs`, `src/ui/pull_requests_view.rs`.
-- ☑ **Full-width header band removed; its buttons moved into the rail.** `review_header`
-  + `rail_toggle_button` deleted; the diff now fills the whole surface. The rail's
-  `review_actions` carries Back, the PR heading (state icon + #num + wrapping title)
-  and the actions (Open in browser / Checkout) stacked full-width — so
-  collapsing the rail hides them all. *Files*: `src/ui/pull_requests_view.rs`.
-  *Tests*: UI e2e (collapsed rail hides files **and** actions; toggle-intent test dropped).
+- ☑ **Full-width header band removed.** `review_header` + `rail_toggle_button`
+  deleted; the diff now fills the whole surface. Later passes moved Back, the PR
+  title and PR-level actions into the center detail, leaving rail collapse scoped
+  to the changed-files list + composer. *Files*: `src/ui/pull_requests_view.rs`.
+  *Tests*: UI e2e (collapsed rail hides files; toggle-intent test dropped).
 - ☑ **Homogeneous button radius.** New `theme::RADIUS_BUTTON = 4` (matches the git
   sidebar commit button); the PR back / action / verdict / Submit buttons drop their
   hardcoded `6.0`. *Files*: `src/theme.rs`, `src/ui/pull_requests_view.rs`.
@@ -166,10 +165,9 @@ pending review + merge of the `m-pr` worktree branch.
 - ☑ **Back + title moved to the center; rail header dropped.** The center detail
   now leads with a **Back** control and the PR **title**; the rail's old header row
   (Back + PR state icon + `#number` + title) is gone, so the sidebar gains vertical
-  space and keeps only the **Open in browser / Checkout** actions above the Files
-  changed band + file list + composer. Back lives in the detail (a diff's **Close**
-  returns there). Pure view re-layout — `review_detail` gained the header + an
-  `action` param; `review_actions` slimmed to the two buttons. *Files*:
+  space for the Files changed band + file list + composer. Back lives in the detail
+  (a diff's **Close** returns there). Pure view re-layout — `review_detail` gained
+  the header + an `action` param. *Files*:
   `src/ui/pull_requests_view.rs`, `specs/pull-requests.md`. *Tests*: covered by the
   existing PR-cockpit UI e2e (Back/Open/Checkout still resolve).
 
@@ -202,11 +200,16 @@ pending review + merge of the `m-pr` worktree branch.
 - ☑ **Composer is a true segmented control.** Comment / Approve / Request changes
   render as one segmented control; the primary button label names the submitted
   action and disables empty Comment reviews. *Files*: `src/ui/pull_requests_view.rs`.
-- ☑ **Review signals are calmer per file.** Viewed state moved to an **Unread**
-  filter chip in the Files changed header; rows keep only muted forge-draft and
-  agent-note icons with no counts. Existing-thread Ask action moved inside the
+- ☑ **Review signals are calmer per file.** Viewed state moved to an icon-only
+  unread filter chip in the Files changed header; rows keep only muted forge-draft
+  and agent-note icons with no counts. Existing-thread Ask action moved inside the
   thread card. *Files*: `src/ui/{pull_requests_view,diff_view}.rs`. *Tests*: PR
   rail UI e2e + diff thread intent e2e.
+- ☑ **PR-level actions live in the center detail.** Open in browser / Checkout
+  moved out of the rail and only appear when no file diff is open.
+- ☑ **Center detail header compacted.** The PR detail now starts with a full-width
+  header: Back on the left, title + `author · source → dest`, compact
+  Open-in-browser / Checkout actions on the right, and a `#number` chip.
 
 ### Next actions (M-PR2)
 - **Review then merge** the `m-pr` worktree branch into `main` (the milestone loop

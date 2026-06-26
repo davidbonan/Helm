@@ -96,7 +96,7 @@ detail panel, resizable split persisted in `Prefs.pr_detail_width`):
 - **Detail** of the selection: header (title · `#number` · state), `source →
   dest`, author, **checks** + **reviewers**, and the **diff-centric review
   surface** (§11) — the PR's changed files and their diffs, with in-diff comments
-  and a submit composer. Header actions: **Open in browser** (reuses
+  and a submit composer. PR-level actions: **Open in browser** (reuses
   `terminal::links::open_url` on the PR's `url`), **Checkout** (§7), and **Ask
   Claude** (§11). **Merging** stays out of scope (opens the browser).
 
@@ -195,17 +195,19 @@ M-RC review engine (`review.rs`, `ui::diff_view`) so the in-diff comment UX is t
 same one as commit/working-tree review.
 
 - **Layout.** The **center** area shows the selected file's diff, or — when **no
-  file is open** — the PR **detail**: a **Back** control + the PR **title** heading
-  the author avatar, `source → dest`, body, Checks and conversation, in the
+  file is open** — the PR **detail**: a compact full-width header with **Back**,
+  the PR **title**, `author · source → dest`, compact **Open in browser** /
+  **Checkout** PR-level actions and a `#number` chip, followed by author avatar,
+  `source → dest`, body, Checks and conversation, in the
   commit-detail visual language on `bg_canvas`. The **rail sits on the right** —
-  the commit-detail sidebar's place — carrying only the **Open in browser /
-  Checkout** actions, a **Files changed** band, the file rows and the composer; it
-  never holds the title or detail. The **Files changed** band reuses the shared
+  the commit-detail sidebar's place — carrying only a **Files changed** band, the
+  file rows and the composer; it never holds PR-level actions, the title or
+  detail. The **Files changed** band reuses the shared
   Flat ⇄ Tree file-view toggle (`Prefs.git_file_view`): Flat shows full paths,
   Tree groups files under collapsible directory rows (`git::file_tree`). File rows
   show only quiet monochrome icons when they carry forge-review draft comments or
   agent notes; opened state stays out of the rows and is exposed through a compact
-  **Unread** filter chip carrying the unread count in the header. The rail **collapses**
+  icon-only unread filter chip carrying the unread count in the header. The rail **collapses**
   via the header toggle
   (`PanelRight*`) or **⌘G** (the git-sidebar key, rebound here since the standard
   git sidebar is suppressed in the PR cockpit), persisted in `Prefs.pr_rail_collapsed`;
@@ -226,7 +228,7 @@ same one as commit/working-tree review.
 - **Changed files + diff (read).** The rail lists the changed files (path, kind,
   ±counts, quiet review/agent icons); selecting one loads its diff lazily (its own
   gated request) and marks it viewed for that review session. The header's
-  **Unread** filter chip filters the list down to files not yet opened; when the
+  icon-only unread filter chip filters the list down to files not yet opened; when the
   filter hides every row, the list shows **All files viewed**. The
   surface opens with **no file selected**, so the center shows the **PR detail**;
   the diff's **Close** (or `Esc` over it) clears the selection back to that detail

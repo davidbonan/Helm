@@ -1,10 +1,10 @@
 //! Rendering for the Pull Requests cockpit (pull-requests.md §5/§11). Two states:
 //! a **browse** list of the workspace PRs grouped **To review** then **Mine**, and
 //! — once a row is opened — a **review** surface: the center area holds the open
-//! file's read-only diff, or the PR detail (Back + title, author, body, checks,
-//! conversation) when no file is selected; a changed-files rail on the right
-//! carries the Open / Checkout actions, the file list and the composer (so
-//! collapsing the rail from the title bar hides the whole apparatus). Pure
+//! file's read-only diff, or the PR detail (compact header, author, body, checks,
+//! conversation and PR-level Open / Checkout actions) when no file is selected; a
+//! changed-files rail on the right carries the file list and the composer (so
+//! collapsing the rail from the title bar hides the review apparatus). Pure
 //! `fn(&mut egui::Ui, …)`: the app owns the cache, the selection, the fetched
 //! detail/diff and the persisted rail width, and consumes the returned intents.
 
@@ -33,6 +33,15 @@ const DIFF_MIN_WIDTH: f32 = 420.0;
 /// Reading-width cap for the center PR detail so the body/comments don't stretch
 /// into one long line when the rail is collapsed (or on a wide window).
 const DETAIL_MAX_WIDTH: f32 = 760.0;
+const DETAIL_HEADER_TITLE_SIZE: f32 = 16.0;
+const DETAIL_HEADER_SUBTITLE_SIZE: f32 = 12.5;
+const DETAIL_HEADER_BACK_SIZE: f32 = 38.0;
+const DETAIL_HEADER_WIDE_HEIGHT: f32 = 58.0;
+const DETAIL_HEADER_STACKED_HEIGHT: f32 = 96.0;
+const DETAIL_ACTION_HEIGHT: f32 = 30.0;
+const DETAIL_ACTION_OPEN_WIDTH: f32 = 152.0;
+const DETAIL_ACTION_CHECKOUT_WIDTH: f32 = 112.0;
+const DETAIL_HEADER_GAP: f32 = 8.0;
 
 const ROW_HEIGHT: f32 = 60.0;
 const GROUP_HEADER_HEIGHT: f32 = 34.0;
@@ -176,10 +185,11 @@ pub fn pull_requests_page(
 }
 
 /// The review surface (pull-requests.md §11): the center area shows the open
-/// file's read-only diff, or the PR detail (a Back control + the PR title heading
+/// file's read-only diff, or the PR detail (compact Back/title/actions header +
 /// the author/body/checks/conversation) when no file is selected; a changed-files
-/// rail on the **right** — the commit-detail sidebar's place — carries the Open in
-/// browser / Checkout actions, the file list and the composer. The title-bar
+/// rail on the **right** — the commit-detail sidebar's place — carries the file
+/// list and the composer. The PR-level Open in browser / Checkout actions live in
+/// the center detail and disappear with it when a file diff is open. The title-bar
 /// toggle collapses the rail, leaving the center full-width.
 #[allow(clippy::too_many_arguments)]
 fn render_review(
@@ -238,54 +248,10 @@ fn render_review(
     rail_resize_handle(ui, palette, split_x, rect, rail_width, action);
 }
 
-/// The rail's PR actions, stacked full-width so collapsing the rail hides them:
-/// Open in browser and Checkout. The Back control and the PR title head the
-/// center detail instead.
-fn review_actions(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    review: &PrReviewView<'_>,
-    action: &mut PullRequestsPageAction,
-) {
-    let pr = review.pr;
-    let w = ui.available_width();
-    if action_button(ui, palette, w, Icon::ExternalLink, "Open in browser") {
-        action.open_url = Some(pr.url.clone());
-    }
-    ui.add_space(6.0);
-    if action_button(ui, palette, w, Icon::GitBranch, "Checkout") {
-        action.checkout = true;
-    }
-}
-
-fn back_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
-    let (rect, response, hovered) = clickable(ui, egui::vec2(30.0, 28.0), true);
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::same(RADIUS_BUTTON),
-        if hovered {
-            palette.bg_surface_hover
-        } else {
-            palette.bg_surface
-        },
-    );
-    paint_icon(
-        ui.painter(),
-        rect.center(),
-        STATUS_ICON,
-        Icon::ArrowLeft,
-        palette.text_secondary,
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Back".to_owned())
-    });
-    response.clicked()
-}
-
-/// Right rail of the review surface (git.md §9 visual language): the PR actions
-/// (Open in browser, Checkout), then a **Files changed** band (count chip,
-/// ±totals, ratio bar) and the file list, with the review composer pinned to the
-/// foot. The Back control, the PR title and the detail live in the center area.
+/// Right rail of the review surface (git.md §9 visual language): a **Files
+/// changed** band (count chip, ±totals, ratio bar) and the file list, with the
+/// review composer pinned to the foot. The Back control, PR-level actions, title
+/// and detail live in the center area when no file is open.
 fn review_rail(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -321,8 +287,6 @@ fn review_rail(
         .show(&mut panel, |ui| {
             ui.set_width(ui.available_width());
             ui.add_space(PANEL_PAD_Y);
-            review_actions(ui, palette, review, action);
-            ui.add_space(SECTION_TOP_MARGIN);
             let collapse_id = egui::Id::new(("pr_review_dirs", review.pr.url.as_str()));
             let mut collapsed: HashSet<String> =
                 ui.data(|d| d.get_temp(collapse_id).unwrap_or_default());
@@ -374,9 +338,10 @@ fn review_rail(
 }
 
 /// The PR detail in the **center** area when no file is open (pull-requests.md
-/// §11): a Back control and the PR title head the author block + branch flow +
-/// body, then Checks and the conversation-level comments. A selected file swaps
-/// this for its diff; the rail keeps the actions and the changed-files list.
+/// §11): a compact PR header heads the author block + branch flow + body, then
+/// Checks and the conversation-level comments. The PR-level actions live here so
+/// a selected file swaps the center to its diff and leaves the rail focused on
+/// changed files + review submission.
 fn review_detail(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -396,26 +361,14 @@ fn review_detail(
     egui::ScrollArea::vertical()
         .id_salt("pr_review_detail")
         .show(&mut panel, |ui| {
-            ui.set_width(ui.available_width().min(DETAIL_MAX_WIDTH));
+            let full_width = ui.available_width();
+            ui.set_width(full_width);
             ui.add_space(PANEL_PAD_Y);
-            let pr = review.pr;
-            ui.horizontal(|ui| {
-                if back_button(ui, palette) {
-                    action.back = true;
-                }
-                ui.add_space(10.0);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&pr.title)
-                            .size(TITLE_SIZE)
-                            .strong()
-                            .color(palette.text_primary),
-                    )
-                    .wrap(),
-                );
-            });
+            review_detail_header(ui, palette, review, action);
+            ui.set_width(full_width.min(DETAIL_MAX_WIDTH));
             ui.add_space(SECTION_TOP_MARGIN);
             review_meta(ui, palette, review);
+            let pr = review.pr;
 
             if let Some(error) = review.detail_error {
                 ui.add_space(SECTION_TOP_MARGIN);
@@ -467,6 +420,279 @@ fn review_detail(
             }
             ui.add_space(PANEL_PAD_Y);
         });
+}
+
+/// Full-width header for the center PR detail. It mirrors the accepted mockup:
+/// Back on the left, title + context, compact PR-level actions on the right, then
+/// a subtle divider before the existing detail content.
+fn review_detail_header(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    action: &mut PullRequestsPageAction,
+) {
+    let pr = review.pr;
+    let width = ui.available_width();
+    let number = format!("#{}", pr.number);
+    let number_galley = ui.painter().layout_no_wrap(
+        number.clone(),
+        egui::FontId::proportional(CHIP_SIZE),
+        palette.text_secondary,
+    );
+    let number_w = number_galley.size().x + 18.0;
+    let actions_w = DETAIL_ACTION_OPEN_WIDTH
+        + DETAIL_HEADER_GAP
+        + DETAIL_ACTION_CHECKOUT_WIDTH
+        + DETAIL_HEADER_GAP
+        + number_w;
+    let wide = width >= 560.0;
+    let height = if wide {
+        DETAIL_HEADER_WIDE_HEIGHT
+    } else {
+        DETAIL_HEADER_STACKED_HEIGHT
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+
+    let back_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.top() + 4.0),
+        egui::vec2(DETAIL_HEADER_BACK_SIZE, DETAIL_HEADER_BACK_SIZE),
+    );
+    if detail_back_button(ui, palette, back_rect) {
+        action.back = true;
+    }
+
+    let title_left = back_rect.right() + 12.0;
+    let actions_left = if wide {
+        (rect.right() - actions_w).max(title_left + 180.0)
+    } else {
+        rect.right() - number_w
+    };
+    let title_right = (actions_left - 14.0).max(title_left + 40.0);
+    let title_clip = egui::Rect::from_min_max(
+        egui::pos2(title_left, rect.top()),
+        egui::pos2(title_right, rect.bottom()),
+    );
+    let title_painter = ui.painter().with_clip_rect(title_clip);
+    let title_galley = ui.painter().layout_no_wrap(
+        pr.title.clone(),
+        egui::FontId::new(
+            DETAIL_HEADER_TITLE_SIZE,
+            crate::theme::medium_family(ui.ctx()),
+        ),
+        palette.text_primary,
+    );
+    title_painter.galley(
+        egui::pos2(title_left, rect.top() + 8.0),
+        title_galley,
+        palette.text_primary,
+    );
+    let subtitle = format!("{} · {} → {}", pr.author, pr.source_branch, pr.dest_branch);
+    let subtitle_galley = ui.painter().layout_no_wrap(
+        subtitle.clone(),
+        egui::FontId::proportional(DETAIL_HEADER_SUBTITLE_SIZE),
+        palette.text_secondary,
+    );
+    title_painter.galley(
+        egui::pos2(title_left, rect.top() + 30.0),
+        subtitle_galley,
+        palette.text_secondary,
+    );
+    detail_label_accessibility(ui, title_clip, "pr_detail_header_title", pr.title.clone());
+    detail_label_accessibility(
+        ui,
+        egui::Rect::from_min_max(
+            egui::pos2(title_left, rect.top() + 28.0),
+            egui::pos2(title_right, rect.top() + 46.0),
+        ),
+        "pr_detail_header_subtitle",
+        subtitle,
+    );
+
+    if wide {
+        let y = rect.top() + (DETAIL_HEADER_WIDE_HEIGHT - DETAIL_ACTION_HEIGHT) / 2.0;
+        let mut x = rect.right() - actions_w;
+        if detail_action_button(
+            ui,
+            palette,
+            egui::Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(DETAIL_ACTION_OPEN_WIDTH, DETAIL_ACTION_HEIGHT),
+            ),
+            Icon::ExternalLink,
+            "Open in browser",
+            "pr_detail_open_browser",
+        ) {
+            action.open_url = Some(pr.url.clone());
+        }
+        x += DETAIL_ACTION_OPEN_WIDTH + DETAIL_HEADER_GAP;
+        if detail_action_button(
+            ui,
+            palette,
+            egui::Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(DETAIL_ACTION_CHECKOUT_WIDTH, DETAIL_ACTION_HEIGHT),
+            ),
+            Icon::GitBranch,
+            "Checkout",
+            "pr_detail_checkout",
+        ) {
+            action.checkout = true;
+        }
+        x += DETAIL_ACTION_CHECKOUT_WIDTH + DETAIL_HEADER_GAP;
+        detail_number_chip(ui, palette, egui::pos2(x, y + 2.0), number, number_galley);
+    } else {
+        detail_number_chip(
+            ui,
+            palette,
+            egui::pos2(rect.right() - number_w, rect.top() + 9.0),
+            number,
+            number_galley,
+        );
+        let y = rect.top() + 58.0;
+        if detail_action_button(
+            ui,
+            palette,
+            egui::Rect::from_min_size(
+                egui::pos2(title_left, y),
+                egui::vec2(DETAIL_ACTION_OPEN_WIDTH, DETAIL_ACTION_HEIGHT),
+            ),
+            Icon::ExternalLink,
+            "Open in browser",
+            "pr_detail_open_browser",
+        ) {
+            action.open_url = Some(pr.url.clone());
+        }
+        if detail_action_button(
+            ui,
+            palette,
+            egui::Rect::from_min_size(
+                egui::pos2(title_left + DETAIL_ACTION_OPEN_WIDTH + DETAIL_HEADER_GAP, y),
+                egui::vec2(DETAIL_ACTION_CHECKOUT_WIDTH, DETAIL_ACTION_HEIGHT),
+            ),
+            Icon::GitBranch,
+            "Checkout",
+            "pr_detail_checkout",
+        ) {
+            action.checkout = true;
+        }
+    }
+
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left(), rect.bottom()),
+            egui::pos2(rect.right(), rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, palette.border_subtle),
+    );
+}
+
+fn detail_back_button(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect) -> bool {
+    let response = ui.interact(rect, ui.id().with("pr_detail_back"), egui::Sense::click());
+    let fill = if response.hovered() {
+        palette.bg_surface_hover
+    } else {
+        palette.bg_surface
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+    paint_icon(
+        ui.painter(),
+        rect.center(),
+        STATUS_ICON,
+        Icon::ArrowLeft,
+        palette.text_secondary,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Back".to_owned())
+    });
+    response.clicked()
+}
+
+fn detail_action_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    icon: Icon,
+    label: &'static str,
+    id: &'static str,
+) -> bool {
+    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    let fill = if response.hovered() {
+        palette.bg_surface_hover
+    } else {
+        palette.bg_surface
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_BUTTON),
+        fill,
+        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let icon_center = egui::pos2(rect.left() + 13.0, rect.center().y);
+    paint_icon(
+        painter,
+        icon_center,
+        STATUS_ICON,
+        icon,
+        palette.text_secondary,
+    );
+    let label_left = rect.left() + 26.0;
+    let label_clip = egui::Rect::from_min_max(
+        egui::pos2(label_left, rect.top()),
+        egui::pos2(rect.right() - 8.0, rect.bottom()),
+    );
+    let label_painter = painter.with_clip_rect(label_clip);
+    let galley = painter.layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(12.5),
+        palette.text_primary,
+    );
+    label_painter.galley(
+        egui::pos2(label_left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        palette.text_primary,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.to_owned())
+    });
+    response.clicked()
+}
+
+fn detail_number_chip(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    pos: egui::Pos2,
+    label: String,
+    galley: std::sync::Arc<egui::Galley>,
+) {
+    let size = galley.size() + egui::vec2(18.0, 8.0);
+    let rect = egui::Rect::from_min_size(pos, size);
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(crate::theme::RADIUS_PILL),
+        palette.bg_canvas,
+        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        rect.center() - galley.size() / 2.0,
+        galley,
+        palette.text_secondary,
+    );
+    detail_label_accessibility(ui, rect, "pr_detail_number", label);
+}
+
+fn detail_label_accessibility(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: &'static str,
+    label: String,
+) {
+    let response = ui.interact(rect, ui.id().with(id), egui::Sense::hover());
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -800,24 +1026,14 @@ fn unread_filter_chip(
     unread_count: usize,
     unread_only: &mut bool,
 ) {
-    let label = "Unread";
-    let label_font = egui::FontId::proportional(12.0);
-    let count_font = egui::FontId::proportional(10.5);
-    let label_galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        label_font.clone(),
-        egui::Color32::PLACEHOLDER,
-    );
+    let count_font = egui::FontId::proportional(11.0);
     let count_text = unread_count.to_string();
     let count_galley =
         ui.painter()
             .layout_no_wrap(count_text.clone(), count_font, egui::Color32::PLACEHOLDER);
     let icon_w = 12.0;
-    let count_w = count_galley.size().x + 10.0;
-    let size = egui::vec2(
-        8.0 + icon_w + 4.0 + label_galley.size().x + 6.0 + count_w + 8.0,
-        24.0,
-    );
+    let gap = 5.0;
+    let size = egui::vec2(9.0 + icon_w + gap + count_galley.size().x + 9.0, 24.0);
     let enabled = unread_count > 0 || *unread_only;
     let (rect, response, hovered) = clickable(ui, size, enabled);
     let selected = *unread_only;
@@ -848,28 +1064,13 @@ fn unread_filter_chip(
         palette.text_muted
     };
     let center_y = rect.center().y;
-    let icon_center = egui::pos2(rect.left() + 8.0 + icon_w / 2.0, center_y);
+    let icon_center = egui::pos2(rect.left() + 9.0 + icon_w / 2.0, center_y);
     paint_icon(ui.painter(), icon_center, icon_w, Icon::EyeOff, content);
-    let label_pos = egui::pos2(
-        icon_center.x + icon_w / 2.0 + 4.0,
-        center_y - label_galley.size().y / 2.0,
-    );
-    ui.painter().galley(label_pos, label_galley, content);
-    let count_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 8.0 - count_w / 2.0, center_y),
-        egui::vec2(count_w, 16.0),
-    );
-    ui.painter().rect_filled(
-        count_rect,
-        egui::CornerRadius::same(RADIUS_BUTTON),
-        if selected {
-            with_alpha(palette.accent, 32)
-        } else {
-            palette.bg_surface_hover
-        },
-    );
     ui.painter().galley(
-        count_rect.center() - count_galley.size() / 2.0,
+        egui::pos2(
+            icon_center.x + icon_w / 2.0 + gap,
+            center_y - count_galley.size().y / 2.0,
+        ),
         count_galley,
         content,
     );
@@ -1529,49 +1730,6 @@ fn status_line(
                 .color(palette.text_secondary),
         );
     });
-}
-
-fn action_button(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    width: f32,
-    icon: Icon,
-    label: &str,
-) -> bool {
-    let (rect, response, hovered) = clickable(ui, egui::vec2(width, 30.0), true);
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::same(RADIUS_BUTTON),
-        if hovered {
-            palette.bg_surface_hover
-        } else {
-            palette.bg_surface
-        },
-    );
-    paint_icon(
-        ui.painter(),
-        egui::pos2(rect.left() + 11.0 + STATUS_ICON / 2.0, rect.center().y),
-        STATUS_ICON,
-        icon,
-        palette.text_secondary,
-    );
-    let galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        egui::FontId::proportional(12.5),
-        palette.text_primary,
-    );
-    ui.painter().galley(
-        egui::pos2(
-            rect.left() + 11.0 + STATUS_ICON + 6.0,
-            rect.center().y - galley.size().y / 2.0,
-        ),
-        galley,
-        palette.text_primary,
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.to_owned())
-    });
-    response.clicked()
 }
 
 fn muted(palette: &Palette, text: &str) -> egui::RichText {
