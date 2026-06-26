@@ -12,9 +12,9 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **0/9**.
+Counter: **1/9**.
 
-- ☐ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
+- ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
   adopts a cached entry **without re-running the runners** (instant), else builds
   + fetches. Preserve per PR: `draft`, `agent_notes`, `summary`, `verdict`,
@@ -71,7 +71,7 @@ Counter: **0/9**.
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- Start with **T1** (per-PR cache) — the daily navigation pain.
+- **T2** (diff cache within a PR), keyed on `(base,head,path)` per T5's requirement.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

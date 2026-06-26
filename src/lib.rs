@@ -5,6 +5,7 @@ pub mod feedback;
 pub mod frame_log;
 pub mod git;
 pub mod keybindings;
+pub mod lru;
 pub mod notify;
 pub mod persistence;
 pub mod pull_requests;

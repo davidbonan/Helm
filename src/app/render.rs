@@ -827,9 +827,13 @@ impl HelmApp {
         let pr_selected = self.pr_selected;
         let pr_detail_width = self.pr_detail_width;
         let pr_rail_collapsed = self.pr_rail_collapsed;
-        // Taken out for the frame so the review surface can borrow its diff state
-        // `&mut` inside the central closure; restored before actions are applied.
-        let mut pr_review_local = self.pr_review.take();
+        // The active review surface is taken out of the cache for the frame so it can
+        // be borrowed `&mut` inside the central closure; reinserted before the actions
+        // that open / close / mutate it run.
+        let mut pr_review_local = self
+            .pr_active
+            .clone()
+            .and_then(|key| self.pr_reviews.remove(&key));
         let mut pr_select = None;
         let mut pr_open_url: Option<String> = None;
         let mut pr_checkout = false;
@@ -2229,14 +2233,18 @@ impl HelmApp {
                 ..prefs
             });
         }
-        // Restore the review surface (taken out for the frame) before the actions
-        // that open / close / mutate it run.
-        self.pr_review = pr_review_local;
+        // Reinsert the active review surface (taken out for the frame) into the cache
+        // before the actions that open / close / mutate it run.
+        if let Some(review) = pr_review_local {
+            self.pr_reviews.insert(review.key.clone(), review);
+        }
         if !pr_review_intents.is_empty() {
             self.apply_pr_review_intents(pr_review_intents, ctx);
         }
         if pr_back {
-            self.pr_review = None;
+            // Leave the cockpit's browse list; keep the surface cached so reopening
+            // the PR is instant (drafts + loaded diff retained).
+            self.pr_active = None;
         }
         if pr_close_file {
             self.close_pr_file();
@@ -2251,7 +2259,7 @@ impl HelmApp {
             self.submit_pr_review(ctx);
         }
         if pr_checkout {
-            if let Some(pr) = self.pr_review.as_ref().map(|review| review.pr.clone()) {
+            if let Some(pr) = self.active_review().map(|review| review.pr.clone()) {
                 self.request_pr_checkout(&pr, ctx);
             }
         }

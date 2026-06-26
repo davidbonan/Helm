@@ -1984,3 +1984,123 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
         "the agent tab is named after the configured command"
     );
 }
+
+// --- PR review cache (M-PR3 T1) ---------------------------------------------
+
+fn github_pr(repo: &str, number: u64) -> crate::pull_requests::model::PullRequest {
+    use crate::pull_requests::model::{Checks, ForgeKind, PrRole, PrState, Review};
+    crate::pull_requests::model::PullRequest {
+        forge_kind: ForgeKind::GitHub,
+        repo_label: repo.to_owned(),
+        number,
+        title: "Test PR".to_owned(),
+        role: PrRole::Mine,
+        state: PrState::Open,
+        author: "octocat".to_owned(),
+        source_branch: "feature".to_owned(),
+        dest_branch: "main".to_owned(),
+        url: format!("https://example.test/{repo}/pull/{number}"),
+        updated_at: "today".to_owned(),
+        checks: Checks::Passing,
+        review: Review::Pending,
+        reviewers: Vec::new(),
+    }
+}
+
+fn seed_review(
+    key: &crate::pull_requests::runner::PrReviewKey,
+    pr: &crate::pull_requests::model::PullRequest,
+    root: &std::path::Path,
+) -> PrReview {
+    PrReview {
+        key: key.clone(),
+        pr: pr.clone(),
+        root: root.to_path_buf(),
+        fetched_at: 0.0,
+        detail: None,
+        detail_error: None,
+        files: Vec::new(),
+        base: None,
+        head: None,
+        files_loading: false,
+        files_error: None,
+        selected_file: None,
+        diff: None,
+        diff_path: None,
+        diff_loading: false,
+        diff_error: None,
+        diff_view: crate::ui::diff_view::DiffViewState::default(),
+        existing: crate::review::ForgeThreads::new(),
+        draft: crate::review::FileComments::new(),
+        agent_notes: crate::review::FileComments::new(),
+        verdict: crate::pull_requests::model::ReviewVerdict::default(),
+        summary: String::new(),
+        posting: false,
+        post_error: None,
+    }
+}
+
+#[test]
+fn review_open_builds_when_absent_adopts_when_fresh_refetches_when_stale() {
+    assert_eq!(review_open(false, 0.0, 60.0), ReviewOpen::Build);
+    assert_eq!(review_open(true, 0.0, 60.0), ReviewOpen::Adopt);
+    assert_eq!(review_open(true, 59.9, 60.0), ReviewOpen::Adopt);
+    assert_eq!(review_open(true, 60.0, 60.0), ReviewOpen::AdoptAndRefetch);
+    assert_eq!(review_open(true, 120.0, 60.0), ReviewOpen::AdoptAndRefetch);
+}
+
+#[test]
+fn reopening_a_fresh_cached_pr_review_adopts_without_refetching() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("web");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    repo.remote("origin", "git@github.com:acme/web.git")
+        .unwrap();
+
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(root.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+
+    let pr = github_pr("acme/web", 7);
+    app.pr_cache.pull_requests = vec![pr.clone()];
+    let key = crate::pull_requests::runner::PrReviewKey {
+        forge_kind: pr.forge_kind,
+        repo_label: pr.repo_label.clone(),
+        number: pr.number,
+    };
+
+    // A fully-loaded, fresh (fetched_at == ctx time 0.0) cached surface with a draft.
+    let mut review = seed_review(&key, &pr, &root);
+    crate::review::add_comment(
+        &mut review.draft,
+        "src/a.rs",
+        crate::review::LineComment {
+            old_lineno: None,
+            new_lineno: Some(3),
+            code: "let x = 1;".to_owned(),
+            note: "keep".to_owned(),
+        },
+    );
+    app.pr_reviews.insert(key.clone(), review);
+    app.pr_active = Some(key.clone());
+    app.pr_review_lru.touch(key.clone());
+
+    let ctx = egui::Context::default();
+    app.open_pr_review(0, &ctx);
+
+    assert!(
+        app.pr_review_runner.is_none() && app.pr_detail_runner.is_none(),
+        "a fresh cached surface is adopted without re-running the fetch runners"
+    );
+    let active = app.active_review().expect("surface still active");
+    assert!(
+        !active.files_loading,
+        "no loading spinner on a cached reopen"
+    );
+    assert_eq!(
+        crate::review::count(&active.draft),
+        1,
+        "the draft survives the reopen"
+    );
+}

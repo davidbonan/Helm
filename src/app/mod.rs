@@ -71,7 +71,39 @@ const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// (pull-requests.md §6): network-bound (`gh`/`curl`), so far coarser than the
 /// git/worktree ticks.
 const PR_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Bound on the per-PR review cache (pull-requests.md §11): the most recently opened
+/// surfaces are kept warm (drafts + loaded diff) so navigating back is instant; older
+/// ones are evicted by `LruOrder`.
+const PR_REVIEW_CACHE_CAP: usize = 8;
+/// A cached review surface re-opened after this many seconds re-fetches its detail +
+/// files in the background, swapping the data in on arrival without touching drafts.
+const PR_REVIEW_REFRESH_SECS: f64 = 60.0;
 type Panes = HashMap<PaneId, TerminalState>;
+
+/// What `open_pr_review` should do for a (re)selected PR given whether its surface is
+/// already cached and how old that cache is — the cache policy (pull-requests.md §11)
+/// kept pure and out of the rendering layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewOpen {
+    /// Not cached — build a fresh surface and fetch its detail + files.
+    Build,
+    /// Cached and fresh — adopt it as-is, fetch nothing.
+    Adopt,
+    /// Cached but stale — adopt it (drafts and shown data kept) and re-fetch in the
+    /// background, swapping the data in on arrival.
+    AdoptAndRefetch,
+}
+
+/// Decide how to open a review surface from its cache state. `age_secs` is the time
+/// since the cached surface last fetched; `Build` when absent, `Adopt` when fresh,
+/// `AdoptAndRefetch` once older than `max_age_secs`.
+pub fn review_open(cached: bool, age_secs: f64, max_age_secs: f64) -> ReviewOpen {
+    match (cached, age_secs >= max_age_secs) {
+        (false, _) => ReviewOpen::Build,
+        (true, false) => ReviewOpen::Adopt,
+        (true, true) => ReviewOpen::AdoptAndRefetch,
+    }
+}
 
 mod keys;
 use keys::{action_pressed, open_agents_pressed, overlay_or_command};
@@ -116,6 +148,9 @@ struct PrReview {
     pr: crate::pull_requests::model::PullRequest,
     /// Local repo the PR refs are fetched into for the read-only diff.
     root: PathBuf,
+    /// `egui` time the detail + files were last (re)fetched — gates the staleness
+    /// re-fetch when this surface is re-opened from the cache (§11).
+    fetched_at: f64,
     detail: Option<crate::pull_requests::model::PrDetail>,
     detail_error: Option<String>,
     files: Vec<crate::git::commit_detail::CommitFile>,
@@ -467,12 +502,17 @@ pub struct HelmApp {
     /// Project roots queried by the last PR fetch; a change re-queries (§6).
     last_pr_roots: Vec<PathBuf>,
     /// Selected PR row in the cockpit, indexing `pr_cache.pull_requests`. Drives
-    /// the list highlight; the open review surface (if any) is `pr_review`.
+    /// the list highlight; the open review surface (if any) is `active_review()`.
     /// Session-only, like the cache itself.
     pr_selected: Option<usize>,
-    /// Open PR review surface (pull-requests.md §11): the PR being reviewed plus
-    /// its lazily-fetched detail/diff. `None` ⇒ the cockpit shows the browse list.
-    pr_review: Option<PrReview>,
+    /// Per-PR review surfaces kept warm (pull-requests.md §11): the active one is
+    /// `pr_reviews[pr_active]`, the others stay cached with their drafts + loaded
+    /// diff so navigating back is instant. Bounded by `pr_review_lru`.
+    pr_reviews: HashMap<crate::pull_requests::runner::PrReviewKey, PrReview>,
+    /// Key of the open review surface, or `None` ⇒ the cockpit shows the browse list.
+    pr_active: Option<crate::pull_requests::runner::PrReviewKey>,
+    /// Most-recently-used order bounding `pr_reviews` to `PR_REVIEW_CACHE_CAP`.
+    pr_review_lru: crate::lru::LruOrder<crate::pull_requests::runner::PrReviewKey>,
     /// Off-thread review fetch (changed files + per-file diffs, §5).
     pr_review_runner: Option<crate::pull_requests::runner::PrReviewRunner>,
     /// Off-thread per-PR detail fetch (body / comments / checks, §5).
@@ -640,7 +680,9 @@ impl HelmApp {
             last_pr_poll: 0.0,
             last_pr_roots: Vec::new(),
             pr_selected: None,
-            pr_review: None,
+            pr_reviews: HashMap::new(),
+            pr_active: None,
+            pr_review_lru: crate::lru::LruOrder::new(PR_REVIEW_CACHE_CAP),
             pr_review_runner: None,
             pr_detail_runner: None,
             pr_post_runner: None,
@@ -1545,9 +1587,21 @@ impl HelmApp {
             .get_or_insert_with(|| crate::pull_requests::runner::PrPostRunner::new(repainter(ctx)))
     }
 
-    /// Open the review surface for the PR at `index` (pull-requests.md §11): resolve
-    /// the local repo, then fire the off-thread detail (forge) and changed-files
-    /// (git) fetches. No-op with a toast when no workspace repo matches the PR.
+    fn active_review(&self) -> Option<&PrReview> {
+        self.pr_active
+            .as_ref()
+            .and_then(|key| self.pr_reviews.get(key))
+    }
+
+    fn active_review_mut(&mut self) -> Option<&mut PrReview> {
+        let key = self.pr_active.clone()?;
+        self.pr_reviews.get_mut(&key)
+    }
+
+    /// Open the review surface for the PR at `index` (pull-requests.md §11): adopt a
+    /// cached surface instantly (drafts + loaded diff kept), re-fetching only when it
+    /// is stale; otherwise build a fresh one and fetch its detail + changed files.
+    /// No-op with a toast when no workspace repo matches the PR.
     fn open_pr_review(&mut self, index: usize, ctx: &egui::Context) {
         let Some(pr) = self.pr_cache.pull_requests.get(index).cloned() else {
             return;
@@ -1564,32 +1618,67 @@ impl HelmApp {
             number: pr.number,
         };
         self.pr_selected = Some(index);
-        self.pr_review = Some(PrReview {
-            key: key.clone(),
-            pr: pr.clone(),
-            root: root.clone(),
-            detail: None,
-            detail_error: None,
-            files: Vec::new(),
-            base: None,
-            head: None,
-            files_loading: true,
-            files_error: None,
-            selected_file: None,
-            diff: None,
-            diff_path: None,
-            diff_loading: false,
-            diff_error: None,
-            diff_view: crate::ui::diff_view::DiffViewState::default(),
-            existing: crate::review::ForgeThreads::new(),
-            draft: crate::review::FileComments::new(),
-            agent_notes: crate::review::FileComments::new(),
-            verdict: crate::pull_requests::model::ReviewVerdict::default(),
-            summary: String::new(),
-            posting: false,
-            post_error: None,
-        });
+        self.pr_active = Some(key.clone());
+        if let Some(evicted) = self.pr_review_lru.touch(key.clone()) {
+            self.pr_reviews.remove(&evicted);
+        }
+        let age = self
+            .pr_reviews
+            .get(&key)
+            .map(|review| now - review.fetched_at);
+        match review_open(age.is_some(), age.unwrap_or(0.0), PR_REVIEW_REFRESH_SECS) {
+            ReviewOpen::Adopt => {}
+            ReviewOpen::AdoptAndRefetch => {
+                if let Some(review) = self.pr_reviews.get_mut(&key) {
+                    review.fetched_at = now;
+                }
+                self.request_pr_review_fetch(&pr, &root, &key, ctx);
+            }
+            ReviewOpen::Build => {
+                self.pr_reviews.insert(
+                    key.clone(),
+                    PrReview {
+                        key: key.clone(),
+                        pr: pr.clone(),
+                        root: root.clone(),
+                        fetched_at: now,
+                        detail: None,
+                        detail_error: None,
+                        files: Vec::new(),
+                        base: None,
+                        head: None,
+                        files_loading: true,
+                        files_error: None,
+                        selected_file: None,
+                        diff: None,
+                        diff_path: None,
+                        diff_loading: false,
+                        diff_error: None,
+                        diff_view: crate::ui::diff_view::DiffViewState::default(),
+                        existing: crate::review::ForgeThreads::new(),
+                        draft: crate::review::FileComments::new(),
+                        agent_notes: crate::review::FileComments::new(),
+                        verdict: crate::pull_requests::model::ReviewVerdict::default(),
+                        summary: String::new(),
+                        posting: false,
+                        post_error: None,
+                    },
+                );
+                self.request_pr_review_fetch(&pr, &root, &key, ctx);
+            }
+        }
+    }
 
+    /// Fire the off-thread detail (forge) + changed-files (git) fetches for `key`.
+    /// Shared by a fresh open and a stale-cache re-fetch; the replies are adopted by
+    /// `poll_pr_review` into whichever cached surface still carries `key`.
+    fn request_pr_review_fetch(
+        &mut self,
+        pr: &crate::pull_requests::model::PullRequest,
+        root: &Path,
+        key: &crate::pull_requests::runner::PrReviewKey,
+        ctx: &egui::Context,
+    ) {
         let bitbucket_email = self.prefs.bitbucket_email.clone();
         self.pr_detail_runner(ctx)
             .request(crate::pull_requests::runner::PrDetailRequest {
@@ -1602,8 +1691,8 @@ impl HelmApp {
         self.pr_review_runner(ctx)
             .request(crate::pull_requests::runner::PrReviewRequest::Files(
                 crate::pull_requests::runner::PrFilesRequest {
-                    key,
-                    root,
+                    key: key.clone(),
+                    root: root.to_path_buf(),
                     forge_kind: pr.forge_kind,
                     number: pr.number,
                     source_branch: pr.source_branch.clone(),
@@ -1615,7 +1704,7 @@ impl HelmApp {
     /// Select a changed file in the open review and clear the stale diff so the
     /// loader shows; `ensure_selected_diff` then fetches it.
     fn select_pr_file(&mut self, idx: usize, ctx: &egui::Context) {
-        if let Some(review) = self.pr_review.as_mut() {
+        if let Some(review) = self.active_review_mut() {
             if review.selected_file != Some(idx) {
                 review.selected_file = Some(idx);
                 review.diff = None;
@@ -1629,7 +1718,7 @@ impl HelmApp {
     /// diff so the surface falls back to the "select a file" placeholder. The draft
     /// review pools are left untouched — closing a file never discards its notes.
     fn close_pr_file(&mut self) {
-        if let Some(review) = self.pr_review.as_mut() {
+        if let Some(review) = self.active_review_mut() {
             review.selected_file = None;
             review.diff = None;
             review.diff_path = None;
@@ -1642,7 +1731,7 @@ impl HelmApp {
     /// Request the selected file's diff if it isn't loaded/in flight yet. Drives
     /// every selection; idempotent per frame.
     fn ensure_selected_diff(&mut self, ctx: &egui::Context) {
-        let Some(review) = self.pr_review.as_ref() else {
+        let Some(review) = self.active_review() else {
             return;
         };
         let (Some(base), Some(head)) = (review.base, review.head) else {
@@ -1660,7 +1749,7 @@ impl HelmApp {
         }
         let key = review.key.clone();
         let root = review.root.clone();
-        if let Some(review) = self.pr_review.as_mut() {
+        if let Some(review) = self.active_review_mut() {
             review.diff_loading = true;
         }
         self.pr_review_runner(ctx).request(
@@ -1674,8 +1763,9 @@ impl HelmApp {
         );
     }
 
-    /// Drain the detail and review runners into the open surface, adopting only
-    /// replies whose `key` (and, for a diff, path) still matches the selection.
+    /// Drain the detail and review runners into the cached surface their `key` (and,
+    /// for a diff, path) names — so a re-fetch lands even when the user has navigated
+    /// to another PR in the meantime, keeping every cached surface warm.
     fn poll_pr_review(&mut self, ctx: &egui::Context) {
         use crate::pull_requests::runner::PrReviewReply;
         let mut details = Vec::new();
@@ -1685,7 +1775,7 @@ impl HelmApp {
             }
         }
         for reply in details {
-            if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == reply.key) {
+            if let Some(review) = self.pr_reviews.get_mut(&reply.key) {
                 match reply.result {
                     Ok(detail) => {
                         review.existing =
@@ -1707,7 +1797,7 @@ impl HelmApp {
         for reply in replies {
             match reply {
                 PrReviewReply::Files { key, result } => {
-                    if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == key) {
+                    if let Some(review) = self.pr_reviews.get_mut(&key) {
                         review.files_loading = false;
                         match result {
                             Ok(loaded) => {
@@ -1721,7 +1811,7 @@ impl HelmApp {
                     }
                 }
                 PrReviewReply::FileDiff { key, path, result } => {
-                    if let Some(review) = self.pr_review.as_mut().filter(|r| r.key == key) {
+                    if let Some(review) = self.pr_reviews.get_mut(&key) {
                         // The in-flight request is done regardless; adopt the diff
                         // only if this is still the selected file.
                         review.diff_loading = false;
@@ -1755,7 +1845,7 @@ impl HelmApp {
     /// empty review (no comments, no summary, plain Comment verdict) is a no-op.
     fn submit_pr_review(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        let Some(review) = self.pr_review.as_ref() else {
+        let Some(review) = self.active_review() else {
             return;
         };
         if review.posting {
@@ -1782,7 +1872,7 @@ impl HelmApp {
             summary,
             comments,
         };
-        if let Some(review) = self.pr_review.as_mut() {
+        if let Some(review) = self.active_review_mut() {
             review.posting = true;
             review.post_error = None;
         }
@@ -1800,12 +1890,12 @@ impl HelmApp {
         }
         let now = ctx.input(|i| i.time);
         for reply in replies {
-            if self.pr_review.as_ref().map(|r| &r.key) != Some(&reply.key) {
+            if self.active_review().map(|r| &r.key) != Some(&reply.key) {
                 continue;
             }
             match reply.result {
                 Ok(()) => {
-                    if let Some(review) = self.pr_review.as_mut() {
+                    if let Some(review) = self.active_review_mut() {
                         review.posting = false;
                         review.post_error = None;
                         review.draft.clear();
@@ -1816,7 +1906,7 @@ impl HelmApp {
                     self.refresh_pr_detail(ctx);
                 }
                 Err(message) => {
-                    if let Some(review) = self.pr_review.as_mut() {
+                    if let Some(review) = self.active_review_mut() {
                         review.posting = false;
                         review.post_error = Some(message.clone());
                     }
@@ -1829,11 +1919,7 @@ impl HelmApp {
     /// Re-fetch the open PR's detail (after a successful submit) so freshly-posted
     /// comments reappear inline once the forge serves them.
     fn refresh_pr_detail(&mut self, ctx: &egui::Context) {
-        let Some((key, pr)) = self
-            .pr_review
-            .as_ref()
-            .map(|r| (r.key.clone(), r.pr.clone()))
-        else {
+        let Some((key, pr)) = self.active_review().map(|r| (r.key.clone(), r.pr.clone())) else {
             return;
         };
         let bitbucket_email = self.prefs.bitbucket_email.clone();
@@ -1865,7 +1951,7 @@ impl HelmApp {
                     file,
                     comment,
                 } => {
-                    if let Some(review) = self.pr_review.as_mut() {
+                    if let Some(review) = self.active_review_mut() {
                         let store = match pool {
                             ReviewPool::Forge => &mut review.draft,
                             ReviewPool::Agent => &mut review.agent_notes,
@@ -1874,7 +1960,7 @@ impl HelmApp {
                     }
                 }
                 ReviewIntent::DeleteComment { pool, file, line } => {
-                    if let Some(review) = self.pr_review.as_mut() {
+                    if let Some(review) = self.active_review_mut() {
                         let store = match pool {
                             ReviewPool::Forge => &mut review.draft,
                             ReviewPool::Agent => &mut review.agent_notes,
@@ -1899,7 +1985,7 @@ impl HelmApp {
     /// "review this branch" prompt, plus the user's agent-pool notes when present
     /// (never the forge draft, which is destined for GitHub / Bitbucket).
     fn ask_claude_on_pr(&mut self, ctx: &egui::Context) {
-        let Some((pr, draft_notes)) = self.pr_review.as_ref().map(|r| {
+        let Some((pr, draft_notes)) = self.active_review().map(|r| {
             let notes = (crate::review::count(&r.agent_notes) > 0)
                 .then(|| crate::review::build_review_prompt(&r.agent_notes));
             (r.pr.clone(), notes)
@@ -1923,7 +2009,7 @@ impl HelmApp {
         new: Option<u32>,
         ctx: &egui::Context,
     ) {
-        let Some((pr, prompt)) = self.pr_review.as_ref().and_then(|r| {
+        let Some((pr, prompt)) = self.active_review().and_then(|r| {
             let thread = r.existing.get(file)?.get(&(old, new))?;
             let line = new.or(old).unwrap_or_default();
             Some((r.pr.clone(), thread_agent_prompt(file, line, thread)))
@@ -1994,7 +2080,7 @@ impl HelmApp {
             .entry((key, tab_id))
             .or_default()
             .insert(pane_id, pane);
-        self.pr_review = None;
+        self.pr_active = None;
         self.central_mode = CentralMode::Terminal;
         true
     }
@@ -2128,12 +2214,10 @@ impl HelmApp {
     /// Re-point the list selection after a refresh re-orders or drops rows: track
     /// the open review's PR by identity, else clear an out-of-range highlight.
     fn reconcile_pr_selection(&mut self) {
-        if let Some(review) = &self.pr_review {
-            let (forge, repo, number) = (
-                review.pr.forge_kind,
-                review.pr.repo_label.as_str(),
-                review.pr.number,
-            );
+        if let Some((forge, repo, number)) = self
+            .active_review()
+            .map(|r| (r.pr.forge_kind, r.pr.repo_label.clone(), r.pr.number))
+        {
             self.pr_selected = self.pr_cache.pull_requests.iter().position(|pr| {
                 pr.forge_kind == forge && pr.repo_label == repo && pr.number == number
             });

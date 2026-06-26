@@ -317,7 +317,8 @@ fn ensure_branch_local(request: &CheckoutRequest) -> Result<(), String> {
 
 /// Identity a review reply is matched against so the UI adopts only the data for
 /// the PR still selected (the runner is fire-and-forget, several may be in flight).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Hash` so it can also key the per-PR review cache (pull-requests.md §11).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PrReviewKey {
     pub forge_kind: ForgeKind,
     pub repo_label: String,
