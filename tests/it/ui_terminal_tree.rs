@@ -8,7 +8,7 @@ use helm::terminal::emu::{feed, shared_term, SharedTerm, DEFAULT_FONT_SIZE};
 use helm::terminal::layout::{Layout, Node, Orient, PaneId, Rect as PaneRect};
 use helm::terminal::palette::{TermPalette, TermTheme};
 use helm::theme::Palette;
-use helm::ui::terminal_view::{terminal_tree, terminal_view};
+use helm::ui::terminal_view::{terminal_tree, terminal_view, DropZone};
 
 const CLEAR: Option<Shortcut> = Some(Shortcut::cmd(egui::Key::K));
 
@@ -126,6 +126,45 @@ fn draw(ui: &mut egui::Ui, state: &mut TreeState) {
             .layout
             .resize_split(drag.first, drag.second, drag.delta, state.area, 8.0, 14.0);
     }
+    if let Some(drop) = output.drop {
+        match drop.zone {
+            DropZone::Swap => state.layout.swap_panes(drop.src, drop.target),
+            DropZone::Side(side) => state.layout.move_pane(drop.src, drop.target, side),
+        }
+    }
+}
+
+/// Press-drag-release a pane grip from `from` to `to`, stepping the pointer so
+/// egui registers a real drag (not a click) and the drop target sees the hover
+/// payload before release — the same multi-frame shape kittest needs for seams.
+fn drag_pane(harness: &mut Harness<TreeState>, from: egui::Pos2, to: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+    for step in 1..=6 {
+        let t = step as f32 / 6.0;
+        let p = egui::pos2(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+        harness.event(egui::Event::PointerMoved(p));
+        harness.run();
+    }
+    harness.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+}
+
+/// Center of a pane's top-right drag grip (mirrors GRIP_W/GRIP_TOP/GRIP_H in
+/// terminal_view: 26 wide, inset 3, 14 tall).
+fn grip_pos(rect: &PaneRect) -> egui::Pos2 {
+    egui::pos2(rect.x + rect.w - 3.0 - 13.0, rect.y + 3.0 + 7.0)
 }
 
 #[test]
@@ -204,5 +243,81 @@ fn dragging_the_root_seam_resizes_the_root_split_not_the_inner_one() {
     assert!(
         (inner_after - inner_before).abs() < 1e-3,
         "the inner split is untouched: {inner_before} -> {inner_after}"
+    );
+}
+
+fn left_right_ids(harness: &mut Harness<TreeState>) -> ((PaneId, PaneRect), (PaneId, PaneRect)) {
+    let area = harness.state().area;
+    let rects = harness.state().layout.rects(area);
+    let left = *rects
+        .iter()
+        .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+        .expect("a pane");
+    let right = *rects
+        .iter()
+        .max_by(|a, b| a.1.x.total_cmp(&b.1.x))
+        .expect("a pane");
+    (left, right)
+}
+
+#[test]
+fn dragging_a_pane_grip_onto_a_target_edge_re_splits_it_there() {
+    let mut harness = Harness::new_ui_state(draw, TreeState::two_panes());
+    harness.run();
+    let ((left_id, left_rect), (right_id, right_rect)) = left_right_ids(&mut harness);
+
+    // Grab the left pane and drop it on the bottom edge of the right pane: the
+    // tree becomes a horizontal split with the right pane on top, left below.
+    let from = grip_pos(&left_rect);
+    let to = egui::pos2(
+        right_rect.x + right_rect.w / 2.0,
+        right_rect.y + right_rect.h * 0.9,
+    );
+    drag_pane(&mut harness, from, to);
+
+    match harness.state().layout.root() {
+        Node::Split {
+            orient: Orient::Horizontal,
+            first,
+            second,
+            ..
+        } => {
+            assert_eq!(**first, Node::Leaf(right_id), "right pane lands on top");
+            assert_eq!(**second, Node::Leaf(left_id), "dragged pane lands below");
+        }
+        other => panic!("expected a horizontal split after the move, got {other:?}"),
+    }
+    assert_eq!(
+        harness.state().layout.focus(),
+        left_id,
+        "focus follows the dragged pane"
+    );
+}
+
+#[test]
+fn dropping_a_pane_grip_on_the_target_center_swaps_the_two() {
+    let mut harness = Harness::new_ui_state(draw, TreeState::two_panes());
+    harness.run();
+    let ((left_id, left_rect), (right_id, right_rect)) = left_right_ids(&mut harness);
+
+    let from = grip_pos(&left_rect);
+    let to = egui::pos2(
+        right_rect.x + right_rect.w / 2.0,
+        right_rect.y + right_rect.h / 2.0,
+    );
+    drag_pane(&mut harness, from, to);
+
+    let area = harness.state().area;
+    let rects = harness.state().layout.rects(area);
+    let leftmost = rects
+        .iter()
+        .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+        .map(|(id, _)| *id)
+        .expect("a pane");
+    assert_eq!(leftmost, right_id, "the right pane took the left slot");
+    assert_eq!(
+        harness.state().layout.focus(),
+        left_id,
+        "focus follows the dragged pane"
     );
 }

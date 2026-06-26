@@ -142,6 +142,13 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
   steps of **5 %** in the given direction.
 - **Minimum size** of a pane: ~8 columns × 3 rows; a resize
   that would violate this threshold is bounded.
+- **Reorganizing (drag & drop)**: hovering a pane reveals a small **drag grip**
+  in its top-right corner; dragging it onto another pane drops it according to
+  the zone under the pointer — a **directional edge** (left / right / top /
+  bottom) **re-splits** the target with the dragged pane on that side, the
+  **center** **swaps** the two panes. The dragged pane keeps its PTY and its
+  focus follows it; the grip captures only drags, so a plain click still focuses
+  the pane below it.
 
 ## 6. Focus & navigation
 

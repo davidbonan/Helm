@@ -58,14 +58,19 @@ const ROW_MIN_NAME_W: f32 = 40.0;
 const ROW_MIN_CHIP_W: f32 = 48.0;
 
 /// Columns view: one column per project on a single 2D scroll plane (horizontal
-/// between columns, vertical down the wall). The column width is
-/// **shared** across columns and **resizable** (drag the handle in any gap),
-/// persisted in `Prefs` and clamped to [`COLUMN_MIN_WIDTH`, `COLUMN_MAX_WIDTH`].
+/// between columns, vertical down the wall). **One or two** projects fill the
+/// viewport (full width / 50-50); **three or more** keep the persisted,
+/// **resizable** shared width (drag the handle in any gap, clamped to
+/// [`COLUMN_MIN_WIDTH`, `COLUMN_MAX_WIDTH`]) and let the wall scroll — as does a
+/// two-up split that would fall below `COLUMN_MIN_WIDTH` on a narrow window.
 /// Every project is a recessed `bg.sidebar` panel so the columns read apart on
 /// the canvas; the worktree cards (`bg.canvas`) then sit a shade lighter on top.
 const COLUMN_MIN_WIDTH: f32 = 420.0;
 const COLUMN_MAX_WIDTH: f32 = 1200.0;
 const COLUMN_GAP: f32 = 8.0;
+/// Slack left when sizing columns to fill the viewport, so the frame stroke and
+/// sub-pixel rounding never nudge content past the edge into a spurious scrollbar.
+const COLUMN_FILL_SLACK: f32 = 2.0;
 const COLUMN_RADIUS: u8 = 12;
 const COLUMN_PAD: f32 = 6.0;
 /// Leading inset before the first column — tight so the wall of terminals sits
@@ -394,7 +399,6 @@ fn render_columns(
     action: &mut AgentsPageAction,
     mut render_terminal: impl FnMut(usize, &mut egui::Ui, TermView),
 ) {
-    let column_width = column_width.clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH);
     if rows.is_empty() {
         let inner = egui::Rect::from_min_max(
             egui::pos2(rect.left() + CONTENT_PAD_X, rect.top()),
@@ -408,21 +412,45 @@ fn render_columns(
         empty_state(&mut e, palette);
         return;
     }
+    let groups = groups(rows);
+    let n = groups.len();
+    // Width that fills the viewport evenly: the trailing gap and the 1px frame
+    // stroke (each side) live outside `column_width`, so back them out per column.
+    let fill = (rect.width() - COLUMN_EDGE_PAD - n as f32 * (COLUMN_GAP + 2.0) - COLUMN_FILL_SLACK)
+        / n as f32;
+    // Only one or two projects fill the viewport (full width / 50-50). Three or more,
+    // or a fill below the minimum (a narrow window), keep the comfortable persisted
+    // width and let the wall scroll — an even split would crush the columns, which
+    // breaks down on a small screen.
+    let fill_viewport = n <= 2 && fill >= COLUMN_MIN_WIDTH;
+    let resizable = !fill_viewport;
+    let column_width = if fill_viewport {
+        fill
+    } else {
+        column_width.clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH)
+    };
+    // Each column fills at least the visible viewport height, so its tinted lane
+    // reads full-height even when its agents are collapsed; taller content scrolls.
+    let col_min_height =
+        (rect.height() - COLUMN_TOP_MARGIN - 2.0 * COLUMN_PAD - 2.0 - COLUMN_FILL_SLACK).max(0.0);
     let mut area = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     // One 2D scroll plane for the whole wall: horizontal between columns, vertical
-    // down the wall. Each column hugs its full content height (no per-column scroll),
-    // so the tallest column drives the vertical extent.
+    // down the wall. No per-column scroll — each column fills the viewport height,
+    // then grows with its content, so the tallest column drives the vertical extent.
     egui::ScrollArea::both()
         .id_salt("agents_columns")
         .show(&mut area, |ui| {
             ui.add_space(COLUMN_TOP_MARGIN);
             ui.horizontal_top(|ui| {
+                // Gaps are the explicit edge pad + per-column resize handle; drop the
+                // inherited item spacing so the fill math lands on the viewport edge.
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(COLUMN_EDGE_PAD);
-                for (col_idx, (start, end)) in groups(rows).into_iter().enumerate() {
+                for (col_idx, (start, end)) in groups.into_iter().enumerate() {
                     let lane = rows[start].lane;
                     let col = egui::Frame::new()
                         .fill(project_tint(palette, lane))
@@ -434,6 +462,7 @@ fn render_columns(
                             // stacks top-down inside it.
                             ui.vertical(|ui| {
                                 ui.set_width(column_width - 2.0 * COLUMN_PAD);
+                                ui.set_min_height(col_min_height);
                                 project_column(
                                     ui,
                                     palette,
@@ -442,30 +471,44 @@ fn render_columns(
                                     end,
                                     selected,
                                     terminal_height,
+                                    col_min_height,
                                     action,
                                     &mut render_terminal,
                                 );
                             });
                         });
                     let col_height = col.response.rect.height();
-                    column_resize_handle(ui, palette, col_idx, col_height, column_width, action);
+                    column_resize_handle(
+                        ui,
+                        palette,
+                        col_idx,
+                        col_height,
+                        column_width,
+                        resizable,
+                        action,
+                    );
                 }
             });
         });
 }
 
-/// Draggable separator occupying a column's trailing gap: dragging adjusts the
-/// shared column width (clamped, persisted by the app). A faint accent rule and
-/// the resize cursor surface it on hover; otherwise it's just empty gap.
+/// Separator occupying a column's trailing gap. While the wall overflows
+/// (`resizable`), dragging adjusts the shared column width (clamped, persisted by
+/// the app), surfaced by a faint accent rule and the resize cursor on hover. When
+/// columns fill the viewport evenly the width is derived, so it's just empty gap.
 fn column_resize_handle(
     ui: &mut egui::Ui,
     palette: &Palette,
     col_idx: usize,
     col_height: f32,
     column_width: f32,
+    resizable: bool,
     action: &mut AgentsPageAction,
 ) {
     let (gap, _) = ui.allocate_exact_size(egui::vec2(COLUMN_GAP, col_height), egui::Sense::hover());
+    if !resizable {
+        return;
+    }
     let handle = ui.interact(
         gap.expand2(egui::vec2(3.0, 0.0)),
         ui.id().with(("agents_col_resize", col_idx)),
@@ -497,9 +540,11 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
     end: usize,
     selected: Option<usize>,
     terminal_height: f32,
+    col_min_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
+    let col_top = ui.min_rect().top();
     card_header(ui, palette, &rows[start], end - start, COLUMN_HEADER_HEIGHT);
     let (rule, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
@@ -509,7 +554,22 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
         egui::Stroke::new(1.0, palette.border_subtle),
     );
     ui.add_space(8.0);
-    for (ws, we) in worktree_runs(rows, start, end) {
+    // The focused card's terminal swallows the column's leftover height instead of
+    // sitting at a fixed strip above an empty lane. The collapsed siblings' height
+    // isn't statically known (each preview hugs a variable row count), so size the
+    // strip from the column *overhead* — every laid-out pixel but the strip — measured
+    // the previous frame; `terminal_height` is its floor (the drag handle still sets
+    // that floor). Live panes repaint each frame, so the one-frame settle is unseen.
+    let owns_focus = selected.is_some_and(|s| (start..end).contains(&s));
+    let col_id = ui.id().with(("agents_col_fill", start));
+    let fill_height = owns_focus.then(|| match ui.data(|d| d.get_temp::<f32>(col_id)) {
+        Some(overhead) => (col_min_height - overhead).max(terminal_height),
+        None => terminal_height,
+    });
+    for (i, (ws, we)) in worktree_runs(rows, start, end).into_iter().enumerate() {
+        if i > 0 {
+            ui.add_space(GROUP_GAP);
+        }
         worktree_card(
             ui,
             palette,
@@ -518,10 +578,14 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
             we,
             selected,
             terminal_height,
+            fill_height,
             action,
             render_terminal,
         );
-        ui.add_space(GROUP_GAP);
+    }
+    if owns_focus {
+        let overhead = ui.next_widget_position().y - col_top - fill_height.unwrap_or(0.0);
+        ui.data_mut(|d| d.insert_temp(col_id, overhead));
     }
 }
 
@@ -537,6 +601,7 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     we: usize,
     selected: Option<usize>,
     terminal_height: f32,
+    fill_height: Option<f32>,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
@@ -560,6 +625,7 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
                     idx,
                     selected == Some(idx),
                     terminal_height,
+                    fill_height,
                     action,
                     render_terminal,
                 );
@@ -738,6 +804,7 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     idx: usize,
     focused: bool,
     terminal_height: f32,
+    fill_height: Option<f32>,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
@@ -866,8 +933,12 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
         return;
     }
     ui.add_space(6.0);
+    // Fill the column's leftover height when this focused card owns the slack
+    // (`fill_height`, sized by the caller from the column overhead); `terminal_height`
+    // stays the floor.
+    let strip_height = fill_height.unwrap_or(terminal_height).max(TERM_MIN_HEIGHT);
     let (strip, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), terminal_height),
+        egui::vec2(ui.available_width(), strip_height),
         egui::Sense::hover(),
     );
     let mut term_ui = ui.new_child(
@@ -890,6 +961,8 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
             }
         });
     }
+    // The handle stays even when auto-filled: dragging sets the floor
+    // (`terminal_height`), so the user can still grow the strip past the fill.
     terminal_resize_handle(ui, palette, idx, terminal_height, action);
 }
 

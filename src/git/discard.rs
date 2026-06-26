@@ -23,6 +23,7 @@ pub fn discard_all(repo: &git2::Repository) -> Result<(), git2::Error> {
     // Enumeration without line stats: `load_repo` paid a `Patch` per changed
     // file just to list the paths.
     let statuses = status::work_statuses(repo)?;
+    let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut restore: Vec<String> = Vec::new();
     for entry in statuses.iter() {
         if entry.status().contains(git2::Status::CONFLICTED) {
@@ -33,6 +34,9 @@ pub fn discard_all(repo: &git2::Repository) -> Result<(), git2::Error> {
         };
         let new = delta.new_file().path().and_then(|p| p.to_str());
         let old = delta.old_file().path().and_then(|p| p.to_str());
+        if new.or(old).is_some_and(|p| nested.contains(Path::new(p))) {
+            continue;
+        }
         match delta.status() {
             git2::Delta::Untracked => {
                 if let Some(path) = new.or(old) {

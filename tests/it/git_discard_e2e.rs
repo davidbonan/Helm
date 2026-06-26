@@ -55,6 +55,30 @@ fn discard_deletes_an_untracked_file() {
 }
 
 #[test]
+fn discard_all_never_deletes_a_worktree_nested_in_the_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    let repo = git2::Repository::init(&root).unwrap();
+    commit_file(&repo, "a.txt", "v1\n", "init");
+
+    // A worktree inside the root is reported as one untracked entry; discard all
+    // must skip it instead of removing the directory from disk.
+    repo.worktree("nested", &root.join("nested"), None).unwrap();
+    fs::write(root.join("b.txt"), "scratch").unwrap();
+
+    discard::discard_all(&repo).unwrap();
+
+    assert!(
+        !root.join("b.txt").exists(),
+        "the real untracked file is discarded"
+    );
+    assert!(
+        root.join("nested").join(".git").exists(),
+        "the nested worktree is left untouched on disk"
+    );
+}
+
+#[test]
 fn discard_keeps_the_staged_part_of_a_partially_staged_file() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

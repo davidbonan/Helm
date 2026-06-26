@@ -254,10 +254,14 @@ pub(crate) fn rename_old_path(
 
 pub fn load_repo(repo: &git2::Repository) -> Result<RepoStatus, git2::Error> {
     let statuses = work_statuses(repo)?;
+    let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut out = RepoStatus::default();
     for entry in statuses.iter() {
         let status = entry.status();
         let path = entry_path(&entry);
+        if !nested.is_empty() && nested.contains(Path::new(&path)) {
+            continue;
+        }
         if let Some(kind) = staged_kind(status) {
             out.staged.push(FileEntry {
                 path: path.clone(),
