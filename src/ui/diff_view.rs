@@ -48,6 +48,19 @@ pub struct DiffViewState {
     /// center inline-comment card, so opening a reply in one surface shows it in both.
     active_reply: Option<u64>,
     reply_buffer: String,
+    /// Which conversation-level composer is open (pull-requests.md §11) — the
+    /// standalone add field or a reply under a top-level card — with
+    /// `conversation_buffer` holding its draft. Only one is open at a time.
+    conversation_edit: Option<ConversationEdit>,
+    conversation_buffer: String,
+}
+
+/// The open conversation composer (pull-requests.md §11): a new top-level comment,
+/// or a reply nested under the top-level card carrying the given forge id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConversationEdit {
+    Add,
+    Reply(u64),
 }
 
 impl DiffViewState {
@@ -66,6 +79,8 @@ impl DiffViewState {
         self.reveal_line = None;
         self.active_reply = None;
         self.reply_buffer.clear();
+        self.conversation_edit = None;
+        self.conversation_buffer.clear();
     }
 
     /// Requests that the diff scroll the given new-side line into view on its next
@@ -103,6 +118,43 @@ impl DiffViewState {
     /// editor needs both lent at once (`reply_editor`'s `buffer` + `focus`).
     pub fn reply_fields(&mut self) -> (&mut String, &mut bool) {
         (&mut self.reply_buffer, &mut self.note_focus)
+    }
+
+    /// Which conversation composer is open (the standalone add field or a reply under
+    /// a top-level card), or `None` when none is being drafted (pull-requests.md §11).
+    pub(crate) fn conversation_edit(&self) -> Option<ConversationEdit> {
+        self.conversation_edit
+    }
+
+    /// Opens the standalone add-comment composer, clearing any prior draft and arming
+    /// the one-shot focus.
+    pub fn open_conversation_add(&mut self) {
+        self.conversation_edit = Some(ConversationEdit::Add);
+        self.conversation_buffer.clear();
+        self.note_focus = true;
+    }
+
+    /// Opens a reply nested under the top-level card carrying `comment_id`.
+    pub fn open_conversation_reply(&mut self, comment_id: u64) {
+        self.conversation_edit = Some(ConversationEdit::Reply(comment_id));
+        self.conversation_buffer.clear();
+        self.note_focus = true;
+    }
+
+    /// Closes the conversation composer and discards its draft.
+    pub fn cancel_conversation(&mut self) {
+        self.conversation_edit = None;
+        self.conversation_buffer.clear();
+    }
+
+    /// The conversation draft, for reading the body on send.
+    pub fn conversation_buffer_mut(&mut self) -> &mut String {
+        &mut self.conversation_buffer
+    }
+
+    /// The conversation draft paired with its one-shot focus flag, for the editor.
+    pub fn conversation_fields(&mut self) -> (&mut String, &mut bool) {
+        (&mut self.conversation_buffer, &mut self.note_focus)
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -1116,6 +1168,28 @@ pub(crate) enum ReplyEdit {
     Cancel,
 }
 
+/// The hint and button captions for a `reply_editor`, so the same field reads as a
+/// reply or a new comment depending on where it is opened (pull-requests.md §11).
+pub(crate) struct EditorLabels {
+    pub hint: &'static str,
+    pub send: &'static str,
+    pub cancel: &'static str,
+}
+
+/// Replying to an existing thread or conversation card.
+pub(crate) const REPLY_LABELS: EditorLabels = EditorLabels {
+    hint: "Reply…",
+    send: "Send reply",
+    cancel: "Cancel reply",
+};
+
+/// Starting a new top-level conversation comment.
+pub(crate) const COMMENT_LABELS: EditorLabels = EditorLabels {
+    hint: "Add a comment…",
+    send: "Comment",
+    cancel: "Cancel",
+};
+
 /// Shared reply field: a multiline input (Enter sends, Shift+Enter inserts a
 /// newline) with a Send / Cancel footer. Used by the diff overlay and the center
 /// inline-comment card so a reply reads the same in both. Unlike `note_editor` it
@@ -1127,6 +1201,7 @@ pub(crate) fn reply_editor(
     buffer: &mut String,
     focus: &mut bool,
     width: f32,
+    labels: &EditorLabels,
 ) -> ReplyEdit {
     let submit_key = ui.input_mut(|i| {
         let mut submit = false;
@@ -1157,7 +1232,7 @@ pub(crate) fn reply_editor(
                 egui::TextEdit::multiline(buffer)
                     .desired_rows(2)
                     .desired_width(width)
-                    .hint_text("Reply…"),
+                    .hint_text(labels.hint),
             )
         })
         .inner;
@@ -1184,7 +1259,7 @@ pub(crate) fn reply_editor(
                 palette,
                 lucide_icons::Icon::Check,
                 palette.accent,
-                "Send reply",
+                labels.send,
             ) {
                 edit = ReplyEdit::Send;
             }
@@ -1194,7 +1269,7 @@ pub(crate) fn reply_editor(
                 palette,
                 lucide_icons::Icon::X,
                 palette.text_muted,
-                "Cancel reply",
+                labels.cancel,
             ) {
                 edit = ReplyEdit::Cancel;
             }
@@ -1360,6 +1435,7 @@ fn reply_block(
                     &mut state.reply_buffer,
                     &mut state.note_focus,
                     width,
+                    &REPLY_LABELS,
                 );
             });
         });
@@ -1399,6 +1475,18 @@ pub(crate) fn reply_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
         palette.accent,
         lucide_icons::Icon::MessageSquarePlus,
         "Reply",
+    )
+}
+
+/// The "Add a comment" pill that opens the standalone conversation composer —
+/// forge-tinted like `reply_pill`. Returns `true` on click (pull-requests.md §11).
+pub(crate) fn comment_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
+    agent_pill(
+        ui,
+        palette,
+        palette.accent,
+        lucide_icons::Icon::MessageSquarePlus,
+        "Add a comment",
     )
 }
 

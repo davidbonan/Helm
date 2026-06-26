@@ -1382,7 +1382,9 @@ impl HelmApp {
             ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
             // Only raised on the PR surface (handled by `apply_pr_review_intents`):
             // there is no forge thread in the working-tree / commit review.
-            ReviewIntent::AskAgentOnThread { .. } | ReviewIntent::ReplyToThread { .. } => {}
+            ReviewIntent::AskAgentOnThread { .. }
+            | ReviewIntent::ReplyToThread { .. }
+            | ReviewIntent::PostConversationComment { .. } => {}
         }
     }
 
@@ -2038,6 +2040,7 @@ impl HelmApp {
                     let message = match reply.kind {
                         PrPostKind::Review => "Review submitted",
                         PrPostKind::Reply => "Reply posted",
+                        PrPostKind::Conversation => "Comment posted",
                     };
                     self.toasts.success(message, now);
                     self.refresh_pr_detail(ctx);
@@ -2082,6 +2085,7 @@ impl HelmApp {
         let mut send_to_agent = false;
         let mut ask_thread: Option<(String, Option<u32>, Option<u32>)> = None;
         let mut replies: Vec<(u64, String)> = Vec::new();
+        let mut conversation: Vec<(Option<u64>, String)> = Vec::new();
         for intent in intents {
             match intent {
                 ReviewIntent::SaveComment {
@@ -2113,10 +2117,16 @@ impl HelmApp {
                 ReviewIntent::ReplyToThread { comment_id, body } => {
                     replies.push((comment_id, body))
                 }
+                ReviewIntent::PostConversationComment { parent, body } => {
+                    conversation.push((parent, body))
+                }
             }
         }
         for (comment_id, body) in replies {
             self.post_pr_reply(comment_id, body, ctx);
+        }
+        for (parent, body) in conversation {
+            self.post_pr_conversation(parent, body, ctx);
         }
         if let Some((file, old, new)) = ask_thread {
             self.ask_claude_on_thread(&file, old, new, ctx);
@@ -2153,6 +2163,37 @@ impl HelmApp {
             review.post_error = None;
         }
         self.pr_post_runner(ctx).request_reply(request);
+    }
+
+    /// Post a conversation-level comment (pull-requests.md §11): `parent` is `None`
+    /// for the standalone composer, `Some(id)` to nest under a top-level card. Fires
+    /// the off-thread write, then `poll_pr_post` re-fetches the detail. Blank is a
+    /// no-op.
+    fn post_pr_conversation(&mut self, parent: Option<u64>, body: String, ctx: &egui::Context) {
+        let body = body.trim().to_owned();
+        if body.is_empty() {
+            return;
+        }
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        if review.posting {
+            return;
+        }
+        let request = crate::pull_requests::runner::PrConversationRequest {
+            key: review.key.clone(),
+            forge_kind: review.pr.forge_kind,
+            repo_label: review.pr.repo_label.clone(),
+            number: review.pr.number,
+            bitbucket_email: self.prefs.bitbucket_email.clone(),
+            parent,
+            body,
+        };
+        if let Some(review) = self.active_review_mut() {
+            review.posting = true;
+            review.post_error = None;
+        }
+        self.pr_post_runner(ctx).request_conversation(request);
     }
 
     /// Launch the review agent on the whole PR (pull-requests.md §11): the generic

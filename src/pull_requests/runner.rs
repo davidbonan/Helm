@@ -697,12 +697,27 @@ pub struct PrReplyRequest {
     pub body: String,
 }
 
+/// Add or reply to a conversation-level comment (pull-requests.md §11): `parent` is
+/// `None` for a new top-level comment, `Some(id)` to nest under one (Bitbucket only —
+/// GitHub issue comments are flat and ignore it).
+#[derive(Debug, Clone)]
+pub struct PrConversationRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+    pub parent: Option<u64>,
+    pub body: String,
+}
+
 /// Which write the post runner carried, so the UI clears the review draft only on
-/// a submitted review — a posted reply leaves the draft untouched.
+/// a submitted review — a posted reply or conversation comment leaves it untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrPostKind {
     Review,
     Reply,
+    Conversation,
 }
 
 /// The single reply per post request, echoing the key for adoption.
@@ -753,6 +768,20 @@ impl PrPostRunner {
             let _ = tx.send(PrPostReply {
                 key: request.key,
                 kind: PrPostKind::Reply,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn request_conversation(&self, request: PrConversationRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = post_conversation(&request);
+            let _ = tx.send(PrPostReply {
+                key: request.key,
+                kind: PrPostKind::Conversation,
                 result,
             });
             on_event();
@@ -873,6 +902,52 @@ fn post_reply(req: &PrReplyRequest) -> Result<(), String> {
                 &header,
                 &bitbucket::reply_comment_body(req.comment_id, &req.body),
             )
+        }
+    }
+}
+
+/// Post a conversation-level comment (pull-requests.md §11). GitHub adds it on the
+/// flat issue-comments endpoint (replies aren't threaded there); Bitbucket posts to
+/// the PR comments collection, nesting under `parent` when the user replied to a card.
+fn post_conversation(req: &PrConversationRequest) -> Result<(), String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            let body = github::reply_comment_body(&req.body);
+            run_stdin(
+                "gh",
+                &github::issue_comment_args(&req.repo_label, req.number),
+                &body,
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                let e = e.trim();
+                if e.is_empty() {
+                    "gh comment failed".to_owned()
+                } else {
+                    e.to_owned()
+                }
+            })
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let url = bitbucket::post_comment_url(workspace, repo, req.number);
+            let payload = match req.parent {
+                Some(parent) => bitbucket::reply_comment_body(parent, &req.body),
+                None => bitbucket::summary_comment_body(&req.body),
+            };
+            curl_post_ok(&url, &header, &payload)
         }
     }
 }

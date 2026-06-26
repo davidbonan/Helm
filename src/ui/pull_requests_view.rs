@@ -21,7 +21,8 @@ use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, BODY_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
 use crate::ui::detail::{author_avatar, count_chip};
 use crate::ui::diff_view::{
-    reply_editor, reply_pill, DiffReview, DiffSurface, DiffViewState, ReplyEdit,
+    comment_pill, reply_editor, reply_pill, ConversationEdit, DiffReview, DiffSurface,
+    DiffViewState, ReplyEdit, COMMENT_LABELS, REPLY_LABELS,
 };
 use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
 use crate::ui::git_panel::ratio_bar;
@@ -421,33 +422,118 @@ fn review_detail(
                 }
             }
 
-            // Conversation-level comments only; the inline ones (path + line set)
-            // are anchored in the diff via ForgeThreads (pull-requests.md §11).
-            let conversation: Vec<&PrComment> = review
-                .detail
-                .map(|d| d.comments.iter().filter(|c| c.path.is_none()).collect())
-                .unwrap_or_default();
-            if !conversation.is_empty() {
-                band_title(ui, palette, "Conversation");
-                for c in conversation {
-                    ui.label(
-                        egui::RichText::new(&c.author)
-                            .size(META_SIZE)
-                            .color(palette.text_secondary)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new(&c.body)
-                            .size(12.5)
-                            .color(palette.text_secondary),
-                    );
-                    ui.add_space(6.0);
-                }
-            }
-
+            conversation_section(ui, palette, review, action);
             inline_comments_section(ui, palette, review, action);
             ui.add_space(PANEL_PAD_Y);
         });
+}
+
+/// **Conversation** band in the center detail (pull-requests.md §11): the PR's
+/// top-level comments (no diff anchor), each with a Reply affordance when the forge
+/// threads them (Bitbucket carries a comment id; GitHub issue comments are flat), and
+/// a standalone composer that always lets the user start a new comment.
+fn conversation_section(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &mut PrReviewView<'_>,
+    action: &mut PullRequestsPageAction,
+) {
+    // `detail` is a copied-out `'a` reference, so it no longer borrows `review` — the
+    // composer state under `review.diff_view` can then lend mutably (as in the inline
+    // section).
+    let detail = review.detail;
+    let diff_view = &mut *review.diff_view;
+    let conversation: Vec<&PrComment> = detail
+        .map(|d| d.comments.iter().filter(|c| c.path.is_none()).collect())
+        .unwrap_or_default();
+    band_title(ui, palette, "Conversation");
+    for c in &conversation {
+        ui.label(
+            egui::RichText::new(&c.author)
+                .size(META_SIZE)
+                .color(palette.text_secondary)
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new(&c.body)
+                .size(12.5)
+                .color(palette.text_secondary),
+        );
+        // A forge that threads top-level comments (Bitbucket) carries an id to reply
+        // under; GitHub's are flat, so a reply there is just a new comment via the
+        // standalone composer below.
+        if let Some(id) = c.id {
+            conversation_reply_block(ui, palette, diff_view, id, action);
+        }
+        ui.add_space(6.0);
+    }
+    conversation_add_block(ui, palette, diff_view, action);
+}
+
+/// The Reply affordance under a top-level conversation card: a "Reply" pill that
+/// swaps to the shared composer, raising `PostConversationComment` with the card's id
+/// as parent so the forge nests it under the thread (pull-requests.md §11).
+fn conversation_reply_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff_view: &mut DiffViewState,
+    id: u64,
+    action: &mut PullRequestsPageAction,
+) {
+    ui.add_space(4.0);
+    if diff_view.conversation_edit() == Some(ConversationEdit::Reply(id)) {
+        let width = (ui.available_width() - 8.0).max(160.0);
+        let (buffer, focus) = diff_view.conversation_fields();
+        match reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS) {
+            ReplyEdit::Send => {
+                let body = diff_view.conversation_buffer_mut().trim().to_owned();
+                if !body.is_empty() {
+                    action
+                        .review_intents
+                        .push(ReviewIntent::PostConversationComment {
+                            parent: Some(id),
+                            body,
+                        });
+                }
+                diff_view.cancel_conversation();
+            }
+            ReplyEdit::Cancel => diff_view.cancel_conversation(),
+            ReplyEdit::Idle => {}
+        }
+    } else if reply_pill(ui, palette) {
+        diff_view.open_conversation_reply(id);
+    }
+}
+
+/// The standalone conversation composer (pull-requests.md §11): an "Add a comment"
+/// pill that swaps to the shared composer, raising `PostConversationComment` with no
+/// parent — a new top-level comment on either forge.
+fn conversation_add_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff_view: &mut DiffViewState,
+    action: &mut PullRequestsPageAction,
+) {
+    ui.add_space(6.0);
+    if diff_view.conversation_edit() == Some(ConversationEdit::Add) {
+        let width = (ui.available_width() - 8.0).max(160.0);
+        let (buffer, focus) = diff_view.conversation_fields();
+        match reply_editor(ui, palette, buffer, focus, width, &COMMENT_LABELS) {
+            ReplyEdit::Send => {
+                let body = diff_view.conversation_buffer_mut().trim().to_owned();
+                if !body.is_empty() {
+                    action
+                        .review_intents
+                        .push(ReviewIntent::PostConversationComment { parent: None, body });
+                }
+                diff_view.cancel_conversation();
+            }
+            ReplyEdit::Cancel => diff_view.cancel_conversation(),
+            ReplyEdit::Idle => {}
+        }
+    } else if comment_pill(ui, palette) {
+        diff_view.open_conversation_add();
+    }
 }
 
 /// **Inline comments** band in the center detail (pull-requests.md §5): the PR's
@@ -610,7 +696,7 @@ fn center_reply_block(
         ui.add_space(4.0);
         let width = (ui.available_width() - 8.0).max(160.0);
         let (buffer, focus) = diff_view.reply_fields();
-        let edit = reply_editor(ui, palette, buffer, focus, width);
+        let edit = reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS);
         match edit {
             ReplyEdit::Send => {
                 let body = diff_view.reply_buffer_mut().trim().to_owned();

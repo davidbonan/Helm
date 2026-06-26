@@ -12,7 +12,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **7/9**.
+Counter: **8/9**.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -66,20 +66,25 @@ Counter: **7/9**.
   *Files*: `review.rs`, `model.rs`, `github.rs`, `bitbucket.rs`, `runner.rs`,
   `mod.rs`, `diff_view.rs`/`pull_requests_view.rs`. *Tests*: unit on reply builders;
   UI e2e emits the reply intent from both places.
-- ☐ **T8 — Conversation comments: add + reply (write).** Standalone composer in the
+- ☑ **T8 — Conversation comments: add + reply (write).** Standalone composer in the
   Conversation section + reply on top-level cards. GitHub `POST issues/{n}/comments`;
-  Bitbucket `POST .../comments` (no inline, `parent` for the reply). *Files*:
-  `github.rs`, `bitbucket.rs`, `runner.rs`, `mod.rs`, `pull_requests_view.rs`.
-  *Tests*: unit on builders; UI e2e add + reply.
+  Bitbucket `POST .../comments` (no inline, `parent` for the reply). `ReviewIntent::
+  PostConversationComment { parent: Option<u64>, body }` unifies add (`None`) and
+  card reply (`Some(id)`); the runner gained `PrPostKind::Conversation` +
+  `request_conversation`/`post_conversation`, reusing the §11 success-refetch path.
+  *Files*: `review.rs`, `github.rs`, `bitbucket.rs`, `runner.rs`, `mod.rs`,
+  `diff_view.rs`, `pull_requests_view.rs`. *Tests*: unit on `issue_comment_args`; UI
+  e2e add (`conversation_composer_emits_post_conversation_comment`) + reply
+  (`conversation_card_reply_emits_nested_post_conversation_comment`).
 - ☐ **T9 — Spec + STATE + verify.** `pull-requests.md` §5 (inline comments in the
   center + context; commit view) and §10-§11 (inline replies & conversation
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- **T8** (conversation comments: add + reply, write) — standalone composer in the
-  Conversation section + reply on top-level cards; GitHub `POST issues/{n}/comments`,
-  Bitbucket `POST .../comments` (no inline, `parent` for the reply); detail refetches
-  on success. Reuse the T7 `PrPostKind::Reply` runner path for the reply.
+- **T9** (spec + STATE + verify) — fold T6/T7/T8 into `pull-requests.md` §5 (inline
+  comments in the center + code context; commit view) and §10-§11 (inline replies &
+  conversation comments now in scope); refresh this block; `headless-verify` of the
+  full review flow (inline reply + conversation add/reply). Final milestone close.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

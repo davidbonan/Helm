@@ -1075,3 +1075,172 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
         intents.borrow(),
     );
 }
+
+#[test]
+fn conversation_composer_emits_post_conversation_comment() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: Vec::new(),
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+    };
+    let files = vec![changed_file("src/lib.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let intents: Rc<RefCell<Vec<ReviewIntent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+            sink.borrow_mut().extend(action.review_intents);
+        });
+    harness.run();
+    harness.get_by_label("Add a comment").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .type_text("ship it");
+    harness.run();
+    harness.get_by_label("Comment").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::PostConversationComment { parent: None, body }
+                if body == "ship it"
+        )),
+        "the standalone composer must emit a parent-less PostConversationComment, got {:?}",
+        intents.borrow(),
+    );
+}
+
+#[test]
+fn conversation_card_reply_emits_nested_post_conversation_comment() {
+    use helm::pull_requests::model::PrComment;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer".to_owned(),
+            body: "what about edge cases?".to_owned(),
+            path: None,
+            old_lineno: None,
+            new_lineno: None,
+            id: Some(7),
+            parent_id: None,
+            context: None,
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+    };
+    let files = vec![changed_file("src/lib.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let intents: Rc<RefCell<Vec<ReviewIntent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+            sink.borrow_mut().extend(action.review_intents);
+        });
+    harness.run();
+    // The top-level card carries the only "Reply" affordance (no inline comments here).
+    harness.get_by_label("Reply").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .type_text("covered below");
+    harness.run();
+    harness.get_by_label("Send reply").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::PostConversationComment { parent: Some(parent), body }
+                if *parent == 7 && body == "covered below"
+        )),
+        "replying under a top-level card must nest via parent, got {:?}",
+        intents.borrow(),
+    );
+}

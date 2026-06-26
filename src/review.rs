@@ -106,6 +106,13 @@ pub enum ReviewIntent {
         comment_id: u64,
         body: String,
     },
+    /// Post a conversation-level comment (pull-requests.md §11): `parent` is `None`
+    /// from the standalone composer, `Some(id)` when replying under a top-level card
+    /// (the parent nests it on Bitbucket; GitHub issue comments stay flat).
+    PostConversationComment {
+        parent: Option<u64>,
+        body: String,
+    },
 }
 
 pub fn build_review_prompt(comments: &FileComments) -> String {

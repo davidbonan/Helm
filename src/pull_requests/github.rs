@@ -166,9 +166,24 @@ pub fn reply_comment_args(repo: &str, number: u64, comment_id: u64) -> Vec<Strin
     ]
 }
 
-/// JSON body for the replies endpoint: just the reply text under `body`.
+/// JSON body for the replies endpoint: just the reply text under `body`. Shared by
+/// the conversation comment endpoint, which takes the same `{body}` shape.
 pub fn reply_comment_body(body: &str) -> String {
     json!({ "body": body }).to_string()
+}
+
+/// `gh api repos/{repo}/issues/{n}/comments --method POST --input -` — add a
+/// top-level conversation comment (GitHub issue comments are flat, so a reply is the
+/// same call; the body is fed on stdin, §11).
+pub fn issue_comment_args(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "api".into(),
+        format!("repos/{repo}/issues/{number}/comments"),
+        "--method".into(),
+        "POST".into(),
+        "--input".into(),
+        "-".into(),
+    ]
 }
 
 /// `gh pr checkout <number>` (the plain-checkout path; PR7 prefers a worktree).
@@ -648,6 +663,21 @@ mod tests {
     fn reply_comment_body_carries_only_the_text() {
         let parsed: Value = serde_json::from_str(&reply_comment_body("on it")).unwrap();
         assert_eq!(parsed["body"], "on it");
+    }
+
+    #[test]
+    fn issue_comment_args_post_the_issues_comments_endpoint_via_stdin() {
+        assert_eq!(
+            issue_comment_args("acme/web", 42),
+            vec![
+                "api",
+                "repos/acme/web/issues/42/comments",
+                "--method",
+                "POST",
+                "--input",
+                "-"
+            ]
+        );
     }
 
     #[test]
