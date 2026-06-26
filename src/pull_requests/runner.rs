@@ -684,10 +684,32 @@ pub struct PrPostRequest {
     pub comments: Vec<DraftComment>,
 }
 
+/// Reply to one existing PR comment thread (pull-requests.md §11): the thread
+/// root's forge id and the reply body, posted off-thread like `PrPostRequest`.
+#[derive(Debug, Clone)]
+pub struct PrReplyRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+    pub comment_id: u64,
+    pub body: String,
+}
+
+/// Which write the post runner carried, so the UI clears the review draft only on
+/// a submitted review — a posted reply leaves the draft untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrPostKind {
+    Review,
+    Reply,
+}
+
 /// The single reply per post request, echoing the key for adoption.
 #[derive(Debug, Clone)]
 pub struct PrPostReply {
     pub key: PrReviewKey,
+    pub kind: PrPostKind,
     pub result: Result<(), String>,
 }
 
@@ -716,6 +738,21 @@ impl PrPostRunner {
             let result = post_review(&request);
             let _ = tx.send(PrPostReply {
                 key: request.key,
+                kind: PrPostKind::Review,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn request_reply(&self, request: PrReplyRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = post_reply(&request);
+            let _ = tx.send(PrPostReply {
+                key: request.key,
+                kind: PrPostKind::Reply,
                 result,
             });
             on_event();
@@ -789,6 +826,53 @@ fn post_review(req: &PrPostRequest) -> Result<(), String> {
                 ReviewVerdict::Comment => {}
             }
             Ok(())
+        }
+    }
+}
+
+/// Post one reply to an existing comment thread (pull-requests.md §11). GitHub
+/// replies on the review-comment endpoint (`…/comments/{id}/replies`); Bitbucket
+/// posts to the PR comments collection with a `parent` id (the same URL that takes
+/// a new comment), so the reply nests under the thread.
+fn post_reply(req: &PrReplyRequest) -> Result<(), String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            let body = github::reply_comment_body(&req.body);
+            run_stdin(
+                "gh",
+                &github::reply_comment_args(&req.repo_label, req.number, req.comment_id),
+                &body,
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                let e = e.trim();
+                if e.is_empty() {
+                    "gh reply failed".to_owned()
+                } else {
+                    e.to_owned()
+                }
+            })
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let url = bitbucket::post_comment_url(workspace, repo, req.number);
+            curl_post_ok(
+                &url,
+                &header,
+                &bitbucket::reply_comment_body(req.comment_id, &req.body),
+            )
         }
     }
 }

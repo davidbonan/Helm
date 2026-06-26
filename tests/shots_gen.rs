@@ -1198,10 +1198,12 @@ fn gen_pr_review_comments() {
                     ThreadComment {
                         author: "Dax Vega".to_owned(),
                         body: "Can we keep alloc() under ten lines? It's creeping up.".to_owned(),
+                        id: Some(1),
                     },
                     ThreadComment {
                         author: "Mira Lund".to_owned(),
                         body: "Agreed — pull the grow path into its own helper.".to_owned(),
+                        id: Some(2),
                     },
                 ],
             );

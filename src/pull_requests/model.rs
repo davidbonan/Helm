@@ -194,6 +194,7 @@ pub fn forge_threads(comments: &[PrComment]) -> crate::review::ForgeThreads {
             .push(crate::review::ThreadComment {
                 author: c.author.clone(),
                 body: c.body.clone(),
+                id: c.id,
             });
     }
     threads

@@ -24,6 +24,9 @@ pub type FileComments = BTreeMap<String, Vec<LineComment>>;
 pub struct ThreadComment {
     pub author: String,
     pub body: String,
+    /// Forge id of this comment, when known — the reply target (its thread root's
+    /// id) the diff overlay posts a reply against (pull-requests.md §11).
+    pub id: Option<u64>,
 }
 
 /// Existing PR threads of one repo, keyed by file path then the `(old, new)`
@@ -95,6 +98,13 @@ pub enum ReviewIntent {
         file: String,
         old: Option<u32>,
         new: Option<u32>,
+    },
+    /// Post a reply to an existing PR comment thread (pull-requests.md §11):
+    /// `comment_id` is the thread root's forge id, `body` the reply text. Raised
+    /// from both the diff overlay and the center inline-comment card.
+    ReplyToThread {
+        comment_id: u64,
+        body: String,
     },
 }
 

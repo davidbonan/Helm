@@ -20,7 +20,9 @@ use crate::pull_requests::model::{
 use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, BODY_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
 use crate::ui::detail::{author_avatar, count_chip};
-use crate::ui::diff_view::{DiffReview, DiffSurface, DiffViewState};
+use crate::ui::diff_view::{
+    reply_editor, reply_pill, DiffReview, DiffSurface, DiffViewState, ReplyEdit,
+};
 use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
 use crate::ui::git_panel::ratio_bar;
 use crate::ui::{clickable, paint_icon, with_alpha, SECTION_TOP_MARGIN, TITLEBAR_HEIGHT};
@@ -369,7 +371,7 @@ fn review_rail(
 fn review_detail(
     ui: &mut egui::Ui,
     palette: &Palette,
-    review: &PrReviewView<'_>,
+    review: &mut PrReviewView<'_>,
     rect: egui::Rect,
     action: &mut PullRequestsPageAction,
 ) {
@@ -456,7 +458,7 @@ fn review_detail(
 fn inline_comments_section(
     ui: &mut egui::Ui,
     palette: &Palette,
-    review: &PrReviewView<'_>,
+    review: &mut PrReviewView<'_>,
     action: &mut PullRequestsPageAction,
 ) {
     let Some(detail) = review.detail else {
@@ -470,6 +472,12 @@ fn inline_comments_section(
     if inline.is_empty() {
         return;
     }
+    // `diff` and `changed_files` are copied-out references (`'a`), so they no longer
+    // borrow `review` — leaving `review.diff_view` free to lend mutably to each
+    // card's reply editor.
+    let diff = review.diff;
+    let changed_files = review.files;
+    let diff_view = &mut *review.diff_view;
     band_title(ui, palette, "Inline comments");
     let mut files: Vec<&str> = Vec::new();
     for c in &inline {
@@ -503,17 +511,33 @@ fn inline_comments_section(
                     c.path.as_deref() == Some(path) && (c.old_lineno, c.new_lineno) == (old, new)
                 })
                 .collect();
-            inline_comment_card(ui, palette, review, path, new, &thread, action);
+            inline_comment_card(
+                ui,
+                palette,
+                diff_view,
+                diff,
+                changed_files,
+                path,
+                new,
+                &thread,
+                action,
+            );
         }
     }
 }
 
 /// One inline thread as a clickable card: the code snippet (GitHub's `diff_hunk`,
-/// else a window of the loaded diff for the selected file), then the comments.
+/// else a window of the loaded diff for the selected file), then the comments, then
+/// a Reply affordance that mirrors the diff overlay's (pull-requests.md §11). The
+/// reply state lives in the shared `diff_view`, so opening a reply here also opens
+/// it on the overlay.
+#[allow(clippy::too_many_arguments)]
 fn inline_comment_card(
     ui: &mut egui::Ui,
     palette: &Palette,
-    review: &PrReviewView<'_>,
+    diff_view: &mut DiffViewState,
+    diff: Option<&FileDiff>,
+    files: &[CommitFile],
     path: &str,
     new: Option<u32>,
     thread: &[&PrComment],
@@ -527,7 +551,7 @@ fn inline_comment_card(
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let snippet = inline_snippet(review, path, new, thread);
+            let snippet = inline_snippet(diff, path, new, thread);
             for line in &snippet {
                 ui.label(
                     egui::RichText::new(line)
@@ -562,8 +586,49 @@ fn inline_comment_card(
     };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
     if response.clicked() {
-        if let Some(idx) = review.files.iter().position(|f| f.path == path) {
+        if let Some(idx) = files.iter().position(|f| f.path == path) {
             action.open_inline_comment = Some((idx, new));
+        }
+    }
+    // The reply controls sit *below* the clickable card so editing a reply never
+    // also opens the file. The reply target is the thread root's forge id.
+    if let Some(reply_id) = thread.iter().find_map(|c| c.id) {
+        center_reply_block(ui, palette, diff_view, reply_id, action);
+    }
+}
+
+/// The center card's Reply affordance: a "Reply" pill that swaps to the shared
+/// reply editor, raising `ReplyToThread` on send (pull-requests.md §11).
+fn center_reply_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff_view: &mut DiffViewState,
+    reply_id: u64,
+    action: &mut PullRequestsPageAction,
+) {
+    if diff_view.reply_target() == Some(reply_id) {
+        ui.add_space(4.0);
+        let width = (ui.available_width() - 8.0).max(160.0);
+        let (buffer, focus) = diff_view.reply_fields();
+        let edit = reply_editor(ui, palette, buffer, focus, width);
+        match edit {
+            ReplyEdit::Send => {
+                let body = diff_view.reply_buffer_mut().trim().to_owned();
+                if !body.is_empty() {
+                    action.review_intents.push(ReviewIntent::ReplyToThread {
+                        comment_id: reply_id,
+                        body,
+                    });
+                }
+                diff_view.cancel_reply();
+            }
+            ReplyEdit::Cancel => diff_view.cancel_reply(),
+            ReplyEdit::Idle => {}
+        }
+    } else {
+        ui.add_space(4.0);
+        if reply_pill(ui, palette) {
+            diff_view.open_reply(reply_id);
         }
     }
 }
@@ -572,7 +637,7 @@ fn inline_comment_card(
 /// on the comment (`diff_hunk`); for Bitbucket (no hunk) fall back to a window of the
 /// loaded diff when the comment is on the open file, else nothing (pull-requests.md §5).
 fn inline_snippet(
-    review: &PrReviewView<'_>,
+    diff: Option<&FileDiff>,
     path: &str,
     new: Option<u32>,
     thread: &[&PrComment],
@@ -586,7 +651,7 @@ fn inline_snippet(
         let take = lines.len().min(4);
         return lines[lines.len() - take..].to_vec();
     }
-    if let (Some(diff), Some(new)) = (review.diff, new) {
+    if let (Some(diff), Some(new)) = (diff, new) {
         if diff.path == path && !diff.source_lines.is_empty() {
             let end = (new as usize).min(diff.source_lines.len());
             let start = end.saturating_sub(3);

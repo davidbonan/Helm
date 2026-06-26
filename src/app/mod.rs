@@ -1382,7 +1382,7 @@ impl HelmApp {
             ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
             // Only raised on the PR surface (handled by `apply_pr_review_intents`):
             // there is no forge thread in the working-tree / commit review.
-            ReviewIntent::AskAgentOnThread { .. } => {}
+            ReviewIntent::AskAgentOnThread { .. } | ReviewIntent::ReplyToThread { .. } => {}
         }
     }
 
@@ -2023,14 +2023,23 @@ impl HelmApp {
             }
             match reply.result {
                 Ok(()) => {
+                    use crate::pull_requests::runner::PrPostKind;
                     if let Some(review) = self.active_review_mut() {
                         review.posting = false;
                         review.post_error = None;
-                        review.draft.clear();
-                        review.summary.clear();
-                        review.verdict = crate::pull_requests::model::ReviewVerdict::default();
+                        // A submitted review consumes the draft; a posted reply leaves
+                        // it untouched (the user may still be drafting line notes).
+                        if reply.kind == PrPostKind::Review {
+                            review.draft.clear();
+                            review.summary.clear();
+                            review.verdict = crate::pull_requests::model::ReviewVerdict::default();
+                        }
                     }
-                    self.toasts.success("Review submitted", now);
+                    let message = match reply.kind {
+                        PrPostKind::Review => "Review submitted",
+                        PrPostKind::Reply => "Reply posted",
+                    };
+                    self.toasts.success(message, now);
                     self.refresh_pr_detail(ctx);
                 }
                 Err(message) => {
@@ -2072,6 +2081,7 @@ impl HelmApp {
         use crate::review::{ReviewIntent, ReviewPool};
         let mut send_to_agent = false;
         let mut ask_thread: Option<(String, Option<u32>, Option<u32>)> = None;
+        let mut replies: Vec<(u64, String)> = Vec::new();
         for intent in intents {
             match intent {
                 ReviewIntent::SaveComment {
@@ -2100,13 +2110,49 @@ impl HelmApp {
                 ReviewIntent::AskAgentOnThread { file, old, new } => {
                     ask_thread = Some((file, old, new))
                 }
+                ReviewIntent::ReplyToThread { comment_id, body } => {
+                    replies.push((comment_id, body))
+                }
             }
+        }
+        for (comment_id, body) in replies {
+            self.post_pr_reply(comment_id, body, ctx);
         }
         if let Some((file, old, new)) = ask_thread {
             self.ask_claude_on_thread(&file, old, new, ctx);
         } else if send_to_agent {
             self.ask_claude_on_pr(ctx);
         }
+    }
+
+    /// Post a reply to an existing PR comment thread (pull-requests.md §11): fire the
+    /// off-thread write with the thread root id + body, then let `poll_pr_post`
+    /// re-fetch the detail so the reply lands inline. A blank body is a no-op.
+    fn post_pr_reply(&mut self, comment_id: u64, body: String, ctx: &egui::Context) {
+        let body = body.trim().to_owned();
+        if body.is_empty() {
+            return;
+        }
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        if review.posting {
+            return;
+        }
+        let request = crate::pull_requests::runner::PrReplyRequest {
+            key: review.key.clone(),
+            forge_kind: review.pr.forge_kind,
+            repo_label: review.pr.repo_label.clone(),
+            number: review.pr.number,
+            bitbucket_email: self.prefs.bitbucket_email.clone(),
+            comment_id,
+            body,
+        };
+        if let Some(review) = self.active_review_mut() {
+            review.posting = true;
+            review.post_error = None;
+        }
+        self.pr_post_runner(ctx).request_reply(request);
     }
 
     /// Launch the review agent on the whole PR (pull-requests.md §11): the generic

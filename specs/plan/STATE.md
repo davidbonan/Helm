@@ -12,7 +12,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **6/9**.
+Counter: **7/9**.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -59,7 +59,7 @@ Counter: **6/9**.
   (capture `diff_hunk`), `bitbucket.rs` (fallback), `pull_requests_view.rs`.
   *Tests*: unit on `diff_hunk` parse; UI e2e — inline card with snippet in the
   center, click emits `select_file`.
-- ☐ **T7 — Reply to an inline comment (write).** Thread `id` plumbed to the cards
+- ☑ **T7 — Reply to an inline comment (write).** Thread `id` plumbed to the cards
   (`review::ThreadComment` gains `id`); a reply editor on **both** renders (diff
   overlay **and** T6 center card). Post: GitHub `POST pulls/{n}/comments/{id}/
   replies`; Bitbucket `{content.raw, parent:{id}}`. Detail refetches on success.
@@ -76,10 +76,10 @@ Counter: **6/9**.
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- **T7** (reply to an inline comment, write) — thread `id` plumbed to the cards
-  (`review::ThreadComment` gains `id`); a reply editor on **both** the diff overlay
-  and the T6 center card; GitHub `POST pulls/{n}/comments/{id}/replies`, Bitbucket
-  `{content.raw, parent:{id}}`; detail refetches on success.
+- **T8** (conversation comments: add + reply, write) — standalone composer in the
+  Conversation section + reply on top-level cards; GitHub `POST issues/{n}/comments`,
+  Bitbucket `POST .../comments` (no inline, `parent` for the reply); detail refetches
+  on success. Reuse the T7 `PrPostKind::Reply` runner path for the reply.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

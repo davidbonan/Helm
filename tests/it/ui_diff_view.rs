@@ -1056,6 +1056,7 @@ fn existing_pr_thread_renders_anchored_read_only() {
             vec![helm::review::ThreadComment {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
+                id: Some(11),
             }],
         ))
         .collect(),
@@ -1136,6 +1137,7 @@ fn new_side_thread_on_a_modified_line_renders_once_not_on_the_deleted_row() {
             vec![helm::review::ThreadComment {
                 author: "octocat".into(),
                 body: "please rename new()".into(),
+                id: Some(22),
             }],
         ))
         .collect(),
@@ -1182,6 +1184,7 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
             vec![helm::review::ThreadComment {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
+                id: Some(33),
             }],
         ))
         .collect(),
@@ -1220,6 +1223,68 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
                 if file == "src/main.rs" && old.is_none() && *new == Some(2)
         )),
         "the Ask pill must emit AskAgentOnThread anchored at the thread, got {:?}",
+        intents.borrow(),
+    );
+}
+
+#[test]
+fn reply_pill_on_a_thread_emits_reply_to_thread() {
+    let palette = Palette::light();
+    let diff = review_diff();
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            (None, Some(2u32)),
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename work()".into(),
+                id: Some(77),
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let intents = Rc::new(RefCell::new(Vec::<ReviewIntent>::new()));
+    let intents_in_ui = intents.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::PrReview,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                forge: Some(&empty),
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents_in_ui.borrow_mut(),
+            }),
+        );
+    });
+    harness.run();
+    // Open the reply editor, type a reply, send it.
+    harness.get_by_label("Reply").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .type_text("on it");
+    harness.run();
+    harness.get_by_label("Send reply").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::ReplyToThread { comment_id, body }
+                if *comment_id == 77 && body == "on it"
+        )),
+        "the Reply editor must emit ReplyToThread for the thread root, got {:?}",
         intents.borrow(),
     );
 }

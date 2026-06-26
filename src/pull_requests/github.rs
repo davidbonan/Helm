@@ -153,6 +153,24 @@ pub fn submit_review_body(
     body.to_string()
 }
 
+/// `gh api repos/{repo}/pulls/{n}/comments/{id}/replies --method POST --input -` —
+/// reply to an existing review-comment thread; the body is fed on stdin (§11).
+pub fn reply_comment_args(repo: &str, number: u64, comment_id: u64) -> Vec<String> {
+    vec![
+        "api".into(),
+        format!("repos/{repo}/pulls/{number}/comments/{comment_id}/replies"),
+        "--method".into(),
+        "POST".into(),
+        "--input".into(),
+        "-".into(),
+    ]
+}
+
+/// JSON body for the replies endpoint: just the reply text under `body`.
+pub fn reply_comment_body(body: &str) -> String {
+    json!({ "body": body }).to_string()
+}
+
 /// `gh pr checkout <number>` (the plain-checkout path; PR7 prefers a worktree).
 pub fn checkout_args(repo: &str, number: u64) -> Vec<String> {
     vec![
@@ -609,6 +627,27 @@ mod tests {
         assert_eq!(parsed["event"], "APPROVE");
         assert!(parsed.get("body").is_none());
         assert!(parsed.get("comments").is_none());
+    }
+
+    #[test]
+    fn reply_comment_args_post_the_thread_replies_endpoint_via_stdin() {
+        assert_eq!(
+            reply_comment_args("acme/web", 42, 99),
+            vec![
+                "api",
+                "repos/acme/web/pulls/42/comments/99/replies",
+                "--method",
+                "POST",
+                "--input",
+                "-"
+            ]
+        );
+    }
+
+    #[test]
+    fn reply_comment_body_carries_only_the_text() {
+        let parsed: Value = serde_json::from_str(&reply_comment_body("on it")).unwrap();
+        assert_eq!(parsed["body"], "on it");
     }
 
     #[test]

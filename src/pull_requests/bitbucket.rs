@@ -80,6 +80,12 @@ pub fn summary_comment_body(raw: &str) -> String {
     json!({ "content": { "raw": raw } }).to_string()
 }
 
+/// POST body for a reply: the text plus a `parent` id, so Bitbucket nests it under
+/// the thread root rather than starting a new comment (pull-requests.md §11).
+pub fn reply_comment_body(parent_id: u64, raw: &str) -> String {
+    json!({ "content": { "raw": raw }, "parent": { "id": parent_id } }).to_string()
+}
+
 /// `Authorization: Basic base64(email:token)` for the `curl` requests (§3).
 pub fn basic_auth_header(email: &str, token: &str) -> String {
     format!("Basic {}", base64(&format!("{email}:{token}")))
@@ -364,6 +370,15 @@ mod tests {
         let summary: Value = serde_json::from_str(&summary_comment_body("looks good")).unwrap();
         assert_eq!(summary["content"]["raw"], "looks good");
         assert!(summary.get("inline").is_none());
+    }
+
+    #[test]
+    fn reply_comment_body_nests_under_the_parent() {
+        let reply: Value = serde_json::from_str(&reply_comment_body(7, "on it")).unwrap();
+        assert_eq!(reply["content"]["raw"], "on it");
+        assert_eq!(reply["parent"]["id"], 7);
+        // A reply is not anchored — it inherits the thread's location via `parent`.
+        assert!(reply.get("inline").is_none());
     }
 
     #[test]

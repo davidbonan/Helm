@@ -43,6 +43,11 @@ pub struct DiffViewState {
     /// inline comment is opened from the center, pull-requests.md §5). Consumed by
     /// the row whose `new_lineno` matches, so it survives the async diff load.
     reveal_line: Option<u32>,
+    /// Thread root id whose reply editor is open, with `reply_buffer` holding the
+    /// in-progress reply (pull-requests.md §11). Shared by the diff overlay and the
+    /// center inline-comment card, so opening a reply in one surface shows it in both.
+    active_reply: Option<u64>,
+    reply_buffer: String,
 }
 
 impl DiffViewState {
@@ -59,12 +64,45 @@ impl DiffViewState {
         self.popover_buffer.clear();
         self.note_focus = false;
         self.reveal_line = None;
+        self.active_reply = None;
+        self.reply_buffer.clear();
     }
 
     /// Requests that the diff scroll the given new-side line into view on its next
     /// render (one-shot, consumed when the matching row is drawn).
     pub fn reveal_line(&mut self, new_lineno: u32) {
         self.reveal_line = Some(new_lineno);
+    }
+
+    /// Thread root id whose reply editor is open, or `None` when no reply is being
+    /// drafted — read by the center inline-comment card to mirror the overlay editor.
+    pub fn reply_target(&self) -> Option<u64> {
+        self.active_reply
+    }
+
+    /// Opens the reply editor for thread `comment_id`, clearing any prior draft and
+    /// arming the one-shot focus so the caret lands in the field.
+    pub fn open_reply(&mut self, comment_id: u64) {
+        self.active_reply = Some(comment_id);
+        self.reply_buffer.clear();
+        self.note_focus = true;
+    }
+
+    /// Closes the reply editor and discards its draft.
+    pub fn cancel_reply(&mut self) {
+        self.active_reply = None;
+        self.reply_buffer.clear();
+    }
+
+    /// The in-progress reply text, for the center card's editor to bind to.
+    pub fn reply_buffer_mut(&mut self) -> &mut String {
+        &mut self.reply_buffer
+    }
+
+    /// The reply buffer paired with its one-shot focus flag — the center card's
+    /// editor needs both lent at once (`reply_editor`'s `buffer` + `focus`).
+    pub fn reply_fields(&mut self) -> (&mut String, &mut bool) {
+        (&mut self.reply_buffer, &mut self.note_focus)
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -830,6 +868,7 @@ pub fn diff_view(
                             line.new_lineno,
                             review_existing,
                             review_agent,
+                            state,
                             &mut review_out,
                             0.0,
                         );
@@ -1070,6 +1109,100 @@ fn icon_button(
     response.clicked()
 }
 
+/// What the reply editor raised this frame (pull-requests.md §11).
+pub(crate) enum ReplyEdit {
+    Idle,
+    Send,
+    Cancel,
+}
+
+/// Shared reply field: a multiline input (Enter sends, Shift+Enter inserts a
+/// newline) with a Send / Cancel footer. Used by the diff overlay and the center
+/// inline-comment card so a reply reads the same in both. Unlike `note_editor` it
+/// never validates on lost focus — the two surfaces share the buffer, so moving
+/// between them must not fire the reply.
+pub(crate) fn reply_editor(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    buffer: &mut String,
+    focus: &mut bool,
+    width: f32,
+) -> ReplyEdit {
+    let submit_key = ui.input_mut(|i| {
+        let mut submit = false;
+        i.events.retain(|e| {
+            let is_submit = matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.shift
+            );
+            submit |= is_submit;
+            !is_submit
+        });
+        submit
+    });
+    let response = ui
+        .scope(|ui| {
+            let radius = egui::CornerRadius::same(RADIUS_BUTTON);
+            let w = &mut ui.visuals_mut().widgets;
+            w.inactive.corner_radius = radius;
+            w.hovered.corner_radius = radius;
+            w.active.corner_radius = radius;
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, palette.accent);
+            ui.add(
+                egui::TextEdit::multiline(buffer)
+                    .desired_rows(2)
+                    .desired_width(width)
+                    .hint_text("Reply…"),
+            )
+        })
+        .inner;
+    if *focus {
+        response.request_focus();
+        *focus = false;
+    }
+    let mut edit = if submit_key {
+        ReplyEdit::Send
+    } else {
+        ReplyEdit::Idle
+    };
+    ui.add_space(4.0);
+    // Pin the footer to its own line height: a bare `right_to_left` layout inherits
+    // the parent's full remaining height and would vertically center the buttons far
+    // below the field when the editor sits high in a tall scroll area (the center
+    // inline card), pulling them out of clicking range.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), LINE_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if icon_button(
+                ui,
+                palette,
+                lucide_icons::Icon::Check,
+                palette.accent,
+                "Send reply",
+            ) {
+                edit = ReplyEdit::Send;
+            }
+            ui.add_space(2.0);
+            if icon_button(
+                ui,
+                palette,
+                lucide_icons::Icon::X,
+                palette.text_muted,
+                "Cancel reply",
+            ) {
+                edit = ReplyEdit::Cancel;
+            }
+        },
+    );
+    edit
+}
+
 /// Either the open inline editor (when this line is active) or the saved note as
 /// a clickable card (clicking it re-opens the editor), rendered left-aligned just
 /// below its diff line.
@@ -1147,7 +1280,8 @@ fn comment_block(
 }
 
 /// Renders the read-only PR thread anchored at `line` of `path` (if any) below the
-/// diff line, one card per comment, plus an "Ask {agent}" pill when `agent` is set.
+/// diff line, one card per comment, plus an "Ask {agent}" pill when `agent` is set
+/// and a Reply affordance that opens an inline reply editor (pull-requests.md §11).
 #[allow(clippy::too_many_arguments)]
 fn existing_block(
     ui: &mut egui::Ui,
@@ -1157,6 +1291,7 @@ fn existing_block(
     new: Option<u32>,
     existing: &ForgeThreads,
     agent: &str,
+    state: &mut DiffViewState,
     out: &mut Vec<ReviewIntent>,
     indent: f32,
 ) {
@@ -1195,8 +1330,76 @@ fn existing_block(
                 });
             }
         }
+        if let Some(reply_id) = thread.iter().find_map(|c| c.id) {
+            reply_block(ui, palette, state, reply_id, out, indent);
+        }
         ui.add_space(2.0);
     }
+}
+
+/// The reply affordance under a thread: a "Reply" pill that swaps to the inline
+/// reply editor for thread `reply_id` when clicked, raising `ReplyToThread` on send.
+fn reply_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &mut DiffViewState,
+    reply_id: u64,
+    out: &mut Vec<ReviewIntent>,
+    indent: f32,
+) {
+    if state.active_reply == Some(reply_id) {
+        ui.add_space(3.0);
+        let mut edit = ReplyEdit::Idle;
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            ui.vertical(|ui| {
+                let width = (ui.available_width() - 8.0).max(160.0);
+                edit = reply_editor(
+                    ui,
+                    palette,
+                    &mut state.reply_buffer,
+                    &mut state.note_focus,
+                    width,
+                );
+            });
+        });
+        match edit {
+            ReplyEdit::Send => {
+                let body = state.reply_buffer.trim().to_owned();
+                if !body.is_empty() {
+                    out.push(ReviewIntent::ReplyToThread {
+                        comment_id: reply_id,
+                        body,
+                    });
+                }
+                state.cancel_reply();
+            }
+            ReplyEdit::Cancel => state.cancel_reply(),
+            ReplyEdit::Idle => {}
+        }
+    } else {
+        ui.add_space(2.0);
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            clicked = reply_pill(ui, palette);
+        });
+        if clicked {
+            state.open_reply(reply_id);
+        }
+    }
+}
+
+/// The "Reply" pill that opens a thread's reply editor — forge-tinted (`accent`) so
+/// it reads as a write to the forge, not an agent action. Returns `true` on click.
+pub(crate) fn reply_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
+    agent_pill(
+        ui,
+        palette,
+        palette.accent,
+        lucide_icons::Icon::MessageSquarePlus,
+        "Reply",
+    )
 }
 
 /// One posted PR comment: an initials avatar beside the author and the body —
@@ -1238,7 +1441,13 @@ fn thread_card(
                     );
                     if let Some(label) = ask_label {
                         ui.add_space(4.0);
-                        if agent_pill(ui, palette, lucide_icons::Icon::Bot, label) {
+                        if agent_pill(
+                            ui,
+                            palette,
+                            palette.accent_ai,
+                            lucide_icons::Icon::Bot,
+                            label,
+                        ) {
                             ask_clicked = true;
                         }
                     }
@@ -1510,6 +1719,7 @@ fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
     agent_pill(
         ui,
         palette,
+        palette.accent_ai,
         lucide_icons::Icon::Sparkles,
         &format!("Send to {agent}"),
     )
@@ -1517,7 +1727,13 @@ fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
 
 /// A hover-tinted AI pill with a leading glyph and `label`; returns `true` on
 /// click. Hover takes the `accent_ai` identity shared by the agent affordances.
-fn agent_pill(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, label: &str) -> bool {
+fn agent_pill(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    accent: egui::Color32,
+    icon: lucide_icons::Icon,
+    label: &str,
+) -> bool {
     let label = label.to_owned();
     let font = egui::FontId::proportional(PILL_SIZE);
     let galley =
@@ -1527,7 +1743,7 @@ fn agent_pill(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, la
     let size = egui::vec2(icon_w + 6.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
     let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
     let (fill, content) = if hovered {
-        (with_alpha(palette.accent_ai, 36), palette.accent_ai)
+        (with_alpha(accent, 36), accent)
     } else {
         (palette.bg_surface, palette.text_secondary)
     };

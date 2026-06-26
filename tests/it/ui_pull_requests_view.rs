@@ -17,7 +17,7 @@ use helm::pull_requests::model::{
     Checks, ForgeKind, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
     Reviewer,
 };
-use helm::review::{FileComments, ForgeThreads, LineComment};
+use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent};
 use helm::theme::Palette;
 use helm::ui::diff_view::DiffViewState;
 use helm::ui::file_list::FileViewMode;
@@ -982,4 +982,96 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
     harness.step();
     // src/main.rs is the second changed file; the card carries its new-side line.
     assert_eq!(opened.get(), Some((1, Some(2))));
+}
+
+#[test]
+fn inline_comment_card_reply_emits_reply_to_thread() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-inline".to_owned(),
+            body: "rename this".to_owned(),
+            path: Some("src/main.rs".to_owned()),
+            old_lineno: None,
+            new_lineno: Some(2),
+            id: Some(7),
+            parent_id: None,
+            context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+    };
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let intents: Rc<RefCell<Vec<ReviewIntent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                // Collapse the rail so the composer's summary field isn't the
+                // (ambiguous) second multiline input the reply editor is found by.
+                true,
+                FileViewMode::Flat,
+            );
+            sink.borrow_mut().extend(action.review_intents);
+        });
+    harness.run();
+    // Open the reply editor (its state lives in the shared diff_view), type, send.
+    harness.get_by_label("Reply").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .type_text("on it");
+    harness.run();
+    harness.get_by_label("Send reply").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::ReplyToThread { comment_id, body }
+                if *comment_id == 7 && body == "on it"
+        )),
+        "the center card's reply editor must emit ReplyToThread, got {:?}",
+        intents.borrow(),
+    );
 }
