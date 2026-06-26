@@ -4,21 +4,18 @@ use crate::theme::{Palette, BODY_SIZE, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SI
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::ui::detail::{author_avatar, count_chip};
 use crate::ui::file_list::{self, row_separator, FileMenuCtx, FileMenuOutput, FileViewMode};
 use crate::ui::git_panel::ratio_bar;
-use crate::ui::graph_view::initials;
 use crate::ui::spinner::Spinner;
 use crate::ui::{arrow_nav_pressed, format_date_time, paint_icon, ArrowNav, SECTION_TOP_MARGIN};
 
 const TITLE_ICON_GLYPH: f32 = 15.0;
 const HASH_SIZE: f32 = 11.0;
 const META_SIZE: f32 = 12.0;
-const AVATAR_SIZE: f32 = 30.0;
-const AVATAR_INITIALS_SIZE: f32 = 11.0;
 const AVATAR_GAP: f32 = 9.0;
 const AUTHOR_NAME_SIZE: f32 = 13.0;
 const SUBJECT_SIZE: f32 = 15.0;
-const COUNT_CHIP_SIZE: f32 = 11.0;
 const TOTALS_SIZE: f32 = 13.0;
 
 /// Detail loading spinner (a11y label, no visible text — same pattern as the
@@ -237,37 +234,6 @@ fn meta_block(ui: &mut egui::Ui, palette: &Palette, detail: &CommitDetail) {
     }
 }
 
-/// Avatar dot: the author's initials (same rules as the graph bubble) on a
-/// stable color derived from the name — drawn from the lane palette, whose
-/// `lane_node_text` ink is already designed for this background.
-fn author_avatar(ui: &mut egui::Ui, palette: &Palette, author: &str) {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(AVATAR_SIZE, AVATAR_SIZE), egui::Sense::hover());
-    ui.painter().circle_filled(
-        rect.center(),
-        AVATAR_SIZE / 2.0,
-        avatar_color(palette, author),
-    );
-    let text = initials(author);
-    if !text.is_empty() {
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            &text,
-            egui::FontId::proportional(AVATAR_INITIALS_SIZE),
-            palette.lane_node_text,
-        );
-    }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
-}
-
-fn avatar_color(palette: &Palette, author: &str) -> egui::Color32 {
-    let hash = author.bytes().fold(0usize, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(usize::from(byte))
-    });
-    palette.lane_color(hash)
-}
-
 fn hash_chip(ui: &mut egui::Ui, palette: &Palette, hash: &str) {
     let font = egui::FontId::monospace(HASH_SIZE);
     let galley = ui
@@ -289,30 +255,6 @@ fn hash_chip(ui: &mut egui::Ui, palette: &Palette, hash: &str) {
         palette.text_secondary,
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, hash));
-}
-
-fn count_chip(ui: &mut egui::Ui, palette: &Palette, count: usize) {
-    let text = count.to_string();
-    let font = egui::FontId::proportional(COUNT_CHIP_SIZE);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.clone(), font, egui::Color32::PLACEHOLDER);
-    let size = galley.size() + egui::vec2(10.0, 4.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_PILL),
-        palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    painter.galley(
-        rect.center() - galley.size() / 2.0,
-        galley,
-        palette.text_secondary,
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
 }
 
 fn files_header(

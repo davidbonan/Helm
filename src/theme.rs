@@ -13,6 +13,10 @@ pub const RADIUS_CARD: u8 = 16;
 /// pill, macOS-menu look.
 pub const RADIUS_MENU: u8 = 6;
 pub const RADIUS_MENU_ITEM: u8 = 5;
+/// Interactive buttons (action pills, CTAs) across the sidebars — tight,
+/// near-square like the git sidebar's commit button, so buttons read
+/// homogeneously wherever they appear.
+pub const RADIUS_BUTTON: u8 = 4;
 
 // Typography tokens shared across views (design-system §2; M17-18) — a size
 // used by a single view stays local to it.
@@ -73,6 +77,9 @@ pub struct Palette {
     pub accent: Color32,
     pub accent_hover: Color32,
     pub accent_subtle: Color32,
+    /// Identity color for AI / agent affordances (Sparkles notes, "Ask {agent}"),
+    /// kept distinct from `accent` so review comments and agent prompts don't blur.
+    pub accent_ai: Color32,
     pub bg_canvas: Color32,
     pub bg_sidebar: Color32,
     pub bg_surface: Color32,
@@ -104,6 +111,7 @@ impl Palette {
             accent: Color32::from_rgb(46, 104, 211),
             accent_hover: Color32::from_rgb(69, 121, 216),
             accent_subtle: Color32::from_rgb(234, 240, 250),
+            accent_ai: Color32::from_rgb(124, 92, 224),
             bg_canvas: Color32::from_rgb(255, 255, 255),
             bg_sidebar: Color32::from_rgb(221, 222, 225),
             bg_surface: Color32::from_rgb(239, 239, 240),
@@ -140,6 +148,7 @@ impl Palette {
             accent: Color32::from_rgb(79, 134, 232),
             accent_hover: Color32::from_rgb(110, 156, 236),
             accent_subtle: Color32::from_rgb(30, 42, 64),
+            accent_ai: Color32::from_rgb(157, 138, 248),
             bg_canvas: Color32::from_rgb(25, 34, 45),
             bg_sidebar: Color32::from_rgb(16, 23, 31),
             bg_surface: Color32::from_rgb(28, 37, 49),
@@ -176,6 +185,7 @@ impl Palette {
             accent: Color32::from_rgb(9, 105, 218),
             accent_hover: Color32::from_rgb(49, 125, 228),
             accent_subtle: Color32::from_rgb(221, 244, 255),
+            accent_ai: Color32::from_rgb(130, 80, 223),
             bg_canvas: Color32::from_rgb(255, 255, 255),
             bg_sidebar: Color32::from_rgb(246, 248, 250),
             bg_surface: Color32::from_rgb(246, 248, 250),
@@ -212,6 +222,7 @@ impl Palette {
             accent: Color32::from_rgb(47, 129, 247),
             accent_hover: Color32::from_rgb(83, 155, 245),
             accent_subtle: Color32::from_rgb(19, 35, 57),
+            accent_ai: Color32::from_rgb(163, 113, 247),
             bg_canvas: Color32::from_rgb(13, 17, 23),
             bg_sidebar: Color32::from_rgb(1, 4, 9),
             bg_surface: Color32::from_rgb(22, 27, 34),
@@ -248,6 +259,7 @@ impl Palette {
             accent: Color32::from_rgb(30, 102, 245),
             accent_hover: Color32::from_rgb(71, 135, 247),
             accent_subtle: Color32::from_rgb(214, 224, 245),
+            accent_ai: Color32::from_rgb(136, 57, 239),
             bg_canvas: Color32::from_rgb(239, 241, 245),
             bg_sidebar: Color32::from_rgb(230, 233, 239),
             bg_surface: Color32::from_rgb(220, 224, 232),
@@ -284,6 +296,7 @@ impl Palette {
             accent: Color32::from_rgb(137, 180, 250),
             accent_hover: Color32::from_rgb(166, 198, 251),
             accent_subtle: Color32::from_rgb(46, 52, 76),
+            accent_ai: Color32::from_rgb(203, 166, 247),
             bg_canvas: Color32::from_rgb(30, 30, 46),
             bg_sidebar: Color32::from_rgb(24, 24, 37),
             bg_surface: Color32::from_rgb(49, 50, 68),
@@ -320,6 +333,7 @@ impl Palette {
             accent: Color32::from_rgb(64, 120, 242),
             accent_hover: Color32::from_rgb(100, 147, 245),
             accent_subtle: Color32::from_rgb(226, 234, 253),
+            accent_ai: Color32::from_rgb(140, 75, 214),
             bg_canvas: Color32::from_rgb(250, 250, 250),
             bg_sidebar: Color32::from_rgb(234, 234, 235),
             bg_surface: Color32::from_rgb(240, 240, 241),
@@ -356,6 +370,7 @@ impl Palette {
             accent: Color32::from_rgb(97, 175, 239),
             accent_hover: Color32::from_rgb(132, 194, 244),
             accent_subtle: Color32::from_rgb(49, 64, 80),
+            accent_ai: Color32::from_rgb(198, 120, 221),
             bg_canvas: Color32::from_rgb(40, 44, 52),
             bg_sidebar: Color32::from_rgb(33, 37, 43),
             bg_surface: Color32::from_rgb(44, 49, 58),
@@ -392,6 +407,7 @@ impl Palette {
             accent: Color32::from_rgb(46, 125, 233),
             accent_hover: Color32::from_rgb(88, 150, 238),
             accent_subtle: Color32::from_rgb(204, 214, 231),
+            accent_ai: Color32::from_rgb(120, 71, 189),
             bg_canvas: Color32::from_rgb(225, 226, 231),
             bg_sidebar: Color32::from_rgb(216, 217, 224),
             bg_surface: Color32::from_rgb(220, 221, 228),
@@ -428,6 +444,7 @@ impl Palette {
             accent: Color32::from_rgb(122, 162, 247),
             accent_hover: Color32::from_rgb(154, 184, 249),
             accent_subtle: Color32::from_rgb(40, 47, 69),
+            accent_ai: Color32::from_rgb(187, 154, 247),
             bg_canvas: Color32::from_rgb(26, 27, 38),
             bg_sidebar: Color32::from_rgb(22, 22, 30),
             bg_surface: Color32::from_rgb(31, 34, 49),

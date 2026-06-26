@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::git::diff::{FileDiff, Hunk, ImageBlob, LineOrigin};
-use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent};
-use crate::theme::{Palette, PILL_SIZE, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
+use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
+use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
 use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
 use crate::ui::with_alpha;
@@ -25,10 +25,12 @@ pub struct DiffViewState {
     /// Decoded preview of an image file, kept across frames and re-decoded only when
     /// the underlying blob changes (`ImageBlob::fingerprint`). git.md §4.
     image: Option<ImagePreview>,
-    /// Line whose review note editor is open (M-RC), keyed by its `(old, new)`
-    /// line numbers; `comment_buffer` holds the in-progress text. Cleared on
-    /// validate, `Esc`, or when the open file changes.
-    active_comment: Option<(Option<u32>, Option<u32>)>,
+    /// Line whose review note editor is open (M-RC), keyed by its pool and its
+    /// `(old, new)` line numbers; `comment_buffer` holds the in-progress text.
+    /// The pool distinguishes the PR surface's two gutter buttons (forge vs agent)
+    /// so each opens its own editor on the same line. Cleared on validate, `Esc`,
+    /// or when the open file changes.
+    active_comment: Option<(ReviewPool, Option<u32>, Option<u32>)>,
     comment_buffer: String,
     /// Comment being edited from the review recap popover (M-RC), keyed by
     /// `(file, line_ref)`; `popover_buffer` holds its in-progress text.
@@ -496,7 +498,15 @@ fn char_byte_index(text: &str, char_idx: usize) -> usize {
 /// CLI label for the Send button, and the sink for the actions the diff view
 /// raises. When `None` the diff view is a plain viewer (no review chrome).
 pub struct DiffReview<'a> {
+    /// The agent pool: notes batched for the local agent (the Sparkles gutter
+    /// button + the recap "Send to …"). The only pool on the working-tree / commit
+    /// surfaces.
     pub comments: &'a FileComments,
+    /// The forge pool: PR review comments posted to GitHub / Bitbucket on submit
+    /// (the MessageSquarePlus gutter button). `Some` only on the PR review surface
+    /// (pull-requests.md §11); kept apart from `comments` so a forge review is
+    /// never forced through the agent.
+    pub forge: Option<&'a FileComments>,
     /// Read-only comments already posted on the PR, anchored per line. Empty for
     /// the working-tree / commit diffs; populated only on the PR review surface
     /// (pull-requests.md §11). Rendered below the line, never editable.
@@ -505,26 +515,57 @@ pub struct DiffReview<'a> {
     pub intents: &'a mut Vec<ReviewIntent>,
 }
 
+/// Which surface the diff is shown on — selects the available affordances.
+/// Bundling the old `staged` / `read_only` flags into one value keeps a caller
+/// from assembling an impossible combination (e.g. staged history).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSurface {
+    /// Working tree: per-hunk / per-line staging; `staged` picks the direction
+    /// (the index unstages, the worktree stages).
+    WorkingTree { staged: bool },
+    /// A historical commit (M9-7 / git.md §9): read-only, no staging.
+    Commit,
+    /// The PR review surface (pull-requests.md §11): read-only, with the same
+    /// per-line review annotation as the other surfaces.
+    PrReview,
+}
+
+impl DiffSurface {
+    /// History and PR review are read-only: no staging controls, no line
+    /// selection — only review annotation stays available on every line.
+    fn read_only(self) -> bool {
+        !matches!(self, DiffSurface::WorkingTree { .. })
+    }
+
+    fn staged(self) -> bool {
+        matches!(self, DiffSurface::WorkingTree { staged: true })
+    }
+
+    /// The PR surface carries a forge pool alongside the agent pool: its gutter
+    /// gets a second `MessageSquarePlus` button (slot 0) feeding the forge review
+    /// comments posted to GitHub / Bitbucket on submit.
+    fn forge_review(self) -> bool {
+        matches!(self, DiffSurface::PrReview)
+    }
+}
+
 /// Overlay diff view (central zone, design-system §4 card). Renders the file's
 /// `FileDiff`, a Stage/Unstage button per hunk, and a line selection for partial
 /// staging. Returns `true` if the user requested closing (Close button or `Esc`)
-/// — the caller then returns to the terminal.
-///
-/// `read_only` (full-screen commit diff, M9-7 / git.md §9) removes every staging
-/// control: no hunk buttons, no line-by-line actions, no line selection — it's
-/// history, not the current index. Review annotation (the per-line note icon)
-/// stays available on every line, read-only ones included.
-#[allow(clippy::too_many_arguments)]
+/// — the caller then returns to the terminal. The `surface` decides which
+/// affordances are live (staging, the per-line agent button); review annotation
+/// stays available on every surface, read-only lines included.
 pub fn diff_view(
     ui: &mut egui::Ui,
     palette: &Palette,
     diff: &FileDiff,
-    staged: bool,
-    read_only: bool,
+    surface: DiffSurface,
     state: &mut DiffViewState,
     intents: &mut Vec<GitIntent>,
     review: Option<&mut DiffReview<'_>>,
 ) -> bool {
+    let staged = surface.staged();
+    let read_only = surface.read_only();
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
     let review_available = review.is_some();
@@ -532,11 +573,16 @@ pub fn diff_view(
         Some(r) => r.comments,
         None => &empty,
     };
+    let review_forge_store: &FileComments = match &review {
+        Some(r) => r.forge.unwrap_or(&empty),
+        None => &empty,
+    };
     let review_existing: &ForgeThreads = match &review {
         Some(r) => r.existing,
         None => &empty_threads,
     };
     let review_agent = review.as_ref().map(|r| r.agent).unwrap_or_default();
+    let review_forge = surface.forge_review();
     let mut review_out: Vec<ReviewIntent> = Vec::new();
 
     // First `Esc` cancels an open note editor (inline or popover); a second one
@@ -739,6 +785,7 @@ pub fn diff_view(
                                 staged,
                                 read_only,
                                 review: review_available,
+                                forge: review_forge,
                                 selected: state.selected(hunk_idx, line_idx),
                                 highlighted: state.syntax_line(hunk_idx, line_idx),
                                 text_range: state.text_range_for_row(text_row, text),
@@ -750,21 +797,42 @@ pub fn diff_view(
                             diff_line(ui, &row, hunk_idx, line_idx, &line_ctx, &mut text_rows)
                         };
                         text_row += 1;
-                        if let Some(DiffLineAction::OpenComment { old, new }) = action {
-                            open_inline_editor(state, review_comments, &diff.path, old, new);
-                        } else {
-                            apply_line_action(state, intents, action);
+                        match action {
+                            Some(DiffLineAction::OpenComment { pool, old, new }) => {
+                                let store = match pool {
+                                    ReviewPool::Forge => review_forge_store,
+                                    ReviewPool::Agent => review_comments,
+                                };
+                                open_inline_editor(state, pool, store, &diff.path, old, new);
+                            }
+                            other => apply_line_action(state, intents, other),
                         }
                         existing_block(
                             ui,
                             palette,
                             &diff.path,
-                            line.new_lineno.or(line.old_lineno),
+                            line.old_lineno,
+                            line.new_lineno,
                             review_existing,
                             review_agent,
                             &mut review_out,
-                            layout.content_left(0.0),
+                            0.0,
                         );
+                        if review_forge {
+                            comment_block(
+                                ui,
+                                palette,
+                                &diff.path,
+                                line.old_lineno,
+                                line.new_lineno,
+                                text,
+                                ReviewPool::Forge,
+                                review_forge_store,
+                                state,
+                                &mut review_out,
+                                0.0,
+                            );
+                        }
                         comment_block(
                             ui,
                             palette,
@@ -772,10 +840,11 @@ pub fn diff_view(
                             line.old_lineno,
                             line.new_lineno,
                             text,
+                            ReviewPool::Agent,
                             review_comments,
                             state,
                             &mut review_out,
-                            layout.content_left(0.0),
+                            0.0,
                         );
                     }
                     for new_no in ext.below {
@@ -816,12 +885,19 @@ pub fn diff_view(
     close
 }
 
-/// Stored note anchored at `line` of `path` (`new` line else `old`), if any.
-fn note_at(comments: &FileComments, path: &str, line: Option<u32>) -> Option<String> {
+/// Stored note anchored at the `(old, new)` row of `path`, if any. Matches the full
+/// pair — not `line_ref()` — so a deleted row (old N) and an added row (new N) sharing
+/// a number don't collide and render the same note twice.
+fn note_at(
+    comments: &FileComments,
+    path: &str,
+    old: Option<u32>,
+    new: Option<u32>,
+) -> Option<String> {
     comments
         .get(path)?
         .iter()
-        .find(|c| c.line_ref() == line)
+        .find(|c| c.old_lineno == old && c.new_lineno == new)
         .map(|c| c.note.clone())
 }
 
@@ -829,13 +905,14 @@ fn note_at(comments: &FileComments, path: &str, line: Option<u32>) -> Option<Str
 /// and focuses the field. Closes any popover edit so a single editor is live.
 fn open_inline_editor(
     state: &mut DiffViewState,
+    pool: ReviewPool,
     comments: &FileComments,
     path: &str,
     old: Option<u32>,
     new: Option<u32>,
 ) {
-    state.comment_buffer = note_at(comments, path, new.or(old)).unwrap_or_default();
-    state.active_comment = Some((old, new));
+    state.comment_buffer = note_at(comments, path, old, new).unwrap_or_default();
+    state.active_comment = Some((pool, old, new));
     state.popover_edit = None;
     state.note_focus = true;
 }
@@ -847,13 +924,39 @@ enum NoteEdit {
     Save,
 }
 
-/// Shared note editor: a multiline field (Enter validates, Shift+Enter inserts a
-/// newline) with a Delete (✕) / Validate (✓) icon row underneath. Clicking
-/// outside the field also validates. `focus` is a one-shot that lands the caret
-/// in the field the frame the editor opens.
+/// Visual identity of a review pool — the color, icon, header label and editor
+/// hint that tell a forge review comment (`accent`) apart from an agent note
+/// (`accent_ai`) wherever the two share the diff gutter (pull-requests.md §11).
+struct PoolStyle {
+    color: egui::Color32,
+    icon: lucide_icons::Icon,
+    hint: &'static str,
+}
+
+fn pool_style(palette: &Palette, pool: ReviewPool) -> PoolStyle {
+    match pool {
+        ReviewPool::Forge => PoolStyle {
+            color: palette.accent,
+            icon: lucide_icons::Icon::MessageSquarePlus,
+            hint: "Leave a review comment…",
+        },
+        ReviewPool::Agent => PoolStyle {
+            color: palette.accent_ai,
+            icon: lucide_icons::Icon::Sparkles,
+            hint: "Describe what the agent should do…",
+        },
+    }
+}
+
+/// Shared note field: a multiline input (Enter validates, Shift+Enter inserts a
+/// newline) with a compact Delete / validate footer underneath. Clicking outside
+/// the field also validates. `focus` is a one-shot that lands the caret in the
+/// field the frame the editor opens; `style` colors the caret/selection and the
+/// validate button to the pool's identity.
 fn note_editor(
     ui: &mut egui::Ui,
     palette: &Palette,
+    style: &PoolStyle,
     buffer: &mut String,
     focus: &mut bool,
     width: f32,
@@ -879,16 +982,17 @@ fn note_editor(
     });
     let response = ui
         .scope(|ui| {
-            let radius = egui::CornerRadius::same(4);
+            let radius = egui::CornerRadius::same(RADIUS_BUTTON);
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.corner_radius = radius;
             w.hovered.corner_radius = radius;
             w.active.corner_radius = radius;
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, style.color);
             ui.add(
                 egui::TextEdit::multiline(buffer)
                     .desired_rows(2)
                     .desired_width(width)
-                    .hint_text("Review note"),
+                    .hint_text(style.hint),
             )
         })
         .inner;
@@ -902,25 +1006,26 @@ fn note_editor(
     } else {
         NoteEdit::Idle
     };
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        if icon_button(
-            ui,
-            palette,
-            lucide_icons::Icon::X,
-            palette.git_deleted,
-            "Delete note",
-        ) {
-            edit = NoteEdit::Delete;
-        }
+    ui.add_space(4.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if icon_button(
             ui,
             palette,
             lucide_icons::Icon::Check,
-            palette.accent,
+            style.color,
             "Validate note",
         ) {
             edit = NoteEdit::Save;
+        }
+        ui.add_space(2.0);
+        if icon_button(
+            ui,
+            palette,
+            lucide_icons::Icon::Trash2,
+            palette.git_deleted,
+            "Delete note",
+        ) {
+            edit = NoteEdit::Delete;
         }
     });
     edit
@@ -951,8 +1056,8 @@ fn icon_button(
 }
 
 /// Either the open inline editor (when this line is active) or the saved note as
-/// a clickable card (clicking it re-opens the editor), rendered under a diff line
-/// and aligned to the code column.
+/// a clickable card (clicking it re-opens the editor), rendered left-aligned just
+/// below its diff line.
 #[allow(clippy::too_many_arguments)]
 fn comment_block(
     ui: &mut egui::Ui,
@@ -961,14 +1066,16 @@ fn comment_block(
     old: Option<u32>,
     new: Option<u32>,
     code: &str,
+    pool: ReviewPool,
     comments: &FileComments,
     state: &mut DiffViewState,
     review_out: &mut Vec<ReviewIntent>,
     indent: f32,
 ) {
     let line = new.or(old);
-    if state.active_comment == Some((old, new)) {
-        ui.add_space(2.0);
+    let style = pool_style(palette, pool);
+    if state.active_comment == Some((pool, old, new)) {
+        ui.add_space(3.0);
         let mut edit = NoteEdit::Idle;
         ui.horizontal(|ui| {
             ui.add_space(indent);
@@ -977,17 +1084,19 @@ fn comment_block(
                 edit = note_editor(
                     ui,
                     palette,
+                    &style,
                     &mut state.comment_buffer,
                     &mut state.note_focus,
                     width,
                 );
             });
         });
-        ui.add_space(2.0);
+        ui.add_space(3.0);
         match edit {
             NoteEdit::Save => {
                 save_note(
                     review_out,
+                    pool,
                     path,
                     old,
                     new,
@@ -999,6 +1108,7 @@ fn comment_block(
             }
             NoteEdit::Delete => {
                 review_out.push(ReviewIntent::DeleteComment {
+                    pool,
                     file: path.to_owned(),
                     line,
                 });
@@ -1007,16 +1117,16 @@ fn comment_block(
             }
             NoteEdit::Idle => {}
         }
-    } else if let Some(note) = note_at(comments, path, line) {
-        ui.add_space(2.0);
+    } else if let Some(note) = note_at(comments, path, old, new) {
+        ui.add_space(3.0);
         let mut clicked = false;
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            clicked = note_card(ui, palette, &note, line);
+            clicked = note_card(ui, palette, &style, &note, line);
         });
-        ui.add_space(2.0);
+        ui.add_space(3.0);
         if clicked {
-            open_inline_editor(state, comments, path, old, new);
+            open_inline_editor(state, pool, comments, path, old, new);
         }
     }
 }
@@ -1028,88 +1138,134 @@ fn existing_block(
     ui: &mut egui::Ui,
     palette: &Palette,
     path: &str,
-    line: Option<u32>,
+    old: Option<u32>,
+    new: Option<u32>,
     existing: &ForgeThreads,
     agent: &str,
     out: &mut Vec<ReviewIntent>,
     indent: f32,
 ) {
-    let Some(l) = line else { return };
-    let Some(thread) = existing.get(path).and_then(|f| f.get(&l)) else {
+    let Some(file) = existing.get(path) else {
         return;
     };
-    for comment in thread {
+    // A forge comment anchors to one side: a new-side note matches this row by its
+    // new line, an old-side (deleted-line) note by its old line. Looking up each
+    // side against its own anchor keeps a modified line — a deleted row and an
+    // added row sharing a number — from rendering the same thread on both.
+    let anchors = [new.map(|n| (None, Some(n))), old.map(|o| (Some(o), None))];
+    for anchor in anchors.into_iter().flatten() {
+        let Some(thread) = file.get(&anchor) else {
+            continue;
+        };
+        for comment in thread {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                thread_card(ui, palette, &comment.author, &comment.body);
+            });
+        }
+        if !agent.is_empty() {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                if agent_pill(
+                    ui,
+                    palette,
+                    lucide_icons::Icon::Bot,
+                    &format!("Ask {agent}"),
+                ) {
+                    out.push(ReviewIntent::AskAgentOnThread {
+                        file: path.to_owned(),
+                        old: anchor.0,
+                        new: anchor.1,
+                    });
+                }
+            });
+        }
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            thread_card(ui, palette, &comment.author, &comment.body);
-        });
     }
-    if !agent.is_empty() {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            if agent_pill(
-                ui,
-                palette,
-                lucide_icons::Icon::Bot,
-                &format!("Ask {agent}"),
-            ) {
-                out.push(ReviewIntent::AskAgentOnThread {
-                    file: path.to_owned(),
-                    line: l,
-                });
-            }
-        });
-    }
-    ui.add_space(2.0);
 }
 
-/// One posted PR comment: a muted card (no accent edge, not clickable) with the
-/// author in bold above the body — distinct from the user's editable note card.
+/// One posted PR comment: an initials avatar beside the author and the body —
+/// read-only. Wears the same tinted-card-with-left-edge grammar as the editable
+/// note card, but in a neutral ink so a fetched comment reads apart from a forge
+/// review (`accent`) or an agent note (`accent_ai`). Reuses the shared
+/// `detail::author_avatar`, so inline threads and the PR conversation rail wear
+/// the same face.
 fn thread_card(ui: &mut egui::Ui, palette: &Palette, author: &str, body: &str) {
-    egui::Frame::new()
-        .fill(palette.bg_sidebar)
-        .inner_margin(egui::Margin::symmetric(8, 4))
-        .corner_radius(egui::CornerRadius::same(6))
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+    let color = palette.text_muted;
+    let inner = egui::Frame::new()
+        .fill(with_alpha(color, 18))
+        .inner_margin(egui::Margin::symmetric(9, 6))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL))
+        .stroke(egui::Stroke::new(1.0, with_alpha(color, 55)))
         .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(author)
-                        .size(LINE_SIZE)
-                        .color(palette.text_muted)
-                        .strong(),
+            ui.horizontal_top(|ui| {
+                crate::ui::detail::author_avatar(ui, palette, author);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(author)
+                            .size(LINE_SIZE)
+                            .color(palette.text_primary)
+                            .strong(),
+                    );
+                    ui.add_space(1.0);
+                    ui.label(
+                        egui::RichText::new(body)
+                            .size(LINE_SIZE)
+                            .color(palette.text_secondary),
+                    );
+                });
+            });
+        });
+    let rect = inner.response.rect;
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
+        egui::CornerRadius::same(RADIUS_PILL),
+        color,
+    );
+}
+
+/// Saved note rendered as a compact identity-tinted card — the pool's icon beside
+/// the note body, with an accent left edge — the whole surface clickable to
+/// re-open its editor. Returns `true` on click.
+fn note_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    style: &PoolStyle,
+    note: &str,
+    line: Option<u32>,
+) -> bool {
+    let inner = egui::Frame::new()
+        .fill(with_alpha(style.color, 20))
+        .inner_margin(egui::Margin::symmetric(9, 6))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL))
+        .stroke(egui::Stroke::new(1.0, with_alpha(style.color, 70)))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                let (r, _) =
+                    ui.allocate_exact_size(egui::vec2(LINE_SIZE, LINE_SIZE), egui::Sense::hover());
+                crate::ui::paint_icon(
+                    ui.painter(),
+                    r.center(),
+                    LINE_SIZE - 1.0,
+                    style.icon,
+                    style.color,
                 );
+                ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new(body)
+                    egui::RichText::new(note)
                         .size(LINE_SIZE)
                         .color(palette.text_secondary),
                 );
             });
         });
-}
-
-/// Saved note rendered as a subtle card with an accent edge, the whole surface
-/// clickable to re-open its editor. Returns `true` on click.
-fn note_card(ui: &mut egui::Ui, palette: &Palette, note: &str, line: Option<u32>) -> bool {
-    let inner = egui::Frame::new()
-        .fill(palette.bg_surface)
-        .inner_margin(egui::Margin::symmetric(8, 4))
-        .corner_radius(egui::CornerRadius::same(6))
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(note)
-                    .size(LINE_SIZE)
-                    .color(palette.text_secondary),
-            );
-        });
     let rect = inner.response.rect;
     ui.painter().rect_filled(
-        egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height())),
-        egui::CornerRadius::same(6),
-        palette.accent,
+        egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
+        egui::CornerRadius::same(RADIUS_PILL),
+        style.color,
     );
     let response = ui
         .interact(
@@ -1127,6 +1283,7 @@ fn note_card(ui: &mut egui::Ui, palette: &Palette, note: &str, line: Option<u32>
 /// Pushes a save (or a delete when the note is blank) for the line `(old, new)`.
 fn save_note(
     out: &mut Vec<ReviewIntent>,
+    pool: ReviewPool,
     path: &str,
     old: Option<u32>,
     new: Option<u32>,
@@ -1135,12 +1292,14 @@ fn save_note(
 ) {
     if note.is_empty() {
         out.push(ReviewIntent::DeleteComment {
+            pool,
             file: path.to_owned(),
             line: new.or(old),
         });
         return;
     }
     out.push(ReviewIntent::SaveComment {
+        pool,
         file: path.to_owned(),
         comment: LineComment {
             old_lineno: old,
@@ -1163,7 +1322,7 @@ fn review_chip(ui: &mut egui::Ui, palette: &Palette, n: usize) -> egui::Response
     let size = egui::vec2(icon_w + 4.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
     let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
     let (fill, content) = if hovered {
-        (with_alpha(palette.accent, 36), palette.accent)
+        (with_alpha(palette.accent_ai, 36), palette.accent_ai)
     } else {
         (palette.bg_surface, palette.text_secondary)
     };
@@ -1205,6 +1364,7 @@ fn review_popover(
 ) {
     ui.set_max_width(360.0);
     ui.spacing_mut().item_spacing.y = 6.0;
+    let style = pool_style(palette, ReviewPool::Agent);
     egui::ScrollArea::vertical()
         .max_height(360.0)
         .show(ui, |ui| {
@@ -1224,6 +1384,7 @@ fn review_popover(
                         let edit = note_editor(
                             ui,
                             palette,
+                            &style,
                             &mut state.popover_buffer,
                             &mut state.note_focus,
                             ui.available_width(),
@@ -1232,6 +1393,7 @@ fn review_popover(
                             NoteEdit::Save => {
                                 save_note(
                                     out,
+                                    ReviewPool::Agent,
                                     file,
                                     c.old_lineno,
                                     c.new_lineno,
@@ -1243,6 +1405,7 @@ fn review_popover(
                             }
                             NoteEdit::Delete => {
                                 out.push(ReviewIntent::DeleteComment {
+                                    pool: ReviewPool::Agent,
                                     file: file.clone(),
                                     line,
                                 });
@@ -1282,6 +1445,7 @@ fn review_popover(
                                 "Delete review note",
                             ) {
                                 out.push(ReviewIntent::DeleteComment {
+                                    pool: ReviewPool::Agent,
                                     file: file.clone(),
                                     line,
                                 });
@@ -1324,7 +1488,8 @@ fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
     )
 }
 
-/// A hover-tinted pill with a leading glyph and `label`; returns `true` on click.
+/// A hover-tinted AI pill with a leading glyph and `label`; returns `true` on
+/// click. Hover takes the `accent_ai` identity shared by the agent affordances.
 fn agent_pill(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, label: &str) -> bool {
     let label = label.to_owned();
     let font = egui::FontId::proportional(PILL_SIZE);
@@ -1335,7 +1500,7 @@ fn agent_pill(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, la
     let size = egui::vec2(icon_w + 6.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
     let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
     let (fill, content) = if hovered {
-        (with_alpha(palette.accent, 36), palette.accent)
+        (with_alpha(palette.accent_ai, 36), palette.accent_ai)
     } else {
         (palette.bg_surface, palette.text_secondary)
     };
@@ -1432,6 +1597,7 @@ fn extension_line(
         staged: ext.staged,
         read_only: ext.read_only,
         review: false,
+        forge: false,
         selected: false,
         highlighted: None,
         text_range: state.text_range_for_row(ext.text_row, text),
@@ -1692,6 +1858,9 @@ struct DiffLineCtx<'a> {
     /// Review annotation available (the note icon shows on hover; a click opens
     /// the inline editor). `false` only at the non-review call sites (tests).
     review: bool,
+    /// PR surface: render the second `MessageSquarePlus` gutter button (slot 0)
+    /// for a forge review comment, alongside the agent Sparkles (slot 1).
+    forge: bool,
     selected: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     text_range: Option<(usize, usize)>,
@@ -1721,8 +1890,9 @@ enum DiffLineAction {
     ClearTextSelection,
     Intent(GitIntent),
     /// Review-mode click on a line (read-only ones included): open its note
-    /// editor, keyed by the line's `(old, new)` numbers.
+    /// editor for `pool`, keyed by the line's `(old, new)` numbers.
     OpenComment {
+        pool: ReviewPool,
         old: Option<u32>,
         new: Option<u32>,
     },
@@ -1789,9 +1959,30 @@ fn diff_line(
         text_click_position(&response, content_left, ctx.char_w, ctx.text_row, text_len);
     let line_action_clicked =
         selectable && line_action_button(ui, ctx.palette, rect, response.hovered(), ctx.staged);
-    // The review-note (✦) icon sits beside the stage button on every line; a
-    // click opens the inline editor without leaving a "review mode".
-    let comment_clicked = ctx.review && comment_button(ui, ctx.palette, rect, response.hovered());
+    // Gutter note buttons (beside the stage button): the agent Sparkles on every
+    // review line, plus a forge MessageSquarePlus at slot 0 on the PR surface — a
+    // click opens the matching pool's inline editor without leaving a "review mode".
+    let forge_clicked = ctx.review
+        && ctx.forge
+        && gutter_icon_button(
+            ui,
+            ctx.palette,
+            rect,
+            response.hovered(),
+            0,
+            lucide_icons::Icon::MessageSquarePlus,
+            "Comment for review",
+        );
+    let agent_clicked = ctx.review
+        && gutter_icon_button(
+            ui,
+            ctx.palette,
+            rect,
+            response.hovered(),
+            1,
+            lucide_icons::Icon::Sparkles,
+            "Comment line",
+        );
     let action = if response.triple_clicked() {
         click_position.map(|at| {
             DiffLineAction::SelectText(TextSelection {
@@ -1808,8 +1999,15 @@ fn diff_line(
                 mode: TextSelectionMode::Word,
             })
         })
-    } else if comment_clicked {
+    } else if forge_clicked {
         Some(DiffLineAction::OpenComment {
+            pool: ReviewPool::Forge,
+            old: row.old_lineno,
+            new: row.new_lineno,
+        })
+    } else if agent_clicked {
+        Some(DiffLineAction::OpenComment {
+            pool: ReviewPool::Agent,
             old: row.old_lineno,
             new: row.new_lineno,
         })
@@ -2104,31 +2302,36 @@ fn line_action_button(
     response.clicked()
 }
 
-/// Review-note (✦) button in the gutter, beside the stage button. Painted on row
-/// hover; a click opens the inline note editor for the line. Returns `true` on
-/// click.
-fn comment_button(
+/// Center of gutter button `slot` (0-based, left to right) on `row`, packed from
+/// the left edge so the stage / comment / agent icons share the action column.
+fn gutter_button_rect(row: egui::Rect, slot: usize) -> egui::Rect {
+    let x = row.left()
+        + LINE_ACTION_LEFT
+        + slot as f32 * (LINE_ACTION_SIZE + LINE_ACTION_GAP)
+        + LINE_ACTION_SIZE / 2.0;
+    egui::Rect::from_center_size(
+        egui::pos2(x, row.center().y),
+        egui::vec2(LINE_ACTION_SIZE, LINE_ACTION_SIZE),
+    )
+}
+
+/// A hover-only gutter icon button at `slot`; the icon is muted at rest and
+/// tinted (with a hover fill) when pointed at. Returns `true` on click.
+fn gutter_icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: egui::Rect,
     row_hovered: bool,
+    slot: usize,
+    icon: lucide_icons::Icon,
+    label: &str,
 ) -> bool {
-    let rect = egui::Rect::from_center_size(
-        egui::pos2(
-            row.left()
-                + LINE_ACTION_LEFT
-                + LINE_ACTION_SIZE
-                + LINE_ACTION_GAP
-                + LINE_ACTION_SIZE / 2.0,
-            row.center().y,
-        ),
-        egui::vec2(LINE_ACTION_SIZE, LINE_ACTION_SIZE),
-    );
+    let rect = gutter_button_rect(row, slot);
     let response = ui
         .interact(
             rect,
             ui.id()
-                .with(("line_comment", row.min.x.to_bits(), row.min.y.to_bits())),
+                .with((label, row.min.x.to_bits(), row.min.y.to_bits())),
             egui::Sense::click(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2145,16 +2348,9 @@ fn comment_button(
         } else {
             palette.text_muted
         };
-        crate::ui::paint_icon(
-            ui.painter(),
-            rect.center(),
-            LINE_SIZE,
-            lucide_icons::Icon::Sparkles,
-            color,
-        );
+        crate::ui::paint_icon(ui.painter(), rect.center(), LINE_SIZE, icon, color);
     }
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Comment line"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response.clicked()
 }
 
@@ -2390,5 +2586,26 @@ mod tests {
 
         assert!(state.reconcile(&diff));
         assert!(state.is_stale());
+    }
+
+    #[test]
+    fn note_on_a_deleted_row_does_not_show_on_an_added_row_with_the_same_number() {
+        let mut store = FileComments::new();
+        crate::review::add_comment(
+            &mut store,
+            "f",
+            LineComment {
+                old_lineno: Some(5),
+                new_lineno: None,
+                code: "removed".into(),
+                note: "for claude".into(),
+            },
+        );
+
+        assert_eq!(
+            note_at(&store, "f", Some(5), None).as_deref(),
+            Some("for claude")
+        );
+        assert_eq!(note_at(&store, "f", None, Some(5)), None);
     }
 }

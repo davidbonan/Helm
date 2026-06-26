@@ -1811,6 +1811,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         review_agent_command: "claude".to_owned(),
         bitbucket_email: String::new(),
         pr_detail_width: 460.0,
+        pr_rail_collapsed: false,
         keybindings: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };

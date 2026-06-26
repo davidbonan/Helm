@@ -4,6 +4,36 @@
 
 use super::*;
 
+/// Borrow an open PR review (pull-requests.md §11) as the view struct the cockpit
+/// renders. Built in both `root_layout` arms (active repo / none), so it lives
+/// here rather than being inlined twice.
+fn pr_review_view<'a>(
+    r: &'a mut PrReview,
+    agent: &'a str,
+) -> crate::ui::pull_requests_view::PrReviewView<'a> {
+    crate::ui::pull_requests_view::PrReviewView {
+        pr: &r.pr,
+        detail: r.detail.as_ref(),
+        detail_error: r.detail_error.as_deref(),
+        files: &r.files,
+        files_loading: r.files_loading,
+        files_error: r.files_error.as_deref(),
+        selected_file: r.selected_file,
+        diff: r.diff.as_ref(),
+        diff_loading: r.diff_loading,
+        diff_error: r.diff_error.as_deref(),
+        diff_view: &mut r.diff_view,
+        existing: &r.existing,
+        draft: &r.draft,
+        agent_notes: &r.agent_notes,
+        agent,
+        verdict: &mut r.verdict,
+        summary: &mut r.summary,
+        posting: r.posting,
+        post_error: r.post_error.as_deref(),
+    }
+}
+
 /// `ui()` phases (M17-12), in call order. The order is part of the behavior:
 /// the update runner is polled before the Preferences gate (its events are
 /// drained in all modes), and the git session syncs **after** key routing so a
@@ -328,7 +358,18 @@ impl HelmApp {
             self.sidebars.workspace = !self.sidebars.workspace;
         }
         if action_pressed(ctx, &self.keymap, Action::ToggleGitSidebar) {
-            self.sidebars.git = !self.sidebars.git;
+            // In the PR cockpit the git sidebar is suppressed; ⌘G acts on the
+            // changed-files rail instead — the same key hides the same slot.
+            if self.central_mode == CentralMode::PullRequests {
+                let collapsed = !self.pr_rail_collapsed;
+                self.pr_rail_collapsed = collapsed;
+                self.persist(move |prefs| Prefs {
+                    pr_rail_collapsed: collapsed,
+                    ..prefs
+                });
+            } else {
+                self.sidebars.git = !self.sidebars.git;
+            }
         }
         // ⌘⇧G (keybindings §1): keyboard equivalent of the header switch — consumed
         // by `render_page` with `switch_request` to share the enter/exit logic.
@@ -361,6 +402,7 @@ impl HelmApp {
         self.drain_worktree_sources();
         self.drain_worktree_create(ctx);
         self.drain_worktree_checkout(ctx);
+        self.resume_pending_pr_ask(ctx);
         self.drain_worktree_delete(ctx);
         self.poll_pr_runner();
         self.poll_pr_review(ctx);
@@ -767,18 +809,35 @@ impl HelmApp {
         } else {
             Vec::new()
         };
+        let (pr_github_hint, pr_bitbucket_hint, pr_no_repos) = if pr_active {
+            use crate::pull_requests::runner::SourceStatus;
+            let hint = |status: &SourceStatus| match status {
+                SourceStatus::Unavailable(message) => Some(message.clone()),
+                _ => None,
+            };
+            (
+                hint(&self.pr_cache.github),
+                hint(&self.pr_cache.bitbucket),
+                matches!(self.pr_cache.github, SourceStatus::Absent)
+                    && matches!(self.pr_cache.bitbucket, SourceStatus::Absent),
+            )
+        } else {
+            (None, None, false)
+        };
         let pr_selected = self.pr_selected;
         let pr_detail_width = self.pr_detail_width;
+        let pr_rail_collapsed = self.pr_rail_collapsed;
         // Taken out for the frame so the review surface can borrow its diff state
         // `&mut` inside the central closure; restored before actions are applied.
         let mut pr_review_local = self.pr_review.take();
         let mut pr_select = None;
         let mut pr_open_url: Option<String> = None;
-        let mut pr_checkout: Option<usize> = None;
+        let mut pr_checkout = false;
         let mut pr_set_detail_width = None;
+        let mut pr_toggle_rail = false;
         let mut pr_back = false;
+        let mut pr_close_file = false;
         let mut pr_select_file: Option<usize> = None;
-        let mut pr_ask_claude = false;
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
         let pr_agent = self.review_agent_command.clone();
@@ -926,6 +985,8 @@ impl HelmApp {
                     &done_agents,
                     pr_to_review,
                     pr_active,
+                    pr_rail_collapsed,
+                    &mut pr_toggle_rail,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1036,7 +1097,43 @@ impl HelmApp {
                             agents_set_terminal_height = action.set_terminal_height;
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
-                        } else if let Some(DiffState {
+                        }
+                        // The PR cockpit owns the central area like the dashboard, so
+                        // the term/graph switch is suppressed and it takes priority
+                        // over the per-repo diff overlay; its two-pane body is drawn
+                        // by `pull_requests_view`.
+                        else if central_mode == CentralMode::PullRequests {
+                            let mut review_view = pr_review_local
+                                .as_mut()
+                                .map(|r| pr_review_view(r, &pr_agent));
+                            let hints = crate::ui::pull_requests_view::PrSourceHints {
+                                github: pr_github_hint.as_deref(),
+                                bitbucket: pr_bitbucket_hint.as_deref(),
+                                no_repos: pr_no_repos,
+                            };
+                            let action = crate::ui::pull_requests_view::pull_requests_page(
+                                ui,
+                                &palette,
+                                &pr_list,
+                                pr_selected,
+                                &hints,
+                                review_view.as_mut(),
+                                pr_detail_width,
+                                pr_rail_collapsed,
+                            );
+                            pr_select = action.select;
+                            pr_open_url = action.open_url;
+                            pr_checkout = pr_checkout || action.checkout;
+                            pr_set_detail_width = action.set_detail_width;
+                            pr_back = pr_back || action.back;
+                            pr_close_file = pr_close_file || action.close_file;
+                            pr_select_file = pr_select_file.or(action.select_file);
+                            pr_review_intents = action.review_intents;
+                            pr_submit_review = pr_submit_review || action.submit_review;
+                        }
+                        // A loaded working-tree file overlays the central area for
+                        // Terminal/Graph only — the Agents/PR cockpits above already won.
+                        else if let Some(DiffState {
                             source: DiffSource::WorkingTree { staged },
                             loaded: Some(file),
                             view,
@@ -1050,62 +1147,17 @@ impl HelmApp {
                                 ui,
                                 &palette,
                                 file,
-                                *staged,
-                                false,
+                                crate::ui::diff_view::DiffSurface::WorkingTree { staged: *staged },
                                 view,
                                 &mut diff_intents,
                                 Some(&mut crate::ui::diff_view::DiffReview {
                                     comments: review_comments,
+                                    forge: None,
                                     existing: &no_threads,
                                     agent: &review_agent,
                                     intents: &mut review_intents,
                                 }),
                             );
-                        }
-                        // The PR cockpit owns the central area like the dashboard, so
-                        // the term/graph switch is suppressed; its two-pane body is
-                        // drawn by `pull_requests_view`.
-                        else if central_mode == CentralMode::PullRequests {
-                            let mut review_view = pr_review_local.as_mut().map(|r| {
-                                crate::ui::pull_requests_view::PrReviewView {
-                                    index: r.index,
-                                    pr: &r.pr,
-                                    detail: r.detail.as_ref(),
-                                    detail_error: r.detail_error.as_deref(),
-                                    files: &r.files,
-                                    files_loading: r.files_loading,
-                                    files_error: r.files_error.as_deref(),
-                                    selected_file: r.selected_file,
-                                    diff: r.diff.as_ref(),
-                                    diff_loading: r.diff_loading,
-                                    diff_error: r.diff_error.as_deref(),
-                                    diff_view: &mut r.diff_view,
-                                    existing: &r.existing,
-                                    draft: &r.draft,
-                                    agent: &pr_agent,
-                                    verdict: &mut r.verdict,
-                                    summary: &mut r.summary,
-                                    posting: r.posting,
-                                    post_error: r.post_error.as_deref(),
-                                }
-                            });
-                            let action = crate::ui::pull_requests_view::pull_requests_page(
-                                ui,
-                                &palette,
-                                &pr_list,
-                                pr_selected,
-                                review_view.as_mut(),
-                                pr_detail_width,
-                            );
-                            pr_select = action.select;
-                            pr_open_url = action.open_url;
-                            pr_checkout = action.checkout;
-                            pr_set_detail_width = action.set_detail_width;
-                            pr_back = pr_back || action.back;
-                            pr_select_file = pr_select_file.or(action.select_file);
-                            pr_ask_claude = pr_ask_claude || action.ask_claude;
-                            pr_review_intents = action.review_intents;
-                            pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -1177,12 +1229,12 @@ impl HelmApp {
                                             ui,
                                             &palette,
                                             file,
-                                            false,
-                                            true,
+                                            crate::ui::diff_view::DiffSurface::Commit,
                                             view,
                                             &mut diff_intents,
                                             Some(&mut crate::ui::diff_view::DiffReview {
                                                 comments: review_comments,
+                                                forge: None,
                                                 existing: &no_threads,
                                                 agent: &review_agent,
                                                 intents: &mut review_intents,
@@ -1856,6 +1908,8 @@ impl HelmApp {
                     &done_agents,
                     pr_to_review,
                     pr_active,
+                    pr_rail_collapsed,
+                    &mut pr_toggle_rail,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
@@ -1910,44 +1964,31 @@ impl HelmApp {
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
                         } else if pr_active {
-                            let mut review_view = pr_review_local.as_mut().map(|r| {
-                                crate::ui::pull_requests_view::PrReviewView {
-                                    index: r.index,
-                                    pr: &r.pr,
-                                    detail: r.detail.as_ref(),
-                                    detail_error: r.detail_error.as_deref(),
-                                    files: &r.files,
-                                    files_loading: r.files_loading,
-                                    files_error: r.files_error.as_deref(),
-                                    selected_file: r.selected_file,
-                                    diff: r.diff.as_ref(),
-                                    diff_loading: r.diff_loading,
-                                    diff_error: r.diff_error.as_deref(),
-                                    diff_view: &mut r.diff_view,
-                                    existing: &r.existing,
-                                    draft: &r.draft,
-                                    agent: &pr_agent,
-                                    verdict: &mut r.verdict,
-                                    summary: &mut r.summary,
-                                    posting: r.posting,
-                                    post_error: r.post_error.as_deref(),
-                                }
-                            });
+                            let mut review_view = pr_review_local
+                                .as_mut()
+                                .map(|r| pr_review_view(r, &pr_agent));
+                            let hints = crate::ui::pull_requests_view::PrSourceHints {
+                                github: pr_github_hint.as_deref(),
+                                bitbucket: pr_bitbucket_hint.as_deref(),
+                                no_repos: pr_no_repos,
+                            };
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
                                 &palette,
                                 &pr_list,
                                 pr_selected,
+                                &hints,
                                 review_view.as_mut(),
                                 pr_detail_width,
+                                pr_rail_collapsed,
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
-                            pr_checkout = action.checkout;
+                            pr_checkout = pr_checkout || action.checkout;
                             pr_set_detail_width = action.set_detail_width;
                             pr_back = pr_back || action.back;
+                            pr_close_file = pr_close_file || action.close_file;
                             pr_select_file = pr_select_file.or(action.select_file);
-                            pr_ask_claude = pr_ask_claude || action.ask_claude;
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
@@ -2183,20 +2224,22 @@ impl HelmApp {
         if pr_back {
             self.pr_review = None;
         }
+        if pr_close_file {
+            self.close_pr_file();
+        }
         if let Some(index) = pr_select {
             self.open_pr_review(index, ctx);
         }
         if let Some(idx) = pr_select_file {
             self.select_pr_file(idx, ctx);
         }
-        if pr_ask_claude {
-            self.ask_claude_on_pr(ctx);
-        }
         if pr_submit_review {
             self.submit_pr_review(ctx);
         }
-        if let Some(pr) = pr_checkout.and_then(|index| pr_list.get(index).cloned()) {
-            self.request_pr_checkout(&pr, ctx);
+        if pr_checkout {
+            if let Some(pr) = self.pr_review.as_ref().map(|review| review.pr.clone()) {
+                self.request_pr_checkout(&pr, ctx);
+            }
         }
         if let Some(url) = pr_open_url {
             let now = ctx.input(|i| i.time);
@@ -2212,6 +2255,14 @@ impl HelmApp {
             self.pr_detail_width = width;
             self.persist(move |prefs| Prefs {
                 pr_detail_width: width,
+                ..prefs
+            });
+        }
+        if pr_toggle_rail {
+            let collapsed = !self.pr_rail_collapsed;
+            self.pr_rail_collapsed = collapsed;
+            self.persist(move |prefs| Prefs {
+                pr_rail_collapsed: collapsed,
                 ..prefs
             });
         }

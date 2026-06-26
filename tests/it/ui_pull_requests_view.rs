@@ -1,7 +1,7 @@
 //! UI E2E for the Pull Requests cockpit (pull-requests.md §5/§11): drives
 //! `pull_requests_page` headless across both surfaces — the browse list (groups,
 //! a row, the empty state, the row → select intent) and the review surface (the
-//! header's Open-in-browser / Checkout / Ask-Claude intents, Back, a changed-file
+//! header's Open-in-browser / Checkout intents, Back, a changed-file
 //! click, and the draggable rail width).
 
 use std::cell::Cell;
@@ -11,6 +11,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::git::commit_detail::CommitFile;
+use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
 use helm::git::status::ChangeKind;
 use helm::pull_requests::model::{
     Checks, ForgeKind, PrRole, PrState, PullRequest, Review, ReviewVerdict, Reviewer,
@@ -18,17 +19,17 @@ use helm::pull_requests::model::{
 use helm::review::{FileComments, ForgeThreads};
 use helm::theme::Palette;
 use helm::ui::diff_view::DiffViewState;
-use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView};
+use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView, PrSourceHints};
 
 #[derive(Default)]
 struct Captured {
     select: Cell<Option<usize>>,
     open_url: Cell<Option<String>>,
-    checkout: Cell<Option<usize>>,
+    checkout: Cell<bool>,
     set_detail_width: Cell<Option<f32>>,
     back: Cell<bool>,
+    close_file: Cell<bool>,
     select_file: Cell<Option<usize>>,
-    ask_claude: Cell<bool>,
     submit_review: Cell<bool>,
 }
 
@@ -65,7 +66,16 @@ fn harness(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
         .build_ui(move |ui| {
-            let action = pull_requests_page(ui, &palette, &prs, selected, None, detail_width);
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &prs,
+                selected,
+                &PrSourceHints::default(),
+                None,
+                detail_width,
+                false,
+            );
             if action.select.is_some() {
                 sink.select.set(action.select);
             }
@@ -88,13 +98,13 @@ fn review_harness(
     let mut diff_view = DiffViewState::default();
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
+    let agent_notes = FileComments::new();
     let mut verdict = ReviewVerdict::default();
     let mut summary = String::new();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
         .build_ui(move |ui| {
             let mut review = PrReviewView {
-                index: 0,
                 pr: &pr_value,
                 detail: None,
                 detail_error: None,
@@ -108,18 +118,28 @@ fn review_harness(
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
+                agent_notes: &agent_notes,
                 agent: "claude",
                 verdict: &mut verdict,
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
             };
-            let action = pull_requests_page(ui, &palette, &[], None, Some(&mut review), rail_width);
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                rail_width,
+                false,
+            );
             if action.open_url.is_some() {
                 sink.open_url.set(action.open_url.clone());
             }
-            if action.checkout.is_some() {
-                sink.checkout.set(action.checkout);
+            if action.checkout {
+                sink.checkout.set(true);
             }
             if action.set_detail_width.is_some() {
                 sink.set_detail_width.set(action.set_detail_width);
@@ -127,11 +147,11 @@ fn review_harness(
             if action.back {
                 sink.back.set(true);
             }
+            if action.close_file {
+                sink.close_file.set(true);
+            }
             if action.select_file.is_some() {
                 sink.select_file.set(action.select_file);
-            }
-            if action.ask_claude {
-                sink.ask_claude.set(true);
             }
             if action.submit_review {
                 sink.submit_review.set(true);
@@ -204,7 +224,7 @@ fn review_header_open_in_browser_emits_the_url() {
 }
 
 #[test]
-fn review_header_checkout_emits_the_index() {
+fn review_header_checkout_emits_the_intent() {
     let (mut harness, cap) = review_harness(
         pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
         Vec::new(),
@@ -212,19 +232,7 @@ fn review_header_checkout_emits_the_index() {
     );
     harness.get_by_label("Checkout").click();
     harness.step();
-    assert_eq!(cap.checkout.get(), Some(0));
-}
-
-#[test]
-fn review_header_ask_claude_emits_the_intent() {
-    let (mut harness, cap) = review_harness(
-        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
-        Vec::new(),
-        460.0,
-    );
-    harness.get_by_label("Ask Claude").click();
-    harness.step();
-    assert!(cap.ask_claude.get());
+    assert!(cap.checkout.get());
 }
 
 #[test]
@@ -251,6 +259,105 @@ fn review_back_returns_to_the_list() {
     assert!(cap.back.get());
 }
 
+fn sample_diff() -> FileDiff {
+    FileDiff {
+        path: "src/main.rs".to_owned(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,2 +1,3 @@".to_owned(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 3,
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "fn main() {\n".to_owned(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "    work();\n".to_owned(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+            ],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+    }
+}
+
+/// Closing the open file clears the selection but stays on the review surface — it
+/// is **not** the same as Back (which leaves to the list).
+#[test]
+fn closing_the_open_file_emits_close_not_back() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![changed_file("src/main.rs")];
+    let diff = sample_diff();
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let cap = Rc::new(Captured::default());
+    let sink = cap.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: Some(0),
+                diff: Some(&diff),
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+            );
+            if action.back {
+                sink.back.set(true);
+            }
+            if action.close_file {
+                sink.close_file.set(true);
+            }
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Close").click();
+    harness.step();
+    assert!(cap.close_file.get(), "Close emits close_file");
+    assert!(
+        !cap.back.get(),
+        "closing the file does not leave the review surface",
+    );
+}
+
 #[test]
 fn clicking_a_changed_file_loads_its_diff() {
     let (mut harness, cap) = review_harness(
@@ -265,16 +372,16 @@ fn clicking_a_changed_file_loads_its_diff() {
 
 #[test]
 fn dragging_the_split_resizes_the_rail_width() {
-    // The rail sits on the left; its resize handle is on the split line at
-    // `body.left() + rail_width`. Dragging right widens the rail
-    // (`rail_width + drag_delta.x`).
+    // The rail sits on the right; its resize handle is on the split line at
+    // `body.right() - rail_width` = 1200 - 460 = 740. Dragging left widens the rail
+    // (`rail_width - drag_delta.x`).
     let (mut harness, cap) = review_harness(
         pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
         Vec::new(),
         460.0,
     );
-    let start = egui::pos2(460.0, 400.0);
-    let end = start + egui::vec2(60.0, 0.0);
+    let start = egui::pos2(740.0, 400.0);
+    let end = start - egui::vec2(60.0, 0.0);
     harness.event(egui::Event::PointerMoved(start));
     harness.step();
     harness.event(egui::Event::PointerButton {
@@ -299,6 +406,152 @@ fn dragging_the_split_resizes_the_rail_width() {
         .expect("drag emits a new rail width");
     assert!(
         width > 460.0,
-        "dragging the split right widens the rail, got {width}"
+        "dragging the split left widens the rail, got {width}"
+    );
+}
+
+#[test]
+fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
+    // The rail toggle now lives in the title bar (outside this view); collapsing it
+    // hides the whole rail — file list, actions and composer — and the center area
+    // (here the PR detail, since no file is open) expands to the full width.
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("feature → main");
+    assert!(
+        harness.query_by_label("src/main.rs").is_none(),
+        "the changed-files rail is hidden when collapsed",
+    );
+    assert!(
+        harness.query_by_label("Checkout").is_none(),
+        "the rail's actions are hidden when collapsed",
+    );
+}
+
+#[test]
+fn detail_conversation_lists_only_top_level_comments() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![
+            PrComment {
+                author: "reviewer-top".to_owned(),
+                body: "overall looks good".to_owned(),
+                path: None,
+                old_lineno: None,
+                new_lineno: None,
+                id: None,
+                parent_id: None,
+            },
+            PrComment {
+                author: "reviewer-inline".to_owned(),
+                body: "rename this".to_owned(),
+                path: Some("src/main.rs".to_owned()),
+                old_lineno: None,
+                new_lineno: Some(2),
+                id: None,
+                parent_id: None,
+            },
+        ],
+        check_runs: Vec::new(),
+    };
+    let files = vec![changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+            );
+        });
+    harness.step();
+    harness.step();
+    // Detail (body + conversation) renders in the center; the file list stays in the rail.
+    harness.get_by_label("Describe the change");
+    harness.get_by_label("src/main.rs");
+    harness.get_by_label("Conversation");
+    harness.get_by_label("reviewer-top");
+    assert!(
+        harness.query_by_label("reviewer-inline").is_none(),
+        "inline comments belong to the diff, not the detail conversation",
     );
 }

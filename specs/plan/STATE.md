@@ -23,7 +23,7 @@ pending review + merge of the `m-pr` worktree branch.
   repo; changed-files + per-file diff as gated requests on the detail runner path.
   *Files*: `src/app/*`, `src/pull_requests/runner.rs`.
 - ☑ **T3 — Detail panel → diff-centric.** Rail of changed files + lazy diff via
-  `ui::diff_view`; header keeps Open / Checkout / Ask Claude. *Files*:
+  `ui::diff_view`; header keeps Open / Checkout. *Files*:
   `src/ui/pull_requests_view.rs`, `src/app/{mod,render}.rs`.
 - ☑ **T4 — Inline existing comments.** Posted threads overlay the diff anchored at
   their line, read-only, via `review::ForgeThreads`. *Files*: `src/review.rs`,
@@ -44,6 +44,155 @@ pending review + merge of the `m-pr` worktree branch.
 - ☑ **T7 — Spec + STATE + verify.** `specs/pull-requests.md` §11 (+ §4/§5/§9/§10
   reconciled); this block; full `cargo fmt` + `clippy --all-targets -D warnings` +
   `cargo test` green.
+
+### ☑ Review-surface fix pass (post-T7)
+- ☑ **Rail in commit-detail language.** `review_rail` mirrors `ui::commit_detail`:
+  author avatar + name + `source → dest`, PR body, a **Files changed** band (count
+  chip + ±totals + ratio bar), file rows with separators, bold section titles.
+  *Files*: `src/ui/pull_requests_view.rs`.
+- ☑ **Conversation = top-level only.** The rail's Conversation lists comments with
+  no `path`/`line`; inline ones stay anchored in the diff (`ForgeThreads`).
+  *Files*: `src/ui/pull_requests_view.rs`. *Tests*: UI e2e (inline author absent
+  from the rail).
+- ☑ **Header clears the global buttons.** PR cockpit reserves `TITLEBAR_HEIGHT`
+  like the other central modes. *Files*: `src/app/render.rs`.
+- ☑ **Ask Claude on a worktree-less branch.** `PendingPrAsk` defers the prompt
+  across checkout + create, then `resume_pending_pr_ask` launches the agent in a
+  new tab once the worktree is live and any post-create script is consumed.
+  *Files*: `src/app/{mod,render}.rs`.
+
+### ☑ Review-surface fix pass v2 (user feedback)
+- ☑ **Rail moved to the RIGHT, collapsible.** `render_review` now fills the main
+  area with the diff and puts the changed-files rail on the right (commit-detail's
+  place); a header toggle (`PanelRightClose`/`Open`) collapses it, persisted as
+  `Prefs::pr_rail_collapsed`. Resize handle drag inverted (drag left widens).
+  *Files*: `src/ui/pull_requests_view.rs`, `src/app/{mod,render}.rs`,
+  `src/persistence.rs`. *Tests*: UI e2e (toggle intent; collapsed hides files).
+- ☑ **Per-line icon back to hover-only.** Reverted `DiffReview.always_comment`;
+  the gutter button paints on hover only, as before. *Files*: `src/ui/diff_view.rs`,
+  `src/ui/pull_requests_view.rs`, `src/app/render.rs`.
+- ☑ **Comment affordance reads as a comment.** Gutter icon `Sparkles` → 
+  `MessageSquarePlus`; the Sparkles now marks only the separate Send-to-agent pill,
+  so the per-line action no longer reads as "AI". *Files*: `src/ui/diff_view.rs`.
+
+### ☑ Review-surface fix pass v3 (user feedback)
+- ☑ **Header less prominent, on canvas.** `review_header` paints on
+  `palette.bg_canvas` (was `bg_sidebar`); PR title `14.5` → `13.5`.
+  *Files*: `src/ui/pull_requests_view.rs`.
+- ☑ **Rail = commit-detail background, hideable like the git sidebar.** `review_rail`
+  + `review_composer` on `bg_canvas` (was `bg_sidebar`), matching `commit_detail`.
+  In the PR cockpit the standard git toggle is suppressed, so **⌘G** now flips
+  `pr_rail_collapsed` (alongside the header toggle). *Files*:
+  `src/ui/pull_requests_view.rs`, `src/app/render.rs`.
+- ☑ **Both per-line affordances.** The hover gutter now shows **two** icons:
+  `MessageSquarePlus` (slot 0 → forge draft comment) and `Sparkles` (slot 1 →
+  `ReviewIntent::AskAgentOnLine` → `ask_claude_on_line` → `launch_pr_agent`, quoting
+  the line). PR review only (`DiffReview.line_agent`); working-tree/commit diffs keep
+  the single comment icon. *Files*: `src/review.rs`, `src/ui/diff_view.rs`,
+  `src/app/mod.rs`, `src/ui/pull_requests_view.rs`. *Tests*: UI e2e
+  (`clicking_the_line_sparkles_emits_ask_agent_on_line`).
+
+### ☑ Review-surface fix pass v4 (user feedback)
+- ☑ **Gutter note icon is surface-aware.** Working-tree / commit diffs show the
+  `Sparkles` (AI) glyph (the note only feeds the agent); the PR diff shows
+  `MessageSquarePlus` (the note is a **forge review comment**, posted to GitHub /
+  Bitbucket via *Submit review (N)*, and also batchable to the agent via *Send to
+  {agent}*). Picked from `DiffSurface::forge_review()`. *Files*: `src/ui/diff_view.rs`.
+- ☑ **Per-line direct agent launch dropped — PR notes batch like the others.** The
+  PR diff no longer has a second `Sparkles` button that launches the agent on one
+  line; its gutter is the single note button, recording a draft comment handed off
+  as a batch via *Send to {agent}*. Removed `ReviewIntent::AskAgentOnLine`,
+  `DiffSurface::line_agent`/`claude_button`/`AskLineAgent`, `ask_claude_on_line`,
+  `line_agent_prompt`. The existing-thread *Ask {agent}* pill (`AskAgentOnThread`)
+  is unchanged. *Files*: `src/review.rs`, `src/ui/diff_view.rs`, `src/app/mod.rs`.
+  *Tests*: UI e2e (`pr_surface_note_button_records_a_draft_comment`).
+
+### ☑ Review-surface fix pass v5 (user feedback)
+- ☑ **PR diff has two separate note pools.** A forge pool (`PrReview.draft` →
+  `MessageSquarePlus`, slot 0 → *Submit review (N)* → GitHub / Bitbucket) and an
+  agent pool (`PrReview.agent_notes` → `Sparkles`, slot 1 → *Send to {agent}* recap
+  + whole-PR *Ask Claude*), kept apart so forge review comments are never forced
+  through the agent. New `review::ReviewPool { Agent, Forge }` tags
+  `SaveComment`/`DeleteComment`; `DiffReview` gained `forge: Option<&FileComments>`,
+  `DiffViewState.active_comment` a pool key, `comment_block`/`save_note`/
+  `open_inline_editor` a `pool` arg; `apply_pr_review_intents` routes by pool and
+  `ask_claude_on_pr` now reads `agent_notes` (not the forge draft). Working-tree /
+  commit diffs keep the single agent `Sparkles` pool (`forge: None`). *Files*:
+  `src/review.rs`, `src/ui/diff_view.rs`, `src/app/mod.rs`, `src/app/render.rs`,
+  `src/ui/pull_requests_view.rs`, `specs/pull-requests.md`. *Tests*: UI e2e
+  (`pr_forge_button_records_a_forge_pool_comment`,
+  `pr_agent_button_records_an_agent_pool_note`).
+
+### ☑ Review-surface fix pass v6 (user feedback)
+- ☑ **Rail toggle moved to the title bar.** The changed-files rail collapse button
+  now lives in `top_right_actions` (the slot the suppressed git toggle vacates in a
+  Helm central mode), same `sidebar_toggle` glyph + ⌘G shortcut as the other
+  sidebars. `root_layout`/`top_right_actions` thread `pr_rail_collapsed` +
+  `&mut pr_toggle_rail`; the in-view header toggle and `PullRequestsPageAction::toggle_rail`
+  are gone. *Files*: `src/ui/mod.rs`, `src/app/render.rs`, `src/ui/pull_requests_view.rs`.
+- ☑ **Full-width header band removed; its buttons moved into the rail.** `review_header`
+  + `rail_toggle_button` deleted; the diff now fills the whole surface. The rail's
+  `review_actions` carries Back, the PR heading (state icon + #num + wrapping title)
+  and the actions (Open in browser / Checkout) stacked full-width — so
+  collapsing the rail hides them all. *Files*: `src/ui/pull_requests_view.rs`.
+  *Tests*: UI e2e (collapsed rail hides files **and** actions; toggle-intent test dropped).
+- ☑ **Homogeneous button radius.** New `theme::RADIUS_BUTTON = 4` (matches the git
+  sidebar commit button); the PR back / action / verdict / Submit buttons drop their
+  hardcoded `6.0`. *Files*: `src/theme.rs`, `src/ui/pull_requests_view.rs`.
+
+### ☑ Review-surface fix pass v7 (user feedback)
+- ☑ **No file is force-opened; Close ≠ Back.** The review surface opens with **no
+  file selected** (the "select a file" placeholder) instead of auto-selecting the
+  first changed file. The diff's **Close** (and `Esc` over the diff) now clears the
+  selection back to that placeholder **without leaving the surface**, distinct from
+  **Back** (which still returns to the list). New
+  `PullRequestsPageAction::close_file` + `App::close_pr_file`; dropped the
+  auto-select in `poll_pr_review`. *Files*: `src/ui/pull_requests_view.rs`,
+  `src/app/mod.rs`, `src/app/render.rs`, `specs/pull-requests.md`. *Tests*: UI e2e
+  (`closing_the_open_file_emits_close_not_back`).
+
+### ☑ Review-surface fix pass v8 (user feedback)
+- ☑ **PR detail moved to the center; rail kept lean.** With no file open the center
+  area now hosts the PR **detail** (author + `source → dest`, body, Checks,
+  conversation) instead of an empty placeholder; the right rail keeps only the PR
+  heading + actions (Back / Open / Checkout), the **Files changed** band + file
+  list and the composer. Selecting a file still swaps the center to its diff. Pure
+  view re-layout (new `review_detail`), no app/state change. *Files*:
+  `src/ui/pull_requests_view.rs`, `specs/pull-requests.md`. *Tests*: UI e2e updated
+  (`detail_conversation_lists_only_top_level_comments`,
+  `collapsed_rail_hides_the_changed_files_but_keeps_the_center_area`).
+
+### ☑ Review-surface fix pass v9 (user feedback)
+- ☑ **Back + title moved to the center; rail header dropped.** The center detail
+  now leads with a **Back** control and the PR **title**; the rail's old header row
+  (Back + PR state icon + `#number` + title) is gone, so the sidebar gains vertical
+  space and keeps only the **Open in browser / Checkout** actions above the Files
+  changed band + file list + composer. Back lives in the detail (a diff's **Close**
+  returns there). Pure view re-layout — `review_detail` gained the header + an
+  `action` param; `review_actions` slimmed to the two buttons. *Files*:
+  `src/ui/pull_requests_view.rs`, `specs/pull-requests.md`. *Tests*: covered by the
+  existing PR-cockpit UI e2e (Back/Open/Checkout still resolve).
+
+### ☑ Review-surface fix pass v7 (user feedback)
+- ☑ **Rail reaches the window top like a real side panel.** `render_review` now
+  receives the full-height central rect; the rail frame (its divider + background)
+  spans to the title strip while the diff/detail and the rail's scroll content inset
+  past `TITLEBAR_HEIGHT` (where the floating toggle/feedback/prefs icons sit). The
+  browse list keeps its inset body. *Files*: `src/ui/pull_requests_view.rs`.
+
+### ☑ Comment-card restyle (user feedback)
+- ☑ **Three distinct comment identities, compact, below the line.** The diff's
+  per-line comment surfaces share one tinted-card-with-left-edge grammar in three
+  inks: forge review draft = `accent` (MessageSquarePlus), agent note = new
+  `accent.ai` violet (Sparkles), fetched PR thread = neutral `text.muted` (avatar +
+  author). The inline composer dropped its card+header wrapper back to a bare field
+  + compact Delete/validate footer; the saved note card dropped its title +
+  right-anchored `Lnn`, and comment blocks are no longer indented to the code column
+  — the body now flows left-aligned directly under its line. New
+  `theme::Palette.accent_ai` (+ every preset); `pool_style`/`comment_block` lost
+  their `agent` arg. *Files*: `src/theme.rs`, `src/ui/diff_view.rs`,
+  `specs/design-system.md`. *Tests*: existing diff_view + PR-view UI e2e (a11y labels
+  unchanged); on-demand shot `gen_pr_review_comments` (`tests/shots_gen.rs`).
 
 ### Next actions (M-PR2)
 - **Review then merge** the `m-pr` worktree branch into `main` (the milestone loop
@@ -110,6 +259,20 @@ workspace repos. Counter: **9/9** — complete, pending review + merge of the
   review / Mine groups + rows, the selection's detail (description, checks,
   reviewers, comments) and the Open-in-browser / Checkout actions all render and
   route their intents. Demonstrable milestone scenario (DoD).
+
+- ☑ **Hardening — branch review pass.** Resilience + correctness fixes across the
+  PR feature: per-source `Option<Vec<PullRequest>>` reply so a transient GitHub or
+  Bitbucket failure keeps last-good rows + flags `PrCache.stale` (never blanks the
+  cockpit); Bitbucket token off `curl` argv (stdin `--config -`) + connect/max
+  timeouts + page-follow `next` pagination; `Esc` on a loaded PR diff no longer
+  discards the draft; PR runner drained on the Preferences page; checkout from the
+  review surface targets `review.pr`; selection reconciled after refresh; cockpit
+  surfaces §5 empty / source-unavailable banners; rail-width NaN clamp; re-query on
+  workspace repo-set change. *Files*: `src/pull_requests/{runner,bitbucket}.rs`,
+  `src/ui/pull_requests_view.rs`, `src/app/{mod,render}.rs`. *Tests*: `PrCache`
+  apply resilience units + the existing PR/UI suites. **Dropped:** GitHub
+  team-requested reviews → To-review (per-repo `gh` role queries already cover
+  direct requests; team expansion deferred).
 
 ### Next actions
 - **Review then merge** the `m-pr` worktree branch into `main` (the milestone

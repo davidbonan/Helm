@@ -27,7 +27,7 @@ use helm::theme::Palette;
 use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, TermView, AGENT_PREVIEW_LINES};
 use helm::ui::ai_rebase_modal::{ai_rebase_modal, AiRebasePage};
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState};
-use helm::ui::diff_view::{diff_view, DiffViewState};
+use helm::ui::diff_view::{diff_view, DiffSurface, DiffViewState};
 use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::{GitIntent, GitPanelState};
 use helm::ui::graph_toolbar::{graph_toolbar, ToolbarState};
@@ -463,6 +463,8 @@ fn render_hero(out: &str) {
                 &[],
                 0,
                 false,
+                false,
+                &mut false,
                 &mut sidebar,
                 248.0,
                 300.0,
@@ -678,6 +680,8 @@ fn app_shell(
         &[],
         0,
         false,
+        false,
+        &mut false,
         &mut sidebar,
         248.0,
         300.0,
@@ -1135,8 +1139,7 @@ fn gen_git_staging() {
                         ui,
                         &palette,
                         &file,
-                        false,
-                        false,
+                        DiffSurface::WorkingTree { staged: false },
                         &mut view,
                         &mut intents,
                         None,
@@ -1145,6 +1148,90 @@ fn gen_git_staging() {
             );
         });
     finish(harness, "git_staging");
+}
+
+#[test]
+fn gen_pr_review_comments() {
+    use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent, ThreadComment};
+    use helm::ui::diff_view::DiffReview;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = Rc::new(RefCell::new(Vec::<ReviewIntent>::new()));
+    let state_ui = state.clone();
+    let intents_ui = intents.clone();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(840.0, 720.0))
+        .with_pixels_per_point(2.0)
+        .build_ui(move |ui| {
+            boot(ui);
+            let palette = Palette::dark();
+            let file = staging_diff();
+
+            let mut agent_notes = FileComments::new();
+            agent_notes.insert(
+                file.path.clone(),
+                vec![LineComment {
+                    old_lineno: None,
+                    new_lineno: Some(22),
+                    code: "        let id = self.next_id;".to_owned(),
+                    note: "Rename `id` to `lane` — it shadows the struct field.".to_owned(),
+                }],
+            );
+            let mut forge_notes = FileComments::new();
+            forge_notes.insert(
+                file.path.clone(),
+                vec![LineComment {
+                    old_lineno: None,
+                    new_lineno: Some(20),
+                    code: "            return id;".to_owned(),
+                    note: "Return the freed lane directly — the fall-through below is now unreachable."
+                        .to_owned(),
+                }],
+            );
+            let mut threads = ForgeThreads::new();
+            threads.entry(file.path.clone()).or_default().insert(
+                (None, Some(18)),
+                vec![
+                    ThreadComment {
+                        author: "Dax Vega".to_owned(),
+                        body: "Can we keep alloc() under ten lines? It's creeping up.".to_owned(),
+                    },
+                    ThreadComment {
+                        author: "Mira Lund".to_owned(),
+                        body: "Agreed — pull the grow path into its own helper.".to_owned(),
+                    },
+                ],
+            );
+
+            ui.painter()
+                .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, palette.bg_canvas);
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    let mut git: Vec<GitIntent> = Vec::new();
+                    let mut ri = intents_ui.borrow_mut();
+                    let _ = diff_view(
+                        ui,
+                        &palette,
+                        &file,
+                        DiffSurface::PrReview,
+                        &mut state_ui.borrow_mut(),
+                        &mut git,
+                        Some(&mut DiffReview {
+                            comments: &agent_notes,
+                            forge: Some(&forge_notes),
+                            existing: &threads,
+                            agent: "claude",
+                            intents: &mut ri,
+                        }),
+                    );
+                });
+        });
+    harness.run();
+    finish(harness, "pr_review_comments");
 }
 
 #[test]

@@ -26,10 +26,14 @@ pub struct ThreadComment {
     pub body: String,
 }
 
-/// Existing PR threads of one repo, keyed by file path then anchor line, each a
-/// chronologically-ordered thread. Read-only: the diff view renders these but
-/// never edits them (the editable draft store stays `FileComments`).
-pub type ForgeThreads = BTreeMap<String, BTreeMap<u32, Vec<ThreadComment>>>;
+/// Existing PR threads of one repo, keyed by file path then the `(old, new)`
+/// anchor of the commented row, each a chronologically-ordered thread. The full
+/// pair — not a bare line number — keeps a deleted row (old N) and an added row
+/// (new N) sharing a number from rendering the same thread twice. Read-only: the
+/// diff view renders these but never edits them (the editable draft store stays
+/// `FileComments`).
+pub type ForgeAnchor = (Option<u32>, Option<u32>);
+pub type ForgeThreads = BTreeMap<String, BTreeMap<ForgeAnchor, Vec<ThreadComment>>>;
 
 /// Adds `comment` under `file`, replacing in place a comment already anchored at
 /// the same line (one note per line).
@@ -58,23 +62,39 @@ pub fn count(store: &FileComments) -> usize {
     store.values().map(Vec::len).sum()
 }
 
+/// Which store a line note belongs to (pull-requests.md §11). The working-tree and
+/// commit surfaces only have `Agent`; the PR review surface keeps the two pools
+/// apart so forge comments are never forced through the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPool {
+    /// Notes batched to the local agent (the Sparkles gutter button + "Send to …").
+    Agent,
+    /// PR review comments posted to GitHub / Bitbucket on submit (the
+    /// MessageSquarePlus gutter button + "Submit review").
+    Forge,
+}
+
 /// Review action raised by the diff view, applied by the app (RC5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewIntent {
     SaveComment {
+        pool: ReviewPool,
         file: String,
         comment: LineComment,
     },
     DeleteComment {
+        pool: ReviewPool,
         file: String,
         line: Option<u32>,
     },
     SendToAgent,
-    /// Launch the agent to address an existing PR comment thread anchored at
-    /// `file`:`line` (pull-requests.md §11). Only raised on the PR review surface.
+    /// Launch the agent to address an existing PR comment thread anchored at the
+    /// `(old, new)` row of `file` (pull-requests.md §11). Only raised on the PR
+    /// review surface.
     AskAgentOnThread {
         file: String,
-        line: u32,
+        old: Option<u32>,
+        new: Option<u32>,
     },
 }
 

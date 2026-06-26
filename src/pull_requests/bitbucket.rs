@@ -116,13 +116,26 @@ pub fn parse_list(
 /// Map a PR object (`description`) and its comments page onto the detail. Bitbucket
 /// has no rollup on the PR, so `check_runs` stays empty (pull-requests.md §10).
 pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Result<PrDetail> {
+    Ok(PrDetail {
+        body: parse_body(detail_json)?,
+        comments: parse_comments(comments_json)?,
+        check_runs: Vec::new(),
+    })
+}
+
+/// The PR description (`summary.raw`, falling back to `description`).
+pub fn parse_body(detail_json: &str) -> serde_json::Result<String> {
     let detail: Value = serde_json::from_str(detail_json)?;
-    let body = detail["summary"]["raw"]
+    Ok(detail["summary"]["raw"]
         .as_str()
         .or_else(|| detail["description"].as_str())
         .unwrap_or_default()
-        .to_owned();
+        .to_owned())
+}
 
+/// One `pullrequests/{id}/comments` page mapped onto domain comments; the runner
+/// follows `next_page` to accumulate every page (pull-requests.md §10).
+pub fn parse_comments(comments_json: &str) -> serde_json::Result<Vec<PrComment>> {
     let comments_page: Value = serde_json::from_str(comments_json)?;
     let comments = comments_page["values"]
         .as_array()
@@ -132,6 +145,13 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
                 .filter_map(|c| {
                     let body = c["content"]["raw"].as_str()?.to_owned();
                     let inline = &c["inline"];
+                    // `to` anchors the new side (added/context), `from` the old
+                    // (deleted) side; an unchanged line carries both, so prefer
+                    // `to` and keep the anchor single-sided.
+                    let (old_lineno, new_lineno) = match inline["to"].as_u64() {
+                        Some(to) => (None, Some(to as u32)),
+                        None => (inline["from"].as_u64().map(|n| n as u32), None),
+                    };
                     Some(PrComment {
                         author: c["user"]["display_name"]
                             .as_str()
@@ -139,10 +159,8 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
                             .to_owned(),
                         body,
                         path: inline["path"].as_str().map(str::to_owned),
-                        line: inline["to"]
-                            .as_u64()
-                            .or_else(|| inline["from"].as_u64())
-                            .map(|n| n as u32),
+                        old_lineno,
+                        new_lineno,
                         id: c["id"].as_u64(),
                         parent_id: c["parent"]["id"].as_u64(),
                     })
@@ -150,12 +168,14 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
                 .collect()
         })
         .unwrap_or_default();
+    Ok(comments)
+}
 
-    Ok(PrDetail {
-        body,
-        comments,
-        check_runs: Vec::new(),
-    })
+/// The absolute URL of the next page of a paginated `2.0` collection, or `None`
+/// on the last page — Bitbucket caps a page at 50 entries (pull-requests.md §3).
+pub fn next_page(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json).ok()?;
+    value["next"].as_str().map(str::to_owned)
 }
 
 /// Map one PR object onto the domain. The list reply omits review state and the
@@ -363,11 +383,13 @@ mod tests {
         assert_eq!(detail.comments[0].body, "Nice work");
         // A conversation comment carries no anchor.
         assert_eq!(detail.comments[0].path, None);
-        assert_eq!(detail.comments[0].line, None);
-        // The inline reply anchors to its file line and links to its parent.
+        assert_eq!(detail.comments[0].old_lineno, None);
+        assert_eq!(detail.comments[0].new_lineno, None);
+        // The inline reply anchors to its new-side file line and links to its parent.
         let inline = &detail.comments[2];
         assert_eq!(inline.path.as_deref(), Some("src/billing.rs"));
-        assert_eq!(inline.line, Some(42));
+        assert_eq!(inline.old_lineno, None);
+        assert_eq!(inline.new_lineno, Some(42));
         assert_eq!(inline.id, Some(3));
         assert_eq!(inline.parent_id, Some(2));
         assert!(detail.check_runs.is_empty());

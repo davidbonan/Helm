@@ -5,9 +5,9 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
-use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent};
+use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use helm::theme::Palette;
-use helm::ui::diff_view::{content_x_offset, diff_view, DiffReview, DiffViewState};
+use helm::ui::diff_view::{content_x_offset, diff_view, DiffReview, DiffSurface, DiffViewState};
 use helm::ui::git_panel::GitIntent;
 
 fn line(origin: LineOrigin, content: &str) -> DiffLine {
@@ -125,8 +125,7 @@ fn drive(
             ui,
             &palette,
             &diff,
-            staged,
-            false,
+            DiffSurface::WorkingTree { staged },
             &mut state_in_ui.borrow_mut(),
             &mut sink.borrow_mut(),
             None,
@@ -150,7 +149,13 @@ fn renders_the_path_and_diff_lines() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -187,7 +192,13 @@ fn a_line_longer_than_the_preview_extends_the_row_past_the_viewport() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -216,7 +227,13 @@ fn adjacent_changed_lines_are_contiguous_so_backgrounds_connect() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -426,8 +443,7 @@ fn drive_copy_diff(
             ui,
             &palette,
             &diff,
-            false,
-            false,
+            DiffSurface::WorkingTree { staged: false },
             &mut state_in_ui.borrow_mut(),
             &mut sink,
             None,
@@ -457,8 +473,7 @@ fn drive_read_only(
             ui,
             &palette,
             &diff,
-            false,
-            true,
+            DiffSurface::Commit,
             &mut state_in_ui.borrow_mut(),
             &mut sink.borrow_mut(),
             None,
@@ -566,7 +581,13 @@ fn binary_file_offers_no_line_staging() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -593,7 +614,13 @@ fn oversize_diff_shows_summary_and_no_line_staging() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -646,7 +673,13 @@ fn gutter_shows_old_and_new_line_numbers() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -665,7 +698,13 @@ fn header_shows_addition_and_deletion_totals() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -741,8 +780,7 @@ fn reloading_a_shrunk_diff_drops_a_stale_selection_and_signals_it() {
             ui,
             &palette,
             &diff_in_ui.borrow(),
-            false,
-            false,
+            DiffSurface::WorkingTree { staged: false },
             &mut state_in_ui.borrow_mut(),
             &mut sink,
             None,
@@ -802,7 +840,13 @@ fn an_image_diff_shows_a_zoomable_preview_instead_of_the_binary_placeholder() {
         let mut state = DiffViewState::default();
         let mut sink = Vec::new();
         diff_view(
-            ui, &palette, &diff, false, false, &mut state, &mut sink, None,
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state,
+            &mut sink,
+            None,
         );
     });
     harness.run();
@@ -872,12 +916,12 @@ fn drive_review(
             ui,
             &palette,
             &diff,
-            false,
-            false,
+            DiffSurface::WorkingTree { staged: false },
             &mut state_in_ui.borrow_mut(),
             &mut git.borrow_mut(),
             Some(&mut DiffReview {
                 comments: comments_in_ui.as_ref(),
+                forge: None,
                 existing: &threads_in_ui,
                 agent: "claude",
                 intents: &mut review_sink.borrow_mut(),
@@ -907,12 +951,96 @@ fn clicking_the_note_icon_then_validating_emits_save_comment() {
     assert!(
         intents.iter().any(|i| matches!(
             i,
-            ReviewIntent::SaveComment { file, comment }
-                if file == "src/main.rs"
+            ReviewIntent::SaveComment { pool, file, comment }
+                if *pool == ReviewPool::Agent
+                    && file == "src/main.rs"
                     && comment.new_lineno == Some(2)
                     && comment.note == "needs rename"
         )),
         "Validate must emit SaveComment for the annotated line, got {intents:?}",
+    );
+}
+
+/// Drives the PR review surface (two pools) and returns the emitted intents after
+/// clicking the gutter button labelled `button`, typing `note`, and validating.
+fn drive_pr_review(button: &'static str, note: &'static str) -> Vec<ReviewIntent> {
+    let palette = Palette::light();
+    let diff = review_diff();
+    let review = Rc::new(RefCell::new(Vec::new()));
+    let review_sink = review.clone();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let agent_notes = Rc::new(FileComments::new());
+    let agent_in_ui = agent_notes.clone();
+    let forge = Rc::new(FileComments::new());
+    let forge_in_ui = forge.clone();
+    let threads = ForgeThreads::new();
+
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::PrReview,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: agent_in_ui.as_ref(),
+                forge: Some(forge_in_ui.as_ref()),
+                existing: &threads,
+                agent: "claude",
+                intents: &mut review_sink.borrow_mut(),
+            }),
+        );
+    });
+    harness.run();
+    harness.get_all_by_label(button).last().unwrap().click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .type_text(note);
+    harness.run();
+    harness.get_by_label("Validate note").click();
+    harness.run();
+
+    let out = review.borrow().clone();
+    out
+}
+
+#[test]
+fn pr_forge_button_records_a_forge_pool_comment() {
+    // The MessageSquarePlus button (slot 0) feeds the forge pool — the comments
+    // posted to GitHub / Bitbucket on submit, never sent to the agent.
+    let intents = drive_pr_review("Comment for review", "needs rename");
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::SaveComment { pool, file, comment }
+                if *pool == ReviewPool::Forge
+                    && file == "src/main.rs"
+                    && comment.new_lineno == Some(2)
+                    && comment.note == "needs rename"
+        )),
+        "the forge note button must record a Forge-pool comment, got {intents:?}",
+    );
+}
+
+#[test]
+fn pr_agent_button_records_an_agent_pool_note() {
+    // The Sparkles button (slot 1) feeds the separate agent pool — batched to the
+    // agent via "Send to …", never posted to the forge.
+    let intents = drive_pr_review("Comment line", "ask claude");
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::SaveComment { pool, file, comment }
+                if *pool == ReviewPool::Agent
+                    && file == "src/main.rs"
+                    && comment.new_lineno == Some(2)
+                    && comment.note == "ask claude"
+        )),
+        "the agent note button must record an Agent-pool note, got {intents:?}",
     );
 }
 
@@ -924,7 +1052,7 @@ fn existing_pr_thread_renders_anchored_read_only() {
     existing.insert(
         "src/main.rs".into(),
         std::iter::once((
-            2u32,
+            (None, Some(2u32)),
             vec![helm::review::ThreadComment {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
@@ -942,12 +1070,12 @@ fn existing_pr_thread_renders_anchored_read_only() {
             ui,
             &palette,
             &diff,
-            false,
-            true,
+            DiffSurface::Commit,
             &mut state_in_ui.borrow_mut(),
             &mut git,
             Some(&mut DiffReview {
                 comments: &empty,
+                forge: None,
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents,
@@ -961,6 +1089,88 @@ fn existing_pr_thread_renders_anchored_read_only() {
 }
 
 #[test]
+fn new_side_thread_on_a_modified_line_renders_once_not_on_the_deleted_row() {
+    let palette = Palette::light();
+    // A line modified in place: the deleted row (old 2) and the added row (new 2)
+    // share the number 2. A new-side thread keyed (None, Some(2)) must land on the
+    // added row only — not duplicate onto the deleted row whose old line is also 2.
+    let diff = FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,2 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "fn main() {\n".into(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    origin: LineOrigin::Deletion,
+                    content: "    old();\n".into(),
+                    old_lineno: Some(2),
+                    new_lineno: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "    new();\n".into(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+            ],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+    };
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            (None, Some(2u32)),
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename new()".into(),
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let mut intents: Vec<ReviewIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::Commit,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                forge: None,
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents,
+            }),
+        );
+    });
+    harness.run();
+    assert_eq!(
+        harness.get_all_by_label("please rename new()").count(),
+        1,
+        "a new-side thread on a modified line must render once, not on both rows",
+    );
+}
+
+#[test]
 fn ask_agent_pill_on_a_thread_emits_the_intent() {
     let palette = Palette::light();
     let diff = review_diff();
@@ -968,7 +1178,7 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
     existing.insert(
         "src/main.rs".into(),
         std::iter::once((
-            2u32,
+            (None, Some(2u32)),
             vec![helm::review::ThreadComment {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
@@ -987,12 +1197,12 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
             ui,
             &palette,
             &diff,
-            false,
-            true,
+            DiffSurface::Commit,
             &mut state_in_ui.borrow_mut(),
             &mut git,
             Some(&mut DiffReview {
                 comments: &empty,
+                forge: None,
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents_in_ui.borrow_mut(),
@@ -1006,8 +1216,8 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
     assert!(
         intents.borrow().iter().any(|i| matches!(
             i,
-            ReviewIntent::AskAgentOnThread { file, line }
-                if file == "src/main.rs" && *line == 2
+            ReviewIntent::AskAgentOnThread { file, old, new }
+                if file == "src/main.rs" && old.is_none() && *new == Some(2)
         )),
         "the Ask pill must emit AskAgentOnThread anchored at the thread, got {:?}",
         intents.borrow(),
@@ -1074,7 +1284,7 @@ fn the_editor_delete_icon_removes_the_comment() {
     assert!(
         intents.iter().any(|i| matches!(
             i,
-            ReviewIntent::DeleteComment { file, line }
+            ReviewIntent::DeleteComment { file, line, .. }
                 if file == "src/main.rs" && *line == Some(2)
         )),
         "the editor ✕ must emit DeleteComment for the line, got {intents:?}",
@@ -1099,7 +1309,7 @@ fn clicking_outside_the_editor_validates_the_note() {
     assert!(
         intents.iter().any(|i| matches!(
             i,
-            ReviewIntent::SaveComment { file, comment }
+            ReviewIntent::SaveComment { file, comment, .. }
                 if file == "src/main.rs"
                     && comment.new_lineno == Some(2)
                     && comment.note == "outside save"

@@ -90,15 +90,18 @@ pub struct PullRequest {
     pub reviewers: Vec<Reviewer>,
 }
 
-/// A single comment in a PR's thread. Conversation comments leave `path`/`line`
-/// empty; **inline** review comments anchor to a file line, and `parent_id` links
-/// a reply to the comment it answers (pull-requests.md §11).
+/// A single comment in a PR's thread. Conversation comments leave `path` and both
+/// line anchors empty; **inline** review comments anchor to a diff row, carrying
+/// the side they were left on (`old_lineno` for the deleted side, `new_lineno` for
+/// the added/context side) so the overlay can place them on the right row.
+/// `parent_id` links a reply to the comment it answers (pull-requests.md §11).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrComment {
     pub author: String,
     pub body: String,
     pub path: Option<String>,
-    pub line: Option<u32>,
+    pub old_lineno: Option<u32>,
+    pub new_lineno: Option<u32>,
     pub id: Option<u64>,
     pub parent_id: Option<u64>,
 }
@@ -162,17 +165,21 @@ pub fn draft_comments(store: &crate::review::FileComments) -> Vec<DraftComment> 
 pub fn forge_threads(comments: &[PrComment]) -> crate::review::ForgeThreads {
     let mut threads = crate::review::ForgeThreads::new();
     for c in comments {
-        if let (Some(path), Some(line)) = (c.path.as_deref(), c.line) {
-            threads
-                .entry(path.to_owned())
-                .or_default()
-                .entry(line)
-                .or_default()
-                .push(crate::review::ThreadComment {
-                    author: c.author.clone(),
-                    body: c.body.clone(),
-                });
+        let Some(path) = c.path.as_deref() else {
+            continue;
+        };
+        if c.old_lineno.is_none() && c.new_lineno.is_none() {
+            continue;
         }
+        threads
+            .entry(path.to_owned())
+            .or_default()
+            .entry((c.old_lineno, c.new_lineno))
+            .or_default()
+            .push(crate::review::ThreadComment {
+                author: c.author.clone(),
+                body: c.body.clone(),
+            });
     }
     threads
 }
@@ -315,7 +322,8 @@ mod tests {
             author: author.to_owned(),
             body: body.to_owned(),
             path: path.map(str::to_owned),
-            line,
+            old_lineno: None,
+            new_lineno: line,
             id: None,
             parent_id: None,
         }
@@ -331,11 +339,11 @@ mod tests {
         ];
         let threads = forge_threads(&comments);
         assert_eq!(threads.len(), 2, "conversation comment is excluded");
-        let a_line3 = &threads["a.rs"][&3];
+        let a_line3 = &threads["a.rs"][&(None, Some(3))];
         assert_eq!(a_line3.len(), 2);
         assert_eq!(a_line3[0].author, "bob");
         assert_eq!(a_line3[1].body, "reply");
-        assert_eq!(threads["b.rs"][&9][0].author, "dave");
+        assert_eq!(threads["b.rs"][&(None, Some(9))][0].author, "dave");
     }
 
     #[test]

@@ -113,8 +113,6 @@ pub enum CentralMode {
 /// `key` so a stale fetch for a closed surface is dropped.
 struct PrReview {
     key: crate::pull_requests::runner::PrReviewKey,
-    /// Index of the PR in `pr_cache.pull_requests` when opened (echoed to Checkout).
-    index: usize,
     pr: crate::pull_requests::model::PullRequest,
     /// Local repo the PR refs are fetched into for the read-only diff.
     root: PathBuf,
@@ -135,8 +133,13 @@ struct PrReview {
     /// Inline comments already posted on the PR, grouped per file/line (read-only),
     /// rebuilt from `detail.comments` when the detail lands.
     existing: crate::review::ForgeThreads,
-    /// The user's in-progress draft notes for this PR (posted on submit — §11).
+    /// The user's in-progress forge review comments for this PR (posted to GitHub /
+    /// Bitbucket on submit — §11).
     draft: crate::review::FileComments,
+    /// The user's in-progress agent notes for this PR — a pool kept apart from
+    /// `draft` so forge comments are never forced through the agent (§11). Batched
+    /// to the agent via the diff's "Send to …" recap.
+    agent_notes: crate::review::FileComments,
     /// Composer state for the review submission (pull-requests.md §11): the chosen
     /// verdict and the overall summary, plus the in-flight / error feedback.
     verdict: crate::pull_requests::model::ReviewVerdict,
@@ -224,6 +227,20 @@ struct PendingPostCreate {
     worktree_path: PathBuf,
     script: String,
     env: Vec<(&'static str, String)>,
+}
+
+/// An **Ask Claude** (pull-requests.md §11) deferred while its PR is checked out:
+/// the agent can't launch until the worktree exists, so the prompt is held here
+/// across the off-thread fetch + create, then resumed once the new worktree is
+/// live and its post-create script (if any) has been consumed — running the agent
+/// in a *second* tab keeps the two from sharing a pane.
+struct PendingPrAsk {
+    root: PathBuf,
+    branch: String,
+    prompt: String,
+    /// Canonical path of the created worktree, set once it lands — the resume
+    /// poll waits on this (and on `pending_post_create` clearing for the path).
+    worktree_path: Option<PathBuf>,
 }
 
 /// At most one confirmation modal on screen (M17-8): a single field makes the
@@ -391,6 +408,9 @@ pub struct HelmApp {
     /// One-shot post-create script injected into a freshly created worktree's first
     /// terminal (worktrees.md §6).
     pending_post_create: Option<PendingPostCreate>,
+    /// An **Ask Claude** held while its PR is checked out (pull-requests.md §11):
+    /// resumed once the worktree lands.
+    pending_pr_ask: Option<PendingPrAsk>,
     /// Edit buffers of the Preferences "Project" section, scoped to the active
     /// project (worktrees.md §6).
     project_settings_edit: Option<ProjectSettingsEdit>,
@@ -444,6 +464,8 @@ pub struct HelmApp {
     /// Last PR fetch result shown in the cockpit, refreshed in place each reply.
     pr_cache: crate::pull_requests::runner::PrCache,
     last_pr_poll: f64,
+    /// Project roots queried by the last PR fetch; a change re-queries (§6).
+    last_pr_roots: Vec<PathBuf>,
     /// Selected PR row in the cockpit, indexing `pr_cache.pull_requests`. Drives
     /// the list highlight; the open review surface (if any) is `pr_review`.
     /// Session-only, like the cache itself.
@@ -460,6 +482,9 @@ pub struct HelmApp {
     /// Width of the review surface's changed-files rail (pull-requests.md §11);
     /// live source for rendering, mirrored into `Prefs` on drag (persisted).
     pr_detail_width: f32,
+    /// Review surface's changed-files rail collapsed (pull-requests.md §11);
+    /// toggled from the header, mirrored into `Prefs` (persisted).
+    pr_rail_collapsed: bool,
     /// Bitbucket account email bound to the Preferences field (pull-requests.md
     /// §3): live mirror of `prefs.bitbucket_email`, persisted on edit.
     bitbucket_email: String,
@@ -593,6 +618,7 @@ impl HelmApp {
             worktree_create: None,
             worktree_checkout: None,
             pending_post_create: None,
+            pending_pr_ask: None,
             project_settings_edit: None,
             selected_project: None,
             pull_default: prefs.pull_default,
@@ -612,12 +638,14 @@ impl HelmApp {
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
             last_pr_poll: 0.0,
+            last_pr_roots: Vec::new(),
             pr_selected: None,
             pr_review: None,
             pr_review_runner: None,
             pr_detail_runner: None,
             pr_post_runner: None,
             pr_detail_width: prefs.pr_detail_width,
+            pr_rail_collapsed: prefs.pr_rail_collapsed,
             bitbucket_email: prefs.bitbucket_email.clone(),
             bitbucket_token_input: String::new(),
             prefs_path: None,
@@ -1267,13 +1295,15 @@ impl HelmApp {
     /// spawns the agent tab.
     fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent, ctx: &egui::Context) {
         use crate::review::ReviewIntent;
+        // The working-tree / commit surfaces have only the agent pool, so `pool`
+        // is always `Agent` here; the PR surface routes via `apply_pr_review_intents`.
         match intent {
-            ReviewIntent::SaveComment { file, comment } => {
+            ReviewIntent::SaveComment { file, comment, .. } => {
                 if let Some(key) = self.active_repo_key() {
                     crate::review::add_comment(self.review.entry(key).or_default(), &file, comment);
                 }
             }
-            ReviewIntent::DeleteComment { file, line } => {
+            ReviewIntent::DeleteComment { file, line, .. } => {
                 if let Some(key) = self.active_repo_key() {
                     if let Some(store) = self.review.get_mut(&key) {
                         crate::review::delete_comment(store, &file, line);
@@ -1281,8 +1311,8 @@ impl HelmApp {
                 }
             }
             ReviewIntent::SendToAgent => self.send_review_to_agent(ctx),
-            // No forge threads exist in the working-tree / commit review; this is
-            // only raised on the PR surface (handled by `apply_pr_review_intents`).
+            // Only raised on the PR surface (handled by `apply_pr_review_intents`):
+            // there is no forge thread in the working-tree / commit review.
             ReviewIntent::AskAgentOnThread { .. } => {}
         }
     }
@@ -1536,7 +1566,6 @@ impl HelmApp {
         self.pr_selected = Some(index);
         self.pr_review = Some(PrReview {
             key: key.clone(),
-            index,
             pr: pr.clone(),
             root: root.clone(),
             detail: None,
@@ -1554,6 +1583,7 @@ impl HelmApp {
             diff_view: crate::ui::diff_view::DiffViewState::default(),
             existing: crate::review::ForgeThreads::new(),
             draft: crate::review::FileComments::new(),
+            agent_notes: crate::review::FileComments::new(),
             verdict: crate::pull_requests::model::ReviewVerdict::default(),
             summary: String::new(),
             posting: false,
@@ -1595,8 +1625,22 @@ impl HelmApp {
         self.ensure_selected_diff(ctx);
     }
 
-    /// Request the selected file's diff if it isn't loaded/in flight yet. Drives the
-    /// initial auto-selected file and every later selection; idempotent per frame.
+    /// Close the open file in the review surface: drop the selection and its loaded
+    /// diff so the surface falls back to the "select a file" placeholder. The draft
+    /// review pools are left untouched — closing a file never discards its notes.
+    fn close_pr_file(&mut self) {
+        if let Some(review) = self.pr_review.as_mut() {
+            review.selected_file = None;
+            review.diff = None;
+            review.diff_path = None;
+            review.diff_error = None;
+            review.diff_loading = false;
+            review.diff_view.clear();
+        }
+    }
+
+    /// Request the selected file's diff if it isn't loaded/in flight yet. Drives
+    /// every selection; idempotent per frame.
     fn ensure_selected_diff(&mut self, ctx: &egui::Context) {
         let Some(review) = self.pr_review.as_ref() else {
             return;
@@ -1671,9 +1715,6 @@ impl HelmApp {
                                 review.head = Some(loaded.head);
                                 review.files = loaded.files;
                                 review.files_error = None;
-                                if review.selected_file.is_none() && !review.files.is_empty() {
-                                    review.selected_file = Some(0);
-                                }
                             }
                             Err(message) => review.files_error = Some(message),
                         }
@@ -1807,44 +1848,60 @@ impl HelmApp {
     }
 
     /// Apply the draft-review actions the embedded diff raised: save / delete a
-    /// line note in the PR's draft store, or send the draft to the agent (§11).
+    /// line note in the PR's forge or agent pool (by `pool`), or send the agent
+    /// pool to the agent (§11).
     fn apply_pr_review_intents(
         &mut self,
         intents: Vec<crate::review::ReviewIntent>,
         ctx: &egui::Context,
     ) {
-        use crate::review::ReviewIntent;
+        use crate::review::{ReviewIntent, ReviewPool};
         let mut send_to_agent = false;
-        let mut ask_thread: Option<(String, u32)> = None;
+        let mut ask_thread: Option<(String, Option<u32>, Option<u32>)> = None;
         for intent in intents {
             match intent {
-                ReviewIntent::SaveComment { file, comment } => {
+                ReviewIntent::SaveComment {
+                    pool,
+                    file,
+                    comment,
+                } => {
                     if let Some(review) = self.pr_review.as_mut() {
-                        crate::review::add_comment(&mut review.draft, &file, comment);
+                        let store = match pool {
+                            ReviewPool::Forge => &mut review.draft,
+                            ReviewPool::Agent => &mut review.agent_notes,
+                        };
+                        crate::review::add_comment(store, &file, comment);
                     }
                 }
-                ReviewIntent::DeleteComment { file, line } => {
+                ReviewIntent::DeleteComment { pool, file, line } => {
                     if let Some(review) = self.pr_review.as_mut() {
-                        crate::review::delete_comment(&mut review.draft, &file, line);
+                        let store = match pool {
+                            ReviewPool::Forge => &mut review.draft,
+                            ReviewPool::Agent => &mut review.agent_notes,
+                        };
+                        crate::review::delete_comment(store, &file, line);
                     }
                 }
                 ReviewIntent::SendToAgent => send_to_agent = true,
-                ReviewIntent::AskAgentOnThread { file, line } => ask_thread = Some((file, line)),
+                ReviewIntent::AskAgentOnThread { file, old, new } => {
+                    ask_thread = Some((file, old, new))
+                }
             }
         }
-        if let Some((file, line)) = ask_thread {
-            self.ask_claude_on_thread(&file, line, ctx);
+        if let Some((file, old, new)) = ask_thread {
+            self.ask_claude_on_thread(&file, old, new, ctx);
         } else if send_to_agent {
             self.ask_claude_on_pr(ctx);
         }
     }
 
     /// Launch the review agent on the whole PR (pull-requests.md §11): the generic
-    /// "review this branch" prompt, plus the user's draft line notes when present.
+    /// "review this branch" prompt, plus the user's agent-pool notes when present
+    /// (never the forge draft, which is destined for GitHub / Bitbucket).
     fn ask_claude_on_pr(&mut self, ctx: &egui::Context) {
         let Some((pr, draft_notes)) = self.pr_review.as_ref().map(|r| {
-            let notes = (crate::review::count(&r.draft) > 0)
-                .then(|| crate::review::build_review_prompt(&r.draft));
+            let notes = (crate::review::count(&r.agent_notes) > 0)
+                .then(|| crate::review::build_review_prompt(&r.agent_notes));
             (r.pr.clone(), notes)
         }) else {
             return;
@@ -1859,9 +1916,16 @@ impl HelmApp {
     /// Launch the review agent on one existing PR comment thread (pull-requests.md
     /// §11): the prompt carries the anchor and the posted comments so the agent can
     /// address the reviewer's feedback directly.
-    fn ask_claude_on_thread(&mut self, file: &str, line: u32, ctx: &egui::Context) {
+    fn ask_claude_on_thread(
+        &mut self,
+        file: &str,
+        old: Option<u32>,
+        new: Option<u32>,
+        ctx: &egui::Context,
+    ) {
         let Some((pr, prompt)) = self.pr_review.as_ref().and_then(|r| {
-            let thread = r.existing.get(file)?.get(&line)?;
+            let thread = r.existing.get(file)?.get(&(old, new))?;
+            let line = new.or(old).unwrap_or_default();
             Some((r.pr.clone(), thread_agent_prompt(file, line, thread)))
         }) else {
             return;
@@ -1887,31 +1951,44 @@ impl HelmApp {
         };
         let rows = self.workspace_branch_rows();
         let Some(index) = matching_worktree(&rows, &root, &pr.source_branch) else {
+            self.pending_pr_ask = Some(PendingPrAsk {
+                root: root.clone(),
+                branch: pr.source_branch.clone(),
+                prompt,
+                worktree_path: None,
+            });
             self.request_pr_checkout(pr, ctx);
             self.toasts.success(
-                "Checking out the PR — click Ask Claude again once it opens",
+                "Checking out the PR — Claude starts once the worktree is ready",
                 now,
             );
             return;
         };
+        self.open_pr_agent_in(index, &prompt, ctx);
+    }
+
+    /// Launch the review agent in a fresh tab of worktree `index`, then drop into
+    /// its terminal (pull-requests.md §11). A new tab (not the worktree's first
+    /// pane) so a post-create script never shares the agent's pane.
+    fn open_pr_agent_in(&mut self, index: usize, prompt: &str, ctx: &egui::Context) -> bool {
         self.workspace.set_active(index);
         let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
         self.persist(move |_| next);
         let Some(cwd) = self.workspace.repo(index).map(|r| r.path.clone()) else {
-            return;
+            return false;
         };
         let Some(tab) = self.workspace.add_tab() else {
-            return;
+            return false;
         };
         let (Some(tab_id), Some(pane_id), Some(key)) = (
             self.workspace.tab_id(index, tab),
             self.workspace.active_layout().map(|l| l.focus()),
             self.caches.keys.get(index).cloned(),
         ) else {
-            return;
+            return false;
         };
         self.workspace.rename_tab(tab, &self.review_agent_command);
-        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, &prompt);
+        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, prompt);
         self.caches
             .panes
             .entry((key, tab_id))
@@ -1919,6 +1996,42 @@ impl HelmApp {
             .insert(pane_id, pane);
         self.pr_review = None;
         self.central_mode = CentralMode::Terminal;
+        true
+    }
+
+    /// Resume a deferred **Ask Claude** (pull-requests.md §11) once its worktree is
+    /// live and any post-create script for that path has been consumed (so the
+    /// agent gets its own tab). Polled each frame; a no-op until both hold.
+    fn resume_pending_pr_ask(&mut self, ctx: &egui::Context) {
+        let Some(path) = self
+            .pending_pr_ask
+            .as_ref()
+            .and_then(|ask| ask.worktree_path.clone())
+        else {
+            return;
+        };
+        if self
+            .pending_post_create
+            .as_ref()
+            .is_some_and(|pc| pc.worktree_path == path)
+        {
+            return;
+        }
+        let Some(index) = (0..self.workspace.len()).find(|&index| {
+            self.workspace
+                .repo(index)
+                .is_some_and(|repo| canonical_path(&repo.path) == path)
+        }) else {
+            return;
+        };
+        let prompt = self
+            .pending_pr_ask
+            .as_ref()
+            .map(|ask| ask.prompt.clone())
+            .unwrap_or_default();
+        if self.open_pr_agent_in(index, &prompt, ctx) {
+            self.pending_pr_ask = None;
+        }
     }
 
     /// Checkout a PR (pull-requests.md §7): activate an existing worktree already
@@ -1976,6 +2089,7 @@ impl HelmApp {
                 self.central_mode = CentralMode::Terminal;
             }
             Err(message) => {
+                self.pending_pr_ask.take_if(|ask| ask.root == request.root);
                 self.toasts.error(
                     format!("Checkout failed — {message}"),
                     ctx.input(|i| i.time),
@@ -2007,6 +2121,27 @@ impl HelmApp {
             .and_then(crate::pull_requests::runner::PrRunner::try_recv)
         {
             self.pr_cache.apply(reply);
+            self.reconcile_pr_selection();
+        }
+    }
+
+    /// Re-point the list selection after a refresh re-orders or drops rows: track
+    /// the open review's PR by identity, else clear an out-of-range highlight.
+    fn reconcile_pr_selection(&mut self) {
+        if let Some(review) = &self.pr_review {
+            let (forge, repo, number) = (
+                review.pr.forge_kind,
+                review.pr.repo_label.as_str(),
+                review.pr.number,
+            );
+            self.pr_selected = self.pr_cache.pull_requests.iter().position(|pr| {
+                pr.forge_kind == forge && pr.repo_label == repo && pr.number == number
+            });
+        } else if self
+            .pr_selected
+            .is_some_and(|index| index >= self.pr_cache.pull_requests.len())
+        {
+            self.pr_selected = None;
         }
     }
 
@@ -2115,7 +2250,12 @@ impl HelmApp {
                     self.workspace.set_active(index);
                     let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
                     self.persist(move |_| next);
-                    self.arm_post_create(&request, &created, created_path);
+                    self.arm_post_create(&request, &created, created_path.clone());
+                }
+                if let Some(ask) = self.pending_pr_ask.as_mut() {
+                    if ask.root == request.root && ask.branch == created.source.local_branch {
+                        ask.worktree_path = Some(created_path);
+                    }
                 }
                 if let Some(git) = self.git.as_mut() {
                     git.worker.send(GitCommand::Status);
@@ -2130,6 +2270,7 @@ impl HelmApp {
                 );
             }
             Err(err) => {
+                self.pending_pr_ask.take_if(|ask| ask.root == request.root);
                 let message = format!("Create worktree failed — {}", err.message());
                 if let Some(Modal::CreateWorktree(pending)) = self.modal.as_mut() {
                     if pending.root == request.root && pending.selected.is_some() {
@@ -2962,9 +3103,12 @@ impl eframe::App for HelmApp {
             || (self.page == Page::Preferences
                 && self.preferences_section == PreferencesSection::PullRequests);
         if pr_surface_open {
+            let roots = self.workspace_project_roots();
             let cold = !self.pr_cache.loaded;
+            let repos_changed = roots != self.last_pr_roots;
             let pr_due = focused && now - self.last_pr_poll >= PR_POLL_INTERVAL.as_secs_f64();
-            if cold || focus_regained || pr_due {
+            if cold || repos_changed || focus_regained || pr_due {
+                self.last_pr_roots = roots;
                 self.refresh_pull_requests(&ctx);
                 self.last_pr_poll = now;
             }
@@ -2988,6 +3132,9 @@ impl eframe::App for HelmApp {
         // stay alive. `Esc` closes (effective on the next frame, the event never
         // reaches the other zones).
         if self.page == Page::Preferences {
+            // The early return skips `poll_workers`; drain the PR runner here so the
+            // "Pull Requests" section's source status updates and `in_flight` clears.
+            self.poll_pr_runner();
             self.render_preferences(ui, palette, &ctx);
             if let Some(log) = self.frame_log.as_mut() {
                 log.end_frame("prefs");

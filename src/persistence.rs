@@ -156,6 +156,10 @@ pub struct Prefs {
     /// Width of the PR cockpit's detail panel, set by dragging the list/detail
     /// split (pull-requests.md §5). Restored on launch; clamped by the view.
     pub pr_detail_width: f32,
+    /// PR review surface's changed-files rail collapsed to give the diff the full
+    /// width (pull-requests.md §11). Restored on launch.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pr_rail_collapsed: bool,
     /// Rebindable-action deviations (`action-id = "combo"`, keybindings.md §6):
     /// only deviations from the defaults, `""` = unbound; unknown ids are kept
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
@@ -195,6 +199,7 @@ impl Default for Prefs {
             review_agent_command: default_review_agent_command(),
             bitbucket_email: String::new(),
             pr_detail_width: DEFAULT_PR_DETAIL_WIDTH,
+            pr_rail_collapsed: false,
             keybindings: BTreeMap::new(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -534,6 +539,7 @@ mod tests {
             review_agent_command: "claude --model opus".to_owned(),
             bitbucket_email: "me@corp.com".to_owned(),
             pr_detail_width: 480.0,
+            pr_rail_collapsed: true,
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),

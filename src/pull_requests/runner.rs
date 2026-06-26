@@ -62,9 +62,13 @@ pub struct PrRequest {
 /// The single reply per request.
 #[derive(Debug, Clone)]
 pub struct PrReply {
-    pub pull_requests: Vec<PullRequest>,
     pub github: SourceStatus,
     pub bitbucket: SourceStatus,
+    /// Rows fetched per source: `Some` replaces the cache's rows for that forge;
+    /// `None` means the source failed transiently, so the cache keeps its
+    /// last-good rows and flags the view stale (pull-requests.md §6).
+    pub github_rows: Option<Vec<PullRequest>>,
+    pub bitbucket_rows: Option<Vec<PullRequest>>,
     /// Identity resolved this run (cached by the runner for the next request).
     pub github_login: Option<String>,
     pub bitbucket_uuid: Option<String>,
@@ -79,14 +83,37 @@ pub struct PrCache {
     pub bitbucket: SourceStatus,
     /// `false` until the first reply lands — drives the cold-start fetch on entry.
     pub loaded: bool,
+    /// At least one source served cached rows on the last refresh because its
+    /// query failed transiently (pull-requests.md §6) — drives the "stale" hint.
+    pub stale: bool,
 }
 
 impl PrCache {
+    /// Fold a reply in, keeping a source's prior rows when it didn't answer so a
+    /// transient failure never blanks the list (pull-requests.md §6).
     pub fn apply(&mut self, reply: PrReply) {
-        self.pull_requests = reply.pull_requests;
+        let stale = reply.github_rows.is_none() || reply.bitbucket_rows.is_none();
+        let mut rows = reply
+            .github_rows
+            .unwrap_or_else(|| self.rows_of(ForgeKind::GitHub));
+        rows.extend(
+            reply
+                .bitbucket_rows
+                .unwrap_or_else(|| self.rows_of(ForgeKind::Bitbucket)),
+        );
+        self.pull_requests = dedupe(rows);
         self.github = reply.github;
         self.bitbucket = reply.bitbucket;
         self.loaded = true;
+        self.stale = stale;
+    }
+
+    fn rows_of(&self, kind: ForgeKind) -> Vec<PullRequest> {
+        self.pull_requests
+            .iter()
+            .filter(|pr| pr.forge_kind == kind)
+            .cloned()
+            .collect()
     }
 }
 
@@ -550,11 +577,19 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
                 &bitbucket::pull_request_url(workspace, repo, req.number),
                 &header,
             )?;
-            let comments_json = curl_body(
-                &bitbucket::comments_url(workspace, repo, req.number),
-                &header,
-            )?;
-            bitbucket::parse_detail(&detail_json, &comments_json).map_err(|e| e.to_string())
+            let body = bitbucket::parse_body(&detail_json).map_err(|e| e.to_string())?;
+            let mut comments = Vec::new();
+            let mut next = Some(bitbucket::comments_url(workspace, repo, req.number));
+            while let Some(url) = next {
+                let page = curl_body(&url, &header)?;
+                comments.extend(bitbucket::parse_comments(&page).map_err(|e| e.to_string())?);
+                next = bitbucket::next_page(&page);
+            }
+            Ok(crate::pull_requests::model::PrDetail {
+                body,
+                comments,
+                check_runs: Vec::new(),
+            })
         }
     }
 }
@@ -751,7 +786,9 @@ impl PrRunner {
     }
 }
 
-/// The worker body: resolve forges, query each source, classify + dedupe.
+/// The worker body: resolve forges, query each source, tag roles + dedupe. Each
+/// source yields `Some(rows)` once it answered, or `None` when a query failed
+/// transiently so the cache keeps its last-good rows for that forge (§6).
 fn fetch(
     request: PrRequest,
     mut github_login: Option<String>,
@@ -765,9 +802,10 @@ fn fetch(
         .iter()
         .any(|(f, _)| matches!(f, Forge::Bitbucket { .. }));
 
-    let mut pull_requests = Vec::new();
     let mut github = SourceStatus::Absent;
+    let mut github_rows: Option<Vec<PullRequest>> = Some(Vec::new());
     let mut bitbucket = SourceStatus::Absent;
+    let mut bitbucket_rows: Option<Vec<PullRequest>> = Some(Vec::new());
 
     // GitHub — availability via `gh auth status`, identity via `gh api user`.
     if has_github {
@@ -780,15 +818,32 @@ fn fetch(
             }
             match &github_login {
                 Some(login) if !login.is_empty() => {
-                    github = SourceStatus::Ok;
+                    let mut rows = Vec::new();
+                    let mut complete = true;
                     for query in plan(&forges, None) {
                         if let PrQuery::Gh { repo_label, args } = query {
-                            if let Some(json) = run_stdout("gh", &args) {
-                                if let Ok(mut prs) = github::parse_list(&json, login, &repo_label) {
-                                    pull_requests.append(&mut prs);
+                            match run_stdout("gh", &args) {
+                                Some(json) => {
+                                    if let Ok(mut prs) =
+                                        github::parse_list(&json, login, &repo_label)
+                                    {
+                                        rows.append(&mut prs);
+                                    }
                                 }
+                                // A failed `gh pr list` would drop rows silently;
+                                // keep the cached set rather than show a partial one.
+                                None => complete = false,
                             }
                         }
+                    }
+                    if complete {
+                        github = SourceStatus::Ok;
+                        github_rows = Some(dedupe(rows));
+                    } else {
+                        github = SourceStatus::Unavailable(
+                            "GitHub unreachable — showing cached results".to_owned(),
+                        );
+                        github_rows = None;
                     }
                 }
                 _ => {
@@ -824,16 +879,20 @@ fn fetch(
                             )
                         }
                         CurlResult::HttpError(message) => {
-                            bitbucket = SourceStatus::Unavailable(message)
+                            bitbucket = SourceStatus::Unavailable(message);
+                            bitbucket_rows = None;
                         }
                         CurlResult::Failed => {
                             bitbucket =
-                                SourceStatus::Unavailable("Bitbucket unreachable".to_owned())
+                                SourceStatus::Unavailable("Bitbucket unreachable".to_owned());
+                            bitbucket_rows = None;
                         }
                     }
                 }
                 if let Some(uuid) = &bitbucket_uuid {
-                    bitbucket = SourceStatus::Ok;
+                    let mut rows = Vec::new();
+                    let mut complete = true;
+                    let mut unauthorized = false;
                     for query in plan(&forges, Some(uuid.as_str())) {
                         if let PrQuery::Bitbucket {
                             repo_label,
@@ -841,29 +900,44 @@ fn fetch(
                             role,
                         } = query
                         {
-                            match curl_get(&url, &header) {
-                                CurlResult::Ok(json) => {
-                                    if let Ok(mut prs) =
-                                        bitbucket::parse_list(&json, &repo_label, role)
-                                    {
-                                        pull_requests.append(&mut prs);
+                            let mut next = Some(url);
+                            while let Some(page_url) = next {
+                                match curl_get(&page_url, &header) {
+                                    CurlResult::Ok(json) => {
+                                        if let Ok(mut prs) =
+                                            bitbucket::parse_list(&json, &repo_label, role)
+                                        {
+                                            rows.append(&mut prs);
+                                        }
+                                        next = bitbucket::next_page(&json);
                                     }
-                                }
-                                CurlResult::Unauthorized => {
-                                    bitbucket = SourceStatus::Unavailable(
-                                        "Bitbucket token invalid or expired".to_owned(),
-                                    )
-                                }
-                                CurlResult::HttpError(message) => {
-                                    bitbucket = SourceStatus::Unavailable(message)
-                                }
-                                CurlResult::Failed => {
-                                    bitbucket = SourceStatus::Unavailable(
-                                        "Bitbucket unreachable".to_owned(),
-                                    )
+                                    CurlResult::Unauthorized => {
+                                        unauthorized = true;
+                                        next = None;
+                                    }
+                                    CurlResult::HttpError(_) | CurlResult::Failed => {
+                                        complete = false;
+                                        next = None;
+                                    }
                                 }
                             }
                         }
+                        if unauthorized {
+                            break;
+                        }
+                    }
+                    if unauthorized {
+                        bitbucket = SourceStatus::Unavailable(
+                            "Bitbucket token invalid or expired".to_owned(),
+                        );
+                    } else if complete {
+                        bitbucket = SourceStatus::Ok;
+                        bitbucket_rows = Some(dedupe(rows));
+                    } else {
+                        bitbucket = SourceStatus::Unavailable(
+                            "Bitbucket unreachable — showing cached results".to_owned(),
+                        );
+                        bitbucket_rows = None;
                     }
                 }
             }
@@ -871,9 +945,10 @@ fn fetch(
     }
 
     PrReply {
-        pull_requests: dedupe(pull_requests),
         github,
         bitbucket,
+        github_rows,
+        bitbucket_rows,
         github_login,
         bitbucket_uuid,
     }
@@ -944,58 +1019,69 @@ enum CurlResult {
 /// `curl` the URL with a Basic-auth header, splitting the trailing `%{http_code}`
 /// the `update.rs` idiom uses to tell 200 / 401 / error / no-response apart.
 fn curl_get(url: &str, auth_header: &str) -> CurlResult {
-    let args = [
-        "-s".to_owned(),
-        "-H".to_owned(),
-        format!("Authorization: {auth_header}"),
-        "-w".to_owned(),
-        "\n%{http_code}".to_owned(),
-        url.to_owned(),
-    ];
-    let Ok(out) = Command::new("curl").args(args).output() else {
-        return CurlResult::Failed;
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (body, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
-    match code.trim() {
-        "200" => CurlResult::Ok(body.to_owned()),
-        "401" => CurlResult::Unauthorized,
-        "000" | "" => CurlResult::Failed,
-        code => CurlResult::HttpError(
-            bitbucket::parse_error_message(body)
-                .unwrap_or_else(|| format!("Bitbucket error (HTTP {code})")),
-        ),
-    }
+    run_curl(
+        &["-w".to_owned(), "\n%{http_code}".to_owned(), url.to_owned()],
+        auth_header,
+    )
 }
 
 /// `curl -X POST` the URL with the Basic-auth header and a JSON body; comment
 /// creation returns 201 and approve/request-changes return 200, so both pass.
 fn curl_post(url: &str, auth_header: &str, body: &str) -> CurlResult {
-    let args = [
-        "-s".to_owned(),
-        "-X".to_owned(),
-        "POST".to_owned(),
-        "-H".to_owned(),
-        format!("Authorization: {auth_header}"),
-        "-H".to_owned(),
-        "Content-Type: application/json".to_owned(),
-        "-d".to_owned(),
-        body.to_owned(),
-        "-w".to_owned(),
-        "\n%{http_code}".to_owned(),
-        url.to_owned(),
+    run_curl(
+        &[
+            "-X".to_owned(),
+            "POST".to_owned(),
+            "-H".to_owned(),
+            "Content-Type: application/json".to_owned(),
+            "-d".to_owned(),
+            body.to_owned(),
+            "-w".to_owned(),
+            "\n%{http_code}".to_owned(),
+            url.to_owned(),
+        ],
+        auth_header,
+    )
+}
+
+/// Spawn `curl` with timeouts, feeding the Basic-auth header through a `--config`
+/// file on stdin so the token never lands on the argv (visible to any `ps`); the
+/// per-call options stay on the argv.
+fn run_curl(args: &[String], auth_header: &str) -> CurlResult {
+    use std::io::Write;
+    use std::process::Stdio;
+    let base = [
+        "--silent".to_owned(),
+        "--connect-timeout".to_owned(),
+        "10".to_owned(),
+        "--max-time".to_owned(),
+        "30".to_owned(),
+        "--config".to_owned(),
+        "-".to_owned(),
     ];
-    let Ok(out) = Command::new("curl").args(args).output() else {
+    let Ok(mut child) = Command::new("curl")
+        .args(base.iter().chain(args))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return CurlResult::Failed;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(format!("header = \"Authorization: {auth_header}\"\n").as_bytes());
+    }
+    let Ok(out) = child.wait_with_output() else {
         return CurlResult::Failed;
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    let (resp, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
+    let (body, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
     match code.trim() {
-        "200" | "201" => CurlResult::Ok(resp.to_owned()),
+        "200" | "201" => CurlResult::Ok(body.to_owned()),
         "401" => CurlResult::Unauthorized,
         "000" | "" => CurlResult::Failed,
         code => CurlResult::HttpError(
-            bitbucket::parse_error_message(resp)
+            bitbucket::parse_error_message(body)
                 .unwrap_or_else(|| format!("Bitbucket error (HTTP {code})")),
         ),
     }
@@ -1131,6 +1217,83 @@ mod tests {
         assert_eq!(
             matching_worktree(&rows, Path::new("/ws/web"), "absent"),
             None
+        );
+    }
+
+    fn row(forge: ForgeKind, repo: &str, number: u64) -> PullRequest {
+        use crate::pull_requests::model::{Checks, PrState, Review};
+        PullRequest {
+            forge_kind: forge,
+            repo_label: repo.to_owned(),
+            number,
+            title: String::new(),
+            role: PrRole::Mine,
+            state: PrState::Open,
+            author: String::new(),
+            source_branch: String::new(),
+            dest_branch: String::new(),
+            url: String::new(),
+            updated_at: String::new(),
+            checks: Checks::None,
+            review: Review::None,
+            reviewers: Vec::new(),
+        }
+    }
+
+    fn reply(
+        github_rows: Option<Vec<PullRequest>>,
+        bitbucket_rows: Option<Vec<PullRequest>>,
+    ) -> PrReply {
+        PrReply {
+            github: SourceStatus::Ok,
+            bitbucket: SourceStatus::Ok,
+            github_rows,
+            bitbucket_rows,
+            github_login: None,
+            bitbucket_uuid: None,
+        }
+    }
+
+    #[test]
+    fn apply_replaces_rows_and_clears_stale_when_both_sources_answer() {
+        let mut cache = PrCache::default();
+        cache.apply(reply(
+            Some(vec![row(ForgeKind::GitHub, "acme/web", 1)]),
+            Some(vec![row(ForgeKind::Bitbucket, "team/repo", 2)]),
+        ));
+        assert_eq!(cache.pull_requests.len(), 2);
+        assert!(cache.loaded);
+        assert!(!cache.stale);
+    }
+
+    #[test]
+    fn apply_keeps_a_failed_sources_prior_rows_and_flags_stale() {
+        let mut cache = PrCache::default();
+        cache.apply(reply(
+            Some(vec![row(ForgeKind::GitHub, "acme/web", 1)]),
+            Some(vec![row(ForgeKind::Bitbucket, "team/repo", 2)]),
+        ));
+
+        // GitHub fails transiently (None): its prior row survives; Bitbucket refreshes.
+        cache.apply(reply(
+            None,
+            Some(vec![
+                row(ForgeKind::Bitbucket, "team/repo", 2),
+                row(ForgeKind::Bitbucket, "team/repo", 3),
+            ]),
+        ));
+        assert!(cache.stale);
+        assert!(cache
+            .pull_requests
+            .iter()
+            .any(|pr| pr.forge_kind == ForgeKind::GitHub && pr.number == 1));
+        assert_eq!(
+            cache
+                .pull_requests
+                .iter()
+                .filter(|pr| pr.forge_kind == ForgeKind::Bitbucket)
+                .count(),
+            2
         );
     }
 }

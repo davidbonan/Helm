@@ -111,6 +111,8 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                 &[],
                 0,
                 false,
+                false,
+                &mut false,
                 &mut sidebar,
                 280.0,
                 320.0,

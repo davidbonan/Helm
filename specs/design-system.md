@@ -25,6 +25,7 @@ Semantic colors (no hardcoded hex in the code: reference the token).
 | `accent`           | `#2E68D3`             | `#4F86E8`            | Primary actions, link/active, Commit button |
 | `accent.hover`     | `#4579D8`             | `#6E9CEC`            | Accent hover / pressed |
 | `accent.subtle`    | `#EAF0FA`             | `#1E2A40`            | Light background behind an active element |
+| `accent.ai`        | `#7C5CE0`             | `#9D8AF8`            | AI / agent affordances (Sparkles notes, "Ask {agent}") — kept distinct from `accent` so review comments and agent prompts don't blur |
 | `bg.canvas`        | `#FFFFFF`             | `#19222D`            | Central zone + right sidebar |
 | `bg.sidebar`       | `#DDDEE1`             | `#10171F`            | Left sidebar |
 | `bg.surface`       | `#EFEFF0`             | `#1C2531`            | Pills, input toolbar |

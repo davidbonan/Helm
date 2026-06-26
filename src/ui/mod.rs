@@ -2,6 +2,7 @@ pub mod agents_view;
 pub mod ai_rebase_modal;
 pub mod commit_detail;
 pub mod conflict_view;
+pub mod detail;
 pub mod diff_view;
 pub mod feedback_modal;
 pub mod file_list;
@@ -745,6 +746,11 @@ pub fn root_layout(
     done_agents: &[DoneAgentRow],
     pr_to_review: usize,
     pr_active: bool,
+    // The PR cockpit's changed-files rail (pull-requests.md §11) is toggled from
+    // the title bar — the slot the git toggle vacates in a Helm central mode — so
+    // its collapse state and click signal ride alongside `show_git`.
+    pr_rail_collapsed: bool,
+    pr_toggle_rail: &mut bool,
     sidebar: &mut SidebarAction,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
@@ -956,6 +962,9 @@ pub fn root_layout(
                 open_feedback,
                 helm_central,
                 show_git,
+                pr_active,
+                pr_rail_collapsed,
+                pr_toggle_rail,
             )
         });
 }
@@ -997,6 +1006,9 @@ fn top_right_actions(
     open_feedback: &mut bool,
     helm_central: bool,
     show_git: &mut bool,
+    pr_active: bool,
+    pr_rail_collapsed: bool,
+    pr_toggle_rail: &mut bool,
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
@@ -1013,8 +1025,27 @@ fn top_right_actions(
             );
         }
         // The git panel is forced hidden while a Helm central mode is open, so its
-        // toggle would be inert — drop it.
-        let git = (!helm_central).then(|| git_toggle(ui, palette, show_git));
+        // toggle would be inert. The PR cockpit reuses that slot for its own
+        // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars
+        // collapse from the one place; the Agents dashboard has no rail, so none.
+        let git = if pr_active {
+            let mut shown = !pr_rail_collapsed;
+            let resp = sidebar_toggle(
+                ui,
+                palette,
+                &mut shown,
+                "Toggle files panel",
+                SidebarToggleSide::Right,
+            );
+            if resp.clicked() {
+                *pr_toggle_rail = true;
+            }
+            Some(resp)
+        } else if !helm_central {
+            Some(git_toggle(ui, palette, show_git))
+        } else {
+            None
+        };
         feedback_button(ui, palette, open_feedback);
         let prefs = preferences_button(ui, palette, open_preferences);
         // Badges are painted as an overlay below their icon (not inserted into the

@@ -85,16 +85,27 @@ pub fn parse_review_comments(json: &str) -> serde_json::Result<Vec<PrComment>> {
         .map(|items| {
             items
                 .iter()
-                .map(|c| PrComment {
-                    author: c["user"]["login"].as_str().unwrap_or_default().to_owned(),
-                    body: c["body"].as_str().unwrap_or_default().to_owned(),
-                    path: c["path"].as_str().map(str::to_owned),
-                    line: c["line"]
+                .map(|c| {
+                    // `side` is LEFT for a comment left on the deleted side, else
+                    // the new side (the REST default); the number falls back to
+                    // `original_line` for a comment on an outdated diff.
+                    let num = c["line"]
                         .as_u64()
                         .or_else(|| c["original_line"].as_u64())
-                        .map(|n| n as u32),
-                    id: c["id"].as_u64(),
-                    parent_id: c["in_reply_to_id"].as_u64(),
+                        .map(|n| n as u32);
+                    let (old_lineno, new_lineno) = match c["side"].as_str() {
+                        Some("LEFT") => (num, None),
+                        _ => (None, num),
+                    };
+                    PrComment {
+                        author: c["user"]["login"].as_str().unwrap_or_default().to_owned(),
+                        body: c["body"].as_str().unwrap_or_default().to_owned(),
+                        path: c["path"].as_str().map(str::to_owned),
+                        old_lineno,
+                        new_lineno,
+                        id: c["id"].as_u64(),
+                        parent_id: c["in_reply_to_id"].as_u64(),
+                    }
                 })
                 .collect()
         })
@@ -184,7 +195,8 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
                     author: c["author"]["login"].as_str().unwrap_or_default().to_owned(),
                     body: c["body"].as_str().unwrap_or_default().to_owned(),
                     path: None,
-                    line: None,
+                    old_lineno: None,
+                    new_lineno: None,
                     id: None,
                     parent_id: None,
                 })
@@ -477,11 +489,12 @@ mod tests {
         let comments = parse_review_comments(json).unwrap();
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].path.as_deref(), Some("src/a.rs"));
-        assert_eq!(comments[0].line, Some(12));
+        assert_eq!(comments[0].new_lineno, Some(12));
+        assert_eq!(comments[0].old_lineno, None);
         assert_eq!(comments[0].id, Some(1));
         assert_eq!(comments[0].parent_id, None);
         // line falls back to original_line; the reply links to its parent.
-        assert_eq!(comments[1].line, Some(9));
+        assert_eq!(comments[1].new_lineno, Some(9));
         assert_eq!(comments[1].parent_id, Some(1));
     }
 
