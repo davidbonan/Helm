@@ -78,6 +78,10 @@ const PR_REVIEW_CACHE_CAP: usize = 8;
 /// A cached review surface re-opened after this many seconds re-fetches its detail +
 /// files in the background, swapping the data in on arrival without touching drafts.
 const PR_REVIEW_REFRESH_SECS: f64 = 60.0;
+/// Min cache age before a *focus-regain* refetches the PR list (pull-requests.md §6):
+/// coming back to the app refreshes only a stale cockpit, so rapid focus toggling no
+/// longer spams `gh`/`curl`. The periodic 60 s tick is unaffected.
+const PR_FOCUS_REFRESH_SECS: f64 = 30.0;
 type Panes = HashMap<PaneId, TerminalState>;
 
 /// What `open_pr_review` should do for a (re)selected PR given whether its surface is
@@ -103,6 +107,19 @@ pub fn review_open(cached: bool, age_secs: f64, max_age_secs: f64) -> ReviewOpen
         (true, false) => ReviewOpen::Adopt,
         (true, true) => ReviewOpen::AdoptAndRefetch,
     }
+}
+
+/// Whether to refetch the PR list (pull-requests.md §6): always on a cold cache or a
+/// workspace change; on a focus regain only once the cache is older than `min_age_secs`
+/// so toggling focus doesn't spam the forge. The periodic tick is decided by the caller.
+pub fn should_refresh_pr(
+    cold: bool,
+    repos_changed: bool,
+    focus_regained: bool,
+    age_secs: f64,
+    min_age_secs: f64,
+) -> bool {
+    cold || repos_changed || (focus_regained && age_secs >= min_age_secs)
 }
 
 mod keys;
@@ -3198,8 +3215,16 @@ impl eframe::App for HelmApp {
             let roots = self.workspace_project_roots();
             let cold = !self.pr_cache.loaded;
             let repos_changed = roots != self.last_pr_roots;
-            let pr_due = focused && now - self.last_pr_poll >= PR_POLL_INTERVAL.as_secs_f64();
-            if cold || repos_changed || focus_regained || pr_due {
+            let age = now - self.last_pr_poll;
+            let pr_due = focused && age >= PR_POLL_INTERVAL.as_secs_f64();
+            if should_refresh_pr(
+                cold,
+                repos_changed,
+                focus_regained,
+                age,
+                PR_FOCUS_REFRESH_SECS,
+            ) || pr_due
+            {
                 self.last_pr_roots = roots;
                 self.refresh_pull_requests(&ctx);
                 self.last_pr_poll = now;

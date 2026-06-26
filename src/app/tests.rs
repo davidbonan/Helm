@@ -2049,6 +2049,18 @@ fn review_open_builds_when_absent_adopts_when_fresh_refetches_when_stale() {
 }
 
 #[test]
+fn should_refresh_pr_throttles_focus_regain_but_not_cold_or_repo_change() {
+    // Cold or a workspace change always refreshes, regardless of age/focus.
+    assert!(should_refresh_pr(true, false, false, 0.0, 30.0));
+    assert!(should_refresh_pr(false, true, false, 0.0, 30.0));
+    // A focus regain refreshes only once the cache is at least `min_age` old.
+    assert!(!should_refresh_pr(false, false, true, 29.9, 30.0));
+    assert!(should_refresh_pr(false, false, true, 30.0, 30.0));
+    // No trigger at all: never refresh, however old the cache.
+    assert!(!should_refresh_pr(false, false, false, 120.0, 30.0));
+}
+
+#[test]
 fn reopening_a_fresh_cached_pr_review_adopts_without_refetching() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("web");
