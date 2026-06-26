@@ -95,6 +95,8 @@ pub struct PullRequest {
 /// the side they were left on (`old_lineno` for the deleted side, `new_lineno` for
 /// the added/context side) so the overlay can place them on the right row.
 /// `parent_id` links a reply to the comment it answers (pull-requests.md §11).
+/// `context` is the few lines of code the comment was left on (GitHub's `diff_hunk`),
+/// shown as a snippet in the center's inline-comments section (pull-requests.md §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrComment {
     pub author: String,
@@ -104,6 +106,7 @@ pub struct PrComment {
     pub new_lineno: Option<u32>,
     pub id: Option<u64>,
     pub parent_id: Option<u64>,
+    pub context: Option<String>,
 }
 
 /// A single CI check run shown in the detail panel.
@@ -338,6 +341,7 @@ mod tests {
             new_lineno: line,
             id: None,
             parent_id: None,
+            context: None,
         }
     }
 

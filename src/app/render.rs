@@ -854,6 +854,7 @@ impl HelmApp {
         let mut pr_close_file = false;
         let mut pr_select_file: Option<usize> = None;
         let mut pr_select_commit: Option<crate::ui::pull_requests_view::CommitSelection> = None;
+        let mut pr_open_inline: Option<(usize, Option<u32>)> = None;
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
         let pr_agent = self.review_agent_command.clone();
@@ -1150,6 +1151,7 @@ impl HelmApp {
                             if pr_select_commit.is_none() {
                                 pr_select_commit = action.select_commit;
                             }
+                            pr_open_inline = pr_open_inline.or(action.open_inline_comment);
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                         }
@@ -2026,6 +2028,7 @@ impl HelmApp {
                             if pr_select_commit.is_none() {
                                 pr_select_commit = action.select_commit;
                             }
+                            pr_open_inline = pr_open_inline.or(action.open_inline_comment);
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
@@ -2275,6 +2278,9 @@ impl HelmApp {
         }
         if let Some(sel) = pr_select_commit {
             self.select_pr_commit(sel, ctx);
+        }
+        if let Some((idx, line)) = pr_open_inline {
+            self.open_pr_inline_comment(idx, line, ctx);
         }
         if pr_submit_review {
             self.submit_pr_review(ctx);

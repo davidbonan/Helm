@@ -12,7 +12,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **5/9**.
+Counter: **6/9**.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -49,7 +49,7 @@ Counter: **5/9**.
   explicit base/head. *Files*: `runner.rs`, `mod.rs`, `pull_requests_view.rs`.
   *Tests*: business e2e (single-commit delta on a throwaway repo); UI e2e (band +
   selection).
-- ☐ **T6 — Inline comments in the center, with code context (read).** `PrComment`
+- ☑ **T6 — Inline comments in the center, with code context (read).** `PrComment`
   gains `context: Option<String>` (GitHub `diff_hunk` from the already-fetched
   comments payload — no extra request; Bitbucket: window derived from the loaded
   `FileDiff`, else `None`). A new **Inline comments** section in the center detail,
@@ -76,10 +76,10 @@ Counter: **5/9**.
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- **T6** (inline comments in the center, with code context) — `PrComment.context`
-  (GitHub `diff_hunk`; Bitbucket window from the loaded `FileDiff`, else `None`); an
-  Inline comments section in the center grouped per file; clicking a card opens the
-  file at the line.
+- **T7** (reply to an inline comment, write) — thread `id` plumbed to the cards
+  (`review::ThreadComment` gains `id`); a reply editor on **both** the diff overlay
+  and the T6 center card; GitHub `POST pulls/{n}/comments/{id}/replies`, Bitbucket
+  `{content.raw, parent:{id}}`; detail refetches on success.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

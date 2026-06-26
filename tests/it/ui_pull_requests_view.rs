@@ -827,6 +827,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 new_lineno: None,
                 id: None,
                 parent_id: None,
+                context: None,
             },
             PrComment {
                 author: "reviewer-inline".to_owned(),
@@ -836,6 +837,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 new_lineno: Some(2),
                 id: None,
                 parent_id: None,
+                context: None,
             },
         ],
         check_runs: Vec::new(),
@@ -890,11 +892,94 @@ fn detail_conversation_lists_only_top_level_comments() {
     harness.step();
     // Detail (body + conversation) renders in the center; the file list stays in the rail.
     harness.get_by_label("Describe the change");
-    harness.get_by_label("src/main.rs");
     harness.get_by_label("Conversation");
     harness.get_by_label("reviewer-top");
-    assert!(
-        harness.query_by_label("reviewer-inline").is_none(),
-        "inline comments belong to the diff, not the detail conversation",
-    );
+    // Inline comments are segregated from the conversation into their own band (T6),
+    // not folded into it.
+    harness.get_by_label("Inline comments");
+    harness.get_by_label("reviewer-inline");
+}
+
+/// An inline-comment card shows the code it was left on (GitHub's diff hunk, stripped
+/// of its `@@` header and diff markers) over the thread, and clicking it opens that
+/// file at the commented line (T6).
+#[test]
+fn inline_comment_card_shows_context_and_opens_the_file() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-inline".to_owned(),
+            body: "rename this".to_owned(),
+            path: Some("src/main.rs".to_owned()),
+            old_lineno: None,
+            new_lineno: Some(2),
+            id: Some(7),
+            parent_id: None,
+            context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+    };
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    type Opened = Option<(usize, Option<u32>)>;
+    let opened: Rc<Cell<Opened>> = Rc::new(Cell::new(None));
+    let sink = opened.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+            if let Some(open) = action.open_inline_comment {
+                sink.set(Some(open));
+            }
+        });
+    harness.step();
+    harness.step();
+    // The hunk renders as plain code (the `@@` header and `+`/`-`/space markers stripped).
+    harness.get_by_label("fn main() {");
+    harness.get_by_label("Open src/main.rs line 2").click();
+    harness.step();
+    // src/main.rs is the second changed file; the card carries its new-side line.
+    assert_eq!(opened.get(), Some((1, Some(2))));
 }

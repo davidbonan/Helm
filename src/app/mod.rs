@@ -1745,6 +1745,16 @@ impl HelmApp {
         self.ensure_selected_diff(ctx);
     }
 
+    /// Open the file an inline comment was left on (from the center's inline-comments
+    /// section) and queue a one-shot scroll to its new-side line; the diff reveals it
+    /// once it has loaded (pull-requests.md §5).
+    fn open_pr_inline_comment(&mut self, idx: usize, line: Option<u32>, ctx: &egui::Context) {
+        self.select_pr_file(idx, ctx);
+        if let (Some(review), Some(line)) = (self.active_review_mut(), line) {
+            review.diff_view.reveal_line(line);
+        }
+    }
+
     /// Switch the review's diff range to a single commit (`commit^..commit`) or back to
     /// "All commits" (the three-dot anchors), recomputing the changed files off-thread
     /// (local, no network — the commits are already fetched). Selecting the current

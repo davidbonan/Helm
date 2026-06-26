@@ -39,6 +39,10 @@ pub struct DiffViewState {
     /// One-shot: focus the note editor on its next frame (set when an editor
     /// opens so the caret lands in the field without an extra click).
     note_focus: bool,
+    /// One-shot new-side line to scroll into view on the next render (set when an
+    /// inline comment is opened from the center, pull-requests.md §5). Consumed by
+    /// the row whose `new_lineno` matches, so it survives the async diff load.
+    reveal_line: Option<u32>,
 }
 
 impl DiffViewState {
@@ -54,6 +58,13 @@ impl DiffViewState {
         self.popover_edit = None;
         self.popover_buffer.clear();
         self.note_focus = false;
+        self.reveal_line = None;
+    }
+
+    /// Requests that the diff scroll the given new-side line into view on its next
+    /// render (one-shot, consumed when the matching row is drawn).
+    pub fn reveal_line(&mut self, new_lineno: u32) {
+        self.reveal_line = Some(new_lineno);
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -773,6 +784,10 @@ pub fn diff_view(
                     }
                     for (line_idx, line) in hunk.lines.iter().enumerate() {
                         let text = display_text(&line.content);
+                        if state.reveal_line.is_some() && line.new_lineno == state.reveal_line {
+                            ui.scroll_to_cursor(Some(egui::Align::Center));
+                            state.reveal_line = None;
+                        }
                         let action = {
                             let row = RowData {
                                 origin: line.origin,

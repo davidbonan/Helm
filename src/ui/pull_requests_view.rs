@@ -95,6 +95,9 @@ pub struct PullRequestsPageAction {
     /// A commit band row was clicked: switch the diff range to that commit (or back
     /// to "All commits").
     pub select_commit: Option<CommitSelection>,
+    /// An inline-comment card in the center was clicked: open its file (the changed-
+    /// file index) and, when known, scroll the diff to its new-side line (§5).
+    pub open_inline_comment: Option<(usize, Option<u32>)>,
     /// The rail/diff split was dragged: the app stores and persists the new width.
     pub set_detail_width: Option<f32>,
     /// Flat ⇄ tree view for the changed-files rail. Shared with the Git sidebar
@@ -439,8 +442,158 @@ fn review_detail(
                     ui.add_space(6.0);
                 }
             }
+
+            inline_comments_section(ui, palette, review, action);
             ui.add_space(PANEL_PAD_Y);
         });
+}
+
+/// **Inline comments** band in the center detail (pull-requests.md §5): the PR's
+/// inline review threads, grouped per file, each over a small monochrome snippet of
+/// the code they were left on. The thread itself still renders anchored on the diff
+/// rows (the overlay); this is the navigable summary — clicking a card opens the file
+/// and scrolls the diff to the line.
+fn inline_comments_section(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    action: &mut PullRequestsPageAction,
+) {
+    let Some(detail) = review.detail else {
+        return;
+    };
+    let inline: Vec<&PrComment> = detail
+        .comments
+        .iter()
+        .filter(|c| c.path.is_some() && (c.old_lineno.is_some() || c.new_lineno.is_some()))
+        .collect();
+    if inline.is_empty() {
+        return;
+    }
+    band_title(ui, palette, "Inline comments");
+    let mut files: Vec<&str> = Vec::new();
+    for c in &inline {
+        if let Some(path) = c.path.as_deref() {
+            if !files.contains(&path) {
+                files.push(path);
+            }
+        }
+    }
+    for path in files {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(path)
+                .size(META_SIZE)
+                .monospace()
+                .strong()
+                .color(palette.text_secondary),
+        );
+        let mut anchors: Vec<(Option<u32>, Option<u32>)> = Vec::new();
+        for c in inline.iter().filter(|c| c.path.as_deref() == Some(path)) {
+            let anchor = (c.old_lineno, c.new_lineno);
+            if !anchors.contains(&anchor) {
+                anchors.push(anchor);
+            }
+        }
+        for (old, new) in anchors {
+            let thread: Vec<&PrComment> = inline
+                .iter()
+                .copied()
+                .filter(|c| {
+                    c.path.as_deref() == Some(path) && (c.old_lineno, c.new_lineno) == (old, new)
+                })
+                .collect();
+            inline_comment_card(ui, palette, review, path, new, &thread, action);
+        }
+    }
+}
+
+/// One inline thread as a clickable card: the code snippet (GitHub's `diff_hunk`,
+/// else a window of the loaded diff for the selected file), then the comments.
+fn inline_comment_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    path: &str,
+    new: Option<u32>,
+    thread: &[&PrComment],
+    action: &mut PullRequestsPageAction,
+) {
+    ui.add_space(6.0);
+    let response = egui::Frame::new()
+        .fill(palette.bg_surface)
+        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let snippet = inline_snippet(review, path, new, thread);
+            for line in &snippet {
+                ui.label(
+                    egui::RichText::new(line)
+                        .size(11.5)
+                        .monospace()
+                        .color(palette.text_muted),
+                );
+            }
+            if !snippet.is_empty() {
+                ui.add_space(6.0);
+            }
+            for c in thread {
+                ui.label(
+                    egui::RichText::new(&c.author)
+                        .size(META_SIZE)
+                        .strong()
+                        .color(palette.text_secondary),
+                );
+                ui.label(
+                    egui::RichText::new(&c.body)
+                        .size(12.5)
+                        .color(palette.text_secondary),
+                );
+            }
+        })
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let label = match new {
+        Some(line) => format!("Open {path} line {line}"),
+        None => format!("Open {path}"),
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    if response.clicked() {
+        if let Some(idx) = review.files.iter().position(|f| f.path == path) {
+            action.open_inline_comment = Some((idx, new));
+        }
+    }
+}
+
+/// The few lines of code shown atop an inline-comment card. GitHub carries the hunk
+/// on the comment (`diff_hunk`); for Bitbucket (no hunk) fall back to a window of the
+/// loaded diff when the comment is on the open file, else nothing (pull-requests.md §5).
+fn inline_snippet(
+    review: &PrReviewView<'_>,
+    path: &str,
+    new: Option<u32>,
+    thread: &[&PrComment],
+) -> Vec<String> {
+    if let Some(hunk) = thread.iter().find_map(|c| c.context.as_deref()) {
+        let lines: Vec<String> = hunk
+            .lines()
+            .filter(|l| !l.starts_with("@@"))
+            .map(|l| l.strip_prefix(['+', '-', ' ']).unwrap_or(l).to_owned())
+            .collect();
+        let take = lines.len().min(4);
+        return lines[lines.len() - take..].to_vec();
+    }
+    if let (Some(diff), Some(new)) = (review.diff, new) {
+        if diff.path == path && !diff.source_lines.is_empty() {
+            let end = (new as usize).min(diff.source_lines.len());
+            let start = end.saturating_sub(3);
+            return diff.source_lines[start..end].to_vec();
+        }
+    }
+    Vec::new()
 }
 
 /// Full-width header for the center PR detail. It mirrors the accepted mockup:

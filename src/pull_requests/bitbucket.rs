@@ -209,6 +209,7 @@ pub fn parse_comments(comments_json: &str) -> serde_json::Result<Vec<PrComment>>
                         new_lineno,
                         id: c["id"].as_u64(),
                         parent_id: c["parent"]["id"].as_u64(),
+                        context: None,
                     })
                 })
                 .collect()

@@ -105,6 +105,7 @@ pub fn parse_review_comments(json: &str) -> serde_json::Result<Vec<PrComment>> {
                         new_lineno,
                         id: c["id"].as_u64(),
                         parent_id: c["in_reply_to_id"].as_u64(),
+                        context: c["diff_hunk"].as_str().map(str::to_owned),
                     }
                 })
                 .collect()
@@ -199,6 +200,7 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
                     new_lineno: None,
                     id: None,
                     parent_id: None,
+                    context: None,
                 })
                 .collect()
         })
@@ -526,7 +528,7 @@ mod tests {
     #[test]
     fn parse_review_comments_reads_inline_anchors_and_replies() {
         let json = r#"[
-          {"id": 1, "user": {"login": "dave"}, "body": "nit: rename", "path": "src/a.rs", "line": 12},
+          {"id": 1, "user": {"login": "dave"}, "body": "nit: rename", "path": "src/a.rs", "line": 12, "diff_hunk": "@@ -10,3 +10,4 @@\n ctx\n-old\n+new"},
           {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}, "body": "done", "path": "src/a.rs", "original_line": 9}
         ]"#;
         let comments = parse_review_comments(json).unwrap();
@@ -536,9 +538,15 @@ mod tests {
         assert_eq!(comments[0].old_lineno, None);
         assert_eq!(comments[0].id, Some(1));
         assert_eq!(comments[0].parent_id, None);
-        // line falls back to original_line; the reply links to its parent.
+        // the inline comment carries the diff hunk it was left on as code context.
+        assert_eq!(
+            comments[0].context.as_deref(),
+            Some("@@ -10,3 +10,4 @@\n ctx\n-old\n+new"),
+        );
+        // line falls back to original_line; the reply links to its parent and has no hunk.
         assert_eq!(comments[1].new_lineno, Some(9));
         assert_eq!(comments[1].parent_id, Some(1));
+        assert_eq!(comments[1].context, None);
     }
 
     #[test]
