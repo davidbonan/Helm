@@ -16,9 +16,10 @@ use helm::git::status::ChangeKind;
 use helm::pull_requests::model::{
     Checks, ForgeKind, PrRole, PrState, PullRequest, Review, ReviewVerdict, Reviewer,
 };
-use helm::review::{FileComments, ForgeThreads};
+use helm::review::{FileComments, ForgeThreads, LineComment};
 use helm::theme::Palette;
 use helm::ui::diff_view::DiffViewState;
+use helm::ui::file_list::FileViewMode;
 use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView, PrSourceHints};
 
 #[derive(Default)]
@@ -31,6 +32,7 @@ struct Captured {
     close_file: Cell<bool>,
     select_file: Cell<Option<usize>>,
     submit_review: Cell<bool>,
+    set_file_view: Cell<Option<FileViewMode>>,
 }
 
 fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
@@ -75,6 +77,7 @@ fn harness(
                 None,
                 detail_width,
                 false,
+                FileViewMode::Flat,
             );
             if action.select.is_some() {
                 sink.select.set(action.select);
@@ -134,6 +137,7 @@ fn review_harness(
                 Some(&mut review),
                 rail_width,
                 false,
+                FileViewMode::Flat,
             );
             if action.open_url.is_some() {
                 sink.open_url.set(action.open_url.clone());
@@ -156,6 +160,9 @@ fn review_harness(
             if action.submit_review {
                 sink.submit_review.set(true);
             }
+            if action.set_file_view.is_some() {
+                sink.set_file_view.set(action.set_file_view);
+            }
         });
     harness.step();
     harness.step();
@@ -168,6 +175,15 @@ fn changed_file(path: &str) -> CommitFile {
         kind: ChangeKind::Modified,
         additions: 3,
         deletions: 1,
+    }
+}
+
+fn line_comment(note: &str) -> LineComment {
+    LineComment {
+        old_lineno: None,
+        new_lineno: Some(2),
+        code: "work();".to_owned(),
+        note: note.to_owned(),
     }
 }
 
@@ -242,7 +258,9 @@ fn review_composer_submit_emits_the_intent() {
         Vec::new(),
         460.0,
     );
-    harness.get_by_label("Submit review").click();
+    harness.get_by_label("Approve").click();
+    harness.step();
+    harness.get_all_by_label("Approve").last().unwrap().click();
     harness.step();
     assert!(cap.submit_review.get());
 }
@@ -339,6 +357,7 @@ fn closing_the_open_file_emits_close_not_back() {
                 Some(&mut review),
                 460.0,
                 false,
+                FileViewMode::Flat,
             );
             if action.back {
                 sink.back.set(true);
@@ -368,6 +387,204 @@ fn clicking_a_changed_file_loads_its_diff() {
     harness.get_by_label("src/main.rs").click();
     harness.step();
     assert_eq!(cap.select_file.get(), Some(1));
+}
+
+#[test]
+fn files_header_toggle_requests_tree_view() {
+    let (mut harness, cap) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        vec![changed_file("src/lib.rs"), changed_file("src/main.rs")],
+        460.0,
+    );
+    harness.get_by_label("Tree view").click();
+    harness.step();
+    assert_eq!(cap.set_file_view.get(), Some(FileViewMode::Tree));
+}
+
+#[test]
+fn tree_view_groups_changed_files_under_directory_rows() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![
+        changed_file("README.md"),
+        changed_file("src/lib.rs"),
+        changed_file("src/main.rs"),
+    ];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Tree,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("src");
+    harness.get_by_label("src/lib.rs");
+}
+
+#[test]
+fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![changed_file("src/lib.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let mut draft = FileComments::new();
+    draft.insert("src/lib.rs".to_owned(), vec![line_comment("review this")]);
+    let mut agent_notes = FileComments::new();
+    agent_notes.insert("src/lib.rs".to_owned(), vec![line_comment("inspect this")]);
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: Some(0),
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("src/lib.rs: has review comments");
+    harness.get_by_label("src/lib.rs: has agent notes");
+    assert!(
+        harness.query_by_label("Viewed src/lib.rs").is_none(),
+        "viewed state is represented by the unread filter, not a row badge",
+    );
+    assert!(
+        harness
+            .query_by_label("src/lib.rs: 1 review comments")
+            .is_none(),
+        "comment icons should not expose a visible count badge",
+    );
+    assert!(
+        harness
+            .query_by_label("src/lib.rs: 1 agent notes")
+            .is_none(),
+        "agent-note icons should not expose a visible count badge",
+    );
+}
+
+#[test]
+fn unread_only_filters_out_files_opened_in_this_review() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: Some(0),
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Unread only").click();
+    harness.step();
+    assert!(
+        harness.query_by_label("src/lib.rs").is_none(),
+        "the already-opened file is hidden by the unread-only filter",
+    );
+    harness.get_by_label("src/main.rs");
 }
 
 #[test]
@@ -457,6 +674,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 Some(&mut review),
                 460.0,
                 true,
+                FileViewMode::Flat,
             );
         });
     harness.step();
@@ -541,6 +759,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 Some(&mut review),
                 460.0,
                 false,
+                FileViewMode::Flat,
             );
         });
     harness.step();

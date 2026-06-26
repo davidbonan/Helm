@@ -200,13 +200,19 @@ same one as commit/working-tree review.
   commit-detail visual language on `bg_canvas`. The **rail sits on the right** —
   the commit-detail sidebar's place — carrying only the **Open in browser /
   Checkout** actions, a **Files changed** band, the file rows and the composer; it
-  never holds the title or detail. The rail **collapses** via the header toggle
+  never holds the title or detail. The **Files changed** band reuses the shared
+  Flat ⇄ Tree file-view toggle (`Prefs.git_file_view`): Flat shows full paths,
+  Tree groups files under collapsible directory rows (`git::file_tree`). File rows
+  show only quiet monochrome icons when they carry forge-review draft comments or
+  agent notes; opened state stays out of the rows and is exposed through a compact
+  **Unread** filter chip carrying the unread count in the header. The rail **collapses**
+  via the header toggle
   (`PanelRight*`) or **⌘G** (the git-sidebar key, rebound here since the standard
   git sidebar is suppressed in the PR cockpit), persisted in `Prefs.pr_rail_collapsed`;
   the split width stays `Prefs.pr_detail_width`. On row hover the gutter shows
   **two** review-note buttons feeding **two separate pools** (`ReviewPool`): a
   `MessageSquarePlus` button (slot 0 — the **forge** pool, posted to GitHub /
-  Bitbucket on *Submit review (N)*) and the `Sparkles` button (slot 1 — the
+  Bitbucket on the exact submit action label) and the `Sparkles` button (slot 1 — the
   **agent** pool, batched to the agent via the *Send to {agent}* recap pill). Each
   opens its own inline note editor on the line; the pools never cross, so a forge
   review comment is **never** forced through the agent. Both batch — never one line
@@ -218,24 +224,30 @@ same one as commit/working-tree review.
   in the matched workspace repo; an unfetched head ⇒ the diff is unavailable with
   a one-line hint (Checkout §7 fetches it).
 - **Changed files + diff (read).** The rail lists the changed files (path, kind,
-  ±counts); selecting one loads its diff lazily (its own gated request). The
+  ±counts, quiet review/agent icons); selecting one loads its diff lazily (its own
+  gated request) and marks it viewed for that review session. The header's
+  **Unread** filter chip filters the list down to files not yet opened; when the
+  filter hides every row, the list shows **All files viewed**. The
   surface opens with **no file selected**, so the center shows the **PR detail**;
   the diff's **Close** (or `Esc` over it) clears the selection back to that detail
   **without leaving the surface** — distinct from **Back**, which returns to the
   list. Binary / oversize blobs degrade as elsewhere (git.md).
 - **Existing threads (read).** Posted PR comments overlay the diff **anchored at
-  their line**, read-only, via `review::ForgeThreads` (author + body cards). They
-  are **never edited** locally; the editable draft stores stay `FileComments`.
+  their line**, read-only, via `review::ForgeThreads` (author + body cards with a
+  compact in-card **Ask {agent}** action on the thread). They are **never edited**
+  locally; the editable draft stores stay `FileComments`.
 - **Two draft pools (write).** The forge pool (`PrReview.draft`) and the agent pool
   (`PrReview.agent_notes`) are independent `FileComments` stores; the diff routes a
   `SaveComment`/`DeleteComment` to one by its `ReviewPool`. The forge pool feeds the
   composer's **Submit review (N)** (count = `review::count(draft)`); the agent pool
   feeds the diff's **Send to {agent}** recap and the whole-PR **Ask Claude** prompt
   — so review comments destined for the forge are never sent to the agent.
-- **Forge submission (write).** The rail footer composer carries a **verdict**
-  (`ReviewVerdict`:
-  Comment · Approve · Request changes), an optional **summary**, and **Submit
-  review (N)**. On submit, `model::draft_comments` flattens the forge pool to
+- **Forge submission (write).** The rail footer composer carries a **segmented
+  verdict control** (`ReviewVerdict`: Comment · Approve · Request changes), an
+  optional **summary**, and a primary button whose label names what will be sent
+  (`Submit 1 comment`, `Approve`, `Request changes + 2 comments`, etc.; an empty
+  Comment review reads **Nothing to submit** and is disabled). On submit,
+  `model::draft_comments` flattens the forge pool to
   `DraftComment { path, line, body }` (blank notes dropped) and a gated
   **`PrPostRunner`** posts off-thread:
   - **GitHub** — one call to `POST repos/{repo}/pulls/{n}/reviews` via

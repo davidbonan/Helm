@@ -841,6 +841,7 @@ impl HelmApp {
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
         let pr_agent = self.review_agent_command.clone();
+        let mut set_file_view = None;
 
         // A stale active index makes these accessors return None; degrade to the
         // empty state below instead of panicking mid-frame (M17-4).
@@ -1120,11 +1121,13 @@ impl HelmApp {
                                 review_view.as_mut(),
                                 pr_detail_width,
                                 pr_rail_collapsed,
+                                self.git_file_view,
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
                             pr_checkout = pr_checkout || action.checkout;
                             pr_set_detail_width = action.set_detail_width;
+                            set_file_view = action.set_file_view;
                             pr_back = pr_back || action.back;
                             pr_close_file = pr_close_file || action.close_file;
                             pr_select_file = pr_select_file.or(action.select_file);
@@ -1981,11 +1984,13 @@ impl HelmApp {
                                 review_view.as_mut(),
                                 pr_detail_width,
                                 pr_rail_collapsed,
+                                self.git_file_view,
                             );
                             pr_select = action.select;
                             pr_open_url = action.open_url;
                             pr_checkout = pr_checkout || action.checkout;
                             pr_set_detail_width = action.set_detail_width;
+                            set_file_view = action.set_file_view;
                             pr_back = pr_back || action.back;
                             pr_close_file = pr_close_file || action.close_file;
                             pr_select_file = pr_select_file.or(action.select_file);
@@ -2022,7 +2027,6 @@ impl HelmApp {
 
         let mut generate_requested = false;
         let mut continue_op_requested = false;
-        let mut set_file_view = None;
         if let Some(git) = &self.git {
             let mut sent = false;
             let mut reload_diff = false;

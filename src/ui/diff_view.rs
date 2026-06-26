@@ -943,7 +943,7 @@ fn pool_style(palette: &Palette, pool: ReviewPool) -> PoolStyle {
         ReviewPool::Agent => PoolStyle {
             color: palette.accent_ai,
             icon: lucide_icons::Icon::Sparkles,
-            hint: "Describe what the agent should do…",
+            hint: "Describe what the agent should inspect…",
         },
     }
 }
@@ -1157,30 +1157,28 @@ fn existing_block(
         let Some(thread) = file.get(&anchor) else {
             continue;
         };
-        for comment in thread {
+        for (idx, comment) in thread.iter().enumerate() {
             ui.add_space(2.0);
+            let ask_label =
+                (!agent.is_empty() && idx + 1 == thread.len()).then(|| format!("Ask {agent}"));
+            let mut ask_clicked = false;
             ui.horizontal(|ui| {
                 ui.add_space(indent);
-                thread_card(ui, palette, &comment.author, &comment.body);
-            });
-        }
-        if !agent.is_empty() {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(indent);
-                if agent_pill(
+                ask_clicked = thread_card(
                     ui,
                     palette,
-                    lucide_icons::Icon::Bot,
-                    &format!("Ask {agent}"),
-                ) {
-                    out.push(ReviewIntent::AskAgentOnThread {
-                        file: path.to_owned(),
-                        old: anchor.0,
-                        new: anchor.1,
-                    });
-                }
+                    &comment.author,
+                    &comment.body,
+                    ask_label.as_deref(),
+                );
             });
+            if ask_clicked {
+                out.push(ReviewIntent::AskAgentOnThread {
+                    file: path.to_owned(),
+                    old: anchor.0,
+                    new: anchor.1,
+                });
+            }
         }
         ui.add_space(2.0);
     }
@@ -1192,8 +1190,15 @@ fn existing_block(
 /// review (`accent`) or an agent note (`accent_ai`). Reuses the shared
 /// `detail::author_avatar`, so inline threads and the PR conversation rail wear
 /// the same face.
-fn thread_card(ui: &mut egui::Ui, palette: &Palette, author: &str, body: &str) {
+fn thread_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    author: &str,
+    body: &str,
+    ask_label: Option<&str>,
+) -> bool {
     let color = palette.text_muted;
+    let mut ask_clicked = false;
     let inner = egui::Frame::new()
         .fill(with_alpha(color, 18))
         .inner_margin(egui::Margin::symmetric(9, 6))
@@ -1216,6 +1221,12 @@ fn thread_card(ui: &mut egui::Ui, palette: &Palette, author: &str, body: &str) {
                             .size(LINE_SIZE)
                             .color(palette.text_secondary),
                     );
+                    if let Some(label) = ask_label {
+                        ui.add_space(4.0);
+                        if agent_pill(ui, palette, lucide_icons::Icon::Bot, label) {
+                            ask_clicked = true;
+                        }
+                    }
                 });
             });
         });
@@ -1225,6 +1236,7 @@ fn thread_card(ui: &mut egui::Ui, palette: &Palette, author: &str, body: &str) {
         egui::CornerRadius::same(RADIUS_PILL),
         color,
     );
+    ask_clicked
 }
 
 /// Saved note rendered as a compact identity-tinted card — the pool's icon beside

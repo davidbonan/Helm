@@ -194,6 +194,20 @@ pending review + merge of the `m-pr` worktree branch.
   `specs/design-system.md`. *Tests*: existing diff_view + PR-view UI e2e (a11y labels
   unchanged); on-demand shot `gen_pr_review_comments` (`tests/shots_gen.rs`).
 
+### ☑ PR review polish pass (user feedback)
+- ☑ **Rail file list plugged into Flat ⇄ Tree.** PR changed files reuse
+  `Prefs.git_file_view`, `file_list::view_toggle` and `git::file_tree` with
+  session-only collapsed directories. *Files*: `src/ui/pull_requests_view.rs`,
+  `src/app/render.rs`.
+- ☑ **Composer is a true segmented control.** Comment / Approve / Request changes
+  render as one segmented control; the primary button label names the submitted
+  action and disables empty Comment reviews. *Files*: `src/ui/pull_requests_view.rs`.
+- ☑ **Review signals are calmer per file.** Viewed state moved to an **Unread**
+  filter chip in the Files changed header; rows keep only muted forge-draft and
+  agent-note icons with no counts. Existing-thread Ask action moved inside the
+  thread card. *Files*: `src/ui/{pull_requests_view,diff_view}.rs`. *Tests*: PR
+  rail UI e2e + diff thread intent e2e.
+
 ### Next actions (M-PR2)
 - **Review then merge** the `m-pr` worktree branch into `main` (the milestone loop
   does not merge/push — user's call).

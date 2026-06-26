@@ -9,9 +9,11 @@
 //! detail/diff and the persisted rail width, and consumes the returned intents.
 
 use lucide_icons::Icon;
+use std::collections::HashSet;
 
 use crate::git::commit_detail::CommitFile;
 use crate::git::diff::FileDiff;
+use crate::git::file_tree::{self, TreeRow};
 use crate::pull_requests::model::{
     Checks, PrComment, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
 };
@@ -19,9 +21,9 @@ use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, BODY_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
 use crate::ui::detail::{author_avatar, count_chip};
 use crate::ui::diff_view::{DiffReview, DiffSurface, DiffViewState};
-use crate::ui::file_list::{file_row, row_separator, FileRow};
+use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
 use crate::ui::git_panel::ratio_bar;
-use crate::ui::{clickable, paint_icon, SECTION_TOP_MARGIN, TITLEBAR_HEIGHT};
+use crate::ui::{clickable, paint_icon, with_alpha, SECTION_TOP_MARGIN, TITLEBAR_HEIGHT};
 
 /// Review-surface split bounds: the changed-files rail and the diff each keep a
 /// floor; the persisted rail width is clamped between them.
@@ -74,6 +76,9 @@ pub struct PullRequestsPageAction {
     pub select_file: Option<usize>,
     /// The rail/diff split was dragged: the app stores and persists the new width.
     pub set_detail_width: Option<f32>,
+    /// Flat ⇄ tree view for the changed-files rail. Shared with the Git sidebar
+    /// and commit detail via `Prefs.git_file_view`.
+    pub set_file_view: Option<FileViewMode>,
     /// Draft-review actions the embedded diff raised (save / delete a line note,
     /// send to agent) — the app applies them to the PR's draft store (§11).
     pub review_intents: Vec<ReviewIntent>,
@@ -138,6 +143,7 @@ pub fn pull_requests_page(
     review: Option<&mut PrReviewView<'_>>,
     rail_width: f32,
     rail_collapsed: bool,
+    file_view: FileViewMode,
 ) -> PullRequestsPageAction {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
@@ -154,6 +160,7 @@ pub fn pull_requests_page(
             rect,
             rail_width,
             rail_collapsed,
+            file_view,
             &mut action,
         ),
         // The browse list owns the central area like the Agents dashboard: the
@@ -174,6 +181,7 @@ pub fn pull_requests_page(
 /// rail on the **right** — the commit-detail sidebar's place — carries the Open in
 /// browser / Checkout actions, the file list and the composer. The title-bar
 /// toggle collapses the rail, leaving the center full-width.
+#[allow(clippy::too_many_arguments)]
 fn render_review(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -181,6 +189,7 @@ fn render_review(
     rect: egui::Rect,
     rail_width: f32,
     rail_collapsed: bool,
+    file_view: FileViewMode,
     action: &mut PullRequestsPageAction,
 ) {
     // An open diff owns `Esc` itself — it cancels an in-progress note first, then
@@ -224,7 +233,7 @@ fn render_review(
 
     let rail_rect =
         egui::Rect::from_x_y_ranges(egui::Rangef::new(split_x, rect.right()), rect.y_range());
-    review_rail(ui, palette, review, rail_rect, action);
+    review_rail(ui, palette, review, rail_rect, file_view, action);
 
     rail_resize_handle(ui, palette, split_x, rect, rail_width, action);
 }
@@ -282,6 +291,7 @@ fn review_rail(
     palette: &Palette,
     review: &mut PrReviewView<'_>,
     rect: egui::Rect,
+    file_view: FileViewMode,
     action: &mut PullRequestsPageAction,
 ) {
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
@@ -313,9 +323,50 @@ fn review_rail(
             ui.add_space(PANEL_PAD_Y);
             review_actions(ui, palette, review, action);
             ui.add_space(SECTION_TOP_MARGIN);
-            files_band(ui, palette, review.files);
+            let collapse_id = egui::Id::new(("pr_review_dirs", review.pr.url.as_str()));
+            let mut collapsed: HashSet<String> =
+                ui.data(|d| d.get_temp(collapse_id).unwrap_or_default());
+            let viewed_id = egui::Id::new(("pr_review_viewed_files", review.pr.url.as_str()));
+            let mut viewed: HashSet<String> =
+                ui.data(|d| d.get_temp(viewed_id).unwrap_or_default());
+            if let Some(file) = review
+                .selected_file
+                .and_then(|idx| review.files.get(idx))
+                .map(|f| f.path.clone())
+            {
+                viewed.insert(file);
+            }
+            let unread_only_id = egui::Id::new(("pr_review_unread_only", review.pr.url.as_str()));
+            let mut unread_only: bool = ui.data(|d| d.get_temp(unread_only_id).unwrap_or(false));
+            let unread_count = review
+                .files
+                .iter()
+                .filter(|file| !viewed.contains(&file.path))
+                .count();
+            if let Some(target) = files_band(
+                ui,
+                palette,
+                review.files,
+                file_view,
+                unread_count,
+                &mut unread_only,
+            ) {
+                action.set_file_view = Some(target);
+            }
             ui.add_space(6.0);
-            review_file_list(ui, palette, review, action);
+            review_file_list(
+                ui,
+                palette,
+                review,
+                file_view,
+                &viewed,
+                unread_only,
+                &mut collapsed,
+                action,
+            );
+            ui.data_mut(|d| d.insert_temp(collapse_id, collapsed));
+            ui.data_mut(|d| d.insert_temp(viewed_id, viewed));
+            ui.data_mut(|d| d.insert_temp(unread_only_id, unread_only));
             ui.add_space(PANEL_PAD_Y);
         });
 
@@ -418,10 +469,15 @@ fn review_detail(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn review_file_list(
     ui: &mut egui::Ui,
     palette: &Palette,
     review: &PrReviewView<'_>,
+    view: FileViewMode,
+    viewed: &HashSet<String>,
+    unread_only: bool,
+    collapsed: &mut HashSet<String>,
     action: &mut PullRequestsPageAction,
 ) {
     if review.files_loading && review.files.is_empty() {
@@ -436,36 +492,228 @@ fn review_file_list(
         ui.label(muted(palette, "No file changes"));
         return;
     }
+    let visible: Vec<usize> = review
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, file)| (!unread_only || !viewed.contains(&file.path)).then_some(idx))
+        .collect();
+    if visible.is_empty() {
+        ui.label(muted(palette, "All files viewed"));
+        return;
+    }
     // Rows abut with hairline separators, matching the commit-detail file list;
     // scoped so the zeroed spacing doesn't bleed into the sections below.
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        for (idx, file) in review.files.iter().enumerate() {
-            if idx > 0 {
-                row_separator(ui, palette);
+        match view {
+            FileViewMode::Flat => {
+                for (row_idx, idx) in visible.iter().copied().enumerate() {
+                    if row_idx > 0 {
+                        row_separator(ui, palette);
+                    }
+                    let file = &review.files[idx];
+                    review_file_row(ui, palette, review, idx, file, &file.path, 0.0, action);
+                }
             }
-            let out = file_row(
-                ui,
-                palette,
-                egui::Sense::click(),
-                &FileRow {
-                    path: &file.path,
-                    kind: file.kind,
-                    additions: file.additions,
-                    deletions: file.deletions,
-                    selected: review.selected_file == Some(idx),
-                    stats_hidden_on_hover: false,
-                    indent: 0.0,
-                },
-            );
-            out.response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &file.path)
-            });
-            if out.response.clicked() {
-                action.select_file = Some(idx);
+            FileViewMode::Tree => {
+                let paths: Vec<&str> = visible
+                    .iter()
+                    .map(|idx| review.files[*idx].path.as_str())
+                    .collect();
+                let rows = file_tree::tree_rows(&paths, collapsed);
+                let mut toggle: Option<String> = None;
+                for row in rows {
+                    match row {
+                        TreeRow::Dir {
+                            name,
+                            full_path,
+                            depth,
+                            collapsed: is_collapsed,
+                        } => {
+                            let indent = depth as f32 * file_list::TREE_INDENT_STEP;
+                            if file_list::dir_row(ui, palette, &name, indent, is_collapsed)
+                                .clicked()
+                            {
+                                toggle = Some(full_path);
+                            }
+                        }
+                        TreeRow::File { index, depth } => {
+                            let idx = visible[index];
+                            let file = &review.files[idx];
+                            let indent = depth as f32 * file_list::TREE_INDENT_STEP;
+                            review_file_row(
+                                ui,
+                                palette,
+                                review,
+                                idx,
+                                file,
+                                leaf_name(&file.path),
+                                indent,
+                                action,
+                            );
+                        }
+                    }
+                }
+                if let Some(dir) = toggle {
+                    if !collapsed.remove(&dir) {
+                        collapsed.insert(dir);
+                    }
+                }
             }
         }
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn review_file_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    idx: usize,
+    file: &CommitFile,
+    display: &str,
+    indent: f32,
+    action: &mut PullRequestsPageAction,
+) {
+    let indicators = file_indicators_for(review, &file.path);
+    let out = file_row(
+        ui,
+        palette,
+        egui::Sense::click(),
+        &FileRow {
+            path: display,
+            kind: file.kind,
+            additions: file.additions,
+            deletions: file.deletions,
+            selected: review.selected_file == Some(idx),
+            stats_hidden_on_hover: false,
+            indent,
+            trailing_reserved: indicators.reserved_width(),
+        },
+    );
+    paint_file_indicators(
+        ui,
+        palette,
+        out.trailing_rect,
+        &file.path,
+        indicators,
+        review.selected_file == Some(idx),
+        out.hovered,
+    );
+    let response = out.response.on_hover_text(&file.path);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            true,
+            review.selected_file == Some(idx),
+            &file.path,
+        )
+    });
+    if response.clicked() {
+        action.select_file = Some(idx);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FileIndicators {
+    forge: bool,
+    agent: bool,
+}
+
+impl FileIndicators {
+    fn reserved_width(self) -> f32 {
+        let mut width = 0.0;
+        if self.forge {
+            width += 16.0;
+        }
+        if self.agent {
+            width += 16.0;
+        }
+        if width > 0.0 {
+            width + 4.0
+        } else {
+            0.0
+        }
+    }
+}
+
+fn file_indicators_for(review: &PrReviewView<'_>, path: &str) -> FileIndicators {
+    FileIndicators {
+        forge: review
+            .draft
+            .get(path)
+            .is_some_and(|comments| !comments.is_empty()),
+        agent: review
+            .agent_notes
+            .get(path)
+            .is_some_and(|comments| !comments.is_empty()),
+    }
+}
+
+fn paint_file_indicators(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    path: &str,
+    indicators: FileIndicators,
+    selected: bool,
+    hovered: bool,
+) {
+    if indicators.reserved_width() <= 0.0 {
+        return;
+    }
+    let mut x = rect.left();
+    let y = rect.center().y;
+    let active = selected || hovered;
+    if indicators.forge {
+        x += file_indicator_icon(
+            ui,
+            palette,
+            egui::pos2(x, y),
+            Icon::MessageSquarePlus,
+            palette.accent,
+            active,
+            format!("{path}: has review comments"),
+        );
+    }
+    if indicators.agent {
+        file_indicator_icon(
+            ui,
+            palette,
+            egui::pos2(x, y),
+            Icon::Sparkles,
+            palette.accent_ai,
+            active,
+            format!("{path}: has agent notes"),
+        );
+    }
+}
+
+fn file_indicator_icon(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    pos: egui::Pos2,
+    icon: Icon,
+    color: egui::Color32,
+    active: bool,
+    label: String,
+) -> f32 {
+    let width = 16.0;
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(pos.x + width / 2.0, pos.y),
+        egui::vec2(width, 18.0),
+    );
+    let tint = if active { color } else { palette.text_muted };
+    paint_icon(ui.painter(), rect.center(), 12.0, icon, tint);
+    let response = ui.interact(
+        rect,
+        ui.id().with(("pr_file_indicator", label.as_str())),
+        egui::Sense::hover(),
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
+    width
 }
 
 /// Author block of the rail (commit-detail's `meta_block`): initials avatar +
@@ -503,9 +751,17 @@ fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) 
 
 /// "Files changed" band (commit-detail's `files_header`, sans the flat/tree
 /// toggle): the title + a count chip, with the ±totals and ratio bar pinned right.
-fn files_band(ui: &mut egui::Ui, palette: &Palette, files: &[CommitFile]) {
+fn files_band(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    files: &[CommitFile],
+    view: FileViewMode,
+    unread_count: usize,
+    unread_only: &mut bool,
+) -> Option<FileViewMode> {
     let additions: usize = files.iter().map(|f| f.additions).sum();
     let deletions: usize = files.iter().map(|f| f.deletions).sum();
+    let mut set_view = None;
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Files changed")
@@ -515,7 +771,11 @@ fn files_band(ui: &mut egui::Ui, palette: &Palette, files: &[CommitFile]) {
         );
         ui.add_space(2.0);
         count_chip(ui, palette, files.len());
+        ui.add_space(6.0);
+        unread_filter_chip(ui, palette, unread_count, unread_only);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            set_view = file_list::view_toggle(ui, palette, view);
+            ui.add_space(8.0);
             ratio_bar(ui, palette, additions, deletions);
             ui.add_space(8.0);
             ui.label(
@@ -531,6 +791,94 @@ fn files_band(ui: &mut egui::Ui, palette: &Palette, files: &[CommitFile]) {
             );
         });
     });
+    set_view
+}
+
+fn unread_filter_chip(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    unread_count: usize,
+    unread_only: &mut bool,
+) {
+    let label = "Unread";
+    let label_font = egui::FontId::proportional(12.0);
+    let count_font = egui::FontId::proportional(10.5);
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        label_font.clone(),
+        egui::Color32::PLACEHOLDER,
+    );
+    let count_text = unread_count.to_string();
+    let count_galley =
+        ui.painter()
+            .layout_no_wrap(count_text.clone(), count_font, egui::Color32::PLACEHOLDER);
+    let icon_w = 12.0;
+    let count_w = count_galley.size().x + 10.0;
+    let size = egui::vec2(
+        8.0 + icon_w + 4.0 + label_galley.size().x + 6.0 + count_w + 8.0,
+        24.0,
+    );
+    let enabled = unread_count > 0 || *unread_only;
+    let (rect, response, hovered) = clickable(ui, size, enabled);
+    let selected = *unread_only;
+    let fill = if selected {
+        palette.accent_subtle
+    } else if hovered {
+        palette.bg_surface_hover
+    } else {
+        palette.bg_surface
+    };
+    let stroke = if selected {
+        egui::Stroke::new(1.0, with_alpha(palette.accent, 150))
+    } else {
+        egui::Stroke::new(1.0, palette.border_subtle)
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_BUTTON),
+        fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    let content = if selected || hovered {
+        palette.accent
+    } else if enabled {
+        palette.text_secondary
+    } else {
+        palette.text_muted
+    };
+    let center_y = rect.center().y;
+    let icon_center = egui::pos2(rect.left() + 8.0 + icon_w / 2.0, center_y);
+    paint_icon(ui.painter(), icon_center, icon_w, Icon::EyeOff, content);
+    let label_pos = egui::pos2(
+        icon_center.x + icon_w / 2.0 + 4.0,
+        center_y - label_galley.size().y / 2.0,
+    );
+    ui.painter().galley(label_pos, label_galley, content);
+    let count_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 8.0 - count_w / 2.0, center_y),
+        egui::vec2(count_w, 16.0),
+    );
+    ui.painter().rect_filled(
+        count_rect,
+        egui::CornerRadius::same(RADIUS_BUTTON),
+        if selected {
+            with_alpha(palette.accent, 32)
+        } else {
+            palette.bg_surface_hover
+        },
+    );
+    ui.painter().galley(
+        count_rect.center() - count_galley.size() / 2.0,
+        count_galley,
+        content,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, "Unread only")
+    });
+    if response.clicked() {
+        *unread_only = !*unread_only;
+    }
 }
 
 /// Section heading in the commit-detail language: bold primary text, preceded by
@@ -590,41 +938,7 @@ fn review_composer(
     );
     panel.add_space(6.0);
 
-    let gap = 6.0;
-    let btn_w = (inner.width() - gap * 2.0) / 3.0;
-    panel.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        if verdict_button(
-            ui,
-            palette,
-            btn_w,
-            "Comment",
-            *review.verdict == ReviewVerdict::Comment,
-            palette.accent,
-        ) {
-            *review.verdict = ReviewVerdict::Comment;
-        }
-        if verdict_button(
-            ui,
-            palette,
-            btn_w,
-            "Approve",
-            *review.verdict == ReviewVerdict::Approve,
-            palette.git_added,
-        ) {
-            *review.verdict = ReviewVerdict::Approve;
-        }
-        if verdict_button(
-            ui,
-            palette,
-            btn_w,
-            "Request changes",
-            *review.verdict == ReviewVerdict::RequestChanges,
-            palette.git_deleted,
-        ) {
-            *review.verdict = ReviewVerdict::RequestChanges;
-        }
-    });
+    segmented_verdict(&mut panel, palette, review.verdict, inner.width());
     panel.add_space(6.0);
 
     panel.add(
@@ -645,14 +959,10 @@ fn review_composer(
     }
 
     let count = crate::review::count(review.draft);
-    let label = if review.posting {
-        "Submitting…".to_owned()
-    } else if count > 0 {
-        format!("Submit review ({count})")
-    } else {
-        "Submit review".to_owned()
-    };
-    let enabled = !review.posting;
+    let empty_comment_review =
+        *review.verdict == ReviewVerdict::Comment && count == 0 && review.summary.trim().is_empty();
+    let label = submit_review_label(*review.verdict, count, review.posting, empty_comment_review);
+    let enabled = !review.posting && !empty_comment_review;
     let (rect, response, hovered) = clickable(&mut panel, egui::vec2(inner.width(), 32.0), enabled);
     let fill = if !enabled {
         palette.state_disabled
@@ -672,33 +982,124 @@ fn review_composer(
         palette.lane_node_text,
     );
     response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Submit review"));
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
     if response.clicked() {
         action.submit_review = true;
     }
 }
 
-/// One pill of the verdict selector; `selected_fill` colors it when active.
-fn verdict_button(
+fn submit_review_label(
+    verdict: ReviewVerdict,
+    count: usize,
+    posting: bool,
+    empty_comment_review: bool,
+) -> String {
+    if posting {
+        return "Submitting…".to_owned();
+    }
+    if empty_comment_review {
+        return "Nothing to submit".to_owned();
+    }
+    match verdict {
+        ReviewVerdict::Comment => match count {
+            0 => "Submit comment".to_owned(),
+            1 => "Submit 1 comment".to_owned(),
+            n => format!("Submit {n} comments"),
+        },
+        ReviewVerdict::Approve => match count {
+            0 => "Approve".to_owned(),
+            1 => "Approve + 1 comment".to_owned(),
+            n => format!("Approve + {n} comments"),
+        },
+        ReviewVerdict::RequestChanges => match count {
+            0 => "Request changes".to_owned(),
+            1 => "Request changes + 1 comment".to_owned(),
+            n => format!("Request changes + {n} comments"),
+        },
+    }
+}
+
+/// Single framed segmented control for the review verdict. Active segments use a
+/// subtle tint and colored label; only Request changes goes red when active.
+fn segmented_verdict(
     ui: &mut egui::Ui,
     palette: &Palette,
+    verdict: &mut ReviewVerdict,
     width: f32,
+) {
+    let height = 28.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_BUTTON),
+        palette.bg_surface,
+        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let segment_w = rect.width() / 3.0;
+    let items = [
+        (ReviewVerdict::Comment, "Comment", palette.accent),
+        (ReviewVerdict::Approve, "Approve", palette.git_added),
+        (
+            ReviewVerdict::RequestChanges,
+            "Request changes",
+            palette.git_deleted,
+        ),
+    ];
+    for (idx, (target, label, color)) in items.into_iter().enumerate() {
+        let left = rect.left() + segment_w * idx as f32;
+        let right = if idx == 2 {
+            rect.right()
+        } else {
+            left + segment_w
+        };
+        let segment = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        )
+        .shrink(1.0);
+        if verdict_segment(ui, palette, segment, label, *verdict == target, color) {
+            *verdict = target;
+        }
+        if idx > 0 {
+            ui.painter().vline(
+                left,
+                egui::Rangef::new(rect.top() + 5.0, rect.bottom() - 5.0),
+                egui::Stroke::new(1.0, palette.border_subtle),
+            );
+        }
+    }
+}
+
+fn verdict_segment(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
     label: &str,
     selected: bool,
-    selected_fill: egui::Color32,
+    color: egui::Color32,
 ) -> bool {
-    let (rect, response, hovered) = clickable(ui, egui::vec2(width, 28.0), true);
-    let fill = if selected {
-        selected_fill
-    } else if hovered {
-        palette.bg_surface_hover
-    } else {
-        palette.bg_surface
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with(("review_verdict", label)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    if selected || hovered {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(RADIUS_BUTTON),
+            if selected {
+                with_alpha(color, 36)
+            } else {
+                palette.bg_surface_hover
+            },
+        );
     };
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
     let text_color = if selected {
-        palette.lane_node_text
+        color
     } else {
         palette.text_secondary
     };
@@ -1177,6 +1578,10 @@ fn muted(palette: &Palette, text: &str) -> egui::RichText {
     egui::RichText::new(text)
         .size(12.0)
         .color(palette.text_muted)
+}
+
+fn leaf_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, name)| name)
 }
 
 fn checks_label(checks: Checks) -> &'static str {

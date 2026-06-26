@@ -484,6 +484,7 @@ fn resolved_row(ui: &mut egui::Ui, palette: &Palette, entry: &FileEntry) {
             selected: false,
             stats_hidden_on_hover: false,
             indent: 0.0,
+            trailing_reserved: 0.0,
         },
     );
     row.response
@@ -1939,6 +1940,7 @@ fn file_row(
             selected,
             stats_hidden_on_hover: true,
             indent,
+            trailing_reserved: 0.0,
         },
     );
     let (rect, hovered) = (row.rect, row.hovered);

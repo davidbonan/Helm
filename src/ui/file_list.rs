@@ -59,6 +59,10 @@ pub(crate) struct FileRow<'a> {
     /// Left offset of the row content (status icon + path) for tree indentation.
     /// The hover/selection fill and the accent bar stay full-width.
     pub indent: f32,
+    /// Optional right-side space reserved by callers for their own badges. It
+    /// sits before the stats columns when stats are present, so the path elides
+    /// before both the caller badges and the line stats.
+    pub trailing_reserved: f32,
 }
 
 /// Response + geometry handed back to the caller for its own interactions
@@ -69,6 +73,7 @@ pub(crate) struct FileRowOutput {
     pub hovered: bool,
     pub path_left: f32,
     pub content_right: f32,
+    pub trailing_rect: egui::Rect,
 }
 
 /// OS side effects the file-row context menu defers to the app (clipboard copies
@@ -169,7 +174,21 @@ pub(crate) fn file_row(
     let path_left = content_left + STATUS_ICON_W + STATUS_ICON_GAP;
     let has_stats = row.additions > 0 || row.deletions > 0;
     let stats_w = STAT_ADD_COL_W + STAT_GAP + STAT_DEL_COL_W;
-    let path_right = if has_stats {
+    let trailing_reserved = row.trailing_reserved.max(0.0);
+    let trailing_right = if has_stats {
+        content_right - stats_w - STAT_GAP
+    } else {
+        content_right
+    };
+    let trailing_left = trailing_right - trailing_reserved;
+    let trailing_gap = if trailing_reserved > 0.0 {
+        STAT_GAP
+    } else {
+        0.0
+    };
+    let path_right = if trailing_reserved > 0.0 {
+        trailing_left - trailing_gap
+    } else if has_stats {
         content_right - stats_w - STAT_GAP
     } else {
         content_right
@@ -216,6 +235,10 @@ pub(crate) fn file_row(
         hovered,
         path_left,
         content_right,
+        trailing_rect: egui::Rect::from_min_max(
+            egui::pos2(trailing_left, rect.top()),
+            egui::pos2(trailing_right, rect.bottom()),
+        ),
     }
 }
 
@@ -574,6 +597,7 @@ mod tests {
                             selected: false,
                             stats_hidden_on_hover: false,
                             indent,
+                            trailing_reserved: 0.0,
                         },
                     );
                     sink.borrow_mut()

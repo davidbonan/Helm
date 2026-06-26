@@ -409,6 +409,7 @@ fn file_row(
             selected,
             stats_hidden_on_hover: false,
             indent,
+            trailing_reserved: 0.0,
         },
     );
     if selected {
