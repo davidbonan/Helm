@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.1.0
+
+- Review pull requests inside helm — a new Pull Requests cockpit lists open
+  PRs from GitHub and Bitbucket, with detail, diff, and per-commit changes.
+- Comment inline on PR diff lines, reply in threads, leave conversation
+  comments, and submit a verdict, all without leaving the app.
+- Check out a pull request directly into its own worktree.
+- PR navigation is instant now — reviews and diffs are cached per pull request.
+- Mark up your working diff with inline review notes and send them to a Claude
+  terminal agent.
+- Reorganize terminal splits by drag-and-drop.
+- Agent cards in the Columns view size themselves to the viewport.
+- Done agents appear as clickable rows under the Agents sidebar entry.
+
 ## 1.0.3
 
 - Select individual files in the WIP sidebar and stash them one at a time.
@@ -49,8 +63,3 @@
 ## 0.8.2
 
 - Gated terminal repaints to the visible pane, cutting idle CPU and GPU use.
-
-## 0.8.1
-
-- Agents columns are now resizable in both width and height.
-- General performance work across the app.
