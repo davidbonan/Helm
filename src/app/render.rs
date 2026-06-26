@@ -11,6 +11,10 @@ fn pr_review_view<'a>(
     r: &'a mut PrReview,
     agent: &'a str,
 ) -> crate::ui::pull_requests_view::PrReviewView<'a> {
+    let diff = match (r.base, r.head, r.selected_file.and_then(|i| r.files.get(i))) {
+        (Some(base), Some(head), Some(file)) => r.diffs.get(&(base, head, file.path.clone())),
+        _ => None,
+    };
     crate::ui::pull_requests_view::PrReviewView {
         pr: &r.pr,
         detail: r.detail.as_ref(),
@@ -19,7 +23,7 @@ fn pr_review_view<'a>(
         files_loading: r.files_loading,
         files_error: r.files_error.as_deref(),
         selected_file: r.selected_file,
-        diff: r.diff.as_ref(),
+        diff,
         diff_loading: r.diff_loading,
         diff_error: r.diff_error.as_deref(),
         diff_view: &mut r.diff_view,

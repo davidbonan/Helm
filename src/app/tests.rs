@@ -2025,8 +2025,7 @@ fn seed_review(
         files_loading: false,
         files_error: None,
         selected_file: None,
-        diff: None,
-        diff_path: None,
+        diffs: std::collections::HashMap::new(),
         diff_loading: false,
         diff_error: None,
         diff_view: crate::ui::diff_view::DiffViewState::default(),
@@ -2102,5 +2101,126 @@ fn reopening_a_fresh_cached_pr_review_adopts_without_refetching() {
         crate::review::count(&active.draft),
         1,
         "the draft survives the reopen"
+    );
+}
+
+/// Two-commit repo whose `base..head` changes both `a.txt` and `b.txt`, with a GitHub
+/// `origin` — the fixture for the per-PR diff cache (T2). Returns the `(base, head)` oids.
+fn repo_with_two_file_diff(root: &std::path::Path) -> (git2::Oid, git2::Oid) {
+    std::fs::create_dir_all(root).unwrap();
+    let repo = git2::Repository::init(root).unwrap();
+    repo.remote("origin", "git@github.com:acme/web.git")
+        .unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+
+    let commit = |tag: &str, parents: &[git2::Oid]| -> git2::Oid {
+        std::fs::write(root.join("a.txt"), format!("a{tag}\n")).unwrap();
+        std::fs::write(root.join("b.txt"), format!("b{tag}\n")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("a.txt")).unwrap();
+        index.add_path(Path::new("b.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent_commits: Vec<git2::Commit> = parents
+            .iter()
+            .map(|oid| repo.find_commit(*oid).unwrap())
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parent_refs)
+            .unwrap()
+    };
+
+    let base = commit("1", &[]);
+    let head = commit("2", &[base]);
+    (base, head)
+}
+
+/// Builds an app whose active review for `acme/web#7` has `base..head` loaded with the
+/// two changed files; seeds `diffs` with the files at `cached_indices`. Returns the app
+/// and the two changed files (in `pr_changed_files` order).
+fn app_with_diff_cache(
+    root: &std::path::Path,
+    base: git2::Oid,
+    head: git2::Oid,
+    cached_indices: &[usize],
+) -> (HelmApp, Vec<crate::git::commit_detail::CommitFile>) {
+    let repo = git2::Repository::open(root).unwrap();
+    let files = crate::git::diff::pr_changed_files(&repo, base, head).unwrap();
+    assert_eq!(files.len(), 2, "fixture changes exactly two files");
+
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(root.to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+
+    let pr = github_pr("acme/web", 7);
+    app.pr_cache.pull_requests = vec![pr.clone()];
+    let key = crate::pull_requests::runner::PrReviewKey {
+        forge_kind: pr.forge_kind,
+        repo_label: pr.repo_label.clone(),
+        number: pr.number,
+    };
+    let mut review = seed_review(&key, &pr, root);
+    review.base = Some(base);
+    review.head = Some(head);
+    review.files = files.clone();
+    review.selected_file = Some(0);
+    for &i in cached_indices {
+        let diff = crate::git::diff::pr_file_diff(&repo, base, head, &files[i].path).unwrap();
+        review
+            .diffs
+            .insert((base, head, files[i].path.clone()), diff);
+    }
+    app.pr_reviews.insert(key.clone(), review);
+    app.pr_active = Some(key.clone());
+    app.pr_review_lru.touch(key);
+    (app, files)
+}
+
+#[test]
+fn switching_between_cached_pr_diffs_does_not_refetch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("web");
+    let (base, head) = repo_with_two_file_diff(&root);
+    // Both files already cached.
+    let (mut app, _files) = app_with_diff_cache(&root, base, head, &[0, 1]);
+
+    let ctx = egui::Context::default();
+    app.select_pr_file(0, &ctx);
+    app.select_pr_file(1, &ctx);
+    app.select_pr_file(0, &ctx);
+
+    assert!(
+        app.pr_review_runner.is_none(),
+        "navigating between cached file diffs never fires a fetch"
+    );
+    assert!(
+        !app.active_review().unwrap().diff_loading,
+        "a cached file shows no diff spinner"
+    );
+}
+
+#[test]
+fn selecting_an_uncached_pr_diff_fetches_it_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("web");
+    let (base, head) = repo_with_two_file_diff(&root);
+    // Only the first file is cached.
+    let (mut app, _files) = app_with_diff_cache(&root, base, head, &[0]);
+
+    let ctx = egui::Context::default();
+    app.select_pr_file(0, &ctx);
+    assert!(
+        app.pr_review_runner.is_none(),
+        "the cached file is served without a fetch"
+    );
+
+    app.select_pr_file(1, &ctx);
+    assert!(
+        app.pr_review_runner.is_some(),
+        "a cache miss fires exactly one diff fetch"
+    );
+    assert!(
+        app.active_review().unwrap().diff_loading,
+        "the selected uncached file shows its loading state"
     );
 }

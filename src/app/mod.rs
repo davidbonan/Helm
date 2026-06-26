@@ -159,9 +159,11 @@ struct PrReview {
     files_loading: bool,
     files_error: Option<String>,
     selected_file: Option<usize>,
-    diff: Option<crate::git::diff::FileDiff>,
-    /// Path the loaded `diff` belongs to (guards adoption against a stale reply).
-    diff_path: Option<String>,
+    /// Diffs already loaded for this PR, keyed by `(base, head, path)` so switching
+    /// between files — or commits (T5) — serves from the cache and fetches on miss
+    /// only (pull-requests.md §11). `diff_loading`/`diff_error` track the in-flight
+    /// fetch for the *selected* file.
+    diffs: HashMap<(git2::Oid, git2::Oid, String), crate::git::diff::FileDiff>,
     diff_loading: bool,
     diff_error: Option<String>,
     diff_view: crate::ui::diff_view::DiffViewState,
@@ -1650,8 +1652,7 @@ impl HelmApp {
                         files_loading: true,
                         files_error: None,
                         selected_file: None,
-                        diff: None,
-                        diff_path: None,
+                        diffs: HashMap::new(),
                         diff_loading: false,
                         diff_error: None,
                         diff_view: crate::ui::diff_view::DiffViewState::default(),
@@ -1707,21 +1708,22 @@ impl HelmApp {
         if let Some(review) = self.active_review_mut() {
             if review.selected_file != Some(idx) {
                 review.selected_file = Some(idx);
-                review.diff = None;
                 review.diff_error = None;
+                // Reset the in-flight flag so `ensure_selected_diff` decides afresh
+                // for the new file; the cached diffs map is kept intact.
+                review.diff_loading = false;
             }
         }
         self.ensure_selected_diff(ctx);
     }
 
-    /// Close the open file in the review surface: drop the selection and its loaded
-    /// diff so the surface falls back to the "select a file" placeholder. The draft
-    /// review pools are left untouched — closing a file never discards its notes.
+    /// Close the open file in the review surface: drop the selection so the surface
+    /// falls back to the "select a file" placeholder. The cached diffs and the draft
+    /// review pools are left untouched — reopening a file is instant, and closing
+    /// never discards notes.
     fn close_pr_file(&mut self) {
         if let Some(review) = self.active_review_mut() {
             review.selected_file = None;
-            review.diff = None;
-            review.diff_path = None;
             review.diff_error = None;
             review.diff_loading = false;
             review.diff_view.clear();
@@ -1744,7 +1746,7 @@ impl HelmApp {
         else {
             return;
         };
-        if review.diff_loading || review.diff_path.as_deref() == Some(path.as_str()) {
+        if review.diff_loading || review.diffs.contains_key(&(base, head, path.clone())) {
             return;
         }
         let key = review.key.clone();
@@ -1812,23 +1814,29 @@ impl HelmApp {
                 }
                 PrReviewReply::FileDiff { key, path, result } => {
                     if let Some(review) = self.pr_reviews.get_mut(&key) {
-                        // The in-flight request is done regardless; adopt the diff
-                        // only if this is still the selected file.
-                        review.diff_loading = false;
                         let still_selected = review
                             .selected_file
                             .and_then(|i| review.files.get(i))
                             .map(|f| f.path.as_str())
                             == Some(path.as_str());
-                        if still_selected {
-                            review.diff_path = Some(path);
-                            match result {
-                                Ok(diff) => {
-                                    review.diff = Some(diff);
+                        match result {
+                            Ok(diff) => {
+                                // Warm the cache even if the user has switched away,
+                                // so returning to this file is instant. base/head are
+                                // the review's current refs (commit switching is T5).
+                                if let (Some(base), Some(head)) = (review.base, review.head) {
+                                    review.diffs.insert((base, head, path), diff);
+                                }
+                                if still_selected {
+                                    review.diff_loading = false;
                                     review.diff_error = None;
                                 }
-                                Err(message) => {
-                                    review.diff = None;
+                            }
+                            Err(message) => {
+                                // A failed fetch only affects the selected file's slot;
+                                // an in-flight fetch for another file keeps its state.
+                                if still_selected {
+                                    review.diff_loading = false;
                                     review.diff_error = Some(message);
                                 }
                             }
