@@ -74,7 +74,9 @@ PullRequest {
   review: Approved | ChangesRequested | Pending | None,
   reviewers: Vec<Reviewer>,
 }
-PrDetail { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun> }  // lazy, on selection
+PrComment { author, body, path, old_lineno, new_lineno, id, parent_id, context }  // a fetched thread comment (§11)
+PrCommit  { sha, short, subject, author }                     // one PR commit, oldest-first (§11)
+PrDetail  { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun>, commits: Vec<PrCommit> }  // lazy, on selection
 ReviewVerdict = Comment | Approve | RequestChanges            // submit composer (§11)
 DraftComment  { path, line, body }                            // a postable line comment (§11)
 ```
@@ -95,8 +97,9 @@ detail panel, resizable split persisted in `Prefs.pr_detail_width`):
   (✓ / ✗ / •) + **review** indicators. Clicking a row **selects** it.
 - **Detail** of the selection: header (title · `#number` · state), `source →
   dest`, author, **checks** + **reviewers**, and the **diff-centric review
-  surface** (§11) — the PR's changed files and their diffs, with in-diff comments
-  and a submit composer. PR-level actions: **Open in browser** (reuses
+  surface** (§11) — the PR's changed files and their diffs, with in-diff comments,
+  **inline-comment cards with code context** and a **per-commit** view in the
+  center, and a submit composer. PR-level actions: **Open in browser** (reuses
   `terminal::links::open_url` on the PR's `url`), **Checkout** (§7), and **Ask
   Claude** (§11). **Merging** stays out of scope (opens the browser).
 
@@ -120,6 +123,15 @@ page is open **and the window is focused** — network is heavier than the
 worktree / git ticks, so the cadence is deliberately conservative (rate limits).
 A change to the workspace repo set re-queries. Network error / offline ⇒ keep the
 last good cache, flag it **stale**; **never wipe rows** on a failed refresh.
+
+Opened PRs are held in a small **bounded per-PR review cache** (LRU, ~8 entries),
+each carrying its own **per-file diff cache** keyed by `(base, head, path)`, so
+re-opening a PR — or switching back to one — is **instant**: no re-run of the
+detail / diff runners, drafts and selection intact, with a background re-fetch
+only when the cached entry has aged past ~60 s (swapped in on arrival, drafts
+untouched). The **focus-regained** refetch of the list is throttled by a 30 s
+minimum age so a quick refocus doesn't re-hit the network; cold / repos-changed
+still fire unconditionally.
 
 ## 7. Checkout (open the PR branch as a worktree)
 
@@ -170,12 +182,19 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
 - **M-PR2 (write)**: the three-dot `pr_changed_files` / `pr_file_diff` delta on a
   throwaway repo; `draft_comments` flattening (blank notes dropped) into the
   GitHub review payload and the Bitbucket inline-comment / verdict-URL builders.
+- **M-PR3 (cache & richer reviewing)**: the bounded review-cache LRU + the
+  `should_refresh_pr` throttle predicate (unit); the GitHub / Bitbucket commit and
+  `diff_hunk` parsers + the reply / issue-comment arg & body builders (unit); the
+  per-commit delta on a throwaway repo (business e2e); UI e2e — a commit-band
+  selection, an inline center card with its snippet emitting `select_file`, the
+  reply editor (overlay + center) emitting `ReplyToThread`, and the conversation
+  composer / card reply emitting `PostConversationComment`.
 
 ## 10. Accepted limitations / out of scope (v1)
 
-- **No merging** and **no threaded reply** to a specific existing comment from the
-  app (those open the browser). Line comments, approve / request-changes / comment
-  reviews **are** supported in-app (§11).
+- **No merging** from the app (opens the browser). Line comments, **replies to
+  existing threads**, **conversation comments** (add + reply), and approve /
+  request-changes / comment reviews **are** supported in-app (§11).
 - **Bitbucket Cloud only** — no Server / Data Center (different API base & auth).
 - **Workspace-scoped** — no global account search (a PR to review on a repo not
   in the sidebar is not shown).
@@ -186,7 +205,7 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
   ⇒ Checkout falls back to **Open in browser**.
 - **GitLab / self-hosted** forges unsupported (`parse_remote` ⇒ skipped).
 
-## 11. In-app review (M-PR2 — diff, line comments, submit, Ask Claude)
+## 11. In-app review (M-PR2/M-PR3 — diff, line & inline comments, replies, conversation, submit, Ask Claude)
 
 The detail panel is a **diff-centric review surface**: the changed files of the
 PR shown **without cloning the branch**, each diff annotatable, with a composer to
@@ -270,6 +289,33 @@ same one as commit/working-tree review.
   (resolved/created as in §7) — the same launch path as the whole-PR **Ask
   Claude**, scoped to one thread.
 
-This supersedes the §10 "no posting / approving / requesting changes" limitation
-for **GitHub + Bitbucket Cloud line-level reviews**; **merging** and threaded
-*replies* to a specific existing comment remain out of scope (open the browser).
+**M-PR3 — richer reviewing** (folded into the same surface):
+
+- **Per-commit view (read).** A **commit band** above *Files changed* lists the
+  PR's commits **oldest-first** (short sha · subject · author); selecting one
+  recomputes the changed files + diffs over `commit^..commit` (explicit
+  base/head — the cache key includes it), while **All commits** restores the
+  three-dot PR diff. Reuses `pr_changed_files` / `pr_file_diff` with the commit's
+  oids (local once the head is fetched).
+- **Inline comments in the center (read).** Line-anchored threads are also
+  surfaced in the center **detail**, grouped per file: each card shows a small
+  monochrome **code-context** snippet (GitHub `diff_hunk` straight from the
+  comments payload — no extra request; Bitbucket a window derived from the loaded
+  `FileDiff`, else none) above the thread, and clicking it **opens the file at
+  that line**. The diff overlay anchored on the row stays.
+- **Reply to a thread (write).** Each existing thread — in the diff overlay **and**
+  the center inline card — carries a **reply** editor: GitHub
+  `POST …/pulls/{n}/comments/{id}/replies`, Bitbucket `{content.raw, parent:{id}}`.
+  The detail refetches on success so the reply reappears.
+- **Conversation comments (write).** The center **Conversation** section has a
+  standalone composer (parent-less) plus a **Reply** under each top-level card:
+  GitHub `POST issues/{n}/comments` (flat — issue comments don't thread), Bitbucket
+  `POST …/comments` (the reply nests via `parent`). The per-card Reply shows only
+  when the comment carries a forge id (Bitbucket); GitHub's flat conversation uses
+  the standalone composer. Posting reuses the same gated **`PrPostRunner`** +
+  success-refetch as the submit / reply paths (the draft is untouched — only a
+  submitted *review* clears it).
+
+This supersedes the §10 "no posting / approving / requesting changes / replying"
+limitations for **GitHub + Bitbucket Cloud** reviews; only **merging** remains out
+of scope (opens the browser).

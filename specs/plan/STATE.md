@@ -6,13 +6,13 @@
 
 ---
 
-## ☐ Milestone — M-PR3 · PR review: cache & richer reviewing
+## ☑ Milestone — M-PR3 · PR review: cache & richer reviewing
 
-Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Makes
-the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
-view, surfaces **inline comments in the center with code context**, and lifts the
-§10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **8/9**.
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§6/§11. Makes the cockpit
+navigation instant (per-PR cache + diff cache), adds a **per-commit** view,
+surfaces **inline comments in the center with code context**, and lifts the §10
+limits on **inline replies** and **conversation comments** (add + reply).
+Counter: **9/9** — complete, pending review + merge of the `m-pr` worktree branch.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -76,15 +76,19 @@ Counter: **8/9**.
   `diff_view.rs`, `pull_requests_view.rs`. *Tests*: unit on `issue_comment_args`; UI
   e2e add (`conversation_composer_emits_post_conversation_comment`) + reply
   (`conversation_card_reply_emits_nested_post_conversation_comment`).
-- ☐ **T9 — Spec + STATE + verify.** `pull-requests.md` §5 (inline comments in the
-  center + context; commit view) and §10-§11 (inline replies & conversation
-  comments now in scope) + STATE + `headless-verify` of the flow.
+- ☑ **T9 — Spec + STATE + verify.** Folded M-PR3 into `pull-requests.md`: §4 model
+  (`PrComment.context`, `PrCommit`, `PrDetail.commits`), §5 (inline-context cards +
+  per-commit view in the center), §6 (bounded per-PR review cache + per-file diff
+  cache → instant revisit; focus-regained 30 s throttle), §10 (replies &
+  conversation comments lifted out of scope), §11 (M-PR3 block: per-commit view,
+  inline comments in center, thread reply, conversation add/reply) + §9 test
+  catalogue. `headless-verify` PASS — the review detail (inline-context card,
+  Conversation composer + replies, commit band) renders and the conversation-card
+  reply emits a nested `PostConversationComment`.
 
 ### Next actions (M-PR3)
-- **T9** (spec + STATE + verify) — fold T6/T7/T8 into `pull-requests.md` §5 (inline
-  comments in the center + code context; commit view) and §10-§11 (inline replies &
-  conversation comments now in scope); refresh this block; `headless-verify` of the
-  full review flow (inline reply + conversation add/reply). Final milestone close.
+- **Review then merge** the `m-pr` worktree branch into `main` (the milestone loop
+  does not merge/push — user's call).
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache
