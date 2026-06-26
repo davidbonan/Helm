@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
-    Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
+    Checks, ForgeKind, PrComment, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review,
 };
 
 const API: &str = "https://api.bitbucket.org/2.0";
@@ -45,6 +45,12 @@ pub fn pull_request_url(workspace: &str, repo: &str, id: u64) -> String {
 /// A PR's comment thread (read-only in the cockpit).
 pub fn comments_url(workspace: &str, repo: &str, id: u64) -> String {
     format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/comments?pagelen=100")
+}
+
+/// A PR's commits (per-commit diff: T5). Paginated like comments; Bitbucket returns
+/// them newest-first, so the runner reverses to the oldest-first invariant.
+pub fn commits_url(workspace: &str, repo: &str, id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/commits?pagelen=100")
 }
 
 /// `…/pullrequests/{id}/comments` — the POST target for a new comment (no query,
@@ -120,7 +126,47 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
         body: parse_body(detail_json)?,
         comments: parse_comments(comments_json)?,
         check_runs: Vec::new(),
+        commits: Vec::new(),
     })
+}
+
+/// One `pullrequests/{id}/commits` page mapped onto domain commits (per-commit diff:
+/// T5); the runner follows `next_page` to accumulate every page. `hash` is the full
+/// sha (abbreviated to the git-default 7 chars), the message's first line the subject,
+/// and the author's `display_name` (falling back to the raw `Name <email>`) the name.
+pub fn parse_commits(commits_json: &str) -> serde_json::Result<Vec<PrCommit>> {
+    let page: Value = serde_json::from_str(commits_json)?;
+    let commits = page["values"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|c| {
+                    let sha = c["hash"].as_str().unwrap_or_default().to_owned();
+                    let short = sha.chars().take(7).collect();
+                    let subject = c["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let author = c["author"]["user"]["display_name"]
+                        .as_str()
+                        .or_else(|| c["author"]["raw"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    PrCommit {
+                        sha,
+                        short,
+                        subject,
+                        author,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(commits)
 }
 
 /// The PR description (`summary.raw`, falling back to `description`).
@@ -265,6 +311,7 @@ mod tests {
     const LIST: &str = include_str!("../../tests/fixtures/bitbucket_pr_list.json");
     const DETAIL: &str = include_str!("../../tests/fixtures/bitbucket_pr_detail.json");
     const COMMENTS: &str = include_str!("../../tests/fixtures/bitbucket_pr_comments.json");
+    const COMMITS: &str = include_str!("../../tests/fixtures/bitbucket_pr_commits.json");
 
     #[test]
     fn url_builders_target_the_cloud_2_0_endpoints() {
@@ -393,5 +440,19 @@ mod tests {
         assert_eq!(inline.id, Some(3));
         assert_eq!(inline.parent_id, Some(2));
         assert!(detail.check_runs.is_empty());
+    }
+
+    #[test]
+    fn parse_commits_maps_hash_subject_and_author() {
+        // The page is newest-first as Bitbucket returns it; the runner reverses it.
+        let commits = parse_commits(COMMITS).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(commits[0].short, "bbbbbbb");
+        // Subject is the first message line only.
+        assert_eq!(commits[0].subject, "Wire the submit handler");
+        assert_eq!(commits[0].author, "Bob Roe");
+        // No display name → fall back to the raw `Name <email>`.
+        assert_eq!(commits[1].author, "Alice Doe <alice@example.com>");
     }
 }

@@ -735,6 +735,7 @@ fn detail_conversation_lists_only_top_level_comments() {
             },
         ],
         check_runs: Vec::new(),
+        commits: Vec::new(),
     };
     let files = vec![changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();

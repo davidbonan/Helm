@@ -10,12 +10,12 @@
 use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
-    CheckRun, Checks, DraftComment, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest,
-    Review, ReviewVerdict, Reviewer,
+    CheckRun, Checks, DraftComment, ForgeKind, PrComment, PrCommit, PrDetail, PrRole, PrState,
+    PullRequest, Review, ReviewVerdict, Reviewer,
 };
 
 const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup";
-const DETAIL_FIELDS: &str = "body,comments,statusCheckRollup";
+const DETAIL_FIELDS: &str = "body,comments,commits,statusCheckRollup";
 
 /// `gh auth status` — exit 0 ⇒ the GitHub source is usable (pull-requests.md §3).
 pub fn auth_status_args() -> Vec<String> {
@@ -215,11 +215,43 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
                 .collect()
         })
         .unwrap_or_default();
+    let commits = value["commits"]
+        .as_array()
+        .map(|items| items.iter().map(parse_commit).collect())
+        .unwrap_or_default();
     Ok(PrDetail {
         body: value["body"].as_str().unwrap_or_default().to_owned(),
         comments,
         check_runs,
+        commits,
     })
+}
+
+/// One entry of `gh pr view --json commits`: `oid` is the full hash (abbreviated to the
+/// git-default 7 chars), `messageHeadline` the subject, the first `authors` entry the
+/// display name (falling back to its login).
+fn parse_commit(c: &Value) -> PrCommit {
+    let sha = c["oid"].as_str().unwrap_or_default().to_owned();
+    let short = sha.chars().take(7).collect();
+    let author = c["authors"]
+        .as_array()
+        .and_then(|a| a.first())
+        .map(|a| {
+            let name = a["name"].as_str().unwrap_or_default();
+            if name.is_empty() {
+                a["login"].as_str().unwrap_or_default()
+            } else {
+                name
+            }
+        })
+        .unwrap_or_default()
+        .to_owned();
+    PrCommit {
+        sha,
+        short,
+        subject: c["messageHeadline"].as_str().unwrap_or_default().to_owned(),
+        author,
+    }
 }
 
 fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
@@ -478,6 +510,17 @@ mod tests {
         assert_eq!(detail.check_runs[1].status, Checks::Failing);
         assert_eq!(detail.check_runs[2].name, "ci/circleci: deploy");
         assert_eq!(detail.check_runs[2].status, Checks::Pending);
+
+        assert_eq!(detail.commits.len(), 2);
+        assert_eq!(
+            detail.commits[0].sha,
+            "1111111111111111111111111111111111111111"
+        );
+        assert_eq!(detail.commits[0].short, "1111111");
+        assert_eq!(detail.commits[0].subject, "Add login form");
+        assert_eq!(detail.commits[0].author, "Alice Doe");
+        // No display name → fall back to the login.
+        assert_eq!(detail.commits[1].author, "bob");
     }
 
     #[test]

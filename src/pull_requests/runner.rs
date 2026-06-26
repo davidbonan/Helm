@@ -586,10 +586,20 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
                 comments.extend(bitbucket::parse_comments(&page).map_err(|e| e.to_string())?);
                 next = bitbucket::next_page(&page);
             }
+            let mut commits = Vec::new();
+            let mut next = Some(bitbucket::commits_url(workspace, repo, req.number));
+            while let Some(url) = next {
+                let page = curl_body(&url, &header)?;
+                commits.extend(bitbucket::parse_commits(&page).map_err(|e| e.to_string())?);
+                next = bitbucket::next_page(&page);
+            }
+            // Bitbucket lists commits newest-first; flip to the oldest-first invariant.
+            commits.reverse();
             Ok(crate::pull_requests::model::PrDetail {
                 body,
                 comments,
                 check_runs: Vec::new(),
+                commits,
             })
         }
     }

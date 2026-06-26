@@ -4,6 +4,10 @@
     { "author": { "login": "dave" }, "authorAssociation": "MEMBER", "body": "Looks good to me", "createdAt": "2026-06-20T12:00:00Z" },
     { "author": { "login": "erin" }, "authorAssociation": "CONTRIBUTOR", "body": "One nit on naming", "createdAt": "2026-06-20T13:00:00Z" }
   ],
+  "commits": [
+    { "oid": "1111111111111111111111111111111111111111", "messageHeadline": "Add login form", "authors": [{ "name": "Alice Doe", "login": "alice" }] },
+    { "oid": "2222222222222222222222222222222222222222", "messageHeadline": "Wire the submit handler", "authors": [{ "name": "", "login": "bob" }] }
+  ],
   "statusCheckRollup": [
     { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS" },
     { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE" },

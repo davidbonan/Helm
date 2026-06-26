@@ -12,7 +12,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **3/9**.
+Counter: **4/9**.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -34,10 +34,13 @@ Counter: **3/9**.
   `focus_regained` branch by a 30 s min age on `last_pr_poll`; cold / repos_changed
   fire unconditionally and the periodic 60 s tick is kept at the call site. *Files*:
   `src/app/mod.rs`. *Tests*: unit on the predicate.
-- ☐ **T4 — Commits in the detail fetch.** `PrCommit { sha, short, subject, author }`
-  + `PrDetail.commits`. GitHub: add `commits` to `DETAIL_FIELDS` + parse. Bitbucket:
-  paginated `/commits` endpoint + parse. *Files*: `src/pull_requests/model.rs`,
-  `github.rs`, `bitbucket.rs`, `runner.rs`. *Tests*: unit on fixtures.
+- ☑ **T4 — Commits in the detail fetch.** `PrCommit { sha, short, subject, author }`
+  + `PrDetail.commits` (oldest-first). GitHub: `commits` added to `DETAIL_FIELDS` +
+  `parse_commit` (oid→7-char short, `messageHeadline`, first author name/login).
+  Bitbucket: paginated `commits_url` + `parse_commits` (hash, first message line,
+  `display_name`/raw), reversed to oldest-first in the runner. *Files*:
+  `src/pull_requests/model.rs`, `github.rs`, `bitbucket.rs`, `runner.rs`. *Tests*:
+  unit on both fixtures.
 - ☐ **T5 — Per-commit diff.** Commit band in the rail (above Files changed);
   selecting a commit recomputes files+diff over `commit^..commit` (explicit
   base/head), "All commits" = the current three-dot diff. Reuses
@@ -73,8 +76,8 @@ Counter: **3/9**.
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- **T4** (commits in the detail fetch) — `PrCommit` + `PrDetail.commits`; GitHub
-  `DETAIL_FIELDS` + Bitbucket paginated `/commits`. Feeds T5's per-commit diff.
+- **T5** (per-commit diff) — commit band in the rail; selecting a commit recomputes
+  files+diff over `commit^..commit` (explicit base/head), "All commits" = three-dot.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

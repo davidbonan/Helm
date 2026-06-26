@@ -113,12 +113,24 @@ pub struct CheckRun {
     pub status: Checks,
 }
 
+/// One commit in a PR's history (pull-requests.md §5): `sha` is the full hash, `short`
+/// the abbreviated form, `subject` the first message line, `author` the display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrCommit {
+    pub sha: String,
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+}
+
 /// Lazily-fetched detail for the selected PR (pull-requests.md §5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrDetail {
     pub body: String,
     pub comments: Vec<PrComment>,
     pub check_runs: Vec<CheckRun>,
+    /// Commits in the PR, oldest first (per-commit diff: T5).
+    pub commits: Vec<PrCommit>,
 }
 
 /// The verdict a submitted review carries (pull-requests.md §11). `Comment` posts
