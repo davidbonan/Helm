@@ -346,10 +346,32 @@ pub struct PrFilesLoaded {
     pub files: Vec<crate::git::commit_detail::CommitFile>,
 }
 
-/// A review fetch: the changed-files list (network) or one file's diff (local).
+/// The commit range a `CommitFiles` request recomputes the changed files over — both
+/// already present locally after the initial PR-head fetch, so the recompute is I/O-free
+/// (per-commit diff: T5).
+#[derive(Debug, Clone, Copy)]
+pub enum CommitRange {
+    /// One commit: `base = its first parent` (the commit itself if it is a root), so
+    /// the diff is exactly what that commit introduced.
+    Commit(git2::Oid),
+    /// An explicit oid range — the stored three-dot anchors when returning to "All
+    /// commits".
+    Range { base: git2::Oid, head: git2::Oid },
+}
+
+/// A review fetch: the changed-files list (network), a per-commit/range files recompute
+/// (local), or one file's diff (local).
 #[derive(Debug, Clone)]
 pub enum PrReviewRequest {
     Files(PrFilesRequest),
+    CommitFiles {
+        key: PrReviewKey,
+        root: PathBuf,
+        /// Echoed back so a stale reply for a since-changed selection is dropped
+        /// (`None` ⇒ "All commits").
+        selection: Option<String>,
+        range: CommitRange,
+    },
     FileDiff {
         key: PrReviewKey,
         root: PathBuf,
@@ -359,10 +381,15 @@ pub enum PrReviewRequest {
     },
 }
 
-/// The single reply per review request, echoing the key (and path) for adoption.
+/// The single reply per review request, echoing the key (and path/selection) for adoption.
 pub enum PrReviewReply {
     Files {
         key: PrReviewKey,
+        result: Result<PrFilesLoaded, String>,
+    },
+    CommitFiles {
+        key: PrReviewKey,
+        selection: Option<String>,
         result: Result<PrFilesLoaded, String>,
     },
     FileDiff {
@@ -424,6 +451,16 @@ fn run_review(request: PrReviewRequest) -> PrReviewReply {
             key: req.key.clone(),
             result: load_pr_files(&req),
         },
+        PrReviewRequest::CommitFiles {
+            key,
+            root,
+            selection,
+            range,
+        } => PrReviewReply::CommitFiles {
+            key,
+            selection,
+            result: load_commit_files(&root, range),
+        },
         PrReviewRequest::FileDiff {
             key,
             root,
@@ -466,6 +503,24 @@ fn load_pr_files(req: &PrFilesRequest) -> Result<PrFilesLoaded, String> {
     // Three-dot base: the merge-base, so the diff excludes commits already on the
     // destination. Unrelated histories ⇒ fall back to the destination tip.
     let base = repo.merge_base(dest, head).unwrap_or(dest);
+    let files = crate::git::diff::pr_changed_files(&repo, base, head)
+        .map_err(|e| e.message().to_owned())?;
+    Ok(PrFilesLoaded { base, head, files })
+}
+
+/// Recompute the changed files for a single commit (`parent..commit`) or an explicit
+/// oid range — both already fetched, so no network. A root commit (no parent) diffs
+/// against itself, yielding an empty delta.
+fn load_commit_files(root: &Path, range: CommitRange) -> Result<PrFilesLoaded, String> {
+    let repo = git2::Repository::open(root).map_err(|e| e.message().to_owned())?;
+    let (base, head) = match range {
+        CommitRange::Range { base, head } => (base, head),
+        CommitRange::Commit(head) => {
+            let commit = repo.find_commit(head).map_err(|e| e.message().to_owned())?;
+            let base = commit.parent(0).map(|p| p.id()).unwrap_or(head);
+            (base, head)
+        }
+    };
     let files = crate::git::diff::pr_changed_files(&repo, base, head)
         .map_err(|e| e.message().to_owned())?;
     Ok(PrFilesLoaded { base, head, files })
@@ -1306,5 +1361,60 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn commit_file(
+        repo: &git2::Repository,
+        parent: Option<git2::Oid>,
+        name: &str,
+        content: &str,
+    ) -> git2::Oid {
+        let root = repo.workdir().unwrap();
+        std::fs::write(root.join(name), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .into_iter()
+            .map(|oid| repo.find_commit(oid).unwrap())
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, name, &tree, &parent_refs)
+            .unwrap()
+    }
+
+    #[test]
+    fn load_commit_files_isolates_a_single_commit_from_the_cumulative_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let c1 = commit_file(&repo, None, "a.txt", "1\n");
+        let c2 = commit_file(&repo, Some(c1), "a.txt", "1\n2\n");
+        let c3 = commit_file(&repo, Some(c2), "b.txt", "new\n");
+
+        // A single commit diffs against its parent: c3 only added b.txt.
+        let single = load_commit_files(tmp.path(), CommitRange::Commit(c3)).unwrap();
+        assert_eq!(single.base, c2);
+        assert_eq!(single.head, c3);
+        let single_paths: Vec<&str> = single.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(single_paths, vec!["b.txt"]);
+
+        // The explicit c1..c3 range is cumulative: both files changed.
+        let range =
+            load_commit_files(tmp.path(), CommitRange::Range { base: c1, head: c3 }).unwrap();
+        let mut range_paths: Vec<&str> = range.files.iter().map(|f| f.path.as_str()).collect();
+        range_paths.sort_unstable();
+        assert_eq!(range_paths, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn load_commit_files_root_commit_yields_empty_delta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let root_commit = commit_file(&repo, None, "a.txt", "1\n");
+        let loaded = load_commit_files(tmp.path(), CommitRange::Commit(root_commit)).unwrap();
+        assert_eq!(loaded.base, root_commit);
+        assert!(loaded.files.is_empty());
     }
 }

@@ -15,7 +15,7 @@ use crate::git::commit_detail::CommitFile;
 use crate::git::diff::FileDiff;
 use crate::git::file_tree::{self, TreeRow};
 use crate::pull_requests::model::{
-    Checks, PrComment, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
+    Checks, PrComment, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
 };
 use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, BODY_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
@@ -61,6 +61,15 @@ const AVATAR_GAP: f32 = 9.0;
 const AUTHOR_NAME_SIZE: f32 = 13.0;
 const TOTALS_SIZE: f32 = 13.0;
 
+/// Which commit band row a click in the review rail targeted (per-commit diff: T5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitSelection {
+    /// The "All commits" row — the cumulative three-dot diff.
+    All,
+    /// A single commit by its full sha — its `commit^..commit` delta.
+    Commit(String),
+}
+
 /// What a click on the cockpit targeted. Collected into one struct and returned
 /// each frame; every field is an independent `Option`, mirroring
 /// `AgentsPageAction`.
@@ -83,6 +92,9 @@ pub struct PullRequestsPageAction {
     pub close_file: bool,
     /// A changed-file row was clicked in the review rail: load its diff.
     pub select_file: Option<usize>,
+    /// A commit band row was clicked: switch the diff range to that commit (or back
+    /// to "All commits").
+    pub select_commit: Option<CommitSelection>,
     /// The rail/diff split was dragged: the app stores and persists the new width.
     pub set_detail_width: Option<f32>,
     /// Flat ⇄ tree view for the changed-files rail. Shared with the Git sidebar
@@ -117,6 +129,11 @@ pub struct PrReviewView<'a> {
     pub files_loading: bool,
     pub files_error: Option<&'a str>,
     pub selected_file: Option<usize>,
+    /// The PR's commits (oldest-first) for the rail's commit band; empty until the
+    /// detail loads. `selected_commit` is the chosen commit's sha, or `None` for the
+    /// cumulative "All commits" range (per-commit diff: T5).
+    pub commits: &'a [PrCommit],
+    pub selected_commit: Option<&'a str>,
     pub diff: Option<&'a FileDiff>,
     pub diff_loading: bool,
     pub diff_error: Option<&'a str>,
@@ -287,6 +304,10 @@ fn review_rail(
         .show(&mut panel, |ui| {
             ui.set_width(ui.available_width());
             ui.add_space(PANEL_PAD_Y);
+            if !review.commits.is_empty() {
+                commits_band(ui, palette, review, action);
+                ui.add_space(10.0);
+            }
             let collapse_id = egui::Id::new(("pr_review_dirs", review.pr.url.as_str()));
             let mut collapsed: HashSet<String> =
                 ui.data(|d| d.get_temp(collapse_id).unwrap_or_default());
@@ -973,6 +994,95 @@ fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) 
                 .color(palette.text_secondary),
         );
     }
+}
+
+/// The commit band atop the review rail (per-commit diff: T5): an "All commits" row —
+/// the cumulative three-dot diff — then one row per commit. The selected row drives the
+/// rail's files and the center diff over `commit^..commit`.
+fn commits_band(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    action: &mut PullRequestsPageAction,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Commits")
+                .size(SECTION_TITLE_SIZE)
+                .strong()
+                .color(palette.text_primary),
+        );
+        ui.add_space(2.0);
+        count_chip(ui, palette, review.commits.len());
+    });
+    ui.add_space(6.0);
+    if commit_row(
+        ui,
+        palette,
+        "All commits",
+        None,
+        review.selected_commit.is_none(),
+    ) {
+        action.select_commit = Some(CommitSelection::All);
+    }
+    for commit in review.commits {
+        let selected = review.selected_commit == Some(commit.sha.as_str());
+        if commit_row(ui, palette, &commit.subject, Some(&commit.short), selected) {
+            action.select_commit = Some(CommitSelection::Commit(commit.sha.clone()));
+        }
+    }
+}
+
+/// One commit band row: a full-width clickable line with the hover/selection fill of
+/// the file rows, an optional monospace short sha, then the (elided) subject.
+fn commit_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    subject: &str,
+    short: Option<&str>,
+    selected: bool,
+) -> bool {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
+    if let Some(fill) = file_list::file_row_fill(palette, response.hovered(), selected) {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+    }
+    let center_y = rect.center().y;
+    let mut text_left = rect.left() + 8.0;
+    if let Some(short) = short {
+        let galley = ui.painter().layout_no_wrap(
+            short.to_owned(),
+            egui::FontId::monospace(11.5),
+            palette.text_secondary,
+        );
+        let advance = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(text_left, center_y - galley.size().y / 2.0),
+            galley,
+            palette.text_secondary,
+        );
+        text_left += advance + 8.0;
+    }
+    let color = if selected {
+        palette.text_primary
+    } else {
+        palette.text_secondary
+    };
+    let subject_max = (rect.right() - 8.0 - text_left).max(8.0);
+    let mut job = egui::text::LayoutJob::single_section(
+        subject.to_owned(),
+        egui::text::TextFormat::simple(egui::FontId::proportional(12.5), color),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(subject_max);
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(text_left, center_y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, subject));
+    response.clicked()
 }
 
 /// "Files changed" band (commit-detail's `files_header`, sans the flat/tree

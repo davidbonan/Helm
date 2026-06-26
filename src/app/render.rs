@@ -15,6 +15,11 @@ fn pr_review_view<'a>(
         (Some(base), Some(head), Some(file)) => r.diffs.get(&(base, head, file.path.clone())),
         _ => None,
     };
+    let commits = r
+        .detail
+        .as_ref()
+        .map(|d| d.commits.as_slice())
+        .unwrap_or(&[]);
     crate::ui::pull_requests_view::PrReviewView {
         pr: &r.pr,
         detail: r.detail.as_ref(),
@@ -23,6 +28,8 @@ fn pr_review_view<'a>(
         files_loading: r.files_loading,
         files_error: r.files_error.as_deref(),
         selected_file: r.selected_file,
+        commits,
+        selected_commit: r.selected_commit.as_deref(),
         diff,
         diff_loading: r.diff_loading,
         diff_error: r.diff_error.as_deref(),
@@ -846,6 +853,7 @@ impl HelmApp {
         let mut pr_back = false;
         let mut pr_close_file = false;
         let mut pr_select_file: Option<usize> = None;
+        let mut pr_select_commit: Option<crate::ui::pull_requests_view::CommitSelection> = None;
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
         let pr_agent = self.review_agent_command.clone();
@@ -1139,6 +1147,9 @@ impl HelmApp {
                             pr_back = pr_back || action.back;
                             pr_close_file = pr_close_file || action.close_file;
                             pr_select_file = pr_select_file.or(action.select_file);
+                            if pr_select_commit.is_none() {
+                                pr_select_commit = action.select_commit;
+                            }
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                         }
@@ -2012,6 +2023,9 @@ impl HelmApp {
                             pr_back = pr_back || action.back;
                             pr_close_file = pr_close_file || action.close_file;
                             pr_select_file = pr_select_file.or(action.select_file);
+                            if pr_select_commit.is_none() {
+                                pr_select_commit = action.select_commit;
+                            }
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                         } else {
@@ -2258,6 +2272,9 @@ impl HelmApp {
         }
         if let Some(idx) = pr_select_file {
             self.select_pr_file(idx, ctx);
+        }
+        if let Some(sel) = pr_select_commit {
+            self.select_pr_commit(sel, ctx);
         }
         if pr_submit_review {
             self.submit_pr_review(ctx);

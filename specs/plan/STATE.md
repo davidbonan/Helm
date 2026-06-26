@@ -12,7 +12,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Make
 the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
 view, surfaces **inline comments in the center with code context**, and lifts the
 §10 limits on **inline replies** and **conversation comments** (add + reply).
-Counter: **4/9**.
+Counter: **5/9**.
 
 - ☑ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
   bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
@@ -41,7 +41,7 @@ Counter: **4/9**.
   `display_name`/raw), reversed to oldest-first in the runner. *Files*:
   `src/pull_requests/model.rs`, `github.rs`, `bitbucket.rs`, `runner.rs`. *Tests*:
   unit on both fixtures.
-- ☐ **T5 — Per-commit diff.** Commit band in the rail (above Files changed);
+- ☑ **T5 — Per-commit diff.** Commit band in the rail (above Files changed);
   selecting a commit recomputes files+diff over `commit^..commit` (explicit
   base/head), "All commits" = the current three-dot diff. Reuses
   `pr_changed_files`/`pr_file_diff` with other oids (local after `fetch
@@ -76,8 +76,10 @@ Counter: **4/9**.
   comments now in scope) + STATE + `headless-verify` of the flow.
 
 ### Next actions (M-PR3)
-- **T5** (per-commit diff) — commit band in the rail; selecting a commit recomputes
-  files+diff over `commit^..commit` (explicit base/head), "All commits" = three-dot.
+- **T6** (inline comments in the center, with code context) — `PrComment.context`
+  (GitHub `diff_hunk`; Bitbucket window from the loaded `FileDiff`, else `None`); an
+  Inline comments section in the center grouped per file; clicking a card opens the
+  file at the line.
 
 ### Blockers / Open questions (M-PR3)
 - none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache

@@ -171,8 +171,16 @@ struct PrReview {
     detail: Option<crate::pull_requests::model::PrDetail>,
     detail_error: Option<String>,
     files: Vec<crate::git::commit_detail::CommitFile>,
+    /// The currently-displayed diff range: the three-dot anchors below for "All
+    /// commits", or `commit^..commit` when a commit is selected (per-commit diff: T5).
     base: Option<git2::Oid>,
     head: Option<git2::Oid>,
+    /// The three-dot anchors (`merge-base(dest,head)..head`) set once by the network
+    /// files load, so returning to "All commits" restores them without a refetch.
+    all_base: Option<git2::Oid>,
+    all_head: Option<git2::Oid>,
+    /// The selected commit's full sha, or `None` for "All commits" (the three-dot diff).
+    selected_commit: Option<String>,
     files_loading: bool,
     files_error: Option<String>,
     selected_file: Option<usize>,
@@ -1666,6 +1674,9 @@ impl HelmApp {
                         files: Vec::new(),
                         base: None,
                         head: None,
+                        all_base: None,
+                        all_head: None,
+                        selected_commit: None,
                         files_loading: true,
                         files_error: None,
                         selected_file: None,
@@ -1732,6 +1743,54 @@ impl HelmApp {
             }
         }
         self.ensure_selected_diff(ctx);
+    }
+
+    /// Switch the review's diff range to a single commit (`commit^..commit`) or back to
+    /// "All commits" (the three-dot anchors), recomputing the changed files off-thread
+    /// (local, no network — the commits are already fetched). Selecting the current
+    /// range is a no-op; the file selection resets since the list changes (T5).
+    fn select_pr_commit(
+        &mut self,
+        selection: crate::ui::pull_requests_view::CommitSelection,
+        ctx: &egui::Context,
+    ) {
+        use crate::pull_requests::runner::CommitRange;
+        use crate::ui::pull_requests_view::CommitSelection;
+
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        let (new_selected, range) = match selection {
+            CommitSelection::All => match (review.all_base, review.all_head) {
+                (Some(base), Some(head)) => (None, CommitRange::Range { base, head }),
+                // Anchors not loaded yet — the network files load will land on All commits.
+                _ => return,
+            },
+            CommitSelection::Commit(sha) => match git2::Oid::from_str(&sha) {
+                Ok(oid) => (Some(sha), CommitRange::Commit(oid)),
+                Err(_) => return,
+            },
+        };
+        if review.selected_commit == new_selected {
+            return;
+        }
+        let (key, root) = (review.key.clone(), review.root.clone());
+        if let Some(review) = self.active_review_mut() {
+            review.selected_commit = new_selected.clone();
+            review.selected_file = None;
+            review.diff_error = None;
+            review.diff_loading = false;
+            review.files_loading = true;
+            review.files_error = None;
+        }
+        self.pr_review_runner(ctx).request(
+            crate::pull_requests::runner::PrReviewRequest::CommitFiles {
+                key,
+                root,
+                selection: new_selected,
+                range,
+            },
+        );
     }
 
     /// Close the open file in the review surface: drop the selection so the surface
@@ -1817,15 +1876,49 @@ impl HelmApp {
             match reply {
                 PrReviewReply::Files { key, result } => {
                     if let Some(review) = self.pr_reviews.get_mut(&key) {
-                        review.files_loading = false;
                         match result {
                             Ok(loaded) => {
-                                review.base = Some(loaded.base);
-                                review.head = Some(loaded.head);
-                                review.files = loaded.files;
-                                review.files_error = None;
+                                // The three-dot anchors are recorded even if a commit
+                                // selection raced ahead; the visible range is only
+                                // adopted while still on "All commits".
+                                review.all_base = Some(loaded.base);
+                                review.all_head = Some(loaded.head);
+                                if review.selected_commit.is_none() {
+                                    review.base = Some(loaded.base);
+                                    review.head = Some(loaded.head);
+                                    review.files = loaded.files;
+                                    review.files_error = None;
+                                    review.files_loading = false;
+                                }
                             }
-                            Err(message) => review.files_error = Some(message),
+                            Err(message) => {
+                                if review.selected_commit.is_none() {
+                                    review.files_error = Some(message);
+                                    review.files_loading = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                PrReviewReply::CommitFiles {
+                    key,
+                    selection,
+                    result,
+                } => {
+                    if let Some(review) = self.pr_reviews.get_mut(&key) {
+                        // Adopt only if this reply is for the still-selected commit; a
+                        // stale recompute from a since-changed selection is dropped.
+                        if review.selected_commit == selection {
+                            review.files_loading = false;
+                            match result {
+                                Ok(loaded) => {
+                                    review.base = Some(loaded.base);
+                                    review.head = Some(loaded.head);
+                                    review.files = loaded.files;
+                                    review.files_error = None;
+                                }
+                                Err(message) => review.files_error = Some(message),
+                            }
                         }
                     }
                 }

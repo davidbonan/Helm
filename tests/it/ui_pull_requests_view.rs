@@ -4,7 +4,7 @@
 //! detail header's Open-in-browser / Checkout intents, Back, a changed-file
 //! click, and the draggable rail width).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use egui_kittest::kittest::Queryable;
@@ -14,13 +14,16 @@ use helm::git::commit_detail::CommitFile;
 use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
 use helm::git::status::ChangeKind;
 use helm::pull_requests::model::{
-    Checks, ForgeKind, PrRole, PrState, PullRequest, Review, ReviewVerdict, Reviewer,
+    Checks, ForgeKind, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
+    Reviewer,
 };
 use helm::review::{FileComments, ForgeThreads, LineComment};
 use helm::theme::Palette;
 use helm::ui::diff_view::DiffViewState;
 use helm::ui::file_list::FileViewMode;
-use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView, PrSourceHints};
+use helm::ui::pull_requests_view::{
+    pull_requests_page, CommitSelection, PrReviewView, PrSourceHints,
+};
 
 #[derive(Default)]
 struct Captured {
@@ -115,6 +118,8 @@ fn review_harness(
                 files_loading: false,
                 files_error: None,
                 selected_file: None,
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
@@ -347,6 +352,8 @@ fn closing_the_open_file_emits_close_not_back() {
                 files_loading: false,
                 files_error: None,
                 selected_file: Some(0),
+                commits: &[],
+                selected_commit: None,
                 diff: Some(&diff),
                 diff_loading: false,
                 diff_error: None,
@@ -409,6 +416,95 @@ fn clicking_a_changed_file_loads_its_diff() {
     assert_eq!(cap.select_file.get(), Some(1));
 }
 
+/// The commit band lists "All commits" plus one row per commit, and clicking a commit
+/// emits a `select_commit` for that sha (per-commit diff: T5).
+#[test]
+fn clicking_a_commit_row_selects_that_commit() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        commits: vec![
+            PrCommit {
+                sha: "1111111111111111111111111111111111111111".to_owned(),
+                short: "1111111".to_owned(),
+                subject: "Add login form".to_owned(),
+                author: "octocat".to_owned(),
+            },
+            PrCommit {
+                sha: "2222222222222222222222222222222222222222".to_owned(),
+                short: "2222222".to_owned(),
+                subject: "Wire the submit handler".to_owned(),
+                author: "octocat".to_owned(),
+            },
+        ],
+        ..PrDetail::default()
+    };
+    let files = vec![changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let captured: Rc<RefCell<Option<CommitSelection>>> = Rc::new(RefCell::new(None));
+    let sink = captured.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &detail.commits,
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+            if let Some(sel) = action.select_commit {
+                *sink.borrow_mut() = Some(sel);
+            }
+        });
+    harness.step();
+    harness.step();
+    assert!(
+        harness.query_by_label("All commits").is_some(),
+        "the band offers the cumulative range",
+    );
+    harness.get_by_label("Wire the submit handler").click();
+    harness.step();
+    assert_eq!(
+        captured.borrow().clone(),
+        Some(CommitSelection::Commit(
+            "2222222222222222222222222222222222222222".to_owned()
+        )),
+    );
+}
+
 #[test]
 fn files_header_toggle_requests_tree_view() {
     let (mut harness, cap) = review_harness(
@@ -447,6 +543,8 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 files_loading: false,
                 files_error: None,
                 selected_file: None,
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
@@ -502,6 +600,8 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 files_loading: false,
                 files_error: None,
                 selected_file: Some(0),
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
@@ -571,6 +671,8 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 files_loading: false,
                 files_error: None,
                 selected_file: Some(0),
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
@@ -672,6 +774,8 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 files_loading: false,
                 files_error: None,
                 selected_file: None,
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
@@ -755,6 +859,8 @@ fn detail_conversation_lists_only_top_level_comments() {
                 files_loading: false,
                 files_error: None,
                 selected_file: None,
+                commits: &[],
+                selected_commit: None,
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
