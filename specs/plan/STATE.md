@@ -6,6 +6,81 @@
 
 ---
 
+## ☐ Milestone — M-PR3 · PR review: cache & richer reviewing
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§11 (to extend). Makes
+the cockpit navigation instant (per-PR cache + diff cache), adds a **per-commit**
+view, surfaces **inline comments in the center with code context**, and lifts the
+§10 limits on **inline replies** and **conversation comments** (add + reply).
+Counter: **0/9**.
+
+- ☐ **T1 — Per-PR review cache.** Replace `pr_review: Option<PrReview>` with a
+  bounded (~8) `HashMap<PrReviewKey, PrReview>` + the active key; `open_pr_review`
+  adopts a cached entry **without re-running the runners** (instant), else builds
+  + fetches. Preserve per PR: `draft`, `agent_notes`, `summary`, `verdict`,
+  `selected_file`, `diff_view`, `detail`, `files`. Re-open re-fetches only when the
+  entry is older than ~60 s, swapping on arrival without touching drafts. Pure
+  `LruOrder<PrReviewKey>` helper (touch/evict) kept out of the rendering layer.
+  *Files*: `src/app/mod.rs`, a small pure LRU module. *Tests*: unit on the LRU;
+  UI e2e — PR A → open file → PR B → back to A shows no spinner, drafts intact.
+- ☐ **T2 — Diff cache within a PR.** `PrReview.diffs: HashMap<(Oid,Oid,String),
+  FileDiff>` instead of the single `diff`/`diff_path` slot (key includes base/head
+  — required by T5); `ensure_selected_diff` fetches on miss only. *Files*:
+  `src/app/mod.rs`. *Tests*: UI e2e — switch file A→B→A without re-fetching A.
+- ☐ **T3 — Throttle the focus-regained list refetch.** Gate the `focus_regained`
+  branch (`mod.rs` PR refresh) by a min age on `last_pr_poll` (refetch only if the
+  cache is older than ~30 s); keep cold / repos_changed / 60 s tick. Pure predicate
+  `should_refresh_pr(cold, repos_changed, focus_regained, age, interval)`. *Files*:
+  `src/app/mod.rs`. *Tests*: unit on the predicate.
+- ☐ **T4 — Commits in the detail fetch.** `PrCommit { sha, short, subject, author }`
+  + `PrDetail.commits`. GitHub: add `commits` to `DETAIL_FIELDS` + parse. Bitbucket:
+  paginated `/commits` endpoint + parse. *Files*: `src/pull_requests/model.rs`,
+  `github.rs`, `bitbucket.rs`, `runner.rs`. *Tests*: unit on fixtures.
+- ☐ **T5 — Per-commit diff.** Commit band in the rail (above Files changed);
+  selecting a commit recomputes files+diff over `commit^..commit` (explicit
+  base/head), "All commits" = the current three-dot diff. Reuses
+  `pr_changed_files`/`pr_file_diff` with other oids (local after `fetch
+  pull/N/head`); `selected_commit` state in `PrReview`; a files request taking
+  explicit base/head. *Files*: `runner.rs`, `mod.rs`, `pull_requests_view.rs`.
+  *Tests*: business e2e (single-commit delta on a throwaway repo); UI e2e (band +
+  selection).
+- ☐ **T6 — Inline comments in the center, with code context (read).** `PrComment`
+  gains `context: Option<String>` (GitHub `diff_hunk` from the already-fetched
+  comments payload — no extra request; Bitbucket: window derived from the loaded
+  `FileDiff`, else `None`). A new **Inline comments** section in the center detail,
+  grouped per file: each card = a small monochrome code snippet over the thread;
+  clicking opens the file at that line (`select_pr_file` + scroll). The diff overlay
+  stays. *Files*: `model.rs` (`context` + `forge_threads`/parse), `github.rs`
+  (capture `diff_hunk`), `bitbucket.rs` (fallback), `pull_requests_view.rs`.
+  *Tests*: unit on `diff_hunk` parse; UI e2e — inline card with snippet in the
+  center, click emits `select_file`.
+- ☐ **T7 — Reply to an inline comment (write).** Thread `id` plumbed to the cards
+  (`review::ThreadComment` gains `id`); a reply editor on **both** renders (diff
+  overlay **and** T6 center card). Post: GitHub `POST pulls/{n}/comments/{id}/
+  replies`; Bitbucket `{content.raw, parent:{id}}`. Detail refetches on success.
+  *Files*: `review.rs`, `model.rs`, `github.rs`, `bitbucket.rs`, `runner.rs`,
+  `mod.rs`, `diff_view.rs`/`pull_requests_view.rs`. *Tests*: unit on reply builders;
+  UI e2e emits the reply intent from both places.
+- ☐ **T8 — Conversation comments: add + reply (write).** Standalone composer in the
+  Conversation section + reply on top-level cards. GitHub `POST issues/{n}/comments`;
+  Bitbucket `POST .../comments` (no inline, `parent` for the reply). *Files*:
+  `github.rs`, `bitbucket.rs`, `runner.rs`, `mod.rs`, `pull_requests_view.rs`.
+  *Tests*: unit on builders; UI e2e add + reply.
+- ☐ **T9 — Spec + STATE + verify.** `pull-requests.md` §5 (inline comments in the
+  center + context; commit view) and §10-§11 (inline replies & conversation
+  comments now in scope) + STATE + `headless-verify` of the flow.
+
+### Next actions (M-PR3)
+- Start with **T1** (per-PR cache) — the daily navigation pain.
+
+### Blockers / Open questions (M-PR3)
+- none. Note: T7/T8 extend the frozen §10/§11 scope — fold into §11 in T9. Cache
+  diff key (T2) must include `(base,head)` or the per-commit view (T5) serves a
+  stale diff; T6/T7/T8 can share one `PrCommentRunner` (reply inline, reply/add
+  conversation) + the success refetch.
+
+---
+
 ## ☑ Milestone — M-PR2 · In-app PR review (diff · line comments · submit · Ask Claude)
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §11. Turns the read-only
