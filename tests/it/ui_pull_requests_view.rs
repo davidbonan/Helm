@@ -28,6 +28,7 @@ use helm::ui::pull_requests_view::{
 #[derive(Default)]
 struct Captured {
     select: Cell<Option<usize>>,
+    refresh: Cell<bool>,
     open_url: Cell<Option<String>>,
     checkout: Cell<bool>,
     set_detail_width: Cell<Option<f32>>,
@@ -57,6 +58,7 @@ fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
             name: "reviewer".to_owned(),
             state: Review::Pending,
         }],
+        labels: Vec::new(),
     }
 }
 
@@ -84,6 +86,9 @@ fn harness(
             );
             if action.select.is_some() {
                 sink.select.set(action.select);
+            }
+            if action.refresh {
+                sink.refresh.set(true);
             }
         });
     harness.step();
@@ -113,6 +118,7 @@ fn review_harness(
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -123,6 +129,7 @@ fn review_harness(
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -132,6 +139,7 @@ fn review_harness(
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -174,6 +182,65 @@ fn review_harness(
     (harness, cap)
 }
 
+/// Drives the review surface for a PR whose forge detail is still in flight: `detail`
+/// is `None` and `detail_loading` is set, the state the app holds before the detail
+/// fetch lands.
+fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captured>) {
+    let palette = Palette::light();
+    let cap = Rc::new(Captured::default());
+    let files: Vec<CommitFile> = Vec::new();
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_loading: true,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    (harness, cap)
+}
+
 fn changed_file(path: &str) -> CommitFile {
     CommitFile {
         path: path.to_owned(),
@@ -209,9 +276,51 @@ fn groups_to_review_then_mine_with_their_rows() {
 }
 
 #[test]
+fn clicking_refresh_emits_the_intent() {
+    let (mut harness, cap) = harness(
+        vec![pr("acme/web", 1, "Fix the login flow", PrRole::ToReview)],
+        None,
+        460.0,
+    );
+    harness.get_by_label("Refresh").click();
+    harness.step();
+    assert!(cap.refresh.get());
+}
+
+#[test]
 fn empty_state_when_no_prs() {
     let (harness, _) = harness(Vec::new(), None, 460.0);
     harness.get_by_label("No pull requests");
+}
+
+#[test]
+fn list_loading_shows_a_spinner_not_the_empty_state() {
+    let palette = Palette::light();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints {
+                    loading: true,
+                    ..Default::default()
+                },
+                None,
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Loading pull requests…");
+    assert!(
+        harness.query_by_label("No pull requests").is_none(),
+        "the empty state must not show while loading"
+    );
 }
 
 #[test]
@@ -347,6 +456,7 @@ fn closing_the_open_file_emits_close_not_back() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -357,6 +467,7 @@ fn closing_the_open_file_emits_close_not_back() {
                 diff: Some(&diff),
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -366,6 +477,7 @@ fn closing_the_open_file_emits_close_not_back() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -416,6 +528,82 @@ fn clicking_a_changed_file_loads_its_diff() {
     assert_eq!(cap.select_file.get(), Some(1));
 }
 
+/// ↑/↓ over the changed-files rail step the selection through the list (like the
+/// git sidebar): with the middle file open, ↓ picks the next file and ↑ the
+/// previous, emitting `select_file` so the diff follows.
+#[test]
+fn arrows_navigate_between_changed_files() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![
+        changed_file("src/a.rs"),
+        changed_file("src/b.rs"),
+        changed_file("src/c.rs"),
+    ];
+    let cap = Rc::new(Captured::default());
+    let sink = cap.clone();
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: Some(1),
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+            if action.select_file.is_some() {
+                sink.select_file.set(action.select_file);
+            }
+        });
+    harness.step();
+    harness.step();
+
+    harness.key_press_modifiers(egui::Modifiers::default(), egui::Key::ArrowDown);
+    harness.step();
+    assert_eq!(cap.select_file.get(), Some(2));
+
+    harness.key_press_modifiers(egui::Modifiers::default(), egui::Key::ArrowUp);
+    harness.step();
+    assert_eq!(cap.select_file.get(), Some(0));
+}
+
 /// The commit band lists "All commits" plus one row per commit, and clicking a commit
 /// emits a `select_commit` for that sha (per-commit diff: T5).
 #[test]
@@ -454,6 +642,7 @@ fn clicking_a_commit_row_selects_that_commit() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -464,6 +653,7 @@ fn clicking_a_commit_row_selects_that_commit() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -473,6 +663,7 @@ fn clicking_a_commit_row_selects_that_commit() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -538,6 +729,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -548,6 +740,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -557,6 +750,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             pull_requests_page(
                 ui,
@@ -595,6 +789,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -605,6 +800,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -614,6 +810,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             pull_requests_page(
                 ui,
@@ -666,6 +863,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -676,6 +874,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -685,6 +884,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             pull_requests_page(
                 ui,
@@ -769,6 +969,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: None,
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -779,6 +980,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -788,6 +990,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             pull_requests_page(
                 ui,
@@ -828,6 +1031,9 @@ fn detail_conversation_lists_only_top_level_comments() {
                 id: None,
                 parent_id: None,
                 context: None,
+                created_at: String::new(),
+                resolved: false,
+                thread_id: None,
             },
             PrComment {
                 author: "reviewer-inline".to_owned(),
@@ -838,10 +1044,14 @@ fn detail_conversation_lists_only_top_level_comments() {
                 id: None,
                 parent_id: None,
                 context: None,
+                created_at: String::new(),
+                resolved: false,
+                thread_id: None,
             },
         ],
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: String::new(),
     };
     let files = vec![changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
@@ -856,6 +1066,7 @@ fn detail_conversation_lists_only_top_level_comments() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -866,6 +1077,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -875,6 +1087,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             pull_requests_page(
                 ui,
@@ -900,6 +1113,17 @@ fn detail_conversation_lists_only_top_level_comments() {
     harness.get_by_label("reviewer-inline");
 }
 
+#[test]
+fn review_detail_loading_shows_a_loader_not_the_sections() {
+    let (harness, _) =
+        review_loading_harness(pr("acme/web", 1, "Fix the login flow", PrRole::ToReview));
+    harness.get_by_label("Loading pull request…");
+    assert!(
+        harness.query_by_label("Conversation").is_none(),
+        "detail sections must not render while the detail is loading"
+    );
+}
+
 /// An inline-comment card shows the code it was left on (GitHub's diff hunk, stripped
 /// of its `@@` header and diff markers) over the thread, and clicking it opens that
 /// file at the commented line (T6).
@@ -919,9 +1143,13 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
             id: Some(7),
             parent_id: None,
             context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
         }],
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: String::new(),
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
@@ -939,6 +1167,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -949,6 +1178,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -958,6 +1188,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -976,11 +1207,113 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
         });
     harness.step();
     harness.step();
-    // The hunk renders as plain code (the `@@` header and `+`/`-`/space markers stripped).
-    harness.get_by_label("fn main() {");
+    // The code snippet is the click-to-open target for the anchored file.
     harness.get_by_label("Open src/main.rs line 2").click();
     harness.step();
     // src/main.rs is the second changed file; the card carries its new-side line.
+    assert_eq!(opened.get(), Some((1, Some(2))));
+}
+
+/// Bitbucket inline comments carry no forge hunk; on the conversation page no file is
+/// open, so the card windows the prefetched local diff (`comment_diffs`) into a code
+/// preview — the snippet, not the bare "Open …" link, becomes the click target.
+#[test]
+fn inline_comment_card_windows_comment_diff_when_no_hunk() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-inline".to_owned(),
+            body: "rename this".to_owned(),
+            path: Some("src/main.rs".to_owned()),
+            old_lineno: None,
+            new_lineno: Some(2),
+            id: Some(7),
+            parent_id: None,
+            context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let fd = FileDiff {
+        path: "src/main.rs".to_owned(),
+        binary: false,
+        oversize: false,
+        hunks: Vec::new(),
+        source_lines: vec!["fn main() {".to_owned(), "    work();".to_owned()],
+        image: None,
+    };
+    let comment_diffs = vec![&fd];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    type Opened = Option<(usize, Option<u32>)>;
+    let opened: Rc<Cell<Opened>> = Rc::new(Cell::new(None));
+    let sink = opened.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                comment_diffs: comment_diffs.clone(),
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+            if let Some(open) = action.open_inline_comment {
+                sink.set(Some(open));
+            }
+        });
+    harness.step();
+    harness.step();
+    // The snippet (not the fallback link) is the click target: a Button, not a Label.
+    harness
+        .get_by(|n| {
+            format!("{:?}", n.role()) == "Button"
+                && n.label().as_deref() == Some("Open src/main.rs line 2")
+        })
+        .click();
+    harness.step();
     assert_eq!(opened.get(), Some((1, Some(2))));
 }
 
@@ -1000,9 +1333,13 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
             id: Some(7),
             parent_id: None,
             context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
         }],
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: String::new(),
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
@@ -1019,6 +1356,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1029,6 +1367,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -1038,6 +1377,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -1059,7 +1399,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
     harness.get_by_label("Reply").click();
     harness.run();
     harness
-        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput" && n.is_focused())
         .type_text("on it");
     harness.run();
     harness.get_by_label("Send reply").click();
@@ -1077,6 +1417,178 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
 }
 
 #[test]
+fn inline_comment_card_resolve_emits_resolve_thread() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-inline".to_owned(),
+            body: "rename this".to_owned(),
+            path: Some("src/main.rs".to_owned()),
+            old_lineno: None,
+            new_lineno: Some(2),
+            id: Some(7),
+            parent_id: None,
+            context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+            created_at: String::new(),
+            resolved: false,
+            thread_id: Some("PRRT_9".to_owned()),
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let intents: Rc<RefCell<Vec<ReviewIntent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+            sink.borrow_mut().extend(action.review_intents);
+        });
+    harness.run();
+    harness.get_by_label("Resolve").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::ResolveThread { thread_id, comment_id, resolved }
+                if thread_id.as_deref() == Some("PRRT_9") && *comment_id == 7 && *resolved
+        )),
+        "the resolve pill must emit ResolveThread toggling to resolved, got {:?}",
+        intents.borrow(),
+    );
+}
+
+#[test]
+fn resolved_inline_thread_collapses_and_reopens_on_click() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-inline".to_owned(),
+            body: "rename this".to_owned(),
+            path: Some("src/main.rs".to_owned()),
+            old_lineno: None,
+            new_lineno: Some(2),
+            id: Some(7),
+            parent_id: None,
+            context: Some("@@ -1,2 +1,3 @@\n fn main() {\n+    work();".to_owned()),
+            created_at: String::new(),
+            resolved: true,
+            thread_id: Some("PRRT_9".to_owned()),
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+        });
+    harness.run();
+    // Collapsed by default: the summary row is shown, the snippet (card body) is not.
+    assert!(harness.query_by_label("Resolved · 1 comment").is_some());
+    assert!(harness.query_by_label("Open src/main.rs line 2").is_none());
+    harness.get_by_label("Resolved · 1 comment").click();
+    harness.run();
+    // Re-opened: the card body (its clickable snippet) is back.
+    assert!(harness.query_by_label("Open src/main.rs line 2").is_some());
+}
+
+#[test]
 fn conversation_composer_emits_post_conversation_comment() {
     let palette = Palette::light();
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
@@ -1085,6 +1597,7 @@ fn conversation_composer_emits_post_conversation_comment() {
         comments: Vec::new(),
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: String::new(),
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
@@ -1101,6 +1614,7 @@ fn conversation_composer_emits_post_conversation_comment() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1111,6 +1625,7 @@ fn conversation_composer_emits_post_conversation_comment() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -1120,6 +1635,7 @@ fn conversation_composer_emits_post_conversation_comment() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -1135,7 +1651,9 @@ fn conversation_composer_emits_post_conversation_comment() {
             sink.borrow_mut().extend(action.review_intents);
         });
     harness.run();
-    harness.get_by_label("Add a comment").click();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .focus();
     harness.run();
     harness
         .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
@@ -1150,7 +1668,104 @@ fn conversation_composer_emits_post_conversation_comment() {
             ReviewIntent::PostConversationComment { parent: None, body }
                 if body == "ship it"
         )),
-        "the standalone composer must emit a parent-less PostConversationComment, got {:?}",
+        "the always-visible composer must emit a parent-less PostConversationComment, got {:?}",
+        intents.borrow(),
+    );
+}
+
+#[test]
+fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
+    use helm::pull_requests::model::PrComment;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer".to_owned(),
+            body: "what about edge cases?".to_owned(),
+            path: None,
+            old_lineno: None,
+            new_lineno: None,
+            id: None,
+            parent_id: None,
+            context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let intents: Rc<RefCell<Vec<ReviewIntent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+            sink.borrow_mut().extend(action.review_intents);
+        });
+    harness.run();
+    // A flat (GitHub) comment still carries a Reply pill; it has no id to nest under.
+    harness.get_by_label("Reply").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput" && n.is_focused())
+        .type_text("yes, covered");
+    harness.run();
+    harness.get_by_label("Send reply").click();
+    harness.run();
+
+    assert!(
+        intents.borrow().iter().any(|i| matches!(
+            i,
+            ReviewIntent::PostConversationComment { parent: None, body }
+                if body == "yes, covered"
+        )),
+        "replying under a flat card must post a parent-less top-level comment, got {:?}",
         intents.borrow(),
     );
 }
@@ -1171,9 +1786,13 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
             id: Some(7),
             parent_id: None,
             context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
         }],
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: String::new(),
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
@@ -1190,6 +1809,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
             let mut review = PrReviewView {
                 pr: &pr_value,
                 detail: Some(&detail),
+                detail_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1200,6 +1820,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 diff: None,
                 diff_loading: false,
                 diff_error: None,
+                comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -1209,6 +1830,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 summary: &mut summary,
                 posting: false,
                 post_error: None,
+                current_user: None,
             };
             let action = pull_requests_page(
                 ui,
@@ -1228,7 +1850,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
     harness.get_by_label("Reply").click();
     harness.run();
     harness
-        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput" && n.is_focused())
         .type_text("covered below");
     harness.run();
     harness.get_by_label("Send reply").click();
@@ -1242,5 +1864,93 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
         )),
         "replying under a top-level card must nest via parent, got {:?}",
         intents.borrow(),
+    );
+}
+
+#[test]
+fn conversation_reply_nests_under_its_parent() {
+    use helm::pull_requests::model::PrComment;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let comment = |id: u64, parent: Option<u64>, body: &str| PrComment {
+        author: "reviewer".to_owned(),
+        body: body.to_owned(),
+        path: None,
+        old_lineno: None,
+        new_lineno: None,
+        id: Some(id),
+        parent_id: parent,
+        context: None,
+        created_at: String::new(),
+        resolved: false,
+        thread_id: None,
+    };
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![
+            comment(1, None, "root question"),
+            comment(2, Some(1), "nested answer"),
+        ],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs")];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                diff_loading: false,
+                diff_error: None,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                true,
+                FileViewMode::Flat,
+            );
+        });
+    harness.run();
+    // Both comments render, but the reply nests under the root: a single thread →
+    // a single Reply affordance (two top-level cards would carry two).
+    harness.get_by_label_contains("root question");
+    harness.get_by_label_contains("nested answer");
+    assert_eq!(
+        harness.get_all_by_label("Reply").count(),
+        1,
+        "a parented conversation reply must nest under its root, not stand as a second top-level card",
     );
 }

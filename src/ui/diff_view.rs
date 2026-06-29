@@ -48,19 +48,27 @@ pub struct DiffViewState {
     /// center inline-comment card, so opening a reply in one surface shows it in both.
     active_reply: Option<u64>,
     reply_buffer: String,
-    /// Which conversation-level composer is open (pull-requests.md §11) — the
-    /// standalone add field or a reply under a top-level card — with
-    /// `conversation_buffer` holding its draft. Only one is open at a time.
+    /// The reply composer open under a top-level conversation card, if any
+    /// (pull-requests.md §11), with `conversation_buffer` holding its draft. The
+    /// standalone add composer at the foot of the band is always open and keeps its
+    /// own `conversation_add_buffer`, so a reply draft and a new-comment draft don't
+    /// clobber each other.
     conversation_edit: Option<ConversationEdit>,
     conversation_buffer: String,
+    /// The standalone "Add a comment" composer's draft (always-visible bar at the
+    /// foot of the conversation band, pull-requests.md §11).
+    conversation_add_buffer: String,
+    /// Resolved thread roots (by comment id) the user has expanded in the center
+    /// accordion (pull-requests.md §11). Resolved threads collapse to a summary row by
+    /// default; expanding one adds its root id here.
+    expanded_resolved: HashSet<u64>,
 }
 
-/// The open conversation composer (pull-requests.md §11): a new top-level comment,
-/// or a reply nested under the top-level card carrying the given forge id.
+/// The open reply composer under a top-level conversation card at the given
+/// conversation index (pull-requests.md §11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConversationEdit {
-    Add,
-    Reply(u64),
+    Reply(usize),
 }
 
 impl DiffViewState {
@@ -81,6 +89,21 @@ impl DiffViewState {
         self.reply_buffer.clear();
         self.conversation_edit = None;
         self.conversation_buffer.clear();
+        self.conversation_add_buffer.clear();
+        self.expanded_resolved.clear();
+    }
+
+    /// Whether the resolved thread rooted at `id` is expanded in the center accordion
+    /// (pull-requests.md §11) — resolved threads collapse to a summary row by default.
+    pub fn is_resolved_expanded(&self, id: u64) -> bool {
+        self.expanded_resolved.contains(&id)
+    }
+
+    /// Toggles the collapsed/expanded state of the resolved thread rooted at `id`.
+    pub fn toggle_resolved(&mut self, id: u64) {
+        if !self.expanded_resolved.remove(&id) {
+            self.expanded_resolved.insert(id);
+        }
     }
 
     /// Requests that the diff scroll the given new-side line into view on its next
@@ -126,17 +149,15 @@ impl DiffViewState {
         self.conversation_edit
     }
 
-    /// Opens the standalone add-comment composer, clearing any prior draft and arming
-    /// the one-shot focus.
-    pub fn open_conversation_add(&mut self) {
-        self.conversation_edit = Some(ConversationEdit::Add);
-        self.conversation_buffer.clear();
-        self.note_focus = true;
+    /// The standalone add-comment composer's draft (the always-visible bar at the
+    /// foot of the conversation band), for binding its field and reading it on send.
+    pub fn conversation_add_buffer_mut(&mut self) -> &mut String {
+        &mut self.conversation_add_buffer
     }
 
-    /// Opens a reply nested under the top-level card carrying `comment_id`.
-    pub fn open_conversation_reply(&mut self, comment_id: u64) {
-        self.conversation_edit = Some(ConversationEdit::Reply(comment_id));
+    /// Opens a reply under the top-level card at conversation `index`.
+    pub fn open_conversation_reply(&mut self, index: usize) {
+        self.conversation_edit = Some(ConversationEdit::Reply(index));
         self.conversation_buffer.clear();
         self.note_focus = true;
     }
@@ -279,6 +300,10 @@ const HUNK_BAND_PAD_X: i8 = 8;
 const HUNK_BAND_PAD_Y: i8 = 4;
 const TEXT_DRAG_THRESHOLD: f32 = 2.0;
 const TEXT_SELECTION_ALPHA: u8 = 70;
+/// Lines of the commented hunk previewed atop an overlay thread (pull-requests.md §5).
+const OVERLAY_SNIPPET_LINES: usize = 3;
+/// Extra indent a reply nests under its thread root in the overlay (§11).
+const REPLY_NEST_INDENT: f32 = 14.0;
 
 /// Horizontal geometry of the rows: two number columns (old | new) sized to the
 /// largest number in the file, then the sign, then the content.
@@ -1183,13 +1208,6 @@ pub(crate) const REPLY_LABELS: EditorLabels = EditorLabels {
     cancel: "Cancel reply",
 };
 
-/// Starting a new top-level conversation comment.
-pub(crate) const COMMENT_LABELS: EditorLabels = EditorLabels {
-    hint: "Add a comment…",
-    send: "Comment",
-    cancel: "Cancel",
-};
-
 /// Shared reply field: a multiline input (Enter sends, Shift+Enter inserts a
 /// newline) with a Send / Cancel footer. Used by the diff overlay and the center
 /// inline-comment card so a reply reads the same in both. Unlike `note_editor` it
@@ -1382,19 +1400,29 @@ fn existing_block(
         let Some(thread) = file.get(&anchor) else {
             continue;
         };
+        let now = crate::ui::pull_requests_view::now_epoch_secs();
+        // The commented code, shown once atop the thread; replies reuse the root's
+        // hunk so it isn't redrawn per comment.
+        let snippet = thread
+            .iter()
+            .find_map(|c| c.context.as_deref())
+            .map(|h| crate::pull_requests::model::hunk_snippet(h, OVERLAY_SNIPPET_LINES));
         for (idx, comment) in thread.iter().enumerate() {
             ui.add_space(2.0);
             let ask_label =
                 (!agent.is_empty() && idx + 1 == thread.len()).then(|| format!("Ask {agent}"));
             let mut ask_clicked = false;
             ui.horizontal(|ui| {
-                ui.add_space(indent);
+                // Replies nest a step in under the thread root (pull-requests.md §11).
+                ui.add_space(indent + if idx == 0 { 0.0 } else { REPLY_NEST_INDENT });
                 ask_clicked = thread_card(
                     ui,
                     palette,
-                    &comment.author,
-                    &comment.body,
+                    path,
+                    comment,
                     ask_label.as_deref(),
+                    (idx == 0).then_some(snippet.as_deref()).flatten(),
+                    now,
                 );
             });
             if ask_clicked {
@@ -1405,8 +1433,12 @@ fn existing_block(
                 });
             }
         }
+        let resolved = thread.first().is_some_and(|c| c.resolved);
+        let thread_id = thread.iter().find_map(|c| c.thread_id.clone());
         if let Some(reply_id) = thread.iter().find_map(|c| c.id) {
-            reply_block(ui, palette, state, reply_id, out, indent);
+            reply_block(
+                ui, palette, state, reply_id, resolved, thread_id, out, indent,
+            );
         }
         ui.add_space(2.0);
     }
@@ -1414,11 +1446,14 @@ fn existing_block(
 
 /// The reply affordance under a thread: a "Reply" pill that swaps to the inline
 /// reply editor for thread `reply_id` when clicked, raising `ReplyToThread` on send.
+#[allow(clippy::too_many_arguments)]
 fn reply_block(
     ui: &mut egui::Ui,
     palette: &Palette,
     state: &mut DiffViewState,
     reply_id: u64,
+    resolved: bool,
+    thread_id: Option<String>,
     out: &mut Vec<ReviewIntent>,
     indent: f32,
 ) {
@@ -1455,38 +1490,56 @@ fn reply_block(
         }
     } else {
         ui.add_space(2.0);
-        let mut clicked = false;
+        let mut reply_clicked = false;
+        let mut resolve_clicked = false;
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            clicked = reply_pill(ui, palette);
+            ui.spacing_mut().item_spacing.x = 6.0;
+            reply_clicked = reply_pill(ui, palette);
+            resolve_clicked = resolve_pill(ui, palette, resolved);
         });
-        if clicked {
+        if reply_clicked {
             state.open_reply(reply_id);
+        }
+        if resolve_clicked {
+            out.push(ReviewIntent::ResolveThread {
+                thread_id,
+                comment_id: reply_id,
+                resolved: !resolved,
+            });
         }
     }
 }
 
-/// The "Reply" pill that opens a thread's reply editor — forge-tinted (`accent`) so
-/// it reads as a write to the forge, not an agent action. Returns `true` on click.
-pub(crate) fn reply_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
-    agent_pill(
+/// The thread-level resolve toggle: "Resolve" (a check) when open, "Reopen" (an undo
+/// arc) when resolved — a quiet neutral pill beside Reply (pull-requests.md §11).
+pub(crate) fn resolve_pill(ui: &mut egui::Ui, palette: &Palette, resolved: bool) -> bool {
+    let (icon, label) = if resolved {
+        (lucide_icons::Icon::RotateCcw, "Reopen")
+    } else {
+        (lucide_icons::Icon::CheckCircle, "Resolve")
+    };
+    pill_button(
         ui,
         palette,
-        palette.accent,
-        lucide_icons::Icon::MessageSquarePlus,
-        "Reply",
+        palette.text_primary,
+        icon,
+        label,
+        RADIUS_BUTTON,
     )
 }
 
-/// The "Add a comment" pill that opens the standalone conversation composer —
-/// forge-tinted like `reply_pill`. Returns `true` on click (pull-requests.md §11).
-pub(crate) fn comment_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
-    agent_pill(
+/// The "Reply" pill that opens a thread's reply editor — a quiet, neutral button
+/// (the forge-write accent stays on the editor's Send), matching the PR mockup.
+/// Returns `true` on click.
+pub(crate) fn reply_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
+    pill_button(
         ui,
         palette,
-        palette.accent,
-        lucide_icons::Icon::MessageSquarePlus,
-        "Add a comment",
+        palette.text_primary,
+        lucide_icons::Icon::MessageSquare,
+        "Reply",
+        RADIUS_BUTTON,
     )
 }
 
@@ -1499,42 +1552,56 @@ pub(crate) fn comment_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
 fn thread_card(
     ui: &mut egui::Ui,
     palette: &Palette,
-    author: &str,
-    body: &str,
+    path: &str,
+    comment: &crate::review::ThreadComment,
     ask_label: Option<&str>,
+    snippet: Option<&[crate::pull_requests::model::SnippetLine]>,
+    now: i64,
 ) -> bool {
-    let color = palette.text_muted;
     let mut ask_clicked = false;
-    let inner = egui::Frame::new()
-        .fill(with_alpha(color, 18))
-        .inner_margin(egui::Margin::symmetric(9, 6))
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL))
-        .stroke(egui::Stroke::new(1.0, with_alpha(color, 55)))
+    egui::Frame::new()
+        .fill(palette.bg_surface)
+        .inner_margin(egui::Margin::same(10))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                crate::ui::detail::author_avatar(ui, palette, author);
+                crate::ui::detail::author_avatar(ui, palette, &comment.author);
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(author)
-                            .size(LINE_SIZE)
-                            .color(palette.text_primary)
-                            .strong(),
-                    );
-                    ui.add_space(1.0);
-                    ui.label(
-                        egui::RichText::new(body)
-                            .size(LINE_SIZE)
-                            .color(palette.text_secondary),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(
+                            egui::RichText::new(&comment.author)
+                                .size(LINE_SIZE)
+                                .color(palette.text_primary)
+                                .strong(),
+                        );
+                        let age =
+                            crate::pull_requests::model::relative_age(&comment.created_at, now);
+                        if !age.is_empty() {
+                            ui.label(
+                                egui::RichText::new(age)
+                                    .size(LINE_SIZE - 1.0)
+                                    .color(palette.text_muted),
+                            );
+                        }
+                    });
+                    if let Some(snip) = snippet.filter(|s| !s.is_empty()) {
+                        ui.add_space(4.0);
+                        crate::ui::detail::code_snippet(ui, palette, path, snip);
+                    }
+                    ui.add_space(3.0);
+                    crate::ui::pull_requests_view::markdown(ui, palette, &comment.body);
                     if let Some(label) = ask_label {
                         ui.add_space(4.0);
-                        if agent_pill(
+                        if pill_button(
                             ui,
                             palette,
                             palette.accent_ai,
                             lucide_icons::Icon::Bot,
                             label,
+                            RADIUS_PILL,
                         ) {
                             ask_clicked = true;
                         }
@@ -1542,12 +1609,6 @@ fn thread_card(
                 });
             });
         });
-    let rect = inner.response.rect;
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
-        egui::CornerRadius::same(RADIUS_PILL),
-        color,
-    );
     ask_clicked
 }
 
@@ -1804,23 +1865,27 @@ fn review_popover(
 /// Recap footer action: a Sparkles glyph and a "Send to {agent}" label in a pill
 /// (the AI-call icon used by the commit message), hover-tinted to the accent.
 fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
-    agent_pill(
+    pill_button(
         ui,
         palette,
         palette.accent_ai,
         lucide_icons::Icon::Sparkles,
         &format!("Send to {agent}"),
+        RADIUS_PILL,
     )
 }
 
-/// A hover-tinted AI pill with a leading glyph and `label`; returns `true` on
-/// click. Hover takes the `accent_ai` identity shared by the agent affordances.
-fn agent_pill(
+/// A pill button: a leading glyph and `label` in a rounded rect, neutral at rest
+/// (bg.surface + subtle border, secondary ink) and washed to `hover_accent` on
+/// hover. `radius` picks stadium (`RADIUS_PILL`) vs button corners. Returns `true`
+/// on click.
+fn pill_button(
     ui: &mut egui::Ui,
     palette: &Palette,
-    accent: egui::Color32,
+    hover_accent: egui::Color32,
     icon: lucide_icons::Icon,
     label: &str,
+    radius: u8,
 ) -> bool {
     let label = label.to_owned();
     let font = egui::FontId::proportional(PILL_SIZE);
@@ -1831,13 +1896,13 @@ fn agent_pill(
     let size = egui::vec2(icon_w + 6.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
     let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
     let (fill, content) = if hovered {
-        (with_alpha(accent, 36), accent)
+        (with_alpha(hover_accent, 36), hover_accent)
     } else {
         (palette.bg_surface, palette.text_secondary)
     };
     ui.painter().rect(
         rect,
-        egui::CornerRadius::same(RADIUS_PILL),
+        egui::CornerRadius::same(radius),
         fill,
         egui::Stroke::new(1.0, palette.border_subtle),
         egui::StrokeKind::Inside,

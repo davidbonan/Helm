@@ -2004,6 +2004,7 @@ fn github_pr(repo: &str, number: u64) -> crate::pull_requests::model::PullReques
         checks: Checks::Passing,
         review: Review::Pending,
         reviewers: Vec::new(),
+        labels: Vec::new(),
     }
 }
 
@@ -2029,6 +2030,7 @@ fn seed_review(
         files_error: None,
         selected_file: None,
         diffs: std::collections::HashMap::new(),
+        comment_diff_requests: std::collections::HashSet::new(),
         diff_loading: false,
         diff_error: None,
         diff_view: crate::ui::diff_view::DiffViewState::default(),

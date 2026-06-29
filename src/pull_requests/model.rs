@@ -88,6 +88,9 @@ pub struct PullRequest {
     pub checks: Checks,
     pub review: Review,
     pub reviewers: Vec<Reviewer>,
+    /// Labels on the PR. **GitHub only** — Bitbucket Cloud has no PR-label concept,
+    /// so it always maps to an empty vector (pull-requests.md §10).
+    pub labels: Vec<String>,
 }
 
 /// A single comment in a PR's thread. Conversation comments leave `path` and both
@@ -107,6 +110,16 @@ pub struct PrComment {
     pub id: Option<u64>,
     pub parent_id: Option<u64>,
     pub context: Option<String>,
+    /// ISO-8601 timestamp the comment was posted, rendered as a relative age in the
+    /// card (pull-requests.md §11). Empty when the forge payload omits it.
+    pub created_at: String,
+    /// Whether the review thread this comment belongs to is resolved on the forge
+    /// (GitHub `reviewThread.isResolved`; Bitbucket inline `resolution`). Carried on
+    /// every comment of the thread; the UI reads the root's value.
+    pub resolved: bool,
+    /// GitHub review-thread node id (`PRRT_…`) — the handle `resolveReviewThread`
+    /// needs. `None` on Bitbucket (resolved by comment id) and conversation comments.
+    pub thread_id: Option<String>,
 }
 
 /// A single CI check run shown in the detail panel.
@@ -134,6 +147,9 @@ pub struct PrDetail {
     pub check_runs: Vec<CheckRun>,
     /// Commits in the PR, oldest first (per-commit diff: T5).
     pub commits: Vec<PrCommit>,
+    /// ISO-8601 creation timestamp (GitHub `createdAt` / Bitbucket `created_on`),
+    /// rendered as a relative "Created … ago" in the detail (pull-requests.md §11).
+    pub created_at: String,
 }
 
 /// The verdict a submitted review carries (pull-requests.md §11). `Comment` posts
@@ -195,9 +211,151 @@ pub fn forge_threads(comments: &[PrComment]) -> crate::review::ForgeThreads {
                 author: c.author.clone(),
                 body: c.body.clone(),
                 id: c.id,
+                created_at: c.created_at.clone(),
+                context: c.context.clone(),
+                resolved: c.resolved,
+                thread_id: c.thread_id.clone(),
             });
     }
     threads
+}
+
+/// One line of a code-context snippet shown above a comment (pull-requests.md §5):
+/// its old/new line numbers and whether it was added, deleted or unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnippetLine {
+    pub old_no: Option<u32>,
+    pub new_no: Option<u32>,
+    pub kind: SnippetKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnippetKind {
+    Added,
+    Deleted,
+    Context,
+}
+
+/// Parse a unified-diff hunk (GitHub's `diff_hunk`) into the last `max_lines`
+/// rows ending at the commented line, each tagged with its line numbers and
+/// add/delete/context kind. The `@@ -a,b +c,d @@` header seeds the counters;
+/// the snippet keeps the tail so the commented row sits at the bottom.
+pub fn hunk_snippet(hunk: &str, max_lines: usize) -> Vec<SnippetLine> {
+    let mut out: Vec<SnippetLine> = Vec::new();
+    let (mut old_no, mut new_no) = (0u32, 0u32);
+    for line in hunk.lines() {
+        if let Some(rest) = line.strip_prefix("@@") {
+            if let Some((o, n)) = parse_hunk_header(rest) {
+                old_no = o;
+                new_no = n;
+            }
+            continue;
+        }
+        let first = line.chars().next();
+        let (kind, old, new) = match first {
+            Some('+') => {
+                let l = new_no;
+                new_no += 1;
+                (SnippetKind::Added, None, Some(l))
+            }
+            Some('-') => {
+                let l = old_no;
+                old_no += 1;
+                (SnippetKind::Deleted, Some(l), None)
+            }
+            // "\ No newline at end of file" carries no line; skip it.
+            Some('\\') => continue,
+            _ => {
+                let (o, n) = (old_no, new_no);
+                old_no += 1;
+                new_no += 1;
+                (SnippetKind::Context, Some(o), Some(n))
+            }
+        };
+        out.push(SnippetLine {
+            old_no: old,
+            new_no: new,
+            kind,
+            text: line.get(1..).unwrap_or("").to_owned(),
+        });
+    }
+    if out.len() > max_lines {
+        out.drain(0..out.len() - max_lines);
+    }
+    out
+}
+
+/// Read the start line numbers from a `@@ -a,b +c,d @@` header tail (the text after
+/// the leading `@@`): the old-side `a` and new-side `c`.
+fn parse_hunk_header(rest: &str) -> Option<(u32, u32)> {
+    let (mut old, mut new) = (None, None);
+    for tok in rest.split_whitespace() {
+        if let Some(s) = tok.strip_prefix('-') {
+            old = s.split(',').next().and_then(|n| n.parse().ok());
+        } else if let Some(s) = tok.strip_prefix('+') {
+            new = s.split(',').next().and_then(|n| n.parse().ok());
+        }
+    }
+    Some((old?, new?))
+}
+
+/// Format an ISO-8601 UTC timestamp as a compact relative age ("just now", "5m
+/// ago", "23h ago", "2 days ago", "3 mo ago", "2 yr ago") against `now_secs` (Unix
+/// epoch seconds). Unparseable input yields an empty string so the caller can hide
+/// the line. Used by the review detail's "Created" line.
+pub fn relative_age(iso: &str, now_secs: i64) -> String {
+    let Some(then) = epoch_secs(iso) else {
+        return String::new();
+    };
+    let d = (now_secs - then).max(0);
+    if d < 60 {
+        "just now".to_owned()
+    } else if d < 3600 {
+        format!("{}m ago", d / 60)
+    } else if d < 86_400 {
+        format!("{}h ago", d / 3600)
+    } else if d < 2_592_000 {
+        let days = d / 86_400;
+        if days == 1 {
+            "1 day ago".to_owned()
+        } else {
+            format!("{days} days ago")
+        }
+    } else if d < 31_536_000 {
+        format!("{} mo ago", d / 2_592_000)
+    } else {
+        let yr = d / 31_536_000;
+        if yr == 1 {
+            "1 yr ago".to_owned()
+        } else {
+            format!("{yr} yr ago")
+        }
+    }
+}
+
+/// Parse the leading `YYYY-MM-DDTHH:MM:SS` of an ISO-8601 timestamp into Unix epoch
+/// seconds, treating it as UTC (both forges return UTC — GitHub `…Z`, Bitbucket
+/// `…+00:00`). Sub-second and offset suffixes are ignored.
+fn epoch_secs(iso: &str) -> Option<i64> {
+    let year: i64 = iso.get(0..4)?.parse().ok()?;
+    let month: i64 = iso.get(5..7)?.parse().ok()?;
+    let day: i64 = iso.get(8..10)?.parse().ok()?;
+    let hour: i64 = iso.get(11..13)?.parse().ok()?;
+    let min: i64 = iso.get(14..16)?.parse().ok()?;
+    let sec: i64 = iso.get(17..19)?.parse().ok()?;
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + min * 60 + sec)
+}
+
+/// Days since the Unix epoch for a proleptic-Gregorian `(y, m, d)` — Howard
+/// Hinnant's `days_from_civil` (public-domain), valid across the dates a forge returns.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// The `(forge, repo, number)` identity a PR is deduped on. Two worktrees of one
@@ -265,6 +423,20 @@ mod tests {
     }
 
     #[test]
+    fn relative_age_buckets_by_elapsed_time() {
+        let iso = "2024-06-20T12:00:00Z";
+        let base = epoch_secs(iso).unwrap();
+        assert_eq!(relative_age(iso, base + 30), "just now");
+        assert_eq!(relative_age(iso, base + 5 * 60), "5m ago");
+        assert_eq!(relative_age(iso, base + 3 * 3600), "3h ago");
+        assert_eq!(relative_age(iso, base + 86_400), "1 day ago");
+        assert_eq!(relative_age(iso, base + 5 * 86_400), "5 days ago");
+        assert_eq!(relative_age(iso, base + 60 * 86_400), "2 mo ago");
+        assert_eq!(relative_age(iso, base + 800 * 86_400), "2 yr ago");
+        assert!(relative_age("not-a-date", base).is_empty());
+    }
+
+    #[test]
     fn forge_kind_of_yields_discriminator_and_label() {
         let gh = Forge::GitHub {
             owner: "acme".to_owned(),
@@ -300,6 +472,7 @@ mod tests {
             checks: Checks::None,
             review: Review::None,
             reviewers: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
@@ -343,7 +516,55 @@ mod tests {
             id: None,
             parent_id: None,
             context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
         }
+    }
+
+    #[test]
+    fn hunk_snippet_numbers_lines_and_tags_kinds() {
+        let hunk = "@@ -40,3 +40,4 @@ fn check(t: &Token) {\n fn check(t: &Token) {\n-    if t.exp < now {\n+    if t.exp <= now {\n+        bail();";
+        let snippet = hunk_snippet(hunk, 10);
+        assert_eq!(
+            snippet,
+            vec![
+                SnippetLine {
+                    old_no: Some(40),
+                    new_no: Some(40),
+                    kind: SnippetKind::Context,
+                    text: "fn check(t: &Token) {".to_owned(),
+                },
+                SnippetLine {
+                    old_no: Some(41),
+                    new_no: None,
+                    kind: SnippetKind::Deleted,
+                    text: "    if t.exp < now {".to_owned(),
+                },
+                SnippetLine {
+                    old_no: None,
+                    new_no: Some(41),
+                    kind: SnippetKind::Added,
+                    text: "    if t.exp <= now {".to_owned(),
+                },
+                SnippetLine {
+                    old_no: None,
+                    new_no: Some(42),
+                    kind: SnippetKind::Added,
+                    text: "        bail();".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn hunk_snippet_keeps_only_the_tail_ending_at_the_anchor() {
+        let hunk = "@@ -1,5 +1,5 @@\n a\n b\n c\n d\n e";
+        let snippet = hunk_snippet(hunk, 2);
+        assert_eq!(snippet.len(), 2);
+        assert_eq!(snippet[0].text, "d");
+        assert_eq!(snippet[1].text, "e");
+        assert_eq!(snippet[1].new_no, Some(5));
     }
 
     #[test]

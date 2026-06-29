@@ -67,3 +67,5 @@ cargo clippy -- -D warnings  # Strict lint (CI)
 - No overengineering: no speculative abstraction, readable local code.
 - Always re-read and simplify.
 - Simple, readable, extensible.
+- When, before coding, an in-depth refactor would improve the code and ease the
+  feature's implementation, prefer doing that refactor first.

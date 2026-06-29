@@ -1199,11 +1199,19 @@ fn gen_pr_review_comments() {
                         author: "Dax Vega".to_owned(),
                         body: "Can we keep alloc() under ten lines? It's creeping up.".to_owned(),
                         id: Some(1),
+                        created_at: String::new(),
+                        context: None,
+                        resolved: false,
+                        thread_id: None,
                     },
                     ThreadComment {
                         author: "Mira Lund".to_owned(),
                         body: "Agreed — pull the grow path into its own helper.".to_owned(),
                         id: Some(2),
+                        created_at: String::new(),
+                        context: None,
+                        resolved: false,
+                        thread_id: None,
                     },
                 ],
             );
@@ -1577,4 +1585,253 @@ fn gen_preferences() {
             );
         });
     finish(harness, "preferences");
+}
+
+#[test]
+fn gen_pr_list() {
+    use helm::pull_requests::model::{
+        Checks, ForgeKind, PrRole, PrState, PullRequest, Review, Reviewer,
+    };
+    use helm::ui::file_list::FileViewMode;
+    use helm::ui::pull_requests_view::{pull_requests_page, PrSourceHints};
+
+    let reviewer = |name: &str, state| Reviewer {
+        name: name.to_owned(),
+        state,
+    };
+    let mk = |repo: &str,
+              number: u64,
+              title: &str,
+              author: &str,
+              src: &str,
+              role,
+              state,
+              checks,
+              review,
+              reviewers: Vec<Reviewer>| PullRequest {
+        forge_kind: ForgeKind::GitHub,
+        repo_label: repo.to_owned(),
+        number,
+        title: title.to_owned(),
+        role,
+        state,
+        author: author.to_owned(),
+        source_branch: src.to_owned(),
+        dest_branch: "main".to_owned(),
+        url: format!("https://example.test/{repo}/pull/{number}"),
+        updated_at: "2026-06-20T10:00:00Z".to_owned(),
+        checks,
+        review,
+        reviewers,
+        labels: Vec::new(),
+    };
+
+    let prs = vec![
+        mk(
+            "acme/web",
+            128,
+            "Fix the login redirect loop on expired sessions",
+            "mira",
+            "fix/login-loop",
+            PrRole::ToReview,
+            PrState::Open,
+            Checks::Passing,
+            Review::Pending,
+            vec![reviewer("octocat", Review::Pending)],
+        ),
+        mk(
+            "acme/api",
+            96,
+            "Bump the cache TTL to 15 minutes",
+            "dax",
+            "perf/cache-ttl",
+            PrRole::ToReview,
+            PrState::Open,
+            Checks::Failing,
+            Review::ChangesRequested,
+            vec![reviewer("octocat", Review::ChangesRequested)],
+        ),
+        mk(
+            "acme/web",
+            131,
+            "Draft: extract the session store",
+            "lena",
+            "refactor/session-store",
+            PrRole::Mine,
+            PrState::Draft,
+            Checks::Pending,
+            Review::None,
+            vec![
+                reviewer("mira", Review::Approved),
+                reviewer("dax", Review::Pending),
+                reviewer("kai", Review::ChangesRequested),
+                reviewer("ren", Review::Pending),
+            ],
+        ),
+        mk(
+            "acme/cli",
+            54,
+            "Add the --json flag to status",
+            "lena",
+            "feat/json-status",
+            PrRole::Mine,
+            PrState::Open,
+            Checks::Passing,
+            Review::Approved,
+            vec![reviewer("mira", Review::Approved)],
+        ),
+    ];
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1500.0, 560.0))
+        .with_pixels_per_point(2.0)
+        .build_ui(move |ui| {
+            boot(ui);
+            let palette = Palette::dark();
+            ui.painter()
+                .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, palette.bg_canvas);
+            let _ = pull_requests_page(
+                ui,
+                &palette,
+                &prs,
+                None,
+                &PrSourceHints::default(),
+                None,
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.run();
+    finish(harness, "pr_list");
+}
+
+#[test]
+fn gen_pr_detail() {
+    use helm::pull_requests::model::{
+        Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
+        ReviewVerdict, Reviewer,
+    };
+    use helm::review::{FileComments, ForgeThreads};
+    use helm::ui::diff_view::DiffViewState;
+    use helm::ui::file_list::FileViewMode;
+    use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView, PrSourceHints};
+
+    let comment = |author: &str, body: &str| PrComment {
+        author: author.to_owned(),
+        body: body.to_owned(),
+        path: None,
+        old_lineno: None,
+        new_lineno: None,
+        id: None,
+        parent_id: None,
+        context: None,
+        created_at: String::new(),
+        resolved: false,
+        thread_id: None,
+    };
+    let pr = PullRequest {
+        forge_kind: ForgeKind::GitHub,
+        repo_label: "acme/web".to_owned(),
+        number: 128,
+        title: "Fix the login redirect loop on expired sessions".to_owned(),
+        role: PrRole::ToReview,
+        state: PrState::Open,
+        author: "mira".to_owned(),
+        source_branch: "fix/login-loop".to_owned(),
+        dest_branch: "main".to_owned(),
+        url: "https://example.test/acme/web/pull/128".to_owned(),
+        updated_at: "2026-06-24T08:00:00Z".to_owned(),
+        checks: Checks::Passing,
+        review: Review::Pending,
+        reviewers: vec![
+            Reviewer {
+                name: "octocat".to_owned(),
+                state: Review::Approved,
+            },
+            Reviewer {
+                name: "dax".to_owned(),
+                state: Review::Pending,
+            },
+        ],
+        labels: vec!["bug".to_owned(), "auth".to_owned(), "priority".to_owned()],
+    };
+    let detail = PrDetail {
+        body: "## Problem\n\nExpired sessions sent users into a **redirect loop**: the \
+               auth guard bounced `/login` back through the stale token.\n\n\
+               ## Fixes\n\n- Reset the session cookie when the token is stale\n\
+               - Short-circuit `AuthGuard::check` instead of redirecting\n\n\
+               Covered by a regression test on the guard."
+            .to_owned(),
+        comments: vec![
+            comment(
+                "mira",
+                "Splitting the **guard fix** from the cookie reset for review.",
+            ),
+            comment(
+                "octocat",
+                "Guard change looks right. One nit on the `cookie_name` constant.",
+            ),
+            comment("dax", "Can we add a metric on the loop-break path?"),
+        ],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: "2026-06-23T09:30:00Z".to_owned(),
+    };
+    let files: &[helm::git::commit_detail::CommitFile] = &[];
+    let mut diff_view = DiffViewState::default();
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1000.0, 680.0))
+        .with_pixels_per_point(2.0)
+        .build_ui(move |ui| {
+            boot(ui);
+            let palette = Palette::dark();
+            ui.painter()
+                .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, palette.bg_canvas);
+            let mut review = PrReviewView {
+                pr: &pr,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diff: None,
+                comment_diffs: Vec::new(),
+                diff_loading: false,
+                diff_error: None,
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: Some("Sam Rivers"),
+            };
+            let _ = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                380.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.run();
+    finish(harness, "pr_detail");
 }

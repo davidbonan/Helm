@@ -189,6 +189,10 @@ struct PrReview {
     /// only (pull-requests.md §11). `diff_loading`/`diff_error` track the in-flight
     /// fetch for the *selected* file.
     diffs: HashMap<(git2::Oid, git2::Oid, String), crate::git::diff::FileDiff>,
+    /// Files whose local diff has already been requested to back an inline comment's
+    /// code preview (keyed like `diffs`), so the per-frame prefetch fires once per
+    /// (range, file) even while the fetch is still in flight.
+    comment_diff_requests: HashSet<(git2::Oid, git2::Oid, String)>,
     diff_loading: bool,
     diff_error: Option<String>,
     diff_view: crate::ui::diff_view::DiffViewState,
@@ -525,6 +529,11 @@ pub struct HelmApp {
     pr_runner: Option<crate::pull_requests::runner::PrRunner>,
     /// Last PR fetch result shown in the cockpit, refreshed in place each reply.
     pr_cache: crate::pull_requests::runner::PrCache,
+    /// Current-user display name per forge for the conversation composer avatar
+    /// (pull-requests.md §11), captured from the PR runner's identity resolution and
+    /// kept across later replies that no longer re-resolve it.
+    pr_user_github: Option<String>,
+    pr_user_bitbucket: Option<String>,
     last_pr_poll: f64,
     /// Project roots queried by the last PR fetch; a change re-queries (§6).
     last_pr_roots: Vec<PathBuf>,
@@ -704,6 +713,8 @@ impl HelmApp {
             last_group_poll: 0.0,
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
+            pr_user_github: None,
+            pr_user_bitbucket: None,
             last_pr_poll: 0.0,
             last_pr_roots: Vec::new(),
             pr_selected: None,
@@ -1384,7 +1395,8 @@ impl HelmApp {
             // there is no forge thread in the working-tree / commit review.
             ReviewIntent::AskAgentOnThread { .. }
             | ReviewIntent::ReplyToThread { .. }
-            | ReviewIntent::PostConversationComment { .. } => {}
+            | ReviewIntent::PostConversationComment { .. }
+            | ReviewIntent::ResolveThread { .. } => {}
         }
     }
 
@@ -1683,6 +1695,7 @@ impl HelmApp {
                         files_error: None,
                         selected_file: None,
                         diffs: HashMap::new(),
+                        comment_diff_requests: HashSet::new(),
                         diff_loading: false,
                         diff_error: None,
                         diff_view: crate::ui::diff_view::DiffViewState::default(),
@@ -1853,6 +1866,62 @@ impl HelmApp {
         );
     }
 
+    /// Prefetch the local diff of every file in the current range that carries an
+    /// inline comment without a forge hunk (Bitbucket), so the center inline cards can
+    /// window a code preview even when that file isn't the open one (pull-requests.md
+    /// §5). GitHub comments carry their own `diff_hunk`, so they are skipped.
+    fn ensure_comment_diffs(&mut self, ctx: &egui::Context) {
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        let (Some(base), Some(head)) = (review.base, review.head) else {
+            return;
+        };
+        let Some(detail) = review.detail.as_ref() else {
+            return;
+        };
+        let mut wanted: Vec<String> = Vec::new();
+        for c in &detail.comments {
+            let Some(path) = c.path.as_deref() else {
+                continue;
+            };
+            if c.context.is_some() || c.new_lineno.is_none() {
+                continue;
+            }
+            let cache_key = (base, head, path.to_owned());
+            if review.diffs.contains_key(&cache_key)
+                || review.comment_diff_requests.contains(&cache_key)
+                || wanted.iter().any(|p| p == path)
+            {
+                continue;
+            }
+            wanted.push(path.to_owned());
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let key = review.key.clone();
+        let root = review.root.clone();
+        if let Some(review) = self.active_review_mut() {
+            for path in &wanted {
+                review
+                    .comment_diff_requests
+                    .insert((base, head, path.clone()));
+            }
+        }
+        for path in wanted {
+            self.pr_review_runner(ctx).request(
+                crate::pull_requests::runner::PrReviewRequest::FileDiff {
+                    key: key.clone(),
+                    root: root.clone(),
+                    base,
+                    head,
+                    path,
+                },
+            );
+        }
+    }
+
     /// Drain the detail and review runners into the cached surface their `key` (and,
     /// for a diff, path) names — so a re-fetch lands even when the user has navigated
     /// to another PR in the meantime, keeping every cached surface warm.
@@ -1968,6 +2037,7 @@ impl HelmApp {
             }
         }
         self.ensure_selected_diff(ctx);
+        self.ensure_comment_diffs(ctx);
     }
 
     /// Submit the open PR's review (pull-requests.md §11): flatten the draft line
@@ -2041,6 +2111,7 @@ impl HelmApp {
                         PrPostKind::Review => "Review submitted",
                         PrPostKind::Reply => "Reply posted",
                         PrPostKind::Conversation => "Comment posted",
+                        PrPostKind::Resolve => "Thread updated",
                     };
                     self.toasts.success(message, now);
                     self.refresh_pr_detail(ctx);
@@ -2086,6 +2157,7 @@ impl HelmApp {
         let mut ask_thread: Option<(String, Option<u32>, Option<u32>)> = None;
         let mut replies: Vec<(u64, String)> = Vec::new();
         let mut conversation: Vec<(Option<u64>, String)> = Vec::new();
+        let mut resolves: Vec<(Option<String>, u64, bool)> = Vec::new();
         for intent in intents {
             match intent {
                 ReviewIntent::SaveComment {
@@ -2120,6 +2192,11 @@ impl HelmApp {
                 ReviewIntent::PostConversationComment { parent, body } => {
                     conversation.push((parent, body))
                 }
+                ReviewIntent::ResolveThread {
+                    thread_id,
+                    comment_id,
+                    resolved,
+                } => resolves.push((thread_id, comment_id, resolved)),
             }
         }
         for (comment_id, body) in replies {
@@ -2127,6 +2204,9 @@ impl HelmApp {
         }
         for (parent, body) in conversation {
             self.post_pr_conversation(parent, body, ctx);
+        }
+        for (thread_id, comment_id, resolved) in resolves {
+            self.post_pr_resolve(thread_id, comment_id, resolved, ctx);
         }
         if let Some((file, old, new)) = ask_thread {
             self.ask_claude_on_thread(&file, old, new, ctx);
@@ -2194,6 +2274,40 @@ impl HelmApp {
             review.post_error = None;
         }
         self.pr_post_runner(ctx).request_conversation(request);
+    }
+
+    /// Resolve or reopen a review thread (pull-requests.md §11): fire the off-thread
+    /// toggle, then `poll_pr_post` re-fetches the detail so the badge reflects the new
+    /// state. `thread_id` is the GitHub node id (`None` on Bitbucket, which resolves by
+    /// `comment_id`).
+    fn post_pr_resolve(
+        &mut self,
+        thread_id: Option<String>,
+        comment_id: u64,
+        resolved: bool,
+        ctx: &egui::Context,
+    ) {
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        if review.posting {
+            return;
+        }
+        let request = crate::pull_requests::runner::PrResolveRequest {
+            key: review.key.clone(),
+            forge_kind: review.pr.forge_kind,
+            repo_label: review.pr.repo_label.clone(),
+            number: review.pr.number,
+            bitbucket_email: self.prefs.bitbucket_email.clone(),
+            thread_id,
+            comment_id,
+            resolved,
+        };
+        if let Some(review) = self.active_review_mut() {
+            review.posting = true;
+            review.post_error = None;
+        }
+        self.pr_post_runner(ctx).request_resolve(request);
     }
 
     /// Launch the review agent on the whole PR (pull-requests.md §11): the generic
@@ -2421,6 +2535,12 @@ impl HelmApp {
             .as_mut()
             .and_then(crate::pull_requests::runner::PrRunner::try_recv)
         {
+            if reply.github_name.is_some() {
+                self.pr_user_github = reply.github_name.clone();
+            }
+            if reply.bitbucket_name.is_some() {
+                self.pr_user_bitbucket = reply.bitbucket_name.clone();
+            }
             self.pr_cache.apply(reply);
             self.reconcile_pr_selection();
         }

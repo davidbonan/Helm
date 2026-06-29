@@ -72,6 +72,11 @@ pub struct PrReply {
     /// Identity resolved this run (cached by the runner for the next request).
     pub github_login: Option<String>,
     pub bitbucket_uuid: Option<String>,
+    /// Current-user display names for the conversation composer avatar (§11),
+    /// resolved alongside the identity above and so only `Some` on the first reply;
+    /// the app keeps its last-good value on later replies.
+    pub github_name: Option<String>,
+    pub bitbucket_name: Option<String>,
 }
 
 /// The cockpit's view of the last fetch: the deduped PRs and each source's
@@ -608,12 +613,22 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
             let mut detail = github::parse_detail(&json).map_err(|e| e.to_string())?;
             // Inline review comments are a separate REST resource; missing them is
             // non-fatal (the conversation + diff still render).
-            if let Some(inline) = run_stdout(
+            if let Some(mut inline) = run_stdout(
                 "gh",
                 &github::review_comments_args(&req.repo_label, req.number),
             )
             .and_then(|j| github::parse_review_comments(&j).ok())
             {
+                // Resolution + the thread node id live on the GraphQL review thread,
+                // a separate query joined back by `databaseId`; also non-fatal.
+                if let Some(threads) = run_stdout(
+                    "gh",
+                    &github::review_threads_args(&req.repo_label, req.number),
+                )
+                .and_then(|j| github::parse_review_threads(&j).ok())
+                {
+                    github::apply_thread_resolution(&mut inline, &threads);
+                }
                 detail.comments.extend(inline);
             }
             Ok(detail)
@@ -634,6 +649,8 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
                 &header,
             )?;
             let body = bitbucket::parse_body(&detail_json).map_err(|e| e.to_string())?;
+            let created_at =
+                bitbucket::parse_created_on(&detail_json).map_err(|e| e.to_string())?;
             let mut comments = Vec::new();
             let mut next = Some(bitbucket::comments_url(workspace, repo, req.number));
             while let Some(url) = next {
@@ -655,6 +672,7 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
                 comments,
                 check_runs: Vec::new(),
                 commits,
+                created_at,
             })
         }
     }
@@ -711,6 +729,21 @@ pub struct PrConversationRequest {
     pub body: String,
 }
 
+/// Resolve or reopen one existing review thread (pull-requests.md §11): `thread_id`
+/// is the GitHub review-thread node id (`None` on Bitbucket), `comment_id` the thread
+/// root's numeric id (Bitbucket's resolve handle), `resolved` the target state.
+#[derive(Debug, Clone)]
+pub struct PrResolveRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+    pub thread_id: Option<String>,
+    pub comment_id: u64,
+    pub resolved: bool,
+}
+
 /// Which write the post runner carried, so the UI clears the review draft only on
 /// a submitted review — a posted reply or conversation comment leaves it untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,6 +751,7 @@ pub enum PrPostKind {
     Review,
     Reply,
     Conversation,
+    Resolve,
 }
 
 /// The single reply per post request, echoing the key for adoption.
@@ -782,6 +816,20 @@ impl PrPostRunner {
             let _ = tx.send(PrPostReply {
                 key: request.key,
                 kind: PrPostKind::Conversation,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn request_resolve(&self, request: PrResolveRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = post_resolve(&request);
+            let _ = tx.send(PrPostReply {
+                key: request.key,
+                kind: PrPostKind::Resolve,
                 result,
             });
             on_event();
@@ -952,6 +1000,55 @@ fn post_conversation(req: &PrConversationRequest) -> Result<(), String> {
     }
 }
 
+/// Resolve or reopen one review thread (pull-requests.md §11). GitHub toggles it
+/// with a GraphQL mutation on the thread node id; Bitbucket POSTs to the thread's
+/// `resolve` endpoint to resolve and DELETEs the same URL to reopen.
+fn post_resolve(req: &PrResolveRequest) -> Result<(), String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            let thread_id = req
+                .thread_id
+                .as_deref()
+                .ok_or_else(|| "missing review-thread id".to_owned())?;
+            run_stdin(
+                "gh",
+                &github::resolve_thread_args(thread_id, req.resolved),
+                "",
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                let e = e.trim();
+                if e.is_empty() {
+                    "gh resolve failed".to_owned()
+                } else {
+                    e.to_owned()
+                }
+            })
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let url = bitbucket::resolve_comment_url(workspace, repo, req.number, req.comment_id);
+            if req.resolved {
+                curl_post_ok(&url, &header, "")
+            } else {
+                curl_delete_ok(&url, &header)
+            }
+        }
+    }
+}
+
 pub struct PrRunner {
     on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
     results_tx: Sender<PrReply>,
@@ -1031,6 +1128,8 @@ fn fetch(
     let mut github_rows: Option<Vec<PullRequest>> = Some(Vec::new());
     let mut bitbucket = SourceStatus::Absent;
     let mut bitbucket_rows: Option<Vec<PullRequest>> = Some(Vec::new());
+    let mut github_name: Option<String> = None;
+    let mut bitbucket_name: Option<String> = None;
 
     // GitHub — availability via `gh auth status`, identity via `gh api user`.
     if has_github {
@@ -1040,6 +1139,9 @@ fn fetch(
             if github_login.is_none() {
                 github_login =
                     run_stdout("gh", &github::current_login_args()).map(|s| s.trim().to_owned());
+                github_name = run_stdout("gh", &github::current_name_args())
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty());
             }
             match &github_login {
                 Some(login) if !login.is_empty() => {
@@ -1096,7 +1198,8 @@ fn fetch(
                 if bitbucket_uuid.is_none() {
                     match curl_get(&bitbucket::current_user_url(), &header) {
                         CurlResult::Ok(json) => {
-                            bitbucket_uuid = bitbucket::parse_current_user(&json)
+                            bitbucket_uuid = bitbucket::parse_current_user(&json);
+                            bitbucket_name = bitbucket::parse_current_user_display_name(&json);
                         }
                         CurlResult::Unauthorized => {
                             bitbucket = SourceStatus::Unavailable(
@@ -1176,6 +1279,8 @@ fn fetch(
         bitbucket_rows,
         github_login,
         bitbucket_uuid,
+        github_name,
+        bitbucket_name,
     }
 }
 
@@ -1224,6 +1329,26 @@ fn run_stdin(program: &str, args: &[String], input: &str) -> Result<String, Stri
 /// body is discarded (we re-fetch the detail afterwards).
 fn curl_post_ok(url: &str, auth_header: &str, body: &str) -> Result<(), String> {
     match curl_post(url, auth_header, body) {
+        CurlResult::Ok(_) => Ok(()),
+        CurlResult::Unauthorized => Err("Bitbucket token invalid or expired".to_owned()),
+        CurlResult::HttpError(message) => Err(message),
+        CurlResult::Failed => Err("Bitbucket unreachable".to_owned()),
+    }
+}
+
+/// `curl -X DELETE` reduced to `Result<(), message>` — the unresolve path, which
+/// returns 204 (no body).
+fn curl_delete_ok(url: &str, auth_header: &str) -> Result<(), String> {
+    match run_curl(
+        &[
+            "-X".to_owned(),
+            "DELETE".to_owned(),
+            "-w".to_owned(),
+            "\n%{http_code}".to_owned(),
+            url.to_owned(),
+        ],
+        auth_header,
+    ) {
         CurlResult::Ok(_) => Ok(()),
         CurlResult::Unauthorized => Err("Bitbucket token invalid or expired".to_owned()),
         CurlResult::HttpError(message) => Err(message),
@@ -1302,7 +1427,8 @@ fn run_curl(args: &[String], auth_header: &str) -> CurlResult {
     let text = String::from_utf8_lossy(&out.stdout);
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
     match code.trim() {
-        "200" | "201" => CurlResult::Ok(body.to_owned()),
+        // 204 is the unresolve (DELETE) success — no body.
+        "200" | "201" | "204" => CurlResult::Ok(body.to_owned()),
         "401" => CurlResult::Unauthorized,
         "000" | "" => CurlResult::Failed,
         code => CurlResult::HttpError(
@@ -1462,6 +1588,7 @@ mod tests {
             checks: Checks::None,
             review: Review::None,
             reviewers: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
@@ -1476,6 +1603,8 @@ mod tests {
             bitbucket_rows,
             github_login: None,
             bitbucket_uuid: None,
+            github_name: None,
+            bitbucket_name: None,
         }
     }
 

@@ -6,6 +6,203 @@
 
 ---
 
+## ☑ Milestone — M-PR5 · PR detail → mockup parity
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §4/§11 +
+[`design-system.md`](../design-system.md) §4. Brought the **PR detail**
+(center, no file open) up to the sent mockup: a **carded** layout (author block /
+meta-row / description card / conversation cards), **reviewers + labels + role
+pills**, a **Created … ago** age and an **Oldest/Newest** conversation toggle.
+Locked decisions: **labels = GitHub-only** (Bitbucket Cloud has no PR labels →
+empty); **linked issue / conversation filter / reactions = cut** (no backing — the
+Jira key already leads the title); reviewers wired from the existing
+`PullRequest.reviewers` (GitHub-populated, **BB empty in v1**). Counter: **7/7**.
+
+- ☑ **T1 — Reviewers cluster + role pills.** Detail meta-row reuses
+  `reviewer_stack` (allocated rect → painter); `comment_role` derives **Author** /
+  **Reviewer** neutral tags on conversation cards (never `accent.ai`).
+  *Files*: `src/ui/pull_requests_view.rs`.
+- ☑ **T2 — Labels (GitHub fetch).** `PullRequest.labels: Vec<String>`; GitHub
+  `LIST_FIELDS += labels`, `parse_pr` maps `o["labels"][].name`; Bitbucket empty.
+  Rendered as neutral pills in the meta-row (`neutral_pill`, §4 pill grammar), row
+  hidden when reviewers + labels both empty.
+- ☑ **T3 — Created date.** `PrDetail.created_at`; GitHub `DETAIL_FIELDS +=
+  createdAt`, Bitbucket `created_on`. `model::relative_age` (pure, `now` injected)
+  renders "Created … ago", right-aligned in the author row. (The list *Updated*
+  column was later widened + humanized the same way — M-PR4 T2.)
+- ☑ **T4 — Carded detail layout.** Author block + right-aligned Created age, a
+  reviewers + labels meta-row, the **body in a `bg.surface` card**, conversation
+  **comment cards** (1px `border.subtle` + radius `CARD_RADIUS`). **Token nitpicks
+  needed no code change** — heading casing (band titles are 13pt strong primary, not
+  the sidebar uppercase-muted header), body contrast, `#number` chip cursor and the
+  verdict segmented fill already match §4/the mockup; documented the detail card in
+  `design-system.md` §4.
+- ☑ **T5 — Conversation sort.** `conversation_header` carries an **Oldest|Newest**
+  toggle (`ui.data_temp` per PR url), shown with >1 comment; reverses the
+  oldest-first list. Filter / reactions / linked-issue **cut**.
+- ☑ **T6 — Body render fix.** `\r` stripped from body + comment text in both parsers
+  (`github::parse_detail`, `bitbucket::parse_body`/`parse_comments`). The mockup's
+  stray leading `·` was its own sample data (the header's `author · src → dest` is
+  intentional), not a render leak.
+- ☑ **T7 — Spec + STATE + verify.** Folded into `pull-requests.md` §4
+  (`labels`/`created_at`) + §11 (layout), `design-system.md` §4 (tag variant + detail
+  card); counter recomputed; `gen_pr_detail` screenshot reviewed (cards, meta-row,
+  role tags, Created age, sort toggle all present).
+
+### Next actions (M-PR5)
+- Done. Bitbucket reviewers now wired (M-PR4 T2); labels stay GitHub-only.
+
+**Post-milestone polish** (live-render gaps the mockup screenshots surfaced):
+- ☑ **Markdown bodies + readability.** Description, conversation cards and inline-comment
+  threads were leaking raw markdown (`## …`, `**…**`, `` `…` ``) and, once rendered via
+  `egui_commonmark`, read too dense. Replaced by an in-house renderer
+  (`pull_requests_view::markdown`, on `pulldown-cmark` — already in the tree via
+  `egui_commonmark`) that builds `LayoutJob`s carrying controlled size (`MD_TEXT_SIZE`),
+  intra-line leading (`MD_LINE_HEIGHT`) and **letter-spacing** (`MD_LETTER_SPACING`) —
+  none of which `egui_commonmark` 0.23's plain `RichText` output can set. Handles
+  headings, bold/italic/strike/inline-code, bullet + ordered lists, block quotes and
+  fenced code blocks; `pulldown-cmark` keeps `cookie_name` / `upsertInDatabase` from
+  italicizing on intraword underscores. The `CommonMarkCache` plumbing is gone.
+- ☑ **Reply on every conversation card.** Was Bitbucket-only (the pill needed a forge
+  `id`); GitHub conversation comments (`github::parse_detail` → `id: None`) had none.
+  `ConversationEdit::Reply` now keys by **conversation index** (stable across the
+  Oldest/Newest reversal) and `conversation_reply_block` takes the optional `parent`:
+  threaded forges nest via `parent: Some(id)`, flat (GitHub) posts a new top-level
+  comment (`parent: None`). Spec §11 updated.
+- ☑ **Reply + composer restyle (mockup parity).** The Reply affordance is now a quiet
+  neutral pill (`reply_pill` → `pill_button` with a message-square glyph), and the
+  standalone "Add a comment" pill became an **always-visible composer bar** at the foot
+  of the band — avatar, input field bound to `DiffViewState::conversation_add_buffer`,
+  and a filled-accent **Comment** button, raising the same parent-less
+  `PostConversationComment`. The button is right-anchored (`right_to_left` so the field
+  can't push it off the band) and reads solid accent throughout, only submitting once
+  the draft is non-blank. No paperclip/emoji icons (no backend → dead decoration).
+  `ConversationEdit::Add` / `open_conversation_add` dropped.
+- ☑ **Composer avatar = real current user.** The composer avatar shows the signed-in
+  user's initials, resolved per forge from the PR runner's identity pass: GitHub via
+  `gh api user --jq '.name // .login'` (`github::current_name_args`), Bitbucket via
+  `display_name`/`nickname` off the `/2.0/user` reply
+  (`bitbucket::parse_current_user_display_name`). `PrReply` carries `github_name` /
+  `bitbucket_name` (only `Some` on the first reply that resolves identity); the app
+  keeps them in `HelmApp::pr_user_github` / `pr_user_bitbucket` and feeds the one
+  matching `pr.forge_kind` into `PrReviewView::current_user`. `None` ⇒ the plain dot.
+- ☑ **Loaders for list + detail fetches.** Cold list/refresh showed nothing (the cache
+  reads `Absent`/`Absent` before the first reply ⇒ the misleading "No repository" empty
+  state); detail opened to empty body/checks/conversation shells reading as "nothing
+  here". Browse list now takes a `PrSourceHints::loading` (`!cache.loaded ||
+  runner.busy()`): the refresh icon becomes a spinner and the body shows a centered
+  "Loading pull requests…" instead of the empty state. Review center takes
+  `PrReviewView::detail_loading` (`detail.is_none() && detail_error.is_none()`): a
+  spinner + "Loading pull request…" stands in for the detail sections. Mirrors the
+  existing `files_loading`/`diff_loading` rail placeholders.
+- ☑ **Comment-card overhaul + code snippets + resolved threads.** Every comment card
+  (overlay, center inline, conversation) now carries the **avatar + author** in
+  `text.primary` (no more per-author hue), an **Author/Reviewer** role tag, a relative
+  **age** (`model::relative_age`), **threaded replies indented**, a **selectable** markdown
+  body (the card no longer swallows clicks — the snippet is the open target), and a
+  **multi-row composer**. Code-anchored cards embed a **few-line code snippet**
+  (`detail::code_snippet`): a numbered gutter + `+`/`-`/space signs tinted green/red/neutral.
+  Source: GitHub `diff_hunk` → `model::hunk_snippet` (kept to the `INLINE_SNIPPET_LINES`
+  tail ending at the anchor); Bitbucket (no hunk) windows the loaded diff, else nothing.
+  **Resolve/Reopen** toggle on inline threads → `ReviewIntent::ResolveThread`: GitHub via a
+  GraphQL `reviewThreads` join (`databaseId → (PRRT node id, isResolved)`,
+  `apply_thread_resolution`) + `resolve/unresolveReviewThread` mutation on the node id;
+  Bitbucket via `POST …/comments/{id}/resolve` (resolve) / `DELETE` (reopen, 204).
+  `PrComment`/`ThreadComment` gained `created_at` / `resolved` / `thread_id`. *Files*:
+  `src/pull_requests/{model,github,bitbucket,runner}.rs`, `src/app/mod.rs`, `src/review.rs`,
+  `src/ui/{detail,pull_requests_view,diff_view}.rs`. *Tests*: domain (`hunk_snippet`,
+  `relative_age`), I/O (`parse_review_threads`/`apply_thread_resolution`/`resolve_thread_args`,
+  BB resolution parse + `resolve_comment_url`), UI e2e (snippet open target, resolve pill →
+  `ResolveThread`). **Live forge round-trips unverified** (no creds/network here).
+- ☑ **Conversation replies nest by `parent_id`.** The center Conversation band listed
+  every `path.is_none()` comment as a flat top-level card, ignoring `parent_id` — so a
+  Bitbucket conversation reply stood as its own card. `conversation_section` now groups
+  comments into threads by walking the `parent_id` chain (GitHub stays flat: id/parent
+  both None ⇒ one comment per thread), rendering the root then its replies **indented**
+  with **one Reply affordance per thread** (nesting under the root id). *Files*:
+  `src/ui/pull_requests_view.rs`. *Test*: `conversation_reply_nests_under_its_parent`.
+- ☑ **Inline-comment code preview on the conversation page.** Bitbucket inline comments
+  carry no forge `diff_hunk`, and the conversation page has no file open, so the center
+  inline cards showed only the bare "Open …" link. `poll_pr_review` now prefetches the
+  local diff of every commented file lacking a hunk (`ensure_comment_diffs`, deduped via
+  `PrReview.comment_diff_requests`), and the view passes the current-range diffs
+  (`PrReviewView.comment_diffs`) so `inline_snippet` windows `source_lines` for any
+  commented file — not just the open one. *Files*: `src/app/mod.rs`, `src/app/render.rs`,
+  `src/ui/pull_requests_view.rs`. *Test*: `inline_comment_card_windows_comment_diff_when_no_hunk`.
+- ☑ **Accordion resolved threads + richer snippets.** Resolved threads (center inline +
+  conversation) collapse to a one-line **"Resolved · N comments"** summary row (tick +
+  chevron), re-opening on click — per-thread expand state in `DiffViewState.expanded_resolved`
+  (keyed by the root comment id; `is_resolved_expanded`/`toggle_resolved`); no forge/parser
+  change. Snippets gained **syntax highlighting** (`detail::code_snippet` highlights the code
+  via `syntax_highlight::highlight_buffer` from the file path; the `+`/`-` sign keeps its kind
+  colour) and more context: `INLINE_SNIPPET_LINES` 4→8, and the Bitbucket fallback now windows
+  the loaded diff's **hunk** (`diff_window_snippet`, colored add/delete) instead of flat
+  `source_lines` when a hunk covers the anchor. *Files*: `src/ui/{detail,pull_requests_view,diff_view}.rs`.
+  *Test*: `resolved_inline_thread_collapses_and_reopens_on_click`.
+- ☑ **Unified comment-card grammar (conversation + inline + overlay).** The three comment
+  surfaces shared no visual language; they now wear one **Detail card** grammar (`bg.surface`
+  + `border.subtle` + 10pt radius + 12pt padding) via `comment_frame`. A thread renders as a
+  single card — root at full weight, replies a notch in under a left **thread-rail** with a
+  lighter avatar (`detail::author_avatar_small`, 20pt) — through the shared `thread_members` /
+  `comment_meta_row` helpers; the **age** moved to the card's right edge, and the Reply/Resolve
+  controls moved **inside** the card foot. Spacing unified on a `GAP_XS/SM/MD` (4/8/12) scale,
+  the Oldest|Newest toggle became a real **segmented control** (`order_segment`, `accent.subtle`
+  active), and the diff-overlay `thread_card` dropped its tinted-pill+left-edge look for the same
+  card. *Files*: `src/ui/{detail,pull_requests_view,diff_view}.rs`. No new test (covered by the
+  existing 30 PR-view render/label tests).
+
+### Blockers / Open questions (M-PR5)
+- **Bitbucket reviewers**: resolved in M-PR4 T2 (`fields=+values.participants` on the
+  list query → parsed from `participants`). **Labels** stay GitHub-only — Bitbucket
+  Cloud has no PR labels (genuinely absent, nothing to fetch).
+- **List *Updated* column**: resolved in M-PR4 T2 — humanized via `model::relative_age`
+  after the column was widened.
+
+---
+
+## ☑ Milestone — M-PR4 · PR list redesign (full-width table)
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5 (reconciled to a mockup).
+Turns the browse list from compact two-line rows into a **full-width column
+table** per role group, in English. Locked design decisions: **EN** labels, **no
+tabs** (the two role groups are the only split), **full-width list** (master →
+detail, unchanged §11 surface), header = **title + Refresh** only (no global
+search / notifications / theme / `+`), **no filters / sort**; each group is a
+**rounded card** (section title + count above it, hairline row separators);
+**Status = a plain colored label** (state + review decision) — no pill, CI checks
+live in the §11 detail (matched to the sent mockup). Counter: **2/2**.
+
+- ☑ **T1 — Browse list → carded column table.** `render_list` gains a page header
+  (`Pull Requests` title + Refresh button → `PullRequestsPageAction.refresh`);
+  each group renders a **card** (reserved backdrop shape + `border.subtle` stroke)
+  holding a column-header row + table rows with hairline separators. Per-section
+  columns — **To review**: Title (+ branch) · Project · Author · Reviewer ·
+  Status · Updated · ›; **Mine**: Title (+ branch) · Project · Reviewers · Status
+  · Updated · ›. Cell helpers: `columns` (per-role x-ranges), `paint_avatar` /
+  `reviewer_stack` (overlapping initials avatars + `+N`, ring tinted by reviewer
+  state), `pr_status` (state/review → colored label). *Files*:
+  `src/ui/pull_requests_view.rs`, `src/app/render.rs`. *Tests*: PR-cockpit UI e2e
+  (groups, rows, select + Refresh intents); `headless-verify` (`shots_gen::gen_pr_list`).
+- ☑ **T2 — Calibration + relative age + BB reviewers (feedback).** `columns` now
+  caps Title (`TITLE_MIN_W`/`TITLE_MAX_W`) and spreads the fixed data columns with
+  an even computed gap to the right edge (was right-anchored → Title hogged all
+  slack on wide windows); widened **Updated** (46→96) and humanized it via
+  `model::relative_age(updated_at, now)` (falls back to raw on unparseable input).
+  Bitbucket reviewers now populate: `role_filtered_url` adds `fields=+values.participants`,
+  `parse_pr` reads the roster + per-reviewer decision from `participants`
+  (`aggregate_review` collapses it for the Status column). *Files*:
+  `src/ui/pull_requests_view.rs`, `src/pull_requests/bitbucket.rs`. *Tests*:
+  `bitbucket::parse_list_reads_reviewers_and_review_from_participants`; wide
+  `gen_pr_list` shot reviewed.
+
+### Next actions (M-PR4)
+- Done. Proceed to M-PR5 (PR detail parity) when ready.
+
+### Blockers / Open questions (M-PR4)
+- none.
+
+---
+
 ## ☑ Milestone — M-PR3 · PR review: cache & richer reviewing
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§6/§11. Makes the cockpit

@@ -27,6 +27,15 @@ pub struct ThreadComment {
     /// Forge id of this comment, when known — the reply target (its thread root's
     /// id) the diff overlay posts a reply against (pull-requests.md §11).
     pub id: Option<u64>,
+    /// ISO-8601 timestamp the comment was posted, shown as a relative age.
+    pub created_at: String,
+    /// The few lines of code the comment was left on (GitHub `diff_hunk`), shown as a
+    /// snippet inside the overlay card so it reads self-contained (pull-requests.md §5).
+    pub context: Option<String>,
+    /// Whether this thread is resolved on the forge (read from the root comment).
+    pub resolved: bool,
+    /// GitHub review-thread node id, the handle the resolve toggle posts against.
+    pub thread_id: Option<String>,
 }
 
 /// Existing PR threads of one repo, keyed by file path then the `(old, new)`
@@ -112,6 +121,14 @@ pub enum ReviewIntent {
     PostConversationComment {
         parent: Option<u64>,
         body: String,
+    },
+    /// Resolve or unresolve an existing review thread (pull-requests.md §11).
+    /// `thread_id` is the GitHub review-thread node id (`None` on Bitbucket);
+    /// `comment_id` is the thread root's numeric id (Bitbucket's resolve handle).
+    ResolveThread {
+        thread_id: Option<String>,
+        comment_id: u64,
+        resolved: bool,
     },
 }
 

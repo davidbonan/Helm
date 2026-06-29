@@ -73,10 +73,11 @@ PullRequest {
   checks: Passing | Failing | Pending | None,
   review: Approved | ChangesRequested | Pending | None,
   reviewers: Vec<Reviewer>,
+  labels: Vec<String>,                                        // GitHub labels; empty on Bitbucket (§11 meta-row)
 }
 PrComment { author, body, path, old_lineno, new_lineno, id, parent_id, context }  // a fetched thread comment (§11)
 PrCommit  { sha, short, subject, author }                     // one PR commit, oldest-first (§11)
-PrDetail  { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun>, commits: Vec<PrCommit> }  // lazy, on selection
+PrDetail  { body, comments: Vec<PrComment>, check_runs: Vec<CheckRun>, commits: Vec<PrCommit>, created_at }  // lazy, on selection; created_at ISO-8601 (§11 "Created" age)
 ReviewVerdict = Comment | Approve | RequestChanges            // submit composer (§11)
 DraftComment  { path, line, body }                            // a postable line comment (§11)
 ```
@@ -88,13 +89,28 @@ unit-tested on fixtures**; the runner (§6) owns the shell-out. `forge_kind` /
 
 ## 5. The cockpit (`ui::pull_requests_view::pull_requests_page`)
 
-Two-pane, mirroring the Agents List cockpit (left list flush to the edge, right
-detail panel, resizable split persisted in `Prefs.pr_detail_width`):
+A **full-width list page** owning the central area (like the Agents dashboard):
+no side-by-side detail pane — selecting a PR **navigates** to its review surface
+(§11), which fills the same area, and **Back** returns to the list. The header
+carries only the **Pull Requests** title and a **Refresh** button (§6) — no
+global search, notification or theme chrome (the theme lives in Preferences), and
+**no tabs** (the two role groups below are the only split). All labels are in
+**English** ([`design-system.md`](design-system.md) §7).
 
-- **List**, grouped **To review** then **Mine** (each header carries a count).
-  One row per PR: forge glyph, state icon (open / draft), title (truncated), a
-  **repo chip** + **branch chip**, author, relative age, and compact **checks**
-  (✓ / ✗ / •) + **review** indicators. Clicking a row **selects** it.
+- **List**, two **grouped sections** — **To review** then **Mine** (each section
+  title carries a count and sits **above** a **rounded card**) — each card is a
+  **column table** with a header row and hairline row separators. The shared
+  columns are **Title** (the PR title with its **branch** beneath, led by the
+  open / draft **state icon**), **Project** (repo chip), **Status** and
+  **Updated** (relative age); **To review** adds an **Author** and a **Requested
+  reviewer** column, **Mine** a **Reviewers** column (stacked avatars, `+N`
+  overflow). **Status** is a single **plain colored label** encoding state +
+  review decision (*Open* / *In review* / *Approved* / *Changes requested* /
+  *Draft*) — no pill fill; the CI **checks** (✓ / ✗ / •) live in the §11 review
+  detail, not the list. A trailing chevron marks the row → detail affordance.
+  **No** project / reviewer / status **filter** or sort control —
+  workspace-scoped + grouped is the only ordering. Clicking a row **selects** it
+  (→ the §11 review surface).
 - **Detail** of the selection: header (title · `#number` · state), `source →
   dest`, author, **checks** + **reviewers**, and the **diff-centric review
   surface** (§11) — the PR's changed files and their diffs, with in-diff comments,
@@ -216,8 +232,18 @@ same one as commit/working-tree review.
 - **Layout.** The **center** area shows the selected file's diff, or — when **no
   file is open** — the PR **detail**: a compact full-width header with **Back**,
   the PR **title**, `author · source → dest`, compact **Open in browser** /
-  **Checkout** PR-level actions and a `#number` chip, followed by author avatar,
-  `source → dest`, body, Checks and conversation, in the
+  **Checkout** PR-level actions and a `#number` chip, followed by the author block
+  (avatar, name, `source → dest`) with a right-aligned **Created** relative age
+  (`model::relative_age` over `PrDetail.created_at`), a **meta-row** (the reviewer
+  avatar cluster + neutral **label** pills — labels are GitHub-only, monochrome so
+  the `accent.ai` hue stays reserved for AI surfaces), the **body in a card**
+  (`bg_surface` + `border_subtle`) **rendered as markdown** (an in-house
+  `pulldown-cmark` renderer, as are the comment bodies — it controls font size,
+  line-height and letter-spacing so prose blocks don't read as a dense wall), then
+  Checks and the **Conversation** — each top-level comment a card with an **Author** /
+  **Reviewer** role tag and a quiet **Reply** pill, ordered by an **Oldest | Newest**
+  toggle (persisted per PR), closed by an always-visible **Add a comment** composer
+  bar (the signed-in user's avatar + field + filled **Comment** button). The detail uses the
   commit-detail visual language on `bg_canvas`. The **rail sits on the right** —
   the commit-detail sidebar's place — carrying only a **Files changed** band, the
   file rows and the composer; it never holds PR-level actions, the title or
@@ -307,14 +333,16 @@ same one as commit/working-tree review.
   the center inline card — carries a **reply** editor: GitHub
   `POST …/pulls/{n}/comments/{id}/replies`, Bitbucket `{content.raw, parent:{id}}`.
   The detail refetches on success so the reply reappears.
-- **Conversation comments (write).** The center **Conversation** section has a
-  standalone composer (parent-less) plus a **Reply** under each top-level card:
-  GitHub `POST issues/{n}/comments` (flat — issue comments don't thread), Bitbucket
-  `POST …/comments` (the reply nests via `parent`). The per-card Reply shows only
-  when the comment carries a forge id (Bitbucket); GitHub's flat conversation uses
-  the standalone composer. Posting reuses the same gated **`PrPostRunner`** +
-  success-refetch as the submit / reply paths (the draft is untouched — only a
-  submitted *review* clears it).
+- **Conversation comments (write).** The center **Conversation** section closes with
+  an always-visible composer bar (the current user's avatar + field + filled **Comment**
+  button, parent-less; the avatar's initials come from the forge identity — `gh api user`
+  for GitHub, `/2.0/user` `display_name` for Bitbucket)
+  plus a **Reply** under **every** top-level card:
+  GitHub `POST issues/{n}/comments` (flat — issue comments don't thread, so the
+  reply posts a new top-level comment), Bitbucket `POST …/comments` (the reply nests
+  via `parent` when the card carries a forge id). Posting reuses the same gated
+  **`PrPostRunner`** + success-refetch as the submit / reply paths (the draft is
+  untouched — only a submitted *review* clears it).
 
 This supersedes the §10 "no posting / approving / requesting changes / replying"
 limitations for **GitHub + Bitbucket Cloud** reviews; only **merging** remains out

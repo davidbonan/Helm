@@ -1057,6 +1057,10 @@ fn existing_pr_thread_renders_anchored_read_only() {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
                 id: Some(11),
+                created_at: String::new(),
+                context: None,
+                resolved: false,
+                thread_id: None,
             }],
         ))
         .collect(),
@@ -1138,6 +1142,10 @@ fn new_side_thread_on_a_modified_line_renders_once_not_on_the_deleted_row() {
                 author: "octocat".into(),
                 body: "please rename new()".into(),
                 id: Some(22),
+                created_at: String::new(),
+                context: None,
+                resolved: false,
+                thread_id: None,
             }],
         ))
         .collect(),
@@ -1185,6 +1193,10 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
                 id: Some(33),
+                created_at: String::new(),
+                context: None,
+                resolved: false,
+                thread_id: None,
             }],
         ))
         .collect(),
@@ -1240,6 +1252,10 @@ fn reply_pill_on_a_thread_emits_reply_to_thread() {
                 author: "octocat".into(),
                 body: "please rename work()".into(),
                 id: Some(77),
+                created_at: String::new(),
+                context: None,
+                resolved: false,
+                thread_id: None,
             }],
         ))
         .collect(),

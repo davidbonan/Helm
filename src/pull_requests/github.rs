@@ -7,6 +7,8 @@
 //! because GitHub's `involves` qualifier excludes requested reviewers; roles are
 //! re-derived from the cached login so an overlap collapses through `dedupe`.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
@@ -14,8 +16,8 @@ use crate::pull_requests::model::{
     PullRequest, Review, ReviewVerdict, Reviewer,
 };
 
-const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup";
-const DETAIL_FIELDS: &str = "body,comments,commits,statusCheckRollup";
+const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,labels";
+const DETAIL_FIELDS: &str = "body,comments,commits,statusCheckRollup,createdAt";
 
 /// `gh auth status` — exit 0 ⇒ the GitHub source is usable (pull-requests.md §3).
 pub fn auth_status_args() -> Vec<String> {
@@ -25,6 +27,17 @@ pub fn auth_status_args() -> Vec<String> {
 /// `gh api user --jq .login` — resolves "me" once per session (§1).
 pub fn current_login_args() -> Vec<String> {
     vec!["api".into(), "user".into(), "--jq".into(), ".login".into()]
+}
+
+/// `gh api user` display name, falling back to the login when the account has no
+/// set name — the conversation composer avatar's initials source (§11).
+pub fn current_name_args() -> Vec<String> {
+    vec![
+        "api".into(),
+        "user".into(),
+        "--jq".into(),
+        ".name // .login".into(),
+    ]
 }
 
 /// Open PRs authored by me in `repo` (`owner/name`).
@@ -106,12 +119,86 @@ pub fn parse_review_comments(json: &str) -> serde_json::Result<Vec<PrComment>> {
                         id: c["id"].as_u64(),
                         parent_id: c["in_reply_to_id"].as_u64(),
                         context: c["diff_hunk"].as_str().map(str::to_owned),
+                        created_at: c["created_at"].as_str().unwrap_or_default().to_owned(),
+                        // Resolution lives on the GraphQL review thread, joined in by
+                        // `apply_thread_resolution` after this REST parse.
+                        resolved: false,
+                        thread_id: None,
                     }
                 })
                 .collect()
         })
         .unwrap_or_default();
     Ok(comments)
+}
+
+/// `gh api graphql` query for the PR's review threads — the resolved state and the
+/// thread node id, neither exposed by the REST `pulls/{n}/comments` endpoint
+/// (pull-requests.md §11). The reply joins back to the inline comments by
+/// `databaseId`. Capped at 100 threads, matching the list cap.
+pub fn review_threads_args(repo: &str, number: u64) -> Vec<String> {
+    let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+    vec![
+        "api".into(),
+        "graphql".into(),
+        "-f".into(),
+        format!("owner={owner}"),
+        "-f".into(),
+        format!("name={name}"),
+        "-F".into(),
+        format!("number={number}"),
+        "-f".into(),
+        "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}".into(),
+    ]
+}
+
+/// Map the review-threads GraphQL reply onto `databaseId → (thread node id,
+/// resolved)`. Every comment of a thread maps to the same pair so the join hits
+/// whichever comment the UI anchors on.
+pub fn parse_review_threads(json: &str) -> serde_json::Result<HashMap<u64, (String, bool)>> {
+    let value: Value = serde_json::from_str(json)?;
+    let mut map = HashMap::new();
+    let threads = value["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array();
+    for t in threads.into_iter().flatten() {
+        let thread_id = t["id"].as_str().unwrap_or_default().to_owned();
+        let resolved = t["isResolved"].as_bool().unwrap_or(false);
+        let comments = t["comments"]["nodes"].as_array();
+        for c in comments.into_iter().flatten() {
+            if let Some(db) = c["databaseId"].as_u64() {
+                map.insert(db, (thread_id.clone(), resolved));
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Join the review-thread resolution (`parse_review_threads`) onto the inline
+/// comments, filling each comment's `resolved` + `thread_id` from its `databaseId`.
+pub fn apply_thread_resolution(comments: &mut [PrComment], threads: &HashMap<u64, (String, bool)>) {
+    for c in comments.iter_mut() {
+        if let Some((thread_id, resolved)) = c.id.and_then(|id| threads.get(&id)) {
+            c.thread_id = Some(thread_id.clone());
+            c.resolved = *resolved;
+        }
+    }
+}
+
+/// `gh api graphql` mutation toggling a review thread's resolution (§11):
+/// `resolveReviewThread` / `unresolveReviewThread`, both taking the thread node id.
+pub fn resolve_thread_args(thread_id: &str, resolved: bool) -> Vec<String> {
+    let mutation = if resolved {
+        "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}"
+    } else {
+        "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}"
+    };
+    vec![
+        "api".into(),
+        "graphql".into(),
+        "-f".into(),
+        format!("id={thread_id}"),
+        "-f".into(),
+        format!("query={mutation}"),
+    ]
 }
 
 /// `gh api repos/{repo}/pulls/{n}/reviews --method POST --input -` — submit a
@@ -227,13 +314,16 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
                 .iter()
                 .map(|c| PrComment {
                     author: c["author"]["login"].as_str().unwrap_or_default().to_owned(),
-                    body: c["body"].as_str().unwrap_or_default().to_owned(),
+                    body: c["body"].as_str().unwrap_or_default().replace('\r', ""),
                     path: None,
                     old_lineno: None,
                     new_lineno: None,
                     id: None,
                     parent_id: None,
                     context: None,
+                    created_at: c["createdAt"].as_str().unwrap_or_default().to_owned(),
+                    resolved: false,
+                    thread_id: None,
                 })
                 .collect()
         })
@@ -255,10 +345,11 @@ pub fn parse_detail(json: &str) -> serde_json::Result<PrDetail> {
         .map(|items| items.iter().map(parse_commit).collect())
         .unwrap_or_default();
     Ok(PrDetail {
-        body: value["body"].as_str().unwrap_or_default().to_owned(),
+        body: value["body"].as_str().unwrap_or_default().replace('\r', ""),
         comments,
         check_runs,
         commits,
+        created_at: value["createdAt"].as_str().unwrap_or_default().to_owned(),
     })
 }
 
@@ -328,6 +419,16 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
         }
     }
 
+    let labels: Vec<String> = o["labels"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|l| l["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
     Some(PullRequest {
         forge_kind: ForgeKind::GitHub,
         repo_label: repo_label.to_owned(),
@@ -343,6 +444,7 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
         checks: aggregate_checks(&o["statusCheckRollup"]),
         review: map_review_decision(o["reviewDecision"].as_str().unwrap_or_default()),
         reviewers,
+        labels,
     })
 }
 
@@ -559,6 +661,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_pr_maps_labels() {
+        let value = json!({
+            "number": 5, "title": "T", "author": {"login": "alice"},
+            "headRefName": "f", "baseRefName": "main", "url": "u", "updatedAt": "",
+            "isDraft": false, "reviewDecision": "", "reviewRequests": [],
+            "latestReviews": [], "statusCheckRollup": [],
+            "labels": [{"name": "bug"}, {"name": "p1"}]
+        });
+        let pr = parse_pr(&value, "alice", "acme/web").unwrap();
+        assert_eq!(pr.labels, vec!["bug", "p1"]);
+    }
+
+    #[test]
+    fn parse_detail_reads_created_at_and_strips_cr() {
+        let json = json!({
+            "body": "line1\r\nline2",
+            "comments": [{"author": {"login": "x"}, "body": "a\r\nb"}],
+            "commits": [], "statusCheckRollup": [],
+            "createdAt": "2024-01-02T03:04:05Z"
+        })
+        .to_string();
+        let detail = parse_detail(&json).unwrap();
+        assert_eq!(detail.created_at, "2024-01-02T03:04:05Z");
+        assert_eq!(detail.body, "line1\nline2");
+        assert_eq!(detail.comments[0].body, "a\nb");
+    }
+
+    #[test]
     fn parse_review_comments_reads_inline_anchors_and_replies() {
         let json = r#"[
           {"id": 1, "user": {"login": "dave"}, "body": "nit: rename", "path": "src/a.rs", "line": 12, "diff_hunk": "@@ -10,3 +10,4 @@\n ctx\n-old\n+new"},
@@ -687,5 +817,88 @@ mod tests {
         let prs = parse_list(LIST, "dave", "acme/webapp").unwrap();
         let pr9 = prs.iter().find(|p| p.number == 9).unwrap();
         assert_eq!(pr9.checks, Checks::Pending);
+    }
+
+    #[test]
+    fn review_threads_args_split_the_repo_and_carry_the_query() {
+        let args = review_threads_args("acme/web", 42);
+        assert_eq!(
+            args[0..8],
+            [
+                "api",
+                "graphql",
+                "-f",
+                "owner=acme",
+                "-f",
+                "name=web",
+                "-F",
+                "number=42"
+            ]
+        );
+        assert!(args[9].starts_with("query=") && args[9].contains("reviewThreads"));
+    }
+
+    #[test]
+    fn parse_review_threads_maps_every_comment_to_its_thread() {
+        let json = json!({
+            "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+                {"id": "PRRT_1", "isResolved": true, "comments": {"nodes": [{"databaseId": 10}, {"databaseId": 11}]}},
+                {"id": "PRRT_2", "isResolved": false, "comments": {"nodes": [{"databaseId": 20}]}}
+            ]}}}}
+        })
+        .to_string();
+        let map = parse_review_threads(&json).unwrap();
+        assert_eq!(map[&10], ("PRRT_1".to_owned(), true));
+        assert_eq!(map[&11], ("PRRT_1".to_owned(), true));
+        assert_eq!(map[&20], ("PRRT_2".to_owned(), false));
+    }
+
+    #[test]
+    fn apply_thread_resolution_joins_by_database_id() {
+        let mut comments = vec![
+            PrComment {
+                author: "a".to_owned(),
+                body: "b".to_owned(),
+                path: None,
+                old_lineno: None,
+                new_lineno: None,
+                id: Some(10),
+                parent_id: None,
+                context: None,
+                created_at: String::new(),
+                resolved: false,
+                thread_id: None,
+            },
+            PrComment {
+                author: "a".to_owned(),
+                body: "b".to_owned(),
+                path: None,
+                old_lineno: None,
+                new_lineno: None,
+                id: Some(99),
+                parent_id: None,
+                context: None,
+                created_at: String::new(),
+                resolved: false,
+                thread_id: None,
+            },
+        ];
+        let mut threads = HashMap::new();
+        threads.insert(10u64, ("PRRT_1".to_owned(), true));
+        apply_thread_resolution(&mut comments, &threads);
+        assert_eq!(comments[0].thread_id.as_deref(), Some("PRRT_1"));
+        assert!(comments[0].resolved);
+        // No thread for id 99 → untouched.
+        assert_eq!(comments[1].thread_id, None);
+        assert!(!comments[1].resolved);
+    }
+
+    #[test]
+    fn resolve_thread_args_pick_the_matching_mutation() {
+        let resolve = resolve_thread_args("PRRT_9", true);
+        assert_eq!(resolve[0..4], ["api", "graphql", "-f", "id=PRRT_9"]);
+        assert!(resolve[5].contains("resolveReviewThread"));
+        let unresolve = resolve_thread_args("PRRT_9", false);
+        assert!(unresolve[5].contains("unresolveReviewThread"));
     }
 }

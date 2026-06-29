@@ -134,7 +134,13 @@ take the intent color (added for Stage, deleted for Unstage/Discard).
   padding ~16pt; **integrated bottom toolbar** (same corners) in `bg.surface`
   containing the pills + mic + send button.
 - **Pill / dropdown** — `bg.surface` background, `border.subtle` border, radius ~8pt,
-  `text.secondary` label + `text.muted` chevron.
+  `text.secondary` label + `text.muted` chevron. Bare **tag** variant (PR labels,
+  conversation **Author/Reviewer** role tags) drops the chevron — stays monochrome so
+  the `accent.ai` hue is reserved for AI/agent surfaces.
+- **Detail card** (PR review detail body + conversation comments — pull-requests.md
+  §11) — `bg.surface` fill + `border.subtle` 1px + radius ~10pt + ~12–14pt padding,
+  raised over the `bg.canvas` detail (distinct from the `bg.canvas` Settings card,
+  which sits on a `bg.surface` page).
 - **Primary button** (Commit / Open Folder…) — `accent` background **darkened**
   (×0.85 in light, ×0.70 in dark — derived `Palette::primary_button_fill`,
   same on hover over `accent.hover`; the shared token stays full color

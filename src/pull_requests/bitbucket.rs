@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use crate::pull_requests::model::{
     Checks, ForgeKind, PrComment, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review,
+    Reviewer,
 };
 
 const API: &str = "https://api.bitbucket.org/2.0";
@@ -17,9 +18,9 @@ pub fn current_user_url() -> String {
     format!("{API}/user")
 }
 
-/// Open PRs `me_uuid` authored (`role` ⇒ `Mine`). The list endpoint omits
-/// `reviewers`/`participants`, so the role can't be re-derived from the reply —
-/// it comes from which query found the PR, like the GitHub two-query split.
+/// Open PRs `me_uuid` authored (`role` ⇒ `Mine`). The role can't be re-derived
+/// from the reply (the query, not the payload, says why a PR matched), so it comes
+/// from which query found the PR, like the GitHub two-query split.
 pub fn authored_url(workspace: &str, repo: &str, me_uuid: &str) -> String {
     role_filtered_url(workspace, repo, "author.uuid", me_uuid)
 }
@@ -32,9 +33,12 @@ pub fn reviewing_url(workspace: &str, repo: &str, me_uuid: &str) -> String {
 /// `…/pullrequests?q=<state+role filter>` — the state is folded into `q` (a
 /// separate `state=` param is ignored once `q` is present) and the whole BBQL
 /// expression is percent-encoded, since the runner hands the URL to `curl` raw.
+/// `fields=+values.participants` augments the list's partial representation with
+/// the per-reviewer decision (omitted by default), so the cockpit can show the
+/// reviewer roster and a review status without a per-PR round-trip.
 fn role_filtered_url(workspace: &str, repo: &str, field: &str, me_uuid: &str) -> String {
     let q = encode(&format!("state=\"OPEN\" AND {field}=\"{me_uuid}\""));
-    format!("{API}/repositories/{workspace}/{repo}/pullrequests?q={q}&pagelen=50")
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests?q={q}&fields=%2Bvalues.participants&pagelen=50")
 }
 
 /// A single PR (carries the rendered description for the detail panel).
@@ -69,6 +73,12 @@ pub fn request_changes_url(workspace: &str, repo: &str, id: u64) -> String {
     format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/request-changes")
 }
 
+/// `…/comments/{comment_id}/resolve` — POST resolves the thread, DELETE reopens it
+/// (pull-requests.md §11). The comment id is the thread root's numeric id.
+pub fn resolve_comment_url(workspace: &str, repo: &str, id: u64, comment_id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/comments/{comment_id}/resolve")
+}
+
 /// POST body for an inline comment: the text plus a `{path, to}` anchor on the
 /// new side of the diff (matches how `parse_detail` reads `inline.to`).
 pub fn inline_comment_body(path: &str, line: u32, raw: &str) -> String {
@@ -95,6 +105,17 @@ pub fn basic_auth_header(email: &str, token: &str) -> String {
 pub fn parse_current_user(json: &str) -> Option<String> {
     let value: Value = serde_json::from_str(json).ok()?;
     value["uuid"].as_str().map(str::to_owned)
+}
+
+/// Display name from `GET /2.0/user` (`display_name`, then `nickname`) — the
+/// conversation composer avatar's initials source (§11), since the uuid isn't
+/// human-readable.
+pub fn parse_current_user_display_name(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json).ok()?;
+    value["display_name"]
+        .as_str()
+        .or_else(|| value["nickname"].as_str())
+        .map(str::to_owned)
 }
 
 /// The human-readable `message` from a Bitbucket error reply
@@ -133,6 +154,7 @@ pub fn parse_detail(detail_json: &str, comments_json: &str) -> serde_json::Resul
         comments: parse_comments(comments_json)?,
         check_runs: Vec::new(),
         commits: Vec::new(),
+        created_at: parse_created_on(detail_json)?,
     })
 }
 
@@ -182,7 +204,13 @@ pub fn parse_body(detail_json: &str) -> serde_json::Result<String> {
         .as_str()
         .or_else(|| detail["description"].as_str())
         .unwrap_or_default()
-        .to_owned())
+        .replace('\r', ""))
+}
+
+/// The PR creation timestamp (`created_on`, ISO-8601).
+pub fn parse_created_on(detail_json: &str) -> serde_json::Result<String> {
+    let detail: Value = serde_json::from_str(detail_json)?;
+    Ok(detail["created_on"].as_str().unwrap_or_default().to_owned())
 }
 
 /// One `pullrequests/{id}/comments` page mapped onto domain comments; the runner
@@ -209,13 +237,19 @@ pub fn parse_comments(comments_json: &str) -> serde_json::Result<Vec<PrComment>>
                             .as_str()
                             .unwrap_or_default()
                             .to_owned(),
-                        body,
+                        body: body.replace('\r', ""),
                         path: inline["path"].as_str().map(str::to_owned),
                         old_lineno,
                         new_lineno,
                         id: c["id"].as_u64(),
                         parent_id: c["parent"]["id"].as_u64(),
                         context: None,
+                        created_at: c["created_on"].as_str().unwrap_or_default().to_owned(),
+                        // `resolution` is an object when the thread is resolved, null
+                        // otherwise; Bitbucket has no thread node id (it resolves by
+                        // comment id), so `thread_id` stays None.
+                        resolved: !c["resolution"].is_null(),
+                        thread_id: None,
                     })
                 })
                 .collect()
@@ -231,14 +265,17 @@ pub fn next_page(json: &str) -> Option<String> {
     value["next"].as_str().map(str::to_owned)
 }
 
-/// Map one PR object onto the domain. The list reply omits review state and the
-/// reviewer roster (detail-only on Bitbucket), so both stay empty here.
+/// Map one PR object onto the domain. The reviewer roster and each reviewer's
+/// decision come from `participants` (requested via `fields`, see `role_filtered_url`);
+/// labels stay empty (Bitbucket has no PR labels).
 fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
     let state = if o["draft"].as_bool().unwrap_or(false) {
         PrState::Draft
     } else {
         PrState::Open
     };
+    let reviewers = parse_reviewers(o);
+    let review = aggregate_review(&reviewers);
 
     PullRequest {
         forge_kind: ForgeKind::Bitbucket,
@@ -265,8 +302,56 @@ fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
             .to_owned(),
         updated_at: o["updated_on"].as_str().unwrap_or_default().to_owned(),
         checks: Checks::None,
-        review: Review::None,
-        reviewers: Vec::new(),
+        review,
+        reviewers,
+        labels: Vec::new(),
+    }
+}
+
+/// The reviewer roster with each reviewer's decision, read from `participants`
+/// (entries with `role == "REVIEWER"`); a reviewer who hasn't decided is Pending.
+fn parse_reviewers(o: &Value) -> Vec<Reviewer> {
+    o["participants"]
+        .as_array()
+        .map(|ps| {
+            ps.iter()
+                .filter(|p| p["role"].as_str() == Some("REVIEWER"))
+                .filter_map(|p| {
+                    Some(Reviewer {
+                        name: p["user"]["display_name"].as_str()?.to_owned(),
+                        state: map_participant_state(p),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One participant's review decision (`state`, with `approved` as a fallback).
+fn map_participant_state(p: &Value) -> Review {
+    match p["state"].as_str() {
+        Some("approved") => Review::Approved,
+        Some("changes_requested") => Review::ChangesRequested,
+        _ if p["approved"].as_bool().unwrap_or(false) => Review::Approved,
+        _ => Review::Pending,
+    }
+}
+
+/// Collapse the roster into the list's one-line review status: changes-requested
+/// dominates, then any approval; a roster with no decision yet is Pending ("In
+/// review"), an empty roster is None ("Open") — parity with GitHub's decision.
+fn aggregate_review(reviewers: &[Reviewer]) -> Review {
+    if reviewers
+        .iter()
+        .any(|r| r.state == Review::ChangesRequested)
+    {
+        Review::ChangesRequested
+    } else if reviewers.iter().any(|r| r.state == Review::Approved) {
+        Review::Approved
+    } else if reviewers.is_empty() {
+        Review::None
+    } else {
+        Review::Pending
     }
 }
 
@@ -327,11 +412,11 @@ mod tests {
         // dropped once q is present), differing only by author/reviewers field.
         assert_eq!(
             authored_url("team", "repo", "{me}"),
-            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20author.uuid%3D%22%7Bme%7D%22&pagelen=50"
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20author.uuid%3D%22%7Bme%7D%22&fields=%2Bvalues.participants&pagelen=50"
         );
         assert_eq!(
             reviewing_url("team", "repo", "{me}"),
-            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20reviewers.uuid%3D%22%7Bme%7D%22&pagelen=50"
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests?q=state%3D%22OPEN%22%20AND%20reviewers.uuid%3D%22%7Bme%7D%22&fields=%2Bvalues.participants&pagelen=50"
         );
         assert_eq!(
             pull_request_url("team", "repo", 101),
@@ -400,6 +485,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_current_user_display_name_prefers_display_name_then_nickname() {
+        assert_eq!(
+            parse_current_user_display_name(r#"{"display_name":"Alice Reed","nickname":"alice"}"#),
+            Some("Alice Reed".to_owned())
+        );
+        assert_eq!(
+            parse_current_user_display_name(r#"{"nickname":"alice"}"#),
+            Some("alice".to_owned())
+        );
+        assert_eq!(parse_current_user_display_name(r#"{"uuid":"{a}"}"#), None);
+    }
+
+    #[test]
     fn parse_error_message_reads_the_reason_else_none() {
         let forbidden = r#"{"type":"error","error":{"message":"Your credentials lack one or more required privilege scopes."}}"#;
         assert_eq!(
@@ -428,13 +526,39 @@ mod tests {
             first.url,
             "https://bitbucket.org/team/repo/pull-requests/101"
         );
-        // The list reply has no reviewer/review data — both stay empty.
-        assert_eq!(first.review, Review::None);
-        assert!(first.reviewers.is_empty());
-
         // The same page mapped under Mine carries Mine throughout.
         let mine = parse_list(LIST, "team/repo", PrRole::Mine).unwrap();
         assert!(mine.iter().all(|p| p.role == PrRole::Mine));
+    }
+
+    #[test]
+    fn parse_list_reads_reviewers_and_review_from_participants() {
+        let prs = parse_list(LIST, "team/repo", PrRole::ToReview).unwrap();
+
+        // 101: Bob undecided + Carol approved ⇒ roster of two, decision Approved.
+        assert_eq!(
+            prs[0].reviewers,
+            vec![
+                Reviewer {
+                    name: "Bob".to_owned(),
+                    state: Review::Pending,
+                },
+                Reviewer {
+                    name: "Carol".to_owned(),
+                    state: Review::Approved,
+                },
+            ]
+        );
+        assert_eq!(prs[0].review, Review::Approved);
+
+        // 77: a lone changes-requested reviewer dominates.
+        assert_eq!(prs[1].reviewers.len(), 1);
+        assert_eq!(prs[1].reviewers[0].state, Review::ChangesRequested);
+        assert_eq!(prs[1].review, Review::ChangesRequested);
+
+        // 5: no participants ⇒ empty roster, no decision.
+        assert!(prs[2].reviewers.is_empty());
+        assert_eq!(prs[2].review, Review::None);
     }
 
     #[test]
@@ -459,6 +583,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_detail_reads_created_on_and_strips_cr() {
+        let detail = json!({
+            "summary": {"raw": "a\r\nb"},
+            "created_on": "2024-05-06T07:08:09+00:00"
+        })
+        .to_string();
+        let comments = json!({
+            "values": [{
+                "id": 1, "user": {"display_name": "x"},
+                "content": {"raw": "c\r\nd"}, "inline": {}
+            }]
+        })
+        .to_string();
+        let parsed = parse_detail(&detail, &comments).unwrap();
+        assert_eq!(parsed.created_at, "2024-05-06T07:08:09+00:00");
+        assert_eq!(parsed.body, "a\nb");
+        assert_eq!(parsed.comments[0].body, "c\nd");
+    }
+
+    #[test]
+    fn parse_pr_leaves_labels_empty() {
+        let value = json!({
+            "id": 1, "title": "T", "author": {"display_name": "x"},
+            "source": {"branch": {"name": "f"}},
+            "destination": {"branch": {"name": "main"}},
+            "links": {"html": {"href": "u"}}, "updated_on": "", "draft": false
+        });
+        let pr = parse_pr(&value, "team/repo", PrRole::Mine);
+        assert!(pr.labels.is_empty());
+    }
+
+    #[test]
     fn parse_commits_maps_hash_subject_and_author() {
         // The page is newest-first as Bitbucket returns it; the runner reverses it.
         let commits = parse_commits(COMMITS).unwrap();
@@ -470,5 +626,38 @@ mod tests {
         assert_eq!(commits[0].author, "Bob Roe");
         // No display name → fall back to the raw `Name <email>`.
         assert_eq!(commits[1].author, "Alice Doe <alice@example.com>");
+    }
+
+    #[test]
+    fn resolve_comment_url_targets_the_resolve_endpoint() {
+        assert_eq!(
+            resolve_comment_url("team", "repo", 101, 7),
+            "https://api.bitbucket.org/2.0/repositories/team/repo/pullrequests/101/comments/7/resolve"
+        );
+    }
+
+    #[test]
+    fn parse_comments_reads_created_on_and_resolution() {
+        let json = json!({
+            "values": [
+                {
+                    "id": 1, "user": {"display_name": "x"}, "content": {"raw": "open"},
+                    "created_on": "2024-05-06T07:08:09+00:00"
+                },
+                {
+                    "id": 2, "user": {"display_name": "y"}, "content": {"raw": "done"},
+                    "created_on": "2024-05-07T01:02:03+00:00",
+                    "resolution": {"type": "resolution", "user": {"display_name": "y"}}
+                }
+            ]
+        })
+        .to_string();
+        let comments = parse_comments(&json).unwrap();
+        assert_eq!(comments[0].created_at, "2024-05-06T07:08:09+00:00");
+        assert!(!comments[0].resolved);
+        assert_eq!(comments[1].created_at, "2024-05-07T01:02:03+00:00");
+        assert!(comments[1].resolved);
+        // Bitbucket resolves by comment id, never a thread node id.
+        assert_eq!(comments[1].thread_id, None);
     }
 }

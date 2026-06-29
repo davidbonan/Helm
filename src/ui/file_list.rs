@@ -440,35 +440,72 @@ pub(crate) fn stat_label(ui: &mut egui::Ui, color: egui::Color32, text: String, 
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
 }
 
-/// Elided path: dimmed directory, emphasized file.
+/// Path with a dimmed directory and an emphasized file. The **directory** is the
+/// part that elides (`…`) when the row is too narrow, so the filename — the part
+/// that actually identifies the row — stays readable. The filename keeps its
+/// leading `/` so a truncated dir reads as `…/file`.
 pub(crate) fn path_galley(
     ui: &egui::Ui,
     palette: &Palette,
     path: &str,
     max_width: f32,
 ) -> std::sync::Arc<egui::Galley> {
+    let font = egui::FontId::proportional(PATH_SIZE);
     let (dir, file) = match path.rfind('/') {
-        Some(idx) => (&path[..=idx], &path[idx + 1..]),
+        Some(idx) => (&path[..idx], &path[idx..]),
         None => ("", path),
     };
     let mut job = egui::text::LayoutJob::default();
     if !dir.is_empty() {
-        job.append(
-            dir,
-            0.0,
-            egui::text::TextFormat::simple(
-                egui::FontId::proportional(PATH_SIZE),
-                palette.text_muted,
-            ),
-        );
+        let file_w = text_width(ui, file, &font);
+        if file_w < max_width {
+            let dir_text = elide_end(ui, dir, &font, max_width - file_w);
+            job.append(
+                &dir_text,
+                0.0,
+                egui::text::TextFormat::simple(font.clone(), palette.text_muted),
+            );
+        }
     }
     job.append(
         file,
         0.0,
-        egui::text::TextFormat::simple(egui::FontId::proportional(PATH_SIZE), palette.text_primary),
+        egui::text::TextFormat::simple(font, palette.text_primary),
     );
+    // Safety net for an over-long filename in a very narrow row: only then does
+    // the trailing truncation bite, and only the filename — never the dir.
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
     ui.painter().layout_job(job)
+}
+
+fn text_width(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+/// Longest prefix of `text` that fits in `max_width`, with a trailing `…` when
+/// elided.
+fn elide_end(ui: &egui::Ui, text: &str, font: &egui::FontId, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if text_width(ui, text, font) <= max_width {
+        return text.to_owned();
+    }
+    let budget = (max_width - text_width(ui, "…", font)).max(0.0);
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut candidate = kept.clone();
+        candidate.push(ch);
+        if text_width(ui, &candidate, font) > budget {
+            break;
+        }
+        kept = candidate;
+    }
+    kept.push('…');
+    kept
 }
 
 pub(crate) fn status_icon(kind: ChangeKind) -> lucide_icons::Icon {
@@ -543,6 +580,33 @@ mod tests {
         harness.get_by_label("Tree view").click();
         harness.step();
         assert_eq!(picked.get(), Some(FileViewMode::Tree));
+    }
+
+    #[test]
+    fn path_galley_elides_the_directory_not_the_filename() {
+        let palette = Palette::light();
+        let path = "libraries/modeler/src/queries/getUserProfileUsage.ts";
+        let text: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(280.0, 60.0))
+            .build_ui(|ui| {
+                let galley = path_galley(ui, &palette, path, 220.0);
+                *text.borrow_mut() = galley.job.text.clone();
+            });
+        harness.step();
+        let rendered = text.borrow().clone();
+        assert!(
+            rendered.ends_with("/getUserProfileUsage.ts"),
+            "filename must stay intact, got {rendered:?}"
+        );
+        assert!(
+            rendered.contains('…'),
+            "the directory must be elided, got {rendered:?}"
+        );
+        assert!(
+            !rendered.starts_with("libraries/modeler/src/queries"),
+            "the directory prefix must be cut, got {rendered:?}"
+        );
     }
 
     #[test]

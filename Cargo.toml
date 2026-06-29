@@ -65,6 +65,11 @@ two-face = "0.5.1"
 # new modal and the Preferences › Updates block. Paired with egui 0.34; text
 # only — no image loading (notes are text, §9.6).
 egui_commonmark = { version = "0.23", default-features = false, features = ["pulldown_cmark"] }
+# PR descriptions and comment bodies are rendered by a small in-house markdown
+# renderer (pull_requests_view::markdown) so the body/heading text can carry the
+# letter-spacing and line-height egui_commonmark's plain RichText output can't.
+# Already in the tree via egui_commonmark; pinned to the same 0.13.
+pulldown-cmark = { version = "0.13", default-features = false }
 # Workspace launcher icons: read CFBundleIconFile from each app's Info.plist
 # (plist handles XML or binary) and decode the bundle's .icns to RGBA. Only the
 # PNG entries are needed (every target app stores its sizes as PNG), so the heavy

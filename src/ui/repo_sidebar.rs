@@ -224,6 +224,9 @@ const ICON_GAP: f32 = 10.0;
 const HEADER_ICON_BOX: f32 = 22.0;
 const HEADER_ICON_BOX_RADIUS: u8 = 6;
 const NAME_SIZE: f32 = 15.0;
+/// Worktree row folder name: a touch smaller than the shared nav-entry size so the
+/// nested worktrees read as lighter than the Agents/Pull Requests/Open Folder rows.
+const WORKTREE_NAME_SIZE: f32 = 13.0;
 /// Branch caption under a linked-worktree row (worktrees.md §3): a dimmer
 /// monospace line, smaller than the folder-name title above it.
 const BRANCH_SIZE: f32 = 12.0;
@@ -1389,7 +1392,7 @@ fn repo_row(
         // vertically centered in the row (worktrees.md §3).
         let name = truncated(
             row.name.to_owned(),
-            egui::FontId::proportional(NAME_SIZE),
+            egui::FontId::proportional(WORKTREE_NAME_SIZE),
             text_color,
         );
         let caption = truncated(
@@ -1410,7 +1413,7 @@ fn repo_row(
     } else {
         let galley = truncated(
             row_text(row).to_owned(),
-            egui::FontId::proportional(NAME_SIZE),
+            egui::FontId::proportional(WORKTREE_NAME_SIZE),
             text_color,
         );
         ui.painter().galley(

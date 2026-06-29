@@ -10,10 +10,19 @@ use super::*;
 fn pr_review_view<'a>(
     r: &'a mut PrReview,
     agent: &'a str,
+    current_user: Option<&'a str>,
 ) -> crate::ui::pull_requests_view::PrReviewView<'a> {
     let diff = match (r.base, r.head, r.selected_file.and_then(|i| r.files.get(i))) {
         (Some(base), Some(head), Some(file)) => r.diffs.get(&(base, head, file.path.clone())),
         _ => None,
+    };
+    let comment_diffs: Vec<&crate::git::diff::FileDiff> = match (r.base, r.head) {
+        (Some(base), Some(head)) => r
+            .diffs
+            .iter()
+            .filter_map(|((b, h, _), d)| (*b == base && *h == head).then_some(d))
+            .collect(),
+        _ => Vec::new(),
     };
     let commits = r
         .detail
@@ -23,6 +32,8 @@ fn pr_review_view<'a>(
     crate::ui::pull_requests_view::PrReviewView {
         pr: &r.pr,
         detail: r.detail.as_ref(),
+        // Loading until the forge detail lands or fails — mirrors `files_loading`.
+        detail_loading: r.detail.is_none() && r.detail_error.is_none(),
         detail_error: r.detail_error.as_deref(),
         files: &r.files,
         files_loading: r.files_loading,
@@ -31,6 +42,7 @@ fn pr_review_view<'a>(
         commits,
         selected_commit: r.selected_commit.as_deref(),
         diff,
+        comment_diffs,
         diff_loading: r.diff_loading,
         diff_error: r.diff_error.as_deref(),
         diff_view: &mut r.diff_view,
@@ -42,6 +54,7 @@ fn pr_review_view<'a>(
         summary: &mut r.summary,
         posting: r.posting,
         post_error: r.post_error.as_deref(),
+        current_user,
     }
 }
 
@@ -835,6 +848,14 @@ impl HelmApp {
         } else {
             (None, None, false)
         };
+        // A fetch is in flight, or the cache has never been filled — the browse list
+        // shows a loader instead of the cold cache's misleading "no PRs" empty state.
+        let pr_loading = pr_active
+            && (!self.pr_cache.loaded
+                || self
+                    .pr_runner
+                    .as_ref()
+                    .is_some_and(crate::pull_requests::runner::PrRunner::busy));
         let pr_selected = self.pr_selected;
         let pr_detail_width = self.pr_detail_width;
         let pr_rail_collapsed = self.pr_rail_collapsed;
@@ -857,7 +878,15 @@ impl HelmApp {
         let mut pr_open_inline: Option<(usize, Option<u32>)> = None;
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
+        let mut pr_refresh = false;
         let pr_agent = self.review_agent_command.clone();
+        // The composer avatar shows the current user of the open PR's forge (§11).
+        let pr_current_user = pr_review_local
+            .as_ref()
+            .and_then(|r| match r.pr.forge_kind {
+                crate::pull_requests::model::ForgeKind::GitHub => self.pr_user_github.clone(),
+                crate::pull_requests::model::ForgeKind::Bitbucket => self.pr_user_bitbucket.clone(),
+            });
         let mut set_file_view = None;
 
         // A stale active index makes these accessors return None; degrade to the
@@ -1123,11 +1152,12 @@ impl HelmApp {
                         else if central_mode == CentralMode::PullRequests {
                             let mut review_view = pr_review_local
                                 .as_mut()
-                                .map(|r| pr_review_view(r, &pr_agent));
+                                .map(|r| pr_review_view(r, &pr_agent, pr_current_user.as_deref()));
                             let hints = crate::ui::pull_requests_view::PrSourceHints {
                                 github: pr_github_hint.as_deref(),
                                 bitbucket: pr_bitbucket_hint.as_deref(),
                                 no_repos: pr_no_repos,
+                                loading: pr_loading,
                             };
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
@@ -1154,6 +1184,7 @@ impl HelmApp {
                             pr_open_inline = pr_open_inline.or(action.open_inline_comment);
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
+                            pr_refresh = pr_refresh || action.refresh;
                         }
                         // A loaded working-tree file overlays the central area for
                         // Terminal/Graph only — the Agents/PR cockpits above already won.
@@ -2000,11 +2031,12 @@ impl HelmApp {
                         } else if pr_active {
                             let mut review_view = pr_review_local
                                 .as_mut()
-                                .map(|r| pr_review_view(r, &pr_agent));
+                                .map(|r| pr_review_view(r, &pr_agent, pr_current_user.as_deref()));
                             let hints = crate::ui::pull_requests_view::PrSourceHints {
                                 github: pr_github_hint.as_deref(),
                                 bitbucket: pr_bitbucket_hint.as_deref(),
                                 no_repos: pr_no_repos,
+                                loading: pr_loading,
                             };
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
@@ -2031,6 +2063,7 @@ impl HelmApp {
                             pr_open_inline = pr_open_inline.or(action.open_inline_comment);
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
+                            pr_refresh = pr_refresh || action.refresh;
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             open_dialog_requested = central_empty_state(ui, &palette, keymap);
@@ -2261,6 +2294,9 @@ impl HelmApp {
         }
         if !pr_review_intents.is_empty() {
             self.apply_pr_review_intents(pr_review_intents, ctx);
+        }
+        if pr_refresh {
+            self.refresh_pull_requests(ctx);
         }
         if pr_back {
             // Leave the cockpit's browse list; keep the surface cached so reopening
