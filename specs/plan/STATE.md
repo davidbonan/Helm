@@ -150,6 +150,17 @@ Jira key already leads the title); reviewers wired from the existing
   active), and the diff-overlay `thread_card` dropped its tinted-pill+left-edge look for the same
   card. *Files*: `src/ui/{detail,pull_requests_view,diff_view}.rs`. No new test (covered by the
   existing 30 PR-view render/label tests).
+- ☑ **Comment-card readability polish.** Screenshot review showed the grammar was correct but
+  still read flat. Each comment now lays out as an **avatar gutter + text column** (`comment_block`
+  / `comment_meta_line`): the body aligns under the author instead of sliding back under the
+  avatar, and replies nest by a wider gutter under a `border.input` thread-rail on the root
+  avatar's centre. The conversation **composer** (`conversation_add_block`) is a quiet single-line
+  field (surface fixed to `bg.surface` via `extreme_bg_color`) with a compact Comment button below
+  it. The whole detail (overview, description, checks, comment threads) spans the full panel
+  width. Section headers reach **parity** — both *Conversation* and *Inline comments* carry a
+  `count_chip`; comment **age** brightened to `text.secondary`; author avatars desaturated a touch
+  (`detail::muted_lane`). *Files*: `src/ui/{detail,pull_requests_view}.rs`. Verified headlessly
+  (31 PR-view render/label tests + a one-off wgpu screenshot, since removed).
 
 ### Blockers / Open questions (M-PR5)
 - **Bitbucket reviewers**: resolved in M-PR4 T2 (`fields=+values.participants` on the

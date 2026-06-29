@@ -41,8 +41,11 @@ fn avatar(ui: &mut egui::Ui, palette: &Palette, author: &str, size: f32, initial
     let hash = author.bytes().fold(0usize, |acc, byte| {
         acc.wrapping_mul(31).wrapping_add(usize::from(byte))
     });
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, palette.lane_color(hash));
+    ui.painter().circle_filled(
+        rect.center(),
+        size / 2.0,
+        muted_lane(palette.lane_color(hash)),
+    );
     let text = initials(author);
     if !text.is_empty() {
         ui.painter().text(
@@ -54,6 +57,16 @@ fn avatar(ui: &mut egui::Ui, palette: &Palette, author: &str, size: f32, initial
         );
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+}
+
+/// A calmer author dot: the lane colour pulled a quarter of the way toward its own grey,
+/// so the avatars sit on a muted detail panel without out-shouting the text (§11).
+fn muted_lane(color: egui::Color32) -> egui::Color32 {
+    const T: f32 = 0.25;
+    let [r, g, b, _] = color.to_array();
+    let grey = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
+    let mix = |c: u8| (f32::from(c) * (1.0 - T) + grey * T).round() as u8;
+    egui::Color32::from_rgb(mix(r), mix(g), mix(b))
 }
 
 /// A few lines of the code a comment was left on (pull-requests.md §5), as a compact

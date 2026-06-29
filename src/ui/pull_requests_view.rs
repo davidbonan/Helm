@@ -92,8 +92,9 @@ const REVIEWER_MAX: usize = 3;
 
 /// Lines of code previewed atop an inline-comment card (pull-requests.md §5).
 const INLINE_SNIPPET_LINES: usize = 8;
-/// Extra indent a reply nests under its thread root in the center cards (§11).
-const INLINE_REPLY_INDENT: f32 = 16.0;
+/// Extra indent a reply nests under its thread root in the center cards — sized so the
+/// thread rail falls on the root avatar's centre, reading as a spine descending from it (§11).
+const INLINE_REPLY_INDENT: f32 = 26.0;
 /// Height of a resolved thread's collapsed summary row (§11).
 const RESOLVED_ROW_HEIGHT: f32 = 34.0;
 
@@ -102,6 +103,8 @@ const RESOLVED_ROW_HEIGHT: f32 = 34.0;
 const GAP_XS: f32 = 4.0;
 const GAP_SM: f32 = 8.0;
 const GAP_MD: f32 = 12.0;
+/// Gap between a comment's avatar gutter and its text column (§11).
+const AVATAR_GUTTER_GAP: f32 = 10.0;
 
 const AVATAR_GAP: f32 = 9.0;
 const AUTHOR_NAME_SIZE: f32 = 13.0;
@@ -613,25 +616,19 @@ fn comment_frame(palette: &Palette) -> egui::Frame {
         .inner_margin(egui::Margin::same(12))
 }
 
-/// One comment's header line: the avatar (lighter for a reply), the author, an optional
-/// Author/Reviewer tag, and the relative age pushed to the right edge — the shared face
-/// for the conversation and inline center cards (§11).
-fn comment_meta_row(
+/// One comment's header line: the author, an optional Author/Reviewer tag, and the
+/// relative age pushed to the right edge — rendered in the text column beside the avatar
+/// gutter, the shared face for the conversation and inline center cards (§11).
+fn comment_meta_line(
     ui: &mut egui::Ui,
     palette: &Palette,
     pr: &PullRequest,
     author: &str,
     created_at: &str,
     now: i64,
-    reply: bool,
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = GAP_SM;
-        if reply {
-            author_avatar_small(ui, palette, author);
-        } else {
-            author_avatar(ui, palette, author);
-        }
         ui.label(
             egui::RichText::new(author)
                 .size(META_SIZE)
@@ -647,16 +644,45 @@ fn comment_meta_row(
                 ui.label(
                     egui::RichText::new(age)
                         .size(META_SIZE)
-                        .color(palette.text_muted),
+                        .color(palette.text_secondary),
                 );
             });
         }
     });
 }
 
+/// One comment laid out as an avatar gutter plus a text column: the avatar sits in a
+/// fixed left gutter (lighter for a reply) while the author line and body share the
+/// column to its right, so the body aligns under the author rather than sliding back
+/// under the avatar (§11).
+fn comment_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    pr: &PullRequest,
+    c: &PrComment,
+    now: i64,
+    reply: bool,
+) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        if reply {
+            author_avatar_small(ui, palette, &c.author);
+        } else {
+            author_avatar(ui, palette, &c.author);
+        }
+        ui.add_space(AVATAR_GUTTER_GAP);
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            comment_meta_line(ui, palette, pr, &c.author, &c.created_at, now);
+            ui.add_space(GAP_XS);
+            markdown(ui, palette, &c.body);
+        });
+    });
+}
+
 /// Renders a thread's comments inside an already-opened comment card: the root at full
-/// weight, then each reply a notch in under a left thread-rail with a lighter avatar, so
-/// a thread reads as one block instead of a stack of drifting cards (§11).
+/// weight, then each reply nested under a left thread-rail with a lighter avatar, so a
+/// thread reads as one block instead of a stack of drifting cards (§11).
 fn thread_members(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -664,12 +690,10 @@ fn thread_members(
     members: &[&PrComment],
     now: i64,
 ) {
-    let Some((root, replies)) = members.split_first() else {
+    let Some((&root, replies)) = members.split_first() else {
         return;
     };
-    comment_meta_row(ui, palette, pr, &root.author, &root.created_at, now, false);
-    ui.add_space(GAP_XS);
-    markdown(ui, palette, &root.body);
+    comment_block(ui, palette, pr, root, now, false);
     if replies.is_empty() {
         return;
     }
@@ -677,19 +701,17 @@ fn thread_members(
         ui.add_space(INLINE_REPLY_INDENT);
         ui.vertical(|ui| {
             ui.set_width(ui.available_width());
-            for c in replies {
+            for &c in replies {
                 ui.add_space(GAP_MD);
-                comment_meta_row(ui, palette, pr, &c.author, &c.created_at, now, true);
-                ui.add_space(GAP_XS);
-                markdown(ui, palette, &c.body);
+                comment_block(ui, palette, pr, c, now, true);
             }
         });
     });
     let rect = block.response.rect;
     ui.painter().vline(
         rect.left() + INLINE_REPLY_INDENT * 0.5,
-        egui::Rangef::new(rect.top() + GAP_MD, rect.bottom()),
-        egui::Stroke::new(2.0, palette.border_subtle),
+        egui::Rangef::new(rect.top() + GAP_SM, rect.bottom() - GAP_XS),
+        egui::Stroke::new(2.0, palette.border_input),
     );
 }
 
@@ -701,12 +723,14 @@ fn conversation_header(ui: &mut egui::Ui, palette: &Palette, pr_url: &str, count
     let mut newest_first: bool = ui.data(|d| d.get_temp(id).unwrap_or(false));
     ui.add_space(SECTION_TOP_MARGIN);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP_SM;
         ui.label(
             egui::RichText::new("Conversation")
                 .size(SECTION_TITLE_SIZE)
                 .strong()
                 .color(palette.text_primary),
         );
+        count_chip(ui, palette, count);
         if count > 1 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -814,80 +838,80 @@ fn conversation_add_block(
     current_user: Option<&str>,
     action: &mut PullRequestsPageAction,
 ) {
-    const BUTTON_HEIGHT: f32 = 40.0;
-    // A few rows tall so the composer reads as a comment box, not a one-line bar; the
-    // multiline field still grows further with content (pull-requests.md §11).
-    const COMPOSER_HEIGHT: f32 = 78.0;
-    ui.add_space(12.0);
+    const BUTTON_HEIGHT: f32 = 32.0;
+    ui.add_space(GAP_MD);
     ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         author_avatar(ui, palette, current_user.unwrap_or(""));
-
-        let font = egui::FontId::proportional(13.5);
-        let galley = ui.painter().layout_no_wrap(
-            "Comment".to_owned(),
-            font.clone(),
-            egui::Color32::PLACEHOLDER,
-        );
-        let button_size = egui::vec2(galley.size().x + 34.0, BUTTON_HEIGHT);
-
-        // Place the button bottom-right first so the field never pushes it off the band
-        // edge; the field then fills the gap between it and the avatar.
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), COMPOSER_HEIGHT),
-            egui::Layout::right_to_left(egui::Align::Max),
-            |ui| {
-                let enabled = !diff_view.conversation_add_buffer_mut().trim().is_empty();
-                let (rect, response, hovered) = clickable(ui, button_size, enabled);
-                let fill = if hovered {
-                    palette.accent_hover
-                } else {
-                    palette.accent
-                };
-                ui.painter()
-                    .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "Comment",
-                    font,
-                    palette.lane_node_text,
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Comment")
-                });
-                if response.clicked() {
-                    let body = diff_view.conversation_add_buffer_mut().trim().to_owned();
-                    if !body.is_empty() {
-                        action
-                            .review_intents
-                            .push(ReviewIntent::PostConversationComment { parent: None, body });
-                        diff_view.conversation_add_buffer_mut().clear();
+        ui.add_space(AVATAR_GUTTER_GAP);
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            // The field grows from a single line as the draft fills, so an empty composer
+            // reads as a quiet prompt rather than a tall well; its surface matches the
+            // comment cards (egui paints a TextEdit from `extreme_bg_color`, not widget fill).
+            ui.visuals_mut().extreme_bg_color = palette.bg_surface;
+            let radius = egui::CornerRadius::same(CARD_RADIUS);
+            let w = &mut ui.visuals_mut().widgets;
+            for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                s.corner_radius = radius;
+            }
+            w.inactive.bg_stroke = egui::Stroke::new(1.0, palette.border_subtle);
+            w.hovered.bg_stroke = egui::Stroke::new(1.0, palette.border_input);
+            w.active.bg_stroke = egui::Stroke::new(1.5, palette.accent);
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, palette.accent);
+            ui.add(
+                egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
+                    .desired_rows(1)
+                    .desired_width(ui.available_width())
+                    .font(egui::FontId::proportional(13.5))
+                    .margin(egui::Margin::symmetric(12, 9))
+                    .hint_text("Add a comment…"),
+            );
+            ui.add_space(GAP_SM);
+            // A fixed-height row so the right-to-left layout can't claim the scroll area's
+            // full remaining height and strand the button at the panel foot.
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), BUTTON_HEIGHT),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let enabled = !diff_view.conversation_add_buffer_mut().trim().is_empty();
+                    let font = egui::FontId::proportional(13.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        "Comment".to_owned(),
+                        font.clone(),
+                        egui::Color32::PLACEHOLDER,
+                    );
+                    let button_size = egui::vec2(galley.size().x + 28.0, BUTTON_HEIGHT);
+                    let (rect, response, hovered) = clickable(ui, button_size, enabled);
+                    let fill = if hovered {
+                        palette.accent_hover
+                    } else {
+                        palette.accent
+                    };
+                    ui.painter()
+                        .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Comment",
+                        font,
+                        palette.lane_node_text,
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Comment")
+                    });
+                    if response.clicked() {
+                        let body = diff_view.conversation_add_buffer_mut().trim().to_owned();
+                        if !body.is_empty() {
+                            action
+                                .review_intents
+                                .push(ReviewIntent::PostConversationComment { parent: None, body });
+                            diff_view.conversation_add_buffer_mut().clear();
+                        }
                     }
-                }
-
-                let radius = egui::CornerRadius::same(CARD_RADIUS);
-                let w = &mut ui.visuals_mut().widgets;
-                for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
-                    s.corner_radius = radius;
-                    s.bg_fill = palette.bg_surface;
-                    s.weak_bg_fill = palette.bg_surface;
-                }
-                w.inactive.bg_stroke = egui::Stroke::new(1.0, palette.border_subtle);
-                w.hovered.bg_stroke = egui::Stroke::new(1.0, palette.border_subtle);
-                w.active.bg_stroke = egui::Stroke::new(1.5, palette.accent);
-                ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, palette.accent);
-                let field_width = (ui.available_width() - 10.0).max(120.0);
-                ui.add(
-                    egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
-                        .desired_rows(3)
-                        .desired_width(field_width)
-                        .font(egui::FontId::proportional(13.5))
-                        .margin(egui::Margin::symmetric(12, 11))
-                        .hint_text("Add a comment…"),
-                );
-            },
-        );
+                },
+            );
+        });
     });
 }
 
@@ -920,7 +944,18 @@ fn inline_comments_section(
     let changed_files = review.files;
     let pr = review.pr;
     let diff_view = &mut *review.diff_view;
-    band_title(ui, palette, "Inline comments");
+    ui.add_space(SECTION_TOP_MARGIN);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP_SM;
+        ui.label(
+            egui::RichText::new("Inline comments")
+                .size(SECTION_TITLE_SIZE)
+                .strong()
+                .color(palette.text_primary),
+        );
+        count_chip(ui, palette, inline.len());
+    });
+    ui.add_space(6.0);
     let mut files: Vec<&str> = Vec::new();
     for c in &inline {
         if let Some(path) = c.path.as_deref() {
@@ -930,7 +965,7 @@ fn inline_comments_section(
         }
     }
     for path in files {
-        ui.add_space(4.0);
+        ui.add_space(GAP_SM);
         ui.label(
             egui::RichText::new(path)
                 .size(META_SIZE)
