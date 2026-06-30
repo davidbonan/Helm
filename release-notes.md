@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.1.2
+
+- The Pull Requests list now shows each PR's source → target branch, and
+  stacked PRs nest as a tree under their base.
+- Deleting a PR comment no longer leaves a "deleted" placeholder behind.
+
 ## 1.1.1
 
 - The pull-request detail view is now full-width, with Markdown-rendered
@@ -60,8 +66,3 @@
 ## 0.8.4
 
 - Cycle between repositories with Ctrl+Tab, alongside Cmd+Ctrl+1..9.
-
-## 0.8.3
-
-- Moved the agents view switch into the titlebar; columns now size themselves.
-- Fixed a resize repaint that flipped a finished agent back to Working.
