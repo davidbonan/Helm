@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.1.1
+
+- The pull-request detail view is now full-width, with Markdown-rendered
+  comments and clearer nested reply threads.
+- Polished comment cards for readability.
+
 ## 1.1.0
 
 - Review pull requests inside helm — a new Pull Requests cockpit lists open
@@ -59,7 +65,3 @@
 
 - Moved the agents view switch into the titlebar; columns now size themselves.
 - Fixed a resize repaint that flipped a finished agent back to Working.
-
-## 0.8.2
-
-- Gated terminal repaints to the visible pane, cutting idle CPU and GPU use.
