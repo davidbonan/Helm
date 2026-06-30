@@ -100,8 +100,8 @@ global search, notification or theme chrome (the theme lives in Preferences), an
 - **List**, two **grouped sections** — **To review** then **Mine** (each section
   title carries a count and sits **above** a **rounded card**) — each card is a
   **column table** with a header row and hairline row separators. The shared
-  columns are **Title** (the PR title with its **branch** beneath, led by the
-  open / draft **state icon**), **Project** (repo chip), **Status** and
+  columns are **Title** (the PR title with its **`source → dest` branch** beneath,
+  led by the open / draft **state icon**), **Project** (repo chip), **Status** and
   **Updated** (relative age); **To review** adds an **Author** and a **Requested
   reviewer** column, **Mine** a **Reviewers** column (stacked avatars, `+N`
   overflow). **Status** is a single **plain colored label** encoding state +
@@ -109,8 +109,11 @@ global search, notification or theme chrome (the theme lives in Preferences), an
   *Draft*) — no pill fill; the CI **checks** (✓ / ✗ / •) live in the §11 review
   detail, not the list. A trailing chevron marks the row → detail affordance.
   **No** project / reviewer / status **filter** or sort control —
-  workspace-scoped + grouped is the only ordering. Clicking a row **selects** it
-  (→ the §11 review surface).
+  workspace-scoped + grouped is the only ordering. A PR **stacked** on another
+  listed PR — its **target** branch is that PR's **source** in the same repo —
+  **nests** under it as an **indented tree** (base first, `├`/`└` gutter
+  connectors); an unstacked group renders flat as before. Clicking a row
+  **selects** it (→ the §11 review surface).
 - **Detail** of the selection: header (title · `#number` · state), `source →
   dest`, author, **checks** + **reviewers**, and the **diff-centric review
   surface** (§11) — the PR's changed files and their diffs, with in-diff comments,

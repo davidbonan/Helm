@@ -410,6 +410,111 @@ pub fn dedupe(prs: Vec<PullRequest>) -> Vec<PullRequest> {
     out
 }
 
+/// One row of the stacked-PR layout for a single role group: which PR (`idx` into
+/// the `prs` slice), plus the gutter connectors the list draws to the left of it.
+/// A PR is *stacked on* another when its `dest_branch` is that other PR's
+/// `source_branch` in the same repo (pull-requests.md §5) — the chain renders as an
+/// indented tree, base first. A root (or any unstacked PR) has `elbow_last == None`
+/// and `verticals` empty, so it draws flush-left exactly like before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRow {
+    pub idx: usize,
+    /// One flag per ancestor gutter column (`0..depth-1`): `true` where an ancestor
+    /// still has a sibling below, so a `│` runs through this row.
+    pub verticals: Vec<bool>,
+    /// `Some(is_last)` draws the `├`/`└` elbow at column `verticals.len()`; `None`
+    /// for a stack root, drawn flush-left with no elbow.
+    pub elbow_last: Option<bool>,
+}
+
+impl StackRow {
+    /// Indentation level: 0 for a stack root (and any unstacked PR), +1 per ancestor.
+    pub fn depth(&self) -> usize {
+        self.verticals.len() + usize::from(self.elbow_last.is_some())
+    }
+}
+
+/// Lay a role group out as stacked trees: a PR whose `dest_branch` equals another
+/// listed PR's `source_branch` (same forge + repo) hangs under it. Roots keep their
+/// original relative order, each immediately followed by its descendants (pre-order,
+/// children in listed order); an unstacked list comes back unchanged. `indices` are
+/// positions into `prs` (one role group); the returned rows carry those same `idx`.
+pub fn stacked_rows(prs: &[PullRequest], indices: &[usize]) -> Vec<StackRow> {
+    let n = indices.len();
+    let mut source_of: std::collections::HashMap<(ForgeKind, &str, &str), usize> =
+        std::collections::HashMap::with_capacity(n);
+    for (pos, &idx) in indices.iter().enumerate() {
+        let p = &prs[idx];
+        source_of
+            .entry((
+                p.forge_kind,
+                p.repo_label.as_str(),
+                p.source_branch.as_str(),
+            ))
+            .or_insert(pos);
+    }
+    let parent: Vec<Option<usize>> = indices
+        .iter()
+        .enumerate()
+        .map(|(pos, &idx)| {
+            let p = &prs[idx];
+            source_of
+                .get(&(p.forge_kind, p.repo_label.as_str(), p.dest_branch.as_str()))
+                .copied()
+                .filter(|&par| par != pos)
+        })
+        .collect();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut roots: Vec<usize> = Vec::new();
+    for (pos, &par) in parent.iter().enumerate() {
+        match par {
+            Some(par) => children[par].push(pos),
+            None => roots.push(pos),
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    let mut visited = vec![false; n];
+    // Explicit DFS stack: (pos, ancestor verticals, elbow). Children pushed in reverse
+    // so siblings still emit in their listed order.
+    let mut stack: Vec<(usize, Vec<bool>, Option<bool>)> = roots
+        .iter()
+        .rev()
+        .map(|&root| (root, Vec::new(), None))
+        .collect();
+    while let Some((pos, verticals, elbow_last)) = stack.pop() {
+        if visited[pos] {
+            continue;
+        }
+        visited[pos] = true;
+        let kids = &children[pos];
+        let mut child_vert = verticals.clone();
+        if let Some(last) = elbow_last {
+            child_vert.push(!last);
+        }
+        for (i, &child) in kids.iter().enumerate().rev() {
+            stack.push((child, child_vert.clone(), Some(i + 1 == kids.len())));
+        }
+        out.push(StackRow {
+            idx: indices[pos],
+            verticals,
+            elbow_last,
+        });
+    }
+    // A node reachable only through a cycle never sat under a root; emit it flush so
+    // no row is dropped.
+    for (pos, &done) in visited.iter().enumerate() {
+        if !done {
+            out.push(StackRow {
+                idx: indices[pos],
+                verticals: Vec::new(),
+                elbow_last: None,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +592,72 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].number, 1);
         assert_eq!(out[1].number, 2);
+    }
+
+    fn branched(number: u64, source: &str, dest: &str) -> PullRequest {
+        let mut p = pr(ForgeKind::GitHub, "acme/web", number, PrRole::Mine);
+        p.source_branch = source.to_owned();
+        p.dest_branch = dest.to_owned();
+        p
+    }
+
+    #[test]
+    fn stacked_rows_leaves_an_unstacked_list_unchanged() {
+        let prs = vec![
+            branched(1, "a", "main"),
+            branched(2, "b", "main"),
+            branched(3, "c", "develop"),
+        ];
+        let rows = stacked_rows(&prs, &[0, 1, 2]);
+        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(rows
+            .iter()
+            .all(|r| r.depth() == 0 && r.elbow_last.is_none()));
+    }
+
+    #[test]
+    fn stacked_rows_nests_a_chain_base_first_with_growing_depth() {
+        // Listed out of order (top, base, mid); dest→source links them.
+        let prs = vec![
+            branched(3, "c", "b"),
+            branched(1, "a", "main"),
+            branched(2, "b", "a"),
+        ];
+        let rows = stacked_rows(&prs, &[0, 1, 2]);
+        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [1, 2, 0]);
+        assert_eq!(
+            rows.iter().map(|r| r.depth()).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(rows[0].elbow_last, None);
+        assert_eq!(rows[1].elbow_last, Some(true));
+        assert_eq!(rows[2].elbow_last, Some(true));
+        assert_eq!(rows[2].verticals, vec![false]);
+    }
+
+    #[test]
+    fn stacked_rows_marks_siblings_and_runs_a_vertical_past_a_non_last_branch() {
+        // base ← {A, B}; A ← A1. A is not last, so A1 keeps a vertical in A's column.
+        let prs = vec![
+            branched(1, "a", "main"),
+            branched(2, "b", "a"),
+            branched(3, "c", "a"),
+            branched(4, "d", "b"),
+        ];
+        let rows = stacked_rows(&prs, &[0, 1, 2, 3]);
+        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [0, 1, 3, 2]);
+        assert_eq!(rows[1].elbow_last, Some(false)); // A (├, sibling B below)
+        assert_eq!(rows[2].verticals, vec![true]); // A1 keeps A's column filled
+        assert_eq!(rows[3].elbow_last, Some(true)); // B (└, last)
+    }
+
+    #[test]
+    fn stacked_rows_does_not_link_across_repos() {
+        let mut other = branched(2, "b", "a");
+        other.repo_label = "acme/other".to_owned();
+        let prs = vec![branched(1, "a", "main"), other];
+        let rows = stacked_rows(&prs, &[0, 1]);
+        assert!(rows.iter().all(|r| r.depth() == 0));
     }
 
     #[test]

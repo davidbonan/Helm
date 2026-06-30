@@ -16,7 +16,7 @@ use crate::git::diff::{FileDiff, LineOrigin};
 use crate::git::file_tree::{self, TreeRow};
 use crate::pull_requests::model::{
     hunk_snippet, Checks, PrComment, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review,
-    ReviewVerdict, SnippetKind, SnippetLine,
+    ReviewVerdict, SnippetKind, SnippetLine, StackRow,
 };
 use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, RADIUS_BUTTON, SECTION_TITLE_SIZE};
@@ -58,6 +58,8 @@ const DETAIL_HEADER_GAP: f32 = 8.0;
 const ROW_HEIGHT: f32 = 60.0;
 const GROUP_HEADER_HEIGHT: f32 = 34.0;
 const PAD_X: f32 = 16.0;
+/// Per-level inset of a stacked-PR row, wide enough to seat the `├`/`└` elbow.
+const STACK_INDENT: f32 = 20.0;
 const PANEL_PAD_X: f32 = 18.0;
 const PANEL_PAD_Y: f32 = 14.0;
 
@@ -2933,18 +2935,20 @@ fn group(
     }
     group_header(ui, palette, title, indices.len());
     let backdrop = ui.painter().add(egui::Shape::Noop);
+    let layout = crate::pull_requests::model::stacked_rows(prs, indices);
     let card = ui
         .scope(|ui| {
             column_header(ui, palette, role);
-            for (row, &idx) in indices.iter().enumerate() {
+            for (row, stack) in layout.iter().enumerate() {
                 pr_row(
                     ui,
                     palette,
-                    &prs[idx],
-                    idx,
+                    &prs[stack.idx],
+                    stack.idx,
                     role,
-                    selected == Some(idx),
-                    row > 0,
+                    selected == Some(stack.idx),
+                    row > 0 && stack.elbow_last.is_none(),
+                    stack,
                     action,
                 );
             }
@@ -3113,6 +3117,7 @@ fn pr_row(
     role: PrRole,
     selected: bool,
     divider: bool,
+    stack: &StackRow,
     action: &mut PullRequestsPageAction,
 ) {
     let (rect, response, hovered) =
@@ -3133,6 +3138,10 @@ fn pr_row(
     let cols = columns(rect, role);
     let center_y = rect.center().y;
 
+    // Stacked-PR gutter: ancestor verticals plus this row's ├/└ elbow, then the whole
+    // title cell shifts right one notch per depth level (pull-requests.md §5).
+    let indent = stack_connectors(ui.painter(), palette, rect, stack);
+
     // Title cell: state icon, the title on the upper line, the branch beneath.
     let title_y = rect.top() + ROW_HEIGHT * 0.38;
     let branch_y = rect.top() + ROW_HEIGHT * 0.66;
@@ -3142,7 +3151,7 @@ fn pr_row(
     };
     paint_icon(
         ui.painter(),
-        egui::pos2(rect.left() + PAD_X + STATE_ICON / 2.0, title_y),
+        egui::pos2(rect.left() + PAD_X + indent + STATE_ICON / 2.0, title_y),
         STATE_ICON,
         state_icon,
         state_color,
@@ -3152,13 +3161,13 @@ fn pr_row(
         &pr.title,
         egui::FontId::new(TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
         palette.text_primary,
-        cols.title.min,
+        cols.title.min + indent,
         title_y,
-        cols.title.span(),
+        cols.title.span() - indent,
     );
     paint_icon(
         ui.painter(),
-        egui::pos2(cols.title.min + CHIP_SIZE / 2.0, branch_y),
+        egui::pos2(cols.title.min + indent + CHIP_SIZE / 2.0, branch_y),
         CHIP_SIZE,
         Icon::GitBranch,
         palette.text_muted,
@@ -3168,9 +3177,9 @@ fn pr_row(
         &format!("{} → {}", pr.source_branch, pr.dest_branch),
         egui::FontId::proportional(CHIP_SIZE),
         palette.text_muted,
-        cols.title.min + CHIP_SIZE + 5.0,
+        cols.title.min + indent + CHIP_SIZE + 5.0,
         branch_y,
-        cols.title.span() - CHIP_SIZE - 5.0,
+        cols.title.span() - indent - CHIP_SIZE - 5.0,
     );
 
     // Project: a quiet repo glyph + label.
@@ -3252,6 +3261,38 @@ fn pr_row(
     if response.clicked() {
         action.select = Some(idx);
     }
+}
+
+/// Draw a stacked PR's gutter — vertical lines for the ancestor columns still in play
+/// plus this row's `├`/`└` elbow — and return the pixel inset its title cell takes. A
+/// root (or unstacked PR) draws nothing and returns 0.
+fn stack_connectors(
+    painter: &egui::Painter,
+    palette: &Palette,
+    rect: egui::Rect,
+    stack: &StackRow,
+) -> f32 {
+    let base = rect.left() + PAD_X;
+    let stroke = egui::Stroke::new(1.0, palette.border_input);
+    let col_x = |c: usize| base + c as f32 * STACK_INDENT + STACK_INDENT / 2.0;
+    for (c, &on) in stack.verticals.iter().enumerate() {
+        if on {
+            painter.vline(col_x(c), rect.y_range(), stroke);
+        }
+    }
+    if let Some(is_last) = stack.elbow_last {
+        let c = stack.verticals.len();
+        let x = col_x(c);
+        let mid = rect.center().y;
+        let bottom = if is_last { mid } else { rect.bottom() };
+        painter.vline(x, egui::Rangef::new(rect.top(), bottom), stroke);
+        painter.hline(
+            egui::Rangef::new(x, base + (c + 1) as f32 * STACK_INDENT),
+            mid,
+            stroke,
+        );
+    }
+    stack.depth() as f32 * STACK_INDENT
 }
 
 /// Left-aligned, vertically-centered text truncated to a column width.
