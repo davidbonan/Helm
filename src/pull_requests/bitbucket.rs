@@ -223,6 +223,12 @@ pub fn parse_comments(comments_json: &str) -> serde_json::Result<Vec<PrComment>>
             items
                 .iter()
                 .filter_map(|c| {
+                    // A deleted comment is kept as a tombstone (`deleted: true`, blank
+                    // `content.raw`) so its replies survive; drop it, else it renders as
+                    // an empty, never-disappearing card.
+                    if c["deleted"].as_bool() == Some(true) {
+                        return None;
+                    }
                     let body = c["content"]["raw"].as_str()?.to_owned();
                     let inline = &c["inline"];
                     // `to` anchors the new side (added/context), `from` the old
@@ -659,5 +665,19 @@ mod tests {
         assert!(comments[1].resolved);
         // Bitbucket resolves by comment id, never a thread node id.
         assert_eq!(comments[1].thread_id, None);
+    }
+
+    #[test]
+    fn parse_comments_drops_deleted_tombstones() {
+        let json = json!({
+            "values": [
+                {"id": 1, "user": {"display_name": "x"}, "content": {"raw": "kept"}},
+                {"id": 2, "deleted": true, "content": {"raw": ""}}
+            ]
+        })
+        .to_string();
+        let comments = parse_comments(&json).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].body, "kept");
     }
 }

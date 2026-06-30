@@ -3165,7 +3165,7 @@ fn pr_row(
     );
     cell_text(
         ui,
-        &pr.source_branch,
+        &format!("{} → {}", pr.source_branch, pr.dest_branch),
         egui::FontId::proportional(CHIP_SIZE),
         palette.text_muted,
         cols.title.min + CHIP_SIZE + 5.0,
