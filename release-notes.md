@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.1.3
+
+- Fixed approving, requesting changes on, and resolving comments in Bitbucket
+  pull requests — these actions no longer fail with a server error.
+
 ## 1.1.2
 
 - The Pull Requests list now shows each PR's source → target branch, and
@@ -62,7 +67,3 @@
 - Preview image files in the diff view, with zoom and pan.
 - Pick a project from the Preferences › Project section.
 - Notification toasts moved to the bottom-left and now auto-expire.
-
-## 0.8.4
-
-- Cycle between repositories with Ctrl+Tab, alongside Cmd+Ctrl+1..9.
