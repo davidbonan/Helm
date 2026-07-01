@@ -1378,20 +1378,25 @@ fn curl_get(url: &str, auth_header: &str) -> CurlResult {
 /// `curl -X POST` the URL with the Basic-auth header and a JSON body; comment
 /// creation returns 201 and approve/request-changes return 200, so both pass.
 fn curl_post(url: &str, auth_header: &str, body: &str) -> CurlResult {
-    run_curl(
-        &[
-            "-X".to_owned(),
-            "POST".to_owned(),
-            "-H".to_owned(),
-            "Content-Type: application/json".to_owned(),
-            "-d".to_owned(),
-            body.to_owned(),
-            "-w".to_owned(),
-            "\n%{http_code}".to_owned(),
-            url.to_owned(),
-        ],
-        auth_header,
-    )
+    run_curl(&curl_post_args(url, body), auth_header)
+}
+
+/// curl options for a POST. The approve / request-changes / resolve endpoints
+/// take no body: sending `-d ""` with a JSON content-type makes Bitbucket parse
+/// `""` as JSON and reply 400, so an empty body posts as a bare POST with
+/// neither the header nor `-d`.
+fn curl_post_args(url: &str, body: &str) -> Vec<String> {
+    let mut args = vec!["-X".to_owned(), "POST".to_owned()];
+    if !body.is_empty() {
+        args.push("-H".to_owned());
+        args.push("Content-Type: application/json".to_owned());
+        args.push("-d".to_owned());
+        args.push(body.to_owned());
+    }
+    args.push("-w".to_owned());
+    args.push("\n%{http_code}".to_owned());
+    args.push(url.to_owned());
+    args
 }
 
 /// Spawn `curl` with timeouts, feeding the Basic-auth header through a `--config`
@@ -1704,5 +1709,24 @@ mod tests {
         let loaded = load_commit_files(tmp.path(), CommitRange::Commit(root_commit)).unwrap();
         assert_eq!(loaded.base, root_commit);
         assert!(loaded.files.is_empty());
+    }
+
+    #[test]
+    fn empty_body_post_omits_content_type_and_data() {
+        let args = curl_post_args("https://api.bitbucket.org/x/approve", "");
+        assert!(!args.iter().any(|a| a == "-d"));
+        assert!(!args.iter().any(|a| a == "Content-Type: application/json"));
+        assert_eq!(args.first().map(String::as_str), Some("-X"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://api.bitbucket.org/x/approve")
+        );
+    }
+
+    #[test]
+    fn json_body_post_sends_content_type_and_data() {
+        let args = curl_post_args("https://api.bitbucket.org/x/comments", "{\"a\":1}");
+        assert!(args.iter().any(|a| a == "Content-Type: application/json"));
+        assert!(args.iter().any(|a| a == "{\"a\":1}"));
     }
 }
