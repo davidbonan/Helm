@@ -160,12 +160,59 @@ pub fn rebase_onto(workdir: &Path, onto: &str) -> Result<SyncOutcome, SyncError>
     if !head.is_branch() {
         return Err(SyncError::Other("HEAD is detached".into()));
     }
-    let out = exec(workdir, &["rebase", onto])?;
+    // A branch with no commits of its own that has diverged from the target:
+    // `git rebase <onto>` would replay the shared mainline commits onto it (they
+    // are absent from `onto`). Move the branch onto the target instead — no
+    // replay (git.md §9). Every other case keeps the plain rebase.
+    let plain = ["rebase", onto];
+    let move_onto = ["rebase", "--onto", onto, "HEAD"];
+    let args: &[&str] = if rebase_moves_empty_branch(&repo, &head, onto) {
+        &move_onto
+    } else {
+        &plain
+    };
+    let out = exec(workdir, args)?;
     if out.success() {
         Ok(rebase_outcome(&out.stdout, &out.stderr))
     } else {
         Err(classify_failure(&out))
     }
+}
+
+/// The current branch carries no commits of its own — its tip lives in another
+/// **local** branch (equal to it, or an ancestor of it) — **and** it has diverged
+/// from `onto`: the case where `git rebase <onto>` would replay the shared
+/// mainline commits onto the target (git.md §9). The branch is then moved onto
+/// the target with no replay. Only local branches count as "another branch": a
+/// remote mirror (`origin/<self>`) holding the tip is the branch's own line, not
+/// a separate one — treating it as one would drop already-pushed commits. Any
+/// read error ⇒ `false` (fall back to the plain rebase, git decides).
+fn rebase_moves_empty_branch(repo: &git2::Repository, head: &git2::Reference, onto: &str) -> bool {
+    let Some(tip) = head.target() else {
+        return false;
+    };
+    let Ok(onto_oid) = repo
+        .revparse_single(onto)
+        .and_then(|obj| obj.peel_to_commit())
+        .map(|commit| commit.id())
+    else {
+        return false;
+    };
+    let diverged = tip != onto_oid
+        && !repo.graph_descendant_of(tip, onto_oid).unwrap_or(false)
+        && !repo.graph_descendant_of(onto_oid, tip).unwrap_or(false);
+    if !diverged {
+        return false;
+    }
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else {
+        return false;
+    };
+    branches.flatten().any(|(branch, _)| {
+        branch.get().name() != head.name()
+            && branch.get().target().is_some_and(|oid| {
+                oid == tip || repo.graph_descendant_of(oid, tip).unwrap_or(false)
+            })
+    })
 }
 
 /// Replays the commit `sha` on the **current branch** (graph row menu — git.md
@@ -768,6 +815,55 @@ mod tests {
             ),
             SyncOutcome::Updated
         );
+    }
+
+    fn repo_commit(
+        repo: &git2::Repository,
+        content: &str,
+        msg: &str,
+        update_ref: Option<&str>,
+        parents: &[git2::Oid],
+    ) -> git2::Oid {
+        let sig = git2::Signature::now("T", "t@e").unwrap();
+        std::fs::write(repo.workdir().unwrap().join("f.txt"), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("f.txt")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parents: Vec<git2::Commit> = parents
+            .iter()
+            .map(|oid| repo.find_commit(*oid).unwrap())
+            .collect();
+        let refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(update_ref, &sig, &sig, msg, &tree, &refs)
+            .unwrap()
+    }
+
+    #[test]
+    fn rebase_moves_only_a_committless_branch_that_diverged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        repo.set_head("refs/heads/master").unwrap();
+
+        // master: A -> B ; other: A -> D (diverged at A) ; feat == master (B).
+        let a = repo_commit(&repo, "a\n", "A", Some("HEAD"), &[]);
+        let d = repo_commit(&repo, "d\n", "D", None, &[a]);
+        repo.branch("other", &repo.find_commit(d).unwrap(), false)
+            .unwrap();
+        let b = repo_commit(&repo, "b\n", "B", Some("HEAD"), &[a]);
+        repo.branch("feat", &repo.find_commit(b).unwrap(), false)
+            .unwrap();
+        repo.set_head("refs/heads/feat").unwrap();
+
+        let head = repo.head().unwrap();
+        // feat has no commits of its own and diverged from other → move onto it.
+        assert!(rebase_moves_empty_branch(&repo, &head, "other"));
+        // Onto the branch it shares its tip with (master): not diverged → plain.
+        assert!(!rebase_moves_empty_branch(&repo, &head, "master"));
+
+        // feat gains a commit of its own → plain rebase (its work is replayed).
+        repo_commit(&repo, "e\n", "E", Some("refs/heads/feat"), &[b]);
+        let head = repo.head().unwrap();
+        assert!(!rebase_moves_empty_branch(&repo, &head, "other"));
     }
 
     #[test]

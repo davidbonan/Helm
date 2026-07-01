@@ -402,7 +402,13 @@ decided list of §1; everything else stays **read only**.
   conflict §10 — toast + conflict panel, resolution in the in-app editor or the
   terminal); a dirty working tree surfaces git's refusal as-is (no automatic
   stash: the rebase rewrites the checked-out branch, unlike the checkout
-  exception above).
+  exception above). **Committless branch**: when the current branch has no
+  commits of its own (its tip already lives in another **local** branch) and has
+  **diverged** from the target, a plain `git rebase <branch>` would replay the
+  shared mainline commits onto the target — so instead the branch is **moved
+  onto** it (`git rebase --onto <branch> HEAD`, no replay). Only local branches
+  count as another line: a remote mirror (`origin/<self>`) holding the tip is the
+  branch's own, so its already-pushed commits are never dropped.
 - **Merge from the chips' menu**: **Merge `<branch>` into `<current>`** merges
   the clicked branch (local, or a remote ref as-is — a valid committish) into
   the **current branch**, `git merge <branch>` via the `git` subprocess with
