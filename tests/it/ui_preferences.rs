@@ -1566,7 +1566,7 @@ fn the_updates_section_renders_the_bundled_release_notes() {
     let harness = updates_section_harness(true);
     assert!(
         harness
-            .query_by_label_contains("Cycle between repositories")
+            .query_by_label_contains("Preview image files in the diff view")
             .is_some(),
         "Preferences › Updates must render the bundled release notes"
     );
@@ -1577,7 +1577,7 @@ fn release_notes_stay_browsable_outside_a_bundle() {
     let harness = updates_section_harness(false);
     assert!(
         harness
-            .query_by_label_contains("Cycle between repositories")
+            .query_by_label_contains("Preview image files in the diff view")
             .is_some(),
         "the notes block is independent of the updater (readable in dev runs)"
     );
