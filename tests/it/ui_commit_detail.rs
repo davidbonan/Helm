@@ -47,10 +47,18 @@ struct State {
     detail: Option<CommitDetail>,
     open_file: Option<(git2::Oid, String)>,
     view: FileViewMode,
+    can_amend: bool,
+    amended: Option<String>,
 }
 
 fn harness(detail: Option<CommitDetail>) -> Harness<'static, State> {
-    Harness::builder().build_ui_state(
+    harness_opts(detail, false)
+}
+
+fn harness_opts(detail: Option<CommitDetail>, can_amend: bool) -> Harness<'static, State> {
+    // Small frame dt so two queued clicks land inside egui's 0.3s double-click
+    // window (each event steps its own frame; the default 0.25s dt spreads them).
+    Harness::builder().with_step_dt(0.05).build_ui_state(
         |ui, state| {
             let palette = Palette::dark();
             // Same contract as `HelmApp`: the emitted intent becomes the commit
@@ -58,6 +66,7 @@ fn harness(detail: Option<CommitDetail>) -> Harness<'static, State> {
             // toggle target is applied to the shared mode, like `SetFileView`.
             let open = state.open_file.clone();
             let mut set_view = None;
+            let mut amend = None;
             commit_detail_panel(
                 ui,
                 &palette,
@@ -68,15 +77,22 @@ fn harness(detail: Option<CommitDetail>) -> Harness<'static, State> {
                 &mut FileMenuOutput::default(),
                 state.view,
                 &mut set_view,
+                state.can_amend,
+                &mut amend,
             );
             if let Some(view) = set_view {
                 state.view = view;
+            }
+            if let Some(message) = amend {
+                state.amended = Some(message);
             }
         },
         State {
             detail,
             open_file: None,
             view: FileViewMode::Flat,
+            can_amend,
+            amended: None,
         },
     )
 }
@@ -295,12 +311,16 @@ fn file_row_context_menu_copies_relative_and_reveals_absolute() {
                 &mut menu_in_ui.borrow_mut(),
                 state.view,
                 &mut None,
+                false,
+                &mut None,
             );
         },
         State {
             detail: Some(sample_detail()),
             open_file: None,
             view: FileViewMode::Flat,
+            can_amend: false,
+            amended: None,
         },
     );
     harness.run();
@@ -369,4 +389,74 @@ fn collapsing_a_commit_directory_hides_its_files() {
         harness.query_by_label("tests/new.rs").is_some(),
         "sibling directories stay expanded"
     );
+}
+
+/// Two clicks in a single frame register as a double click (egui counts them by
+/// time-since-last-click, which is 0 within one input batch).
+fn double_click(harness: &mut Harness<State>, label: &str) {
+    harness.get_by_label(label).click();
+    harness.get_by_label(label).click();
+    harness.run();
+}
+
+#[test]
+fn double_click_opens_the_message_editor_prefilled() {
+    let mut harness = harness_opts(Some(sample_detail()), true);
+    harness.run();
+    // Read-only until the double click: no editor controls.
+    assert!(harness.query_by_label("Amend").is_none());
+
+    double_click(&mut harness, "Add lib and tests");
+
+    harness.get_by_label("Amend");
+    harness.get_by_label("Cancel");
+    // Subject field prefilled from the commit.
+    let subject = harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .value();
+    assert_eq!(subject.as_deref(), Some("Add lib and tests"));
+}
+
+#[test]
+fn amend_emits_the_edited_message() {
+    let mut harness = harness_opts(Some(sample_detail()), true);
+    harness.run();
+    double_click(&mut harness, "Add lib and tests");
+
+    harness.get_by_label("Amend").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().amended.as_deref(),
+        Some("Add lib and tests\n\nApproved-by: Florian"),
+        "Amend composes subject + description into the reworded message"
+    );
+}
+
+#[test]
+fn cancel_closes_the_editor_without_emitting() {
+    let mut harness = harness_opts(Some(sample_detail()), true);
+    harness.run();
+    double_click(&mut harness, "Add lib and tests");
+
+    harness.get_by_label("Cancel").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Amend").is_none(), "editor closed");
+    harness.get_by_label("Add lib and tests");
+    assert!(harness.state().amended.is_none(), "Cancel emits nothing");
+}
+
+#[test]
+fn a_non_head_commit_stays_read_only() {
+    let mut harness = harness_opts(Some(sample_detail()), false);
+    harness.run();
+
+    double_click(&mut harness, "Add lib and tests");
+
+    assert!(
+        harness.query_by_label("Amend").is_none(),
+        "only HEAD's message can be amended"
+    );
+    assert!(harness.state().amended.is_none());
 }

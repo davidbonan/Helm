@@ -26,6 +26,11 @@ pub enum GitCommand {
     Discard(String),
     DiscardAll,
     Commit(String),
+    /// Amends **HEAD**'s message (git.md §5, commit-detail reword): a message-only
+    /// amend — tree and author preserved, committer refreshed. Replies with a
+    /// status snapshot like any mutation; the app reloads the graph and re-selects
+    /// the moved HEAD.
+    AmendMessage(String),
     /// Computes a file's diff for the overlay view (M6-3). `staged` selects the
     /// source: `false` ⇒ Unstaged (WT vs index), `true` ⇒ Staged (index vs HEAD).
     Diff {
@@ -633,6 +638,9 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         GitCommand::DiscardAll => discard::discard_all(repo)?,
         GitCommand::Commit(message) => {
             commit::commit(repo, message)?;
+        }
+        GitCommand::AmendMessage(message) => {
+            commit::amend_message(repo, message)?;
         }
         GitCommand::Checkout(name) => branch::checkout(repo, name)?,
         GitCommand::Stash => stash::stash(repo)?,

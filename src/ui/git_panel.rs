@@ -26,6 +26,10 @@ pub enum GitIntent {
     /// on the panel side before it is emitted.
     StashFiles(Vec<String>),
     Commit(String),
+    /// Amends **HEAD**'s message from the commit-detail reword editor (git.md §5):
+    /// the composed message (subject + blank line + description). Handled app-side
+    /// (worker amend + graph reload + HEAD re-select), never straight to the worker.
+    AmendMessage(String),
     /// Asks the AI to fill the commit inputs (subject + description) — the
     /// generation is asynchronous and never commits.
     GenerateMessage,

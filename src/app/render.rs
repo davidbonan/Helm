@@ -699,6 +699,16 @@ impl HelmApp {
         // (failures, network successes) go through the toasts (git.md §10).
         let op_in_progress = self.git.as_ref().is_some_and(|g| g.op_in_progress);
         let op = self.git.as_ref().and_then(|g| g.op.as_ref());
+        // The selected commit is HEAD ⇒ its message can be amended in place (git.md
+        // §5). HEAD carries an `is_head` ref in the graph; a merge/rebase in progress
+        // blocks the reword, so no affordance mid-op.
+        let can_amend_head = graph_mode
+            && !op_in_progress
+            && graph.is_some_and(|g| {
+                g.commits
+                    .iter()
+                    .any(|c| Some(c.oid) == selected_commit && c.refs.iter().any(|r| r.is_head))
+            });
         // The conflict editor only exists while an op is in progress; the op ending
         // (Continue/Abort succeeded, or it was finished from the terminal) closes it.
         if !op_in_progress {
@@ -1017,6 +1027,7 @@ impl HelmApp {
                     show_git,
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
+                    can_amend_head,
                     commit_diff_file.as_ref(),
                     &mut open_commit_file_request,
                     Some(cwd.as_path()),
@@ -1958,6 +1969,7 @@ impl HelmApp {
                     show_git,
                     false,
                     None,
+                    false,
                     None,
                     &mut open_commit_file_request,
                     None,
@@ -2095,12 +2107,21 @@ impl HelmApp {
 
         let mut generate_requested = false;
         let mut continue_op_requested = false;
+        let mut amend_requested = false;
         if let Some(git) = &self.git {
             let mut sent = false;
             let mut reload_diff = false;
             for intent in intents {
                 match intent {
                     GitIntent::GenerateMessage => generate_requested = true,
+                    // Amend HEAD's message (git.md §5): reword + reload the graph, then
+                    // re-select the new HEAD after the loop so the detail panel follows
+                    // the reworded commit (its oid changes).
+                    GitIntent::AmendMessage(message) => {
+                        git.send_then_reload_graph(GitCommand::AmendMessage(message));
+                        amend_requested = true;
+                        sent = true;
+                    }
                     // Banner Abort (git.md §10): confirmation modal first —
                     // resolutions in progress are discarded by the abort.
                     GitIntent::AbortOp => self.modal = Some(Modal::AbortOp),
@@ -2195,6 +2216,14 @@ impl HelmApp {
             }
             self.conflict_editor = None;
             ctx.request_repaint();
+        }
+
+        // Arm the one-shot HEAD re-selection consumed by the next graph reload
+        // (`&mut` needed, unavailable during the immutable-borrow intent loop).
+        if amend_requested {
+            if let Some(git) = self.git.as_mut() {
+                git.select_head_after_amend = true;
+            }
         }
 
         // AI generation (commit card): carried by the session's `AiRunner` — one

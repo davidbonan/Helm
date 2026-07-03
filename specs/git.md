@@ -24,8 +24,7 @@ commit (meta + files) and full-screen commit diff. **Post-MVP** (see §10):
 subprocess), branch creation, Stash / Pop.
 
 **Out of MVP** (explicitly not implemented; do not add without a decision):
-amend (Reword in the interactive rebase covers message edits, §9), remote
-management, annotated tags (the
+remote management, annotated tags (the
 graph creates lightweight tags only, §9), a dedicated stash list (the graph
 rows and the toolbar cover the stash flows, §9–§10), Undo / Redo of operations
 (deferred to a later milestone). The graph started **read only**; every write
@@ -35,7 +34,8 @@ safety **automatic stash**), branch **create / rename / delete** (deletions
 behind a **confirmation modal**), the three **rebase** flavors (plain,
 **interactive**, **AI-driven** — never a history rewrite of another branch),
 **merge**, **cherry-pick**, **revert**, **reset** (hard behind a modal), tag
-**create / push / delete**, per-stash **apply / pop / delete** — and in §10
+**create / push / delete**, per-stash **apply / pop / delete**, **amend** of
+`HEAD`'s message (message-only reword from the commit detail, §9) — and in §10
 for the toolbar (pull / push / branch / stash / pop; **force push** only as
 `--force-with-lease` behind an explicit one-shot entry and a modal). Anything
 outside that list stays out without a new decision; a conflict left behind by
@@ -327,6 +327,13 @@ decided list of §1; everything else stays **read only**.
   of changed files** (diff of the commit vs its **1st parent**; root commit ⇒ vs
   empty tree; merge ⇒ vs 1st parent). Entering Graph mode **reveals** the git sidebar
   if it is hidden.
+- **Amend the message** (only when the selected commit is `HEAD`, never mid
+  merge/rebase): **double-click the message block** swaps it for an inline editor
+  — a subject field + a description field prefilled from the commit — with
+  **Amend** / **Cancel**. Amend rewords `HEAD` in place (tree + author preserved,
+  committer refreshed); the new commit's oid replaces the old one, so the detail
+  panel re-selects the reworded `HEAD`. Cancel restores the read-only block. Empty
+  subject ⇒ Amend disabled. Message-only: no tree or parent change.
 - **Commit diff** (click on a file): opens the file's diff **full
   screen** in place of the graph, **read only** (no stage/unstage — this is
   history). The diff's close action returns **to the graph**; flipping the

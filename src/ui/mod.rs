@@ -731,6 +731,8 @@ pub fn root_layout(
     show_git: &mut bool,
     show_commit_detail: bool,
     commit_detail: Option<&CommitDetail>,
+    // The selected commit is HEAD ⇒ its message can be amended from the detail panel.
+    can_amend_head: bool,
     commit_diff_file: Option<&(git2::Oid, String)>,
     open_commit_file: &mut Option<(git2::Oid, String)>,
     repo_root: Option<&Path>,
@@ -857,6 +859,7 @@ pub fn root_layout(
                     // commit" state).
                     if show_commit_detail {
                         let mut set_view = None;
+                        let mut amend = None;
                         commit_detail_panel(
                             ui,
                             palette,
@@ -867,9 +870,14 @@ pub fn root_layout(
                             file_menu,
                             git_file_view,
                             &mut set_view,
+                            can_amend_head,
+                            &mut amend,
                         );
                         if let Some(view) = set_view {
                             intents.push(crate::ui::git_panel::GitIntent::SetFileView(view));
+                        }
+                        if let Some(message) = amend {
+                            intents.push(crate::ui::git_panel::GitIntent::AmendMessage(message));
                         }
                     } else if active_repo.is_none() {
                         git_panel::no_repo(ui, palette, git_state);

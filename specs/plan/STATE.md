@@ -6,6 +6,27 @@
 
 ---
 
+## ☑ Milestone — M-Amend · Amend HEAD's commit message
+
+Spec: [`specs/git.md`](../git.md) §9 (commit detail) + §1 (decided write). In-place
+**reword of `HEAD`** from the commit detail panel: double-click the message block ⇒
+inline editor (subject + description, prefilled) with **Amend** / **Cancel**.
+Message-only (tree + author preserved, committer refreshed); HEAD-only; blocked mid
+merge/rebase. Counter: **1/1**.
+
+- ☑ **T1 — Amend.** Domain `commit::amend_message` (`Commit::amend`; guards clean
+  state + non-empty message + existing `HEAD`); `GitCommand::AmendMessage(String)`
+  routed through `send_then_reload_graph`; `select_head_after_amend` one-shot
+  re-selects the new `HEAD` in `on_graph` (oid changes on reword). UI:
+  `commit_detail::message_block` double-click → editor (egui temp keyed by oid) →
+  `GitIntent::AmendMessage`. Tests: 3 domain (reword / preserve / blank) + 4 UI e2e
+  (open-prefilled / emit / cancel / read-only-off-HEAD).
+  *Files*: `src/git/commit.rs`, `src/git/worker.rs`, `src/app/git_session.rs`,
+  `src/app/render.rs`, `src/ui/commit_detail.rs`, `src/ui/git_panel.rs`,
+  `src/app/keys.rs`, `src/ui/mod.rs`.
+
+---
+
 ## ☑ Milestone — M-PR5 · PR detail → mockup parity
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §4/§11 +

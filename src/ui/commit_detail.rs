@@ -1,6 +1,8 @@
 use crate::git::commit_detail::{CommitDetail, CommitFile};
 use crate::git::file_tree::{self, TreeRow};
-use crate::theme::{Palette, BODY_SIZE, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SIZE};
+use crate::theme::{
+    Palette, BODY_SIZE, RADIUS_BUTTON, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SIZE,
+};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -50,6 +52,8 @@ pub fn commit_detail_panel(
     file_menu: &mut FileMenuOutput,
     view: FileViewMode,
     set_view: &mut Option<FileViewMode>,
+    can_amend: bool,
+    amend: &mut Option<String>,
 ) {
     panel_header(ui, palette);
     let Some(detail) = detail else {
@@ -60,7 +64,7 @@ pub fn commit_detail_panel(
     // Only a file of THIS commit arms the navigation (the open diff may target a
     // commit whose list is no longer displayed).
     let open_path = open.and_then(|(oid, path)| (*oid == detail.meta.oid).then_some(path.as_str()));
-    meta_block(ui, palette, detail);
+    meta_block(ui, palette, detail, can_amend, amend);
     let mut menu = FileMenuCtx {
         root: repo_root,
         out: file_menu,
@@ -180,7 +184,13 @@ fn panel_header(ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-fn meta_block(ui: &mut egui::Ui, palette: &Palette, detail: &CommitDetail) {
+fn meta_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    detail: &CommitDetail,
+    can_amend: bool,
+    amend: &mut Option<String>,
+) {
     let meta = &detail.meta;
     ui.add_space(10.0);
     ui.horizontal(|ui| {
@@ -218,20 +228,202 @@ fn meta_block(ui: &mut egui::Ui, palette: &Palette, detail: &CommitDetail) {
         });
     });
     ui.add_space(10.0);
-    ui.label(
-        egui::RichText::new(&meta.summary)
-            .size(SUBJECT_SIZE)
-            .strong()
-            .color(palette.text_primary),
+    message_block(ui, palette, detail, can_amend, amend);
+}
+
+/// Editing state for the amend form, kept in egui temp memory keyed by the
+/// commit oid: its presence *is* the "editing" flag. Prefilled from the commit
+/// on the opening double-click, dropped on Amend/Cancel.
+#[derive(Clone)]
+struct AmendDraft {
+    subject: String,
+    description: String,
+    focus: bool,
+}
+
+/// Commit subject + body. Read-only labels by default; when `can_amend` (the
+/// selected commit is HEAD), a double-click swaps the block for an inline editor
+/// (subject + description prefilled from the commit) with **Amend** / **Cancel**.
+/// Amend composes the message and hands it back via `amend` for the caller to
+/// dispatch (`GitIntent::AmendMessage`); the panel stays read-only otherwise.
+fn message_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    detail: &CommitDetail,
+    can_amend: bool,
+    amend: &mut Option<String>,
+) {
+    let meta = &detail.meta;
+    let draft_id = egui::Id::new(("commit_amend_draft", meta.oid));
+    let draft: Option<AmendDraft> = ui.data(|d| d.get_temp(draft_id));
+
+    if let (true, Some(draft)) = (can_amend, draft) {
+        amend_editor(ui, palette, draft_id, draft, amend);
+        return;
+    }
+
+    let sense = if can_amend {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let summary = ui.add(
+        egui::Label::new(
+            egui::RichText::new(&meta.summary)
+                .size(SUBJECT_SIZE)
+                .strong()
+                .color(palette.text_primary),
+        )
+        .sense(sense),
     );
+    let mut body = None;
     if !meta.body.is_empty() {
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(&meta.body)
-                .size(BODY_SIZE)
-                .color(palette.text_secondary),
+        body = Some(
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&meta.body)
+                        .size(BODY_SIZE)
+                        .color(palette.text_secondary),
+                )
+                .sense(sense),
+            ),
         );
     }
+    if can_amend {
+        let opened = summary.double_clicked() || body.as_ref().is_some_and(|b| b.double_clicked());
+        summary.on_hover_text("Double-click to amend the message");
+        if opened {
+            ui.data_mut(|d| {
+                d.insert_temp(
+                    draft_id,
+                    AmendDraft {
+                        subject: meta.summary.clone(),
+                        description: meta.body.clone(),
+                        focus: true,
+                    },
+                )
+            });
+        }
+    }
+}
+
+const AMEND_BUTTON_H: f32 = 28.0;
+
+fn amend_editor(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    draft_id: egui::Id,
+    mut draft: AmendDraft,
+    amend: &mut Option<String>,
+) {
+    let subject = editor_frame(palette).show(ui, |ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut draft.subject)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .desired_width(f32::INFINITY)
+                .font(egui::FontId::proportional(SUBJECT_SIZE)),
+        )
+    });
+    if draft.focus {
+        subject.inner.request_focus();
+        draft.focus = false;
+    }
+    ui.add_space(6.0);
+    editor_frame(palette).show(ui, |ui| {
+        ui.add(
+            egui::TextEdit::multiline(&mut draft.description)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .font(egui::FontId::proportional(BODY_SIZE)),
+        );
+    });
+
+    ui.add_space(8.0);
+    let mut close = false;
+    ui.horizontal(|ui| {
+        let can_apply = !draft.subject.trim().is_empty();
+        if amend_button(ui, palette, "Amend", true, can_apply) {
+            *amend = Some(crate::ui::git_panel::commit_message(
+                &draft.subject,
+                &draft.description,
+            ));
+            close = true;
+        }
+        ui.add_space(6.0);
+        if amend_button(ui, palette, "Cancel", false, true) {
+            close = true;
+        }
+    });
+
+    if close {
+        ui.data_mut(|d| d.remove::<AmendDraft>(draft_id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(draft_id, draft));
+    }
+}
+
+fn editor_frame(palette: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(palette.bg_canvas)
+        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+}
+
+fn amend_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    label: &str,
+    primary: bool,
+    enabled: bool,
+) -> bool {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(BODY_SIZE),
+        egui::Color32::PLACEHOLDER,
+    );
+    let size = egui::vec2(galley.size().x + 24.0, AMEND_BUTTON_H);
+    let (rect, response, hovered) = crate::ui::clickable(ui, size, enabled);
+    let (fill, stroke, text) = if !enabled {
+        (
+            palette.state_disabled,
+            egui::Stroke::NONE,
+            palette.text_muted,
+        )
+    } else if primary {
+        let fill = if hovered {
+            palette.primary_button_hover()
+        } else {
+            palette.primary_button_fill()
+        };
+        (fill, egui::Stroke::NONE, egui::Color32::WHITE)
+    } else {
+        let fill = if hovered {
+            palette.bg_surface_hover
+        } else {
+            palette.bg_surface
+        };
+        (
+            fill,
+            egui::Stroke::new(1.0, palette.border_subtle),
+            palette.text_primary,
+        )
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_BUTTON),
+        fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.center() - galley.size() / 2.0, galley, text);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    enabled && response.clicked()
 }
 
 fn hash_chip(ui: &mut egui::Ui, palette: &Palette, hash: &str) {

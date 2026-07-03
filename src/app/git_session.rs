@@ -303,6 +303,10 @@ pub(crate) struct GitSession {
     /// otherwise the one-shot would be consumed on the row of the **old** HEAD and the
     /// scroll would miss the real one.
     pub(crate) graph_fresh: bool,
+    /// One-shot: the next fresh graph re-selects the (moved) HEAD commit, armed
+    /// after a message amend (git.md §5) so the detail follows the reworded commit
+    /// instead of the vanished pre-amend oid.
+    pub(crate) select_head_after_amend: bool,
     pub(crate) last_poll: f64,
 }
 
@@ -349,6 +353,7 @@ impl GitSession {
             detail: None,
             scroll_to_head: true,
             graph_fresh: true,
+            select_head_after_amend: false,
             last_poll: now,
         }
     }
@@ -618,6 +623,22 @@ impl GitSession {
                         *diff = None;
                     }
                 }
+                // Amend moved HEAD (git.md §5): the pre-amend oid vanished above, so
+                // re-select the reworded commit (the fresh HEAD) and reload its
+                // detail — the sidebar stays on the commit the user just edited.
+                if self.select_head_after_amend {
+                    self.select_head_after_amend = false;
+                    if let Some(head) = graph
+                        .commits
+                        .iter()
+                        .find(|c| c.refs.iter().any(|r| r.is_head))
+                    {
+                        let oid = head.oid;
+                        self.selected_commit = Some(oid);
+                        self.detail = None;
+                        self.worker.send(GitCommand::CommitDetail(oid));
+                    }
+                }
                 self.graph = Some(graph);
             }
             Err(err) => {
@@ -840,6 +861,7 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
             "Discard failed"
         }
         GitCommand::Commit(_) => "Commit failed",
+        GitCommand::AmendMessage(_) => "Amend failed",
         GitCommand::Stash | GitCommand::StashFiles(_) => "Stash failed",
         GitCommand::StashPop | GitCommand::StashPopAt(_) => "Stash pop failed",
         GitCommand::StashApplyAt(_) => "Applying stash failed",
