@@ -415,8 +415,10 @@ pub struct HelmApp {
     /// Height of the Run terminal strip in the git sidebar (git.md §3); live source
     /// for rendering, mirrored into `Prefs` on drag (persisted).
     run_panel_height: f32,
-    /// Run terminal strip folded to its header (git.md §3); persisted.
-    run_panel_collapsed: bool,
+    /// Run terminal strip folded to its header, tracked per worktree so folding one
+    /// project's strip leaves the others untouched (git.md §3). Absent ⇒ the
+    /// persisted `prefs.run_panel_collapsed` seed; in-memory only.
+    run_collapsed: HashMap<RepoKey, bool>,
     /// Inline edit buffer of the Run command, while the header's pencil is active
     /// (git.md §3); `None` when not editing. Committing writes it to the project's
     /// `ProjectSettings.run_command`.
@@ -666,7 +668,7 @@ impl HelmApp {
             agents_column_width: prefs.agents_column_width,
             agents_terminal_height: prefs.agents_terminal_height,
             run_panel_height: prefs.run_panel_height,
-            run_panel_collapsed: prefs.run_panel_collapsed,
+            run_collapsed: HashMap::new(),
             run_command_edit: None,
             run_port_edit: None,
             deferred_wheel_end: None,
@@ -1076,9 +1078,13 @@ impl HelmApp {
                 ..prefs
             });
         }
-        // The Run strip height (git.md §3) only when expanded: a folded strip is
-        // pinned to its header, whose height must not overwrite the remembered one.
-        if !self.run_panel_collapsed {
+        // The Run strip height (git.md §3) only when the active worktree's strip is
+        // expanded: a folded strip is pinned to its header, whose height must not
+        // overwrite the remembered one.
+        let active_expanded = self
+            .active_repo_key()
+            .is_some_and(|key| !self.is_run_collapsed(&key));
+        if active_expanded {
             let height = crate::ui::run_panel_height(ctx).unwrap_or(self.run_panel_height);
             if height != self.run_panel_height {
                 self.run_panel_height = height;
@@ -1319,18 +1325,14 @@ impl HelmApp {
             self.caches.run_panes.remove(&key);
             self.caches
                 .run_panes
-                .insert(key, open_run_terminal(ctx, &cwd, &launch_command));
+                .insert(key.clone(), open_run_terminal(ctx, &cwd, &launch_command));
             ctx.request_repaint();
         } else if action.stop {
             self.caches.run_panes.remove(&key);
         }
         if action.toggle_collapsed {
-            self.run_panel_collapsed = !self.run_panel_collapsed;
-            let run_panel_collapsed = self.run_panel_collapsed;
-            self.persist(move |prefs| Prefs {
-                run_panel_collapsed,
-                ..prefs
-            });
+            let collapsed = !self.is_run_collapsed(&key);
+            self.run_collapsed.insert(key, collapsed);
         }
         if action.begin_edit {
             self.run_port_edit = None;
@@ -1368,6 +1370,15 @@ impl HelmApp {
     fn active_repo_key(&self) -> Option<RepoKey> {
         let index = self.workspace.active()?;
         self.caches.keys.get(index).cloned()
+    }
+
+    /// Whether this worktree's Run strip is folded (git.md §3): its own toggle if the
+    /// user set one this session, else the persisted `run_panel_collapsed` seed.
+    fn is_run_collapsed(&self, key: &RepoKey) -> bool {
+        self.run_collapsed
+            .get(key)
+            .copied()
+            .unwrap_or(self.prefs.run_panel_collapsed)
     }
 
     /// Applies a review action raised by the diff view (M-RC): the editing

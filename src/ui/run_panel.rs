@@ -94,27 +94,9 @@ pub fn run_panel(
         egui::vec2(ui.available_width(), HEADER_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            let chevron = if collapsed {
-                Icon::ChevronRight
-            } else {
-                Icon::ChevronDown
-            };
-            if icon_button(
-                ui,
-                palette,
-                palette.text_primary,
-                true,
-                "Toggle run panel",
-                chevron,
-            ) {
+            if collapse_header(ui, palette, status, collapsed) {
                 action.toggle_collapsed = true;
             }
-            paint_status_dot(ui, status_color(palette, status));
-            ui.label(
-                egui::RichText::new("Run")
-                    .size(LABEL_SIZE)
-                    .color(palette.text_secondary),
-            );
 
             // Right cluster first (right-to-left) so the command field takes the
             // remaining middle width; the port chip sits just left of the controls.
@@ -320,13 +302,64 @@ fn status_color(palette: &Palette, status: &RunStatus) -> egui::Color32 {
     }
 }
 
-fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(STATUS_DOT_RADIUS * 2.0, ICON_HIT),
-        egui::Sense::hover(),
+/// Chevron + status dot + "Run" label as a single fold/unfold hit target: the
+/// whole cluster toggles the strip, not just the chevron (git.md §3).
+fn collapse_header(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    status: &RunStatus,
+    collapsed: bool,
+) -> bool {
+    let chevron = if collapsed {
+        Icon::ChevronRight
+    } else {
+        Icon::ChevronDown
+    };
+    let galley = ui.painter().layout_no_wrap(
+        "Run".to_owned(),
+        egui::FontId::proportional(LABEL_SIZE),
+        palette.text_secondary,
     );
-    ui.painter()
-        .circle_filled(rect.center(), STATUS_DOT_RADIUS, color);
+    let spacing = ui.spacing().item_spacing.x;
+    let dot_w = STATUS_DOT_RADIUS * 2.0;
+    let width = ICON_HIT + spacing + dot_w + spacing + galley.size().x;
+    let (rect, response, hovered) = crate::ui::clickable(ui, egui::vec2(width, ICON_HIT), true);
+
+    let painter = ui.painter();
+    let chevron_color = if hovered {
+        palette.text_primary
+    } else {
+        palette.text_muted
+    };
+    crate::ui::paint_icon(
+        painter,
+        egui::pos2(rect.left() + ICON_HIT / 2.0, rect.center().y),
+        ICON_GLYPH,
+        chevron,
+        chevron_color,
+    );
+    painter.circle_filled(
+        egui::pos2(
+            rect.left() + ICON_HIT + spacing + STATUS_DOT_RADIUS,
+            rect.center().y,
+        ),
+        STATUS_DOT_RADIUS,
+        status_color(palette, status),
+    );
+    painter.galley(
+        egui::pos2(
+            rect.left() + ICON_HIT + spacing + dot_w + spacing,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        palette.text_secondary,
+    );
+
+    let response = response.on_hover_text("Toggle run panel");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toggle run panel")
+    });
+    response.clicked()
 }
 
 /// Lucide icon button, tinted to `intent` on hover — same affordance as the git

@@ -955,7 +955,11 @@ impl HelmApp {
                     None => run_command_resolved.clone(),
                 };
                 let run_status = run_status_of(self.caches.run_panes.get_mut(&run_key));
-                let run_collapsed = self.run_panel_collapsed;
+                let run_collapsed = self
+                    .run_collapsed
+                    .get(&run_key)
+                    .copied()
+                    .unwrap_or(self.prefs.run_panel_collapsed);
                 let run_panel_height = self.run_panel_height;
                 // In-diff review (M-RC): the active repo's stored comments feed the
                 // diff view; the actions it raises are drained into `review_intents`
@@ -1340,7 +1344,7 @@ impl HelmApp {
                 // resolved yet, open the inline editor instead of spawning a no-op shell.
                 if action_pressed(ctx, &self.keymap, Action::Run) {
                     self.sidebars.git = true;
-                    self.run_panel_collapsed = false;
+                    self.run_collapsed.insert(run_key.clone(), false);
                     if run_command_resolved.trim().is_empty() {
                         run_action.begin_edit = true;
                     } else {
