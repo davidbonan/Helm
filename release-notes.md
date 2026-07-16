@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.2.0
+
+- Amend the last commit's message right from the commit panel.
+- Rebasing a diverged branch that has no commits of its own now just moves it
+  onto the target, with no commits to replay.
+- Click anywhere on the Run panel header to collapse or expand it; its collapsed
+  state is now remembered per worktree.
+
 ## 1.1.3
 
 - Fixed approving, requesting changes on, and resolving comments in Bitbucket
@@ -56,14 +64,3 @@
 
 - The terminal now renders in JetBrains Mono, Ghostty's default monospace font.
 
-## 0.9.0
-
-- A "What's new" modal now greets you after an update; the notes also live in
-  Preferences › Updates.
-- Toggle the changed-files lists between flat and tree views, in both the WIP
-  panel and commit details.
-- New Run strip in the git sidebar launches your server/app, with per-worktree
-  port management.
-- Preview image files in the diff view, with zoom and pan.
-- Pick a project from the Preferences › Project section.
-- Notification toasts moved to the bottom-left and now auto-expire.
