@@ -28,7 +28,7 @@ fn whats_new_modal_renders_heading_close_and_bundled_notes() {
 
     harness.get_by_label("What's new");
     harness.get_by_label("Close");
-    harness.get_by_label_contains("Preview image files in the diff view");
+    harness.get_by_label_contains("JetBrains Mono");
 }
 
 #[test]
