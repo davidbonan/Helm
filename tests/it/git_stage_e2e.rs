@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use helm::git::commit;
 use helm::git::diff::{self, DiffSource, LineOrigin};
 use helm::git::stage;
 use helm::git::status;
@@ -118,6 +119,79 @@ fn stage_all_hides_and_skips_a_worktree_nested_in_the_root() {
         "the nested worktree is never staged, got {:?}",
         st.staged
     );
+}
+
+/// A plain clone nested in the workdir is **not** a linked worktree, so
+/// `nested_in_workdir` does not filter it out: libgit2 reports it as a single
+/// untracked directory entry that `add_path` / `remove_file` refuse.
+fn nested_clone(root: &Path) {
+    let vendor = root.join("vendor");
+    git2::Repository::init(&vendor).unwrap();
+    fs::write(vendor.join("f.txt"), "x\n").unwrap();
+}
+
+#[test]
+fn stage_all_reports_a_failure_without_dropping_the_other_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    let repo = git2::Repository::init(&root).unwrap();
+    commit_file(&repo, "base.txt", "v1\n", "init");
+    // Sorted around the failing entry: one before, one after.
+    fs::write(root.join("a.txt"), "new\n").unwrap();
+    nested_clone(&root);
+    fs::write(root.join("z.txt"), "new\n").unwrap();
+
+    stage::stage_all(&repo).unwrap_err();
+
+    // Read from a fresh handle: what actually landed in the on-disk index, not
+    // the mutating handle's cached copy.
+    let st = status::load(&root).unwrap();
+    assert!(
+        st.staged.iter().any(|f| f.path == "a.txt"),
+        "the entry staged before the failure must be written, got {:?}",
+        st.staged
+    );
+    assert!(
+        st.staged.iter().any(|f| f.path == "z.txt"),
+        "the batch must not abort at the failing entry, got {:?}",
+        st.staged
+    );
+    assert!(
+        !st.staged.iter().any(|f| f.path.starts_with("vendor")),
+        "the nested clone is never staged, got {:?}",
+        st.staged
+    );
+}
+
+#[test]
+fn a_failed_stage_all_never_leaks_into_the_next_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    git2::Repository::init(&root).unwrap();
+    // Worker-style long-lived handle: every mutation goes through the same
+    // cached index (worker.rs).
+    let repo = git2::Repository::open(&root).unwrap();
+    commit_file(&repo, "base.txt", "v1\n", "init");
+    fs::write(root.join("a.txt"), "new\n").unwrap();
+    nested_clone(&root);
+
+    stage::stage_all(&repo).unwrap_err();
+
+    // What the on-disk index holds — what `git status` in a terminal pane shows.
+    let staged: Vec<String> = status::load(&root)
+        .unwrap()
+        .staged
+        .iter()
+        .map(|f| f.path.clone())
+        .collect();
+    let oid = commit::commit(&repo, "batch").unwrap();
+    let tree = repo.find_commit(oid).unwrap().tree().unwrap();
+    assert_eq!(
+        tree.get_path(Path::new("a.txt")).is_ok(),
+        staged.iter().any(|p| p == "a.txt"),
+        "the commit must carry exactly what is staged on disk, got {staged:?}"
+    );
+    assert!(tree.get_path(Path::new("vendor")).is_err());
 }
 
 #[test]

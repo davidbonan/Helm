@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **7/37**.
+work**. Counter: **8/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -80,7 +80,7 @@ work**. Counter: **7/37**.
   designed restore is `--abort` only (`git.md:505`), with the branch reflog covering a
   provider `reset --hard`. Stronger verification (checking the replayed commits are
   reachable) would be a **spec change**, not a bug fix.
-- ☐ **T9 — Bulk ops never abort half-way, and a failed mutation never leaks into the
+- ☑ **T9 — Bulk ops never abort half-way, and a failed mutation never leaks into the
   next commit.** 🔴 most severe of the lot. A plain nested clone is reported as one
   untracked entry `vendor/` — `nested_in_workdir` only collects `repo.worktrees()`
   (`worktree.rs:140`) so neither filter catches it. Measured: `index.add_path("vendor/")`
@@ -318,7 +318,7 @@ work**. Counter: **7/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T9 → T4 → T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
+- Order: **T4 → T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
   then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.

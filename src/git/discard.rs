@@ -19,12 +19,18 @@ pub fn discard_file(repo: &git2::Repository, path: &str) -> Result<(), git2::Err
     checkout_paths(repo, [path])
 }
 
+/// Reverts every unstaged change in one pass. A path that cannot be deleted (a
+/// plain clone nested in the workdir, reported as one untracked directory) does
+/// not abort the batch: the restore checkout still runs — otherwise the files
+/// already deleted above would be lost with nothing put back — and the failure
+/// is reported at the end.
 pub fn discard_all(repo: &git2::Repository) -> Result<(), git2::Error> {
     // Enumeration without line stats: `load_repo` paid a `Patch` per changed
     // file just to list the paths.
     let statuses = status::work_statuses(repo)?;
     let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut restore: Vec<String> = Vec::new();
+    let mut failed: Option<git2::Error> = None;
     for entry in statuses.iter() {
         if entry.status().contains(git2::Status::CONFLICTED) {
             continue;
@@ -40,12 +46,16 @@ pub fn discard_all(repo: &git2::Repository) -> Result<(), git2::Error> {
         match delta.status() {
             git2::Delta::Untracked => {
                 if let Some(path) = new.or(old) {
-                    remove_from_disk(repo, path)?;
+                    if let Err(err) = remove_from_disk(repo, path) {
+                        failed.get_or_insert(err);
+                    }
                 }
             }
             git2::Delta::Renamed => {
                 if let Some(path) = new {
-                    remove_from_disk(repo, path)?;
+                    if let Err(err) = remove_from_disk(repo, path) {
+                        failed.get_or_insert(err);
+                    }
                 }
                 restore.extend(old.map(str::to_owned));
             }
@@ -57,7 +67,11 @@ pub fn discard_all(repo: &git2::Repository) -> Result<(), git2::Error> {
     }
     // A single checkout for every tracked restore (one pass instead of one
     // `checkout_index` per file).
-    checkout_paths(repo, restore.iter().map(String::as_str))
+    let restored = checkout_paths(repo, restore.iter().map(String::as_str));
+    match failed {
+        Some(err) => Err(err),
+        None => restored,
+    }
 }
 
 /// Deletes an untracked file, reporting the failure (a silently kept file used

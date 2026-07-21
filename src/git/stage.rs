@@ -3,14 +3,17 @@ use std::path::Path;
 use crate::git::diff::{self, DiffLine, DiffSource, Hunk, LineOrigin};
 use crate::git::status;
 
-/// Soft-reloads the repo's in-memory index from disk before a mutation. The
-/// worker holds one long-lived handle and libgit2 only refreshes its cached
-/// index inside status passes: an index written by another process since the
-/// last poll (git in a terminal pane) would otherwise be silently clobbered by
-/// the next write — cf. `stage_sees_index_changes_made_by_another_handle`.
+/// Reloads the repo's in-memory index from disk before a mutation. The worker
+/// holds one long-lived handle and libgit2 only refreshes its cached index
+/// inside status passes: an index written by another process since the last
+/// poll (git in a terminal pane) would otherwise be silently clobbered by the
+/// next write — cf. `stage_sees_index_changes_made_by_another_handle`. The read
+/// is **forced**: a soft read is a no-op when the on-disk index has not moved,
+/// which would let entries a failed mutation left in memory ride into the next
+/// `write_tree` — cf. `a_failed_stage_all_never_leaks_into_the_next_commit`.
 pub(crate) fn fresh_index(repo: &git2::Repository) -> Result<git2::Index, git2::Error> {
     let mut index = repo.index()?;
-    index.read(false)?;
+    index.read(true)?;
     Ok(index)
 }
 
@@ -67,12 +70,16 @@ fn head_lacks(head: &git2::Object, path: &str) -> bool {
 /// Stages every unstaged change in one pass: one status enumeration (no line
 /// stats) and a **single index write**, where per-file staging paid both per
 /// file. Conflicts are skipped (read only, git.md §2); a rename moves whole
-/// (old path removed with the new one added).
+/// (old path removed with the new one added). An entry libgit2 refuses (a plain
+/// clone nested in the workdir, reported as one untracked directory) does not
+/// abort the batch: the failure is reported once every other entry has been
+/// staged and written.
 pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {
     let statuses = status::work_statuses(repo)?;
     let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut index = fresh_index(repo)?;
     let mut touched = false;
+    let mut failed: Option<git2::Error> = None;
     for entry in statuses.iter() {
         if entry.status().contains(git2::Status::CONFLICTED) {
             continue;
@@ -85,30 +92,40 @@ pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {
         if new.or(old).is_some_and(|p| nested.contains(p)) {
             continue;
         }
-        match delta.status() {
+        let applied = match delta.status() {
             git2::Delta::Untracked | git2::Delta::Modified | git2::Delta::Typechange => {
                 let Some(path) = new.or(old) else { continue };
-                index.add_path(path)?;
+                index.add_path(path)
             }
             git2::Delta::Deleted => {
                 let Some(path) = old.or(new) else { continue };
-                index.remove_path(path)?;
+                index.remove_path(path)
             }
             git2::Delta::Renamed => {
                 let (Some(old), Some(new)) = (old, new) else {
                     continue;
                 };
-                index.remove_path(old)?;
-                index.add_path(new)?;
+                match index.remove_path(old) {
+                    Ok(()) => index.add_path(new),
+                    Err(err) => Err(err),
+                }
             }
             _ => continue,
+        };
+        match applied {
+            Ok(()) => touched = true,
+            Err(err) => {
+                failed.get_or_insert(err);
+            }
         }
-        touched = true;
     }
     if touched {
         index.write()?;
     }
-    Ok(())
+    match failed {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// Unstages every staged change in one `reset_default` (a single index write);

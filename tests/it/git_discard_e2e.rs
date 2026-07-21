@@ -79,6 +79,38 @@ fn discard_all_never_deletes_a_worktree_nested_in_the_root() {
 }
 
 #[test]
+fn discard_all_reports_a_failure_without_dropping_the_other_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    let repo = git2::Repository::init(&root).unwrap();
+    commit_file(&repo, "a.txt", "v1\n", "init");
+    fs::write(root.join("a.txt"), "v2\n").unwrap();
+    // A plain clone nested in the workdir is not a linked worktree, so
+    // `nested_in_workdir` does not filter it out: it reaches `remove_file`,
+    // which refuses a directory.
+    let vendor = root.join("vendor");
+    git2::Repository::init(&vendor).unwrap();
+    fs::write(vendor.join("f.txt"), "x\n").unwrap();
+    fs::write(root.join("z.txt"), "scratch").unwrap();
+
+    discard::discard_all(&repo).unwrap_err();
+
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        "v1\n",
+        "the restore checkout must still run after a failed deletion"
+    );
+    assert!(
+        !root.join("z.txt").exists(),
+        "the batch must not abort at the failing entry"
+    );
+    assert!(
+        vendor.join("f.txt").exists(),
+        "the nested clone is left untouched on disk"
+    );
+}
+
+#[test]
 fn discard_keeps_the_staged_part_of_a_partially_staged_file() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();
