@@ -80,9 +80,9 @@ pub(crate) struct RepoCaches {
     pub(crate) branch_labels: HashMap<RepoKey, String>,
     /// Uncommitted line stats `(additions, deletions)` per dirty repo, for the
     /// sidebar's right-edge `+N −M`. Membership = dirty (value may be `(0, 0)` for a
-    /// change with no countable lines). Refreshed for all repos on sync triggers
-    /// (`workspace_dirty_stats`); the active repo also follows its live `GitSession`
-    /// status every frame.
+    /// change with no countable lines). Refreshed for all repos by the off-thread
+    /// group refresh; the active repo also follows its live `GitSession` status every
+    /// frame.
     pub(crate) dirty: HashMap<RepoKey, (usize, usize)>,
     /// Last graph (+ page size) per left-behind repo: switching back to a repo in
     /// Graph mode displays it immediately while the worker reloads a fresh graph — no
@@ -147,29 +147,6 @@ impl RepoCaches {
     /// mutations of the session that replaces it, until it actually ends.
     pub(crate) fn mutation_lock(&mut self, key: &RepoKey) -> MutationLock {
         self.mutation_locks.entry(key.clone()).or_default().clone()
-    }
-
-    /// Adopts a fresh `workspace_branches` pass (workspace order), dropping the
-    /// unversioned/bare/unreadable entries (`None`) like the absent keys.
-    pub(crate) fn set_branch_labels(&mut self, labels: Vec<Option<String>>) {
-        self.branch_labels = self
-            .keys
-            .iter()
-            .zip(labels)
-            .filter_map(|(key, label)| Some((key.clone(), label?)))
-            .collect();
-    }
-
-    /// Adopts a fresh `workspace_dirty_stats` pass (workspace order): keeps the dirty
-    /// repos with their `(additions, deletions)`, drops the clean ones (`None`). The
-    /// active repo's live overlay is re-applied on the next frame.
-    pub(crate) fn set_dirty_stats(&mut self, stats: Vec<Option<(usize, usize)>>) {
-        self.dirty = self
-            .keys
-            .iter()
-            .zip(stats)
-            .filter_map(|(key, stat)| Some((key.clone(), stat?)))
-            .collect();
     }
 
     /// Pane-set key of `(repo index, tab index)`, `None` if either is stale.

@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **35/37**.
+work**. Counter: **36/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -291,7 +291,7 @@ work**. Counter: **35/37**.
   rebuilt every frame purely for a `max_chars` width measure (`diff_view.rs:844`, O(all
   lines) + `chars().count()`), and `ScrollArea::both()` has no `id_salt` (`:855`) so the
   offset is reused when switching files. *Files*: `src/ui/diff_view.rs`.
-- ☐ **T34 — `workspace_dirty_stats` off the UI thread.** ⚠ **re-framed**: not the render
+- ☑ **T34 — `workspace_dirty_stats` off the UI thread.** ⚠ **re-framed**: not the render
   path — the three sites are discrete events (sidebar Remove `render.rs:2420`, ⌘O
   `mod.rs:3606`, Finder drop `:3630`); the recurring path was already moved to
   `GroupRefreshRunner` ("the full diff per dirty repo froze the frame here",
@@ -330,7 +330,7 @@ work**. Counter: **35/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T34**, then T35 (Lot D).
+- Order: **T35** (Lot D) — last open task.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

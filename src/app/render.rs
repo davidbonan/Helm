@@ -2426,10 +2426,7 @@ impl HelmApp {
             self.caches.sync(&self.workspace);
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
-            self.caches
-                .set_branch_labels(workspace_branches(&self.workspace));
-            self.caches
-                .set_dirty_stats(workspace_dirty_stats(&self.workspace));
+            self.request_group_refresh(ctx);
         }
         if let Some(index) = sidebar.delete_worktree {
             self.request_delete_worktree(index, ctx);

@@ -786,10 +786,10 @@ impl HelmApp {
             ..Default::default()
         };
         app.caches.sync(&app.workspace);
-        app.caches
-            .set_branch_labels(workspace_branches(&app.workspace));
-        app.caches
-            .set_dirty_stats(workspace_dirty_stats(&app.workspace));
+        // Probed inline: the seam has no `egui::Context` to spawn the off-thread pass
+        // on, and a headless run must have the labels from its very first frame.
+        let probes = workspace_probes(&app.workspace);
+        app.apply_group_refresh(probes.iter().map(probe_repo).collect());
         app
     }
 
@@ -1214,8 +1214,14 @@ impl HelmApp {
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
         }
-        // Branch labels + dirty stats are read off the UI thread (`poll_group_refresh`
-        // adopts the reply): the full diff per dirty repo froze the frame here.
+        self.request_group_refresh(ctx);
+    }
+
+    /// Single entry point for the workspace-wide branch/dirty read: the sync triggers
+    /// and every membership change (Open Folder, Finder drop, sidebar Remove). Runs off
+    /// the UI thread — the full diff per dirty repo froze the frame here — and
+    /// `poll_group_refresh` adopts the reply.
+    fn request_group_refresh(&mut self, ctx: &egui::Context) {
         let probes = workspace_probes(&self.workspace);
         self.group_refresh
             .get_or_insert_with(|| GroupRefreshRunner::new(repainter(ctx)))
@@ -2848,47 +2854,6 @@ fn non_git_toast(rejected: &[PathBuf]) -> String {
     }
 }
 
-/// Current branch (HEAD) of each workspace repo, aligned on its order. None =
-/// unversioned, bare (no working tree to reflect) or unreadable. Metadata read only —
-/// same cost class as the sync triggers (UI-thread deviation noted in M11-6).
-pub fn workspace_branches(workspace: &Workspace) -> Vec<Option<String>> {
-    workspace
-        .repos()
-        .map(|r| {
-            if r.bare {
-                return None;
-            }
-            let repo = git2::Repository::open(&r.path).ok()?;
-            crate::git::branch::current(&repo)
-                .ok()
-                .map(|b| b.label().to_owned())
-        })
-        .collect()
-}
-
-/// Uncommitted line stats `(additions, deletions)` per workspace repo, aligned on
-/// its order; `None` for a clean / bare / unreadable repo. Clean repos pay only the
-/// cheap `is_dirty` probe — the full `load_repo` diff (a patch per file) runs solely
-/// for the dirty ones. Same UI-thread cost class as `workspace_branches`, run on the
-/// sync triggers only.
-pub fn workspace_dirty_stats(workspace: &Workspace) -> Vec<Option<(usize, usize)>> {
-    workspace
-        .repos()
-        .map(|r| {
-            if r.bare {
-                return None;
-            }
-            let repo = git2::Repository::open(&r.path).ok()?;
-            if !crate::git::status::is_dirty(&repo).unwrap_or(false) {
-                return None;
-            }
-            crate::git::status::load_repo(&repo)
-                .ok()
-                .map(|status| status.total_line_stats())
-        })
-        .collect()
-}
-
 /// One repo's identity plus the bits the off-thread refresh reads from it.
 #[derive(Clone)]
 struct RepoProbe {
@@ -2917,9 +2882,9 @@ fn workspace_probes(workspace: &Workspace) -> Vec<RepoProbe> {
         .collect()
 }
 
-/// Branch label + dirty stats in a single repo open (merging the `workspace_branches`
-/// / `workspace_dirty_stats` reads): a clean repo pays only the cheap `is_dirty` probe,
-/// the full per-file diff runs solely for the dirty ones.
+/// Branch label + dirty stats in a single repo open: a clean repo pays only the cheap
+/// `is_dirty` probe, the full per-file diff (a patch per file) runs solely for the
+/// dirty ones. Bare, unversioned and unreadable repos yield an empty refresh.
 fn probe_repo(probe: &RepoProbe) -> RepoRefresh {
     let mut refresh = RepoRefresh {
         key: probe.key.clone(),
@@ -2944,13 +2909,16 @@ fn probe_repo(probe: &RepoProbe) -> RepoRefresh {
 }
 
 /// Runs the workspace-wide branch/dirty refresh on a dedicated thread (the full diff
-/// per dirty repo froze the focus-regain frame on the UI thread); skips a request
-/// while one is in flight, like the worktree runners.
+/// per dirty repo froze the focus-regain frame on the UI thread); a request made while
+/// a pass is in flight is coalesced into a single re-run.
 struct GroupRefreshRunner {
     on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
     results_tx: crossbeam_channel::Sender<Vec<RepoRefresh>>,
     results_rx: crossbeam_channel::Receiver<Vec<RepoRefresh>>,
     in_flight: bool,
+    /// Latest request received mid-pass, re-issued when that pass lands: dropping it
+    /// would leave a just-imported repo unlabelled until the next sync trigger.
+    queued: Option<Vec<RepoProbe>>,
 }
 
 impl GroupRefreshRunner {
@@ -2961,13 +2929,19 @@ impl GroupRefreshRunner {
             results_tx,
             results_rx,
             in_flight: false,
+            queued: None,
         }
     }
 
-    fn request(&mut self, probes: Vec<RepoProbe>) -> bool {
+    fn request(&mut self, probes: Vec<RepoProbe>) {
         if self.in_flight {
-            return false;
+            self.queued = Some(probes);
+            return;
         }
+        self.spawn(probes);
+    }
+
+    fn spawn(&mut self, probes: Vec<RepoProbe>) {
         self.in_flight = true;
         let tx = self.results_tx.clone();
         let on_event = std::sync::Arc::clone(&self.on_event);
@@ -2976,15 +2950,15 @@ impl GroupRefreshRunner {
             let _ = tx.send(refreshed);
             on_event();
         });
-        true
     }
 
     fn try_recv(&mut self) -> Option<Vec<RepoRefresh>> {
-        let reply = self.results_rx.try_recv().ok();
-        if reply.is_some() {
-            self.in_flight = false;
+        let reply = self.results_rx.try_recv().ok()?;
+        self.in_flight = false;
+        if let Some(probes) = self.queued.take() {
+            self.spawn(probes);
         }
-        reply
+        Some(reply)
     }
 }
 
@@ -3667,10 +3641,7 @@ impl eframe::App for HelmApp {
             }
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
-            self.caches
-                .set_branch_labels(workspace_branches(&self.workspace));
-            self.caches
-                .set_dirty_stats(workspace_dirty_stats(&self.workspace));
+            self.request_group_refresh(&ctx);
         }
         // A folder dropped from Finder onto the empty-state central card imports it
         // like Open Folder. Gated to the empty workspace: with a repo open the
@@ -3692,10 +3663,7 @@ impl eframe::App for HelmApp {
                 }
                 let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
                 self.persist(move |_| next);
-                self.caches
-                    .set_branch_labels(workspace_branches(&self.workspace));
-                self.caches
-                    .set_dirty_stats(workspace_dirty_stats(&self.workspace));
+                self.request_group_refresh(&ctx);
             }
         }
         // The gear toggles the Preferences page, rendered on the next frame by the

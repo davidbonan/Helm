@@ -2735,3 +2735,195 @@ fn selecting_an_uncached_pr_diff_fetches_it_once() {
         "the selected uncached file shows its loading state"
     );
 }
+
+fn init_repo_with_identity(dir: &Path) -> git2::Repository {
+    std::fs::create_dir_all(dir).unwrap();
+    let repo = git2::Repository::init(dir).unwrap();
+    let mut cfg = repo.config().unwrap();
+    cfg.set_str("user.name", "Test").unwrap();
+    cfg.set_str("user.email", "test@example.com").unwrap();
+    repo
+}
+
+fn commit_file(repo: &git2::Repository, name: &str, body: &str) {
+    let dir = repo.workdir().unwrap();
+    std::fs::write(dir.join(name), body).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(name)).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = repo.signature().unwrap();
+    let parents: Vec<git2::Commit> = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .into_iter()
+        .collect();
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parent_refs)
+        .unwrap();
+}
+
+/// What one off-thread pass reads for the whole workspace, in workspace order.
+fn probed(ws: &Workspace) -> Vec<RepoRefresh> {
+    workspace_probes(ws).iter().map(probe_repo).collect()
+}
+
+fn probed_branches(ws: &Workspace) -> Vec<Option<String>> {
+    probed(ws).into_iter().map(|r| r.branch).collect()
+}
+
+#[test]
+fn probed_branches_reflect_each_repo_head_and_refuse_non_git_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_dir = tmp.path().join("repo");
+    let repo = init_repo_with_identity(&repo_dir);
+    commit_file(&repo, "a.txt", "x\n");
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feat/sidebar", &head, false).unwrap();
+    repo.set_head("refs/heads/feat/sidebar").unwrap();
+    let plain_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&plain_dir).unwrap();
+
+    let mut ws = Workspace::new();
+    let outcome = add_picked_folders(&mut ws, vec![repo_dir, plain_dir.clone()]);
+
+    assert_eq!(
+        outcome.rejected,
+        vec![plain_dir],
+        "a non-git folder is refused"
+    );
+    assert_eq!(probed_branches(&ws), vec![Some("feat/sidebar".to_owned())]);
+}
+
+#[test]
+fn probed_branches_of_a_worktree_group_follow_each_working_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_file(&repo, "a.txt", "x\n");
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![root_dir]);
+
+    let head = repo.head().unwrap().shorthand().unwrap().to_owned();
+    assert_eq!(
+        probed_branches(&ws),
+        vec![Some(head), Some("feature-x".to_owned())]
+    );
+}
+
+#[test]
+fn a_bare_root_and_a_gone_path_have_no_probed_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bare_dir = tmp.path().join("proj.git");
+    let repo = git2::Repository::init_bare(&bare_dir).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    let wt_path = tmp.path().join("checkout");
+    repo.worktree("checkout", &wt_path, None).unwrap();
+
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![wt_path]);
+    ws.add(Repo::new(PathBuf::from("/no/such/repo")));
+
+    assert_eq!(
+        probed_branches(&ws),
+        vec![None, Some("checkout".to_owned()), None],
+        "bare root and unreadable path stay single-line"
+    );
+}
+
+#[test]
+fn a_probe_reports_line_stats_only_for_the_dirty_repos() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirty_dir = tmp.path().join("dirty");
+    let clean_dir = tmp.path().join("clean");
+    let dirty = init_repo_with_identity(&dirty_dir);
+    commit_file(&dirty, "a.txt", "one\ntwo\n");
+    let clean = init_repo_with_identity(&clean_dir);
+    commit_file(&clean, "a.txt", "one\n");
+    std::fs::write(dirty_dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![dirty_dir, clean_dir]);
+
+    let stats: Vec<Option<(usize, usize)>> = probed(&ws).into_iter().map(|r| r.dirty).collect();
+    assert_eq!(
+        stats,
+        vec![Some((1, 0)), None],
+        "the clean repo pays only the `is_dirty` probe and shows no `+N −M`"
+    );
+}
+
+#[test]
+fn the_headless_seam_seeds_the_sidebar_caches_from_the_probe_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_dir = tmp.path().join("repo");
+    let repo = init_repo_with_identity(&repo_dir);
+    commit_file(&repo, "a.txt", "one\n");
+    std::fs::write(repo_dir.join("a.txt"), "one\ntwo\n").unwrap();
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![repo_dir.clone()]);
+
+    let app = HelmApp::with_workspace(ws);
+
+    let key = RepoKey::of(&repo_dir);
+    assert_eq!(
+        app.caches.branch_labels.get(&key),
+        Some(&repo.head().unwrap().shorthand().unwrap().to_owned()),
+        "the headless seam has its labels on frame 1, with no context to spawn on"
+    );
+    assert_eq!(app.caches.dirty.get(&key).copied(), Some((1, 0)));
+}
+
+fn recv_group_refresh(runner: &mut GroupRefreshRunner) -> Vec<RepoRefresh> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(reply) = runner.try_recv() {
+            return reply;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the group refresh never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_group_refresh_requested_mid_pass_is_re_issued_once_that_pass_lands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first_dir = tmp.path().join("first");
+    let second_dir = tmp.path().join("second");
+    commit_file(&init_repo_with_identity(&first_dir), "a.txt", "x\n");
+    commit_file(&init_repo_with_identity(&second_dir), "a.txt", "x\n");
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![first_dir.clone()]);
+    let before_import = workspace_probes(&ws);
+    add_picked_folders(&mut ws, vec![second_dir.clone()]);
+    let after_import = workspace_probes(&ws);
+
+    let mut runner = GroupRefreshRunner::new(|| {});
+    runner.request(before_import);
+    // The import lands while the previous pass is in flight: dropping its request
+    // would leave the new repo unlabelled until the next sync trigger.
+    runner.request(after_import);
+
+    assert_eq!(recv_group_refresh(&mut runner).len(), 1);
+    let second = recv_group_refresh(&mut runner);
+    assert_eq!(
+        second.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
+        vec![RepoKey::of(&first_dir), RepoKey::of(&second_dir)],
+        "the queued request runs after the in-flight pass"
+    );
+    assert!(
+        runner.try_recv().is_none(),
+        "the requests coalesce into a single re-run"
+    );
+}
