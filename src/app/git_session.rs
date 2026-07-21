@@ -92,6 +92,10 @@ pub(crate) struct RepoCaches {
     /// draft + AI runner, see [`CommitDraft`]): the active repo's draft lives in
     /// `git_panel_state` and its runner in the `GitSession`.
     pub(crate) commit_drafts: HashMap<RepoKey, CommitDraft>,
+    /// The mutation lock of each repo, outliving the sessions that use it: a
+    /// session re-spawned on the same repo adopts the lock, so an op left
+    /// running by the previous one still refuses mutations (git.md §9).
+    pub(crate) mutation_locks: HashMap<RepoKey, MutationLock>,
     /// Memoized graph lanes (M10-8): content-addressed (reconciles by comparison,
     /// including on repo switch), nothing to re-key.
     pub(crate) lane_cache: LaneCache,
@@ -134,6 +138,15 @@ impl RepoCaches {
         self.dirty.retain(|key, _| self.keys.contains(key));
         self.graph_cache.retain(|key, _| self.keys.contains(key));
         self.commit_drafts.retain(|key, _| self.keys.contains(key));
+        self.mutation_locks.retain(|key, _| self.keys.contains(key));
+    }
+
+    /// The repo's mutation lock, minted on first use. Shared by every runner of
+    /// every session opened on that repo — the guarantee the per-session lock
+    /// could not give: a run abandoned by a repo switch keeps refusing the
+    /// mutations of the session that replaces it, until it actually ends.
+    pub(crate) fn mutation_lock(&mut self, key: &RepoKey) -> MutationLock {
+        self.mutation_locks.entry(key.clone()).or_default().clone()
     }
 
     /// Adopts a fresh `workspace_branches` pass (workspace order), dropping the
@@ -248,6 +261,11 @@ pub(crate) struct GitSession {
     /// shifts under a removal/regroup), graph-cache key on switch, branch-label
     /// key live.
     pub(crate) key: RepoKey,
+    /// The repo's lock, shared with every runner of the session **and** with the
+    /// sessions that preceded it on this repo (owned by `RepoCaches`): read to
+    /// know whether mutations are currently refused, including by a run the
+    /// previous session left going.
+    pub(crate) mutation_lock: MutationLock,
     pub(crate) worker: GitWorker,
     /// Network ops (M12-3) on dedicated threads: the sequential worker and the poll
     /// are not blocked; one op at a time (`busy`).
@@ -335,15 +353,21 @@ pub(crate) fn repainter(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'stati
 impl GitSession {
     /// Sends no command: the caller orders the first load itself (graph before status
     /// in Graph mode — the worker is sequential).
-    pub(crate) fn spawn(key: RepoKey, path: &Path, ctx: &egui::Context, ai: AiRunner) -> Self {
+    pub(crate) fn spawn(
+        key: RepoKey,
+        path: &Path,
+        ctx: &egui::Context,
+        ai: AiRunner,
+        mutation_lock: MutationLock,
+    ) -> Self {
         let now = ctx.input(|i| i.time);
-        let mutation_lock = MutationLock::new();
         let worker = GitWorker::spawn_with_lock(path, mutation_lock.clone(), repainter(ctx));
         let sync = SyncRunner::new_with_lock(path, mutation_lock.clone(), repainter(ctx));
         let fetch = FetchRunner::new(path, mutation_lock.clone(), repainter(ctx));
-        let ai_rebase = AiRebaseRunner::new(path, mutation_lock, repainter(ctx));
+        let ai_rebase = AiRebaseRunner::new(path, mutation_lock.clone(), repainter(ctx));
         Self {
             key,
+            mutation_lock,
             worker,
             sync,
             fetch,
@@ -789,9 +813,11 @@ impl GitSession {
 
     /// A long op holds the repo's **mutation lock** (git.md §9): every staging,
     /// discard or commit sent meanwhile is refused by the worker, so the sidebar
-    /// greys them out instead of offering a click that can only fail.
+    /// greys them out instead of offering a click that can only fail. The lock is
+    /// also read directly: it may be held by a run this session never started —
+    /// one the previous session on this repo left going across a switch.
     pub(crate) fn lock_busy(&self) -> bool {
-        self.sync.busy() || self.ai_rebase.busy()
+        self.sync.busy() || self.ai_rebase.busy() || self.mutation_lock.is_locked()
     }
 
     /// Git command in progress, as seen by the graph toolbar: network op first

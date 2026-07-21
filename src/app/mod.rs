@@ -858,7 +858,8 @@ impl HelmApp {
                         }
                         None => AiRunner::new(&path, repainter(ctx)),
                     };
-                    let mut session = GitSession::spawn(key, &path, ctx, ai);
+                    let lock = self.caches.mutation_lock(&key);
+                    let mut session = GitSession::spawn(key, &path, ctx, ai, lock);
                     if let Some((graph, limit)) = self.caches.graph_cache.remove(&session.key) {
                         // HEAD may have moved during the absence (checkout in the repo's
                         // terminal): the scroll-to-head auto-scroll waits for the fresh

@@ -1106,6 +1106,7 @@ fn a_superseded_graph_reply_is_discarded() {
         tmp.path(),
         &ctx,
         AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
     );
 
     // FIFO worker: a graph request superseded by a fresher one (reset on
@@ -1150,6 +1151,57 @@ fn a_superseded_graph_reply_is_discarded() {
     assert_eq!(session.graph_limit, graph::PAGE_SIZE);
 }
 
+/// Spawns a session the way `sync_git_session` does: the lock comes from the
+/// caches, not from the session.
+fn spawn_session(caches: &mut RepoCaches, path: &Path, ctx: &egui::Context) -> GitSession {
+    let key = RepoKey::of(path);
+    let lock = caches.mutation_lock(&key);
+    GitSession::spawn(key, path, ctx, AiRunner::new(path, || {}), lock)
+}
+
+#[test]
+fn a_session_respawned_on_the_same_repo_inherits_the_running_op_s_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let other = tempfile::tempdir().unwrap();
+    init_repo_with_commit(other.path());
+    let ctx = egui::Context::default();
+    let mut caches = RepoCaches::default();
+
+    // A long op takes the repo's lock, then the user switches away: the session
+    // goes, its op does not (`SyncRunner` never joins its thread).
+    let first = spawn_session(&mut caches, tmp.path(), &ctx);
+    let guard = first
+        .mutation_lock
+        .try_acquire()
+        .expect("lock free at spawn");
+    drop(first);
+
+    let session = spawn_session(&mut caches, tmp.path(), &ctx);
+    assert!(
+        session.lock_busy(),
+        "the sidebar would offer mutations the op left running still refuses"
+    );
+    std::fs::write(tmp.path().join("a.txt"), "one\n").unwrap();
+    session.worker.send(GitCommand::StageAll);
+    let (_, result) = session.worker.recv().expect("the worker replied");
+    let GitResult::Status { result, .. } = result else {
+        panic!("StageAll replies with a status snapshot");
+    };
+    assert_eq!(
+        result.err().map(|err| err.message().to_owned()),
+        Some("another Git operation is in progress".to_owned()),
+        "the running op no longer holds a lock the new session can bypass"
+    );
+
+    // Another repo has its own lock: it is not collateral damage.
+    let elsewhere = spawn_session(&mut caches, other.path(), &ctx);
+    assert!(!elsewhere.lock_busy());
+
+    drop(guard);
+    assert!(!session.lock_busy(), "the lock is released with the op");
+}
+
 #[test]
 fn graph_poll_does_not_supersede_an_in_flight_graph() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1160,6 +1212,7 @@ fn graph_poll_does_not_supersede_an_in_flight_graph() {
         tmp.path(),
         &ctx,
         AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
     );
 
     session.worker.send(GitCommand::Graph {
@@ -1187,6 +1240,7 @@ fn a_reload_that_changes_the_diff_disarms_the_discard_hunk_confirmation() {
         tmp.path(),
         &ctx,
         AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
     );
 
     let mut diff = Some(open_diff("a.txt", false));

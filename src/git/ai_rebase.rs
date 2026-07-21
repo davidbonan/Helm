@@ -551,8 +551,10 @@ impl AiRebaseRunner {
 }
 
 /// The kill lands within one wait tick (~25 ms) and the restore is local git:
-/// the join stays short — worth it, an unjoined run would race the fresh
-/// [`MutationLock`] of the session reopened on the same repo.
+/// the join stays short. It is no longer what protects a session reopened on the
+/// same repo — the [`MutationLock`] is now the repo's, so an unjoined run keeps
+/// refusing its mutations — but a drop is also how helm quits: without the join
+/// the process would exit before the abort, leaving the rebase in progress.
 impl Drop for AiRebaseRunner {
     fn drop(&mut self) {
         if !self.in_flight {
