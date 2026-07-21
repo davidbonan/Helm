@@ -123,10 +123,11 @@ pub struct Reorder {
 #[derive(Clone, Copy)]
 struct DragRow(usize);
 
-/// Delete worktree modal (worktrees.md §6): dirty ⇒ forced confirmation,
-/// locked/error ⇒ refusal with a reason.
+/// Delete worktree modal (worktrees.md §6): dirty or ignored-carrying ⇒ forced
+/// confirmation, locked/error ⇒ refusal with a reason.
 pub enum DeletePrompt {
     Dirty { label: String, files: usize },
+    Ignored { label: String, entries: usize },
     Refused { label: String, reason: String },
 }
 
@@ -1801,6 +1802,35 @@ fn scroll_row_into_view(
     }
 }
 
+fn confirm_delete_body(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    label: &str,
+    detail: &str,
+    out: &mut DeleteModalAction,
+) {
+    ui.label(egui::RichText::new(format!("Delete worktree “{label}”?")).strong());
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(detail).color(palette.text_secondary));
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        if ui.button("Cancel").clicked() {
+            out.dismiss = true;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(crate::ui::danger_button(palette, "Delete anyway"))
+                .clicked()
+            {
+                out.confirm = true;
+            }
+        });
+    });
+    if crate::ui::modal_confirm_pressed(ui) {
+        out.confirm = true;
+    }
+}
+
 pub fn delete_worktree_modal(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -1814,32 +1844,24 @@ pub fn delete_worktree_modal(
             ui.set_width(280.0);
             match prompt {
                 DeletePrompt::Dirty { label, files } => {
-                    ui.label(egui::RichText::new(format!("Delete worktree “{label}”?")).strong());
-                    ui.add_space(4.0);
                     let plural = if *files > 1 { "s" } else { "" };
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{files} file{plural} with uncommitted changes"
-                        ))
-                        .color(palette.text_secondary),
+                    confirm_delete_body(
+                        ui,
+                        palette,
+                        label,
+                        &format!("{files} file{plural} with uncommitted changes"),
+                        out,
                     );
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            out.dismiss = true;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(crate::ui::danger_button(palette, "Delete anyway"))
-                                .clicked()
-                            {
-                                out.confirm = true;
-                            }
-                        });
-                    });
-                    if crate::ui::modal_confirm_pressed(ui) {
-                        out.confirm = true;
-                    }
+                }
+                DeletePrompt::Ignored { label, entries } => {
+                    let plural = if *entries > 1 { "s" } else { "" };
+                    confirm_delete_body(
+                        ui,
+                        palette,
+                        label,
+                        &format!("{entries} ignored file{plural} will be deleted with the folder"),
+                        out,
+                    );
                 }
                 DeletePrompt::Refused { label, reason } => {
                     ui.label(egui::RichText::new(format!("Cannot delete “{label}”")).strong());

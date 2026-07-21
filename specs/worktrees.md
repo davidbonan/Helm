@@ -205,10 +205,16 @@ worktrees = ["/Users/dev/helm-studio.worktrees/feature-x"]
 
 **Delete worktree**:
 
-- **clean** ⇒ immediate deletion, no confirmation (the branch survives in the
-  repo);
+- **clean and holding no ignored file** ⇒ immediate deletion, no confirmation
+  (the branch survives in the repo);
 - **dirty** ⇒ "*N file(s) with uncommitted changes*" modal with
   `[Cancel] [Delete anyway]`;
+- **clean but holding ignored files** ⇒ "*N ignored file(s) will be deleted with
+  the folder*" modal with `[Cancel] [Delete anyway]`. The folder deletion takes
+  everything the post-create script wrote (`.env`, build output) — never listed
+  in the git panel ([`git.md`](git.md) §2), so it has to be surfaced here. The
+  count comes from a status pass that does **not** recurse into ignored
+  directories (`target/` counts as one), keeping it cheap on a large worktree;
 - **locked** ⇒ refused, lock reason displayed.
 
 Implementation: status check → folder deletion →

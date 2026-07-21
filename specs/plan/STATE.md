@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **14/37**.
+work**. Counter: **15/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -67,7 +67,7 @@ work**. Counter: **14/37**.
   `ORIG_HEAD` (recovery still possible via the HEAD reflog). Gate on `repo.state()` in
   `branch::reset`, matching `commit.rs:2` / `sync.rs:154`.
   *Files*: `src/git/branch.rs`, `src/ui/graph_view.rs`, `src/app/render.rs`.
-- ☐ **T7 — Worktree delete warns about ignored files.** ⚠ **re-scoped**: the current
+- ☑ **T7 — Worktree delete warns about ignored files.** ⚠ **re-scoped**: the current
   behaviour matches two locked decisions — `worktrees.md:207` ("clean ⇒ immediate
   deletion, no confirmation") and `git.md:64` ("ignored files: not listed") — and
   mirrors `git worktree remove`. But `prune(working_tree(true))` → `rmdir_r` takes the
@@ -318,6 +318,7 @@ work**. Counter: **14/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
+- **Lot A complete** (T1–T10 ☑/⏭).
 - Order: **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.

@@ -1133,6 +1133,23 @@ fn dirty_modal_cancel_dismisses_without_confirming() {
 }
 
 #[test]
+fn ignored_modal_warns_before_wiping_the_ignored_files() {
+    let mut harness = modal_harness(DeletePrompt::Ignored {
+        label: "feature-x".to_owned(),
+        entries: 3,
+    });
+    harness.run();
+
+    harness.get_by_label("Delete worktree “feature-x”?");
+    harness.get_by_label("3 ignored files will be deleted with the folder");
+    harness.get_by_label("Delete anyway").click();
+    harness.run();
+
+    assert!(harness.state().confirm);
+    assert!(!harness.state().dismiss);
+}
+
+#[test]
 fn refused_modal_shows_the_lock_reason_and_only_closes() {
     let mut harness = modal_harness(DeletePrompt::Refused {
         label: "feature-x".to_owned(),

@@ -2768,8 +2768,8 @@ impl HelmApp {
     }
 
     /// Drains the reply from the deletion thread (one op at a time): success ⇒ group
-    /// sync (purge the row), dirty ⇒ confirmation modal, locked / git error ⇒ refusal
-    /// modal (worktrees.md §6).
+    /// sync (purge the row), dirty or ignored-carrying ⇒ confirmation modal, locked /
+    /// git error ⇒ refusal modal (worktrees.md §6).
     fn drain_worktree_delete(&mut self, ctx: &egui::Context) {
         use crate::git::worktree::DeleteError;
         let Some(reply) = self
@@ -2797,6 +2797,10 @@ impl HelmApp {
             Err(DeleteError::Dirty(files)) => DeletePrompt::Dirty {
                 label: request.label.clone(),
                 files,
+            },
+            Err(DeleteError::Ignored(entries)) => DeletePrompt::Ignored {
+                label: request.label.clone(),
+                entries,
             },
             Err(DeleteError::Locked(reason)) => refused(
                 &request.label,

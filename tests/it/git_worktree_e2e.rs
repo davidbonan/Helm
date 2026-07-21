@@ -13,8 +13,12 @@ fn init_repo_with_identity(dir: &Path) -> git2::Repository {
 }
 
 fn commit_file(repo: &git2::Repository, name: &str) -> git2::Oid {
+    commit_text(repo, name, "x\n")
+}
+
+fn commit_text(repo: &git2::Repository, name: &str, content: &str) -> git2::Oid {
     let dir = repo.workdir().unwrap();
-    fs::write(dir.join(name), "x\n").unwrap();
+    fs::write(dir.join(name), content).unwrap();
     let mut index = repo.index().unwrap();
     index.add_path(Path::new(name)).unwrap();
     index.write().unwrap();
@@ -585,6 +589,40 @@ fn delete_dirty_worktree_errs_with_count_unless_forced() {
 
     worktree::delete(&root_dir, "feature-x", true).unwrap();
     assert!(!wt_path.exists());
+    assert!(worktree::list(&root_dir).unwrap().worktrees.is_empty());
+}
+
+#[test]
+fn delete_clean_worktree_holding_ignored_files_errs_with_count_unless_forced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_text(&repo, ".gitignore", ".env\nbuild/\n");
+    let with_ignored = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &with_ignored, None).unwrap();
+    fs::write(with_ignored.join(".env"), "TOKEN=1\n").unwrap();
+    fs::create_dir(with_ignored.join("build")).unwrap();
+    fs::write(with_ignored.join("build/out.o"), "x\n").unwrap();
+    let clean = tmp.path().join("feature-y");
+    repo.worktree("feature-y", &clean, None).unwrap();
+
+    // `build/` counts once: the ignored directory is not recursed.
+    let err = worktree::delete(&root_dir, "feature-x", false).unwrap_err();
+    assert!(
+        matches!(err, DeleteError::Ignored(2)),
+        "expected Ignored(2), got {err:?}"
+    );
+    assert!(
+        with_ignored.exists(),
+        "nothing is deleted before confirmation"
+    );
+
+    worktree::delete(&root_dir, "feature-x", true).unwrap();
+    assert!(!with_ignored.exists());
+
+    // No ignored file ⇒ still an immediate deletion, no confirmation.
+    worktree::delete(&root_dir, "feature-y", false).unwrap();
+    assert!(!clean.exists());
     assert!(worktree::list(&root_dir).unwrap().worktrees.is_empty());
 }
 

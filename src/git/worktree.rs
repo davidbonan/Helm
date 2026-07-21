@@ -11,6 +11,9 @@ use crate::git::status;
 pub enum DeleteError {
     Locked(Option<String>),
     Dirty(usize),
+    /// Clean worktree still holding ignored entries — the post-create script's
+    /// `.env`, build output — that the prune wipes with the folder (worktrees.md §6).
+    Ignored(usize),
     Git(git2::Error),
 }
 
@@ -699,6 +702,10 @@ pub fn delete(root: &Path, name: &str, force: bool) -> Result<(), DeleteError> {
         if dirty > 0 {
             return Err(DeleteError::Dirty(dirty));
         }
+        let ignored = ignored_count(&wt_repo)?;
+        if ignored > 0 {
+            return Err(DeleteError::Ignored(ignored));
+        }
     }
     // working_tree(true): libgit2 also removes the directory — a single path for
     // directory + metadata; valid(true) is required because the worktree is still valid.
@@ -706,6 +713,21 @@ pub fn delete(root: &Path, name: &str, force: bool) -> Result<(), DeleteError> {
     opts.valid(true).working_tree(true);
     wt.prune(Some(&mut opts))?;
     Ok(())
+}
+
+/// Ignored entries the prune would delete along with the folder. Ignored directories
+/// are **not** recursed (`target/` counts as one), so the pass stays cheap on a large
+/// worktree; it runs on the deletion thread anyway, never on the frame.
+fn ignored_count(repo: &git2::Repository) -> Result<usize, git2::Error> {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_ignored(true)
+        .include_untracked(true)
+        .exclude_submodules(true);
+    Ok(repo
+        .statuses(Some(&mut opts))?
+        .iter()
+        .filter(|entry| entry.status().contains(git2::Status::IGNORED))
+        .count())
 }
 
 /// Path-based variant of `delete`: the worktree's libgit2 name may differ from the
