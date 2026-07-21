@@ -581,9 +581,10 @@ decided list of §1; everything else stays **read only**.
   same safety **automatic stash** as the branch checkout; **menu only**, the
   double-click on a tag stays ignored (a detached HEAD must never be one
   accidental double-click away) —, **Copy tag name** (the tag's name to the
-  clipboard), **Push tag** — `git push origin <tag>` on the sync runner
-  (network rules §10; multi-remote selection stays out of scope: `origin` or
-  nothing) — and **Delete tag** — a **confirmation modal** naming the tag
+  clipboard), **Push tag** — `git push origin refs/tags/<tag>` on the sync runner
+  (fully qualified like the remote deletion below, so a same-named branch never
+  makes the refspec ambiguous; network rules §10; multi-remote selection stays
+  out of scope: `origin` or nothing) — and **Delete tag** — a **confirmation modal** naming the tag
   (Cancel / red Delete) with an **"Also delete on origin"** option, offered
   whenever `origin` exists (the graph cannot know whether the tag lives
   remotely — `refs/tags` is a local namespace — so a remote-side miss simply

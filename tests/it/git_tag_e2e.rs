@@ -230,6 +230,29 @@ fn push_tag_publishes_it_to_origin() {
 }
 
 #[test]
+fn push_tag_is_unambiguous_next_to_a_same_named_branch() {
+    let (tmp, repo, bare) = origin_fixture();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("v1.0", &head, false).unwrap();
+
+    assert_eq!(
+        sync::push_tag(tmp.path(), "v1.0").unwrap(),
+        SyncOutcome::Updated,
+        "a bare 'v1.0' refspec would be refused: matches more than one"
+    );
+
+    let remote = git2::Repository::open(&bare).unwrap();
+    assert!(
+        remote.find_reference("refs/tags/v1.0").is_ok(),
+        "origin now carries the tag"
+    );
+    assert!(
+        remote.find_reference("refs/heads/v1.0").is_err(),
+        "the same-named branch is never pushed"
+    );
+}
+
+#[test]
 fn delete_remote_tag_removes_it_from_origin_only() {
     let (tmp, repo, bare) = origin_fixture();
     assert!(cli::run(tmp.path(), &["push", "origin", "v1.0"])

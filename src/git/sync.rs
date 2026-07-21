@@ -581,9 +581,11 @@ pub fn delete_remote_branch(workdir: &Path, name: &str) -> Result<SyncOutcome, S
     }
 }
 
-/// Pushes the tag `name` to `origin` (`git push origin <tag>`, graph tag menu —
-/// git.md §9). `origin`-only: multi-remote selection stays out of scope (§10) —
-/// a missing `origin` surfaces git's error as a toast like any push failure.
+/// Pushes the tag `name` to `origin` (`git push origin refs/tags/<tag>`, graph tag
+/// menu — git.md §9): the refspec is **fully qualified**, like [`delete_remote_tag`],
+/// so a same-named branch never makes it ambiguous. `origin`-only: multi-remote
+/// selection stays out of scope (§10) — a missing `origin` surfaces git's error as a
+/// toast like any push failure.
 pub fn push_tag(workdir: &Path, name: &str) -> Result<SyncOutcome, SyncError> {
     // A tag name from a hostile ref could begin with '-': never let it reach the
     // CLI as a flag (same guard as `rebase_onto`).
@@ -591,7 +593,8 @@ pub fn push_tag(workdir: &Path, name: &str) -> Result<SyncOutcome, SyncError> {
         return Err(SyncError::Other(format!("invalid tag name '{name}'")));
     }
     open_repo(workdir)?;
-    let out = exec(workdir, &["push", "origin", name])?;
+    let refspec = format!("refs/tags/{name}");
+    let out = exec(workdir, &["push", "origin", &refspec])?;
     if out.success() {
         Ok(SyncOutcome::Updated)
     } else {
