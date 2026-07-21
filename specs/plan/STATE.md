@@ -6,6 +6,326 @@
 
 ---
 
+## ◐ Milestone — M-GitHard · Git actions hardening
+
+Spec: [`specs/git.md`](../git.md) + [`specs/conflicts.md`](../conflicts.md) +
+[`specs/worktrees.md`](../worktrees.md). Audit of every Git write path (staging,
+discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, worker
+threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
+confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
+action acts on a target the user did not point at, and none silently corrupts or drops
+work**. Counter: **7/37**.
+
+- ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
+  **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
+  3 nits closed inside T35. Verdicts inlined per task.
+
+### Lot A — cross-repo safety & destructive gating
+
+- ☐ **T1 — Git session keyed by repo identity.** `sync_git_session` gates on the
+  workspace **index** (`app/mod.rs:795`) while `Workspace::remove` reassigns `active`
+  to the same index now holding another repo (`workspace.rs:645-656`) ⇒ the panel
+  reads/writes the removed repo. The reorder path already carries a manual
+  `git.index = active` fixup (`render.rs:2456`); `remove` and the 5 s
+  `sync_workspace_groups` got none. Keying on `RepoKey` removes the fixup and the
+  spurious respawn that drops diff/branch-editor/rebase/conflict state.
+  *Files*: `src/app/mod.rs`, `src/app/render.rs`.
+- ☐ **T2 — Discard/stash arming cleared on repo switch.** `park_active_session`
+  (`mod.rs:766-783`) parks only the commit draft; `Ctrl+Tab` is routed with no modal
+  gate (`keys.rs:307`) so an armed confirm re-renders and fires into the **new**
+  session (`git_panel.rs:1524`). Worst case `DiscardTarget::All` ⇒ unconditional
+  `DiscardAll` on the wrong repo. Scope: clear `pending_discard`, `pending_stash`,
+  `marked_files`, `selection_anchor`, `selected_file`; **collapsed-dirs sets are not
+  worth parking** (review). *Files*: `src/app/mod.rs`, `src/ui/git_panel.rs`.
+- ☐ **T3 — Destructive modals + graph menu dropped on repo switch.** Modals carry a
+  name/oid and resolve `self.git` at confirm time (`render.rs:2674-2760`);
+  `close_ai_rebase_modal` deliberately clears only the AI variants. `ForcePush` carries
+  **no branch at all** ⇒ force-pushes the new repo's current branch; `DeleteBranch`/
+  `DeleteTag`/`AbortOp` act by name. Oid-addressed `DropStash`/`ResetHard` degrade to a
+  clean "not found" — not part of the fix. Chip menu is global egui state
+  (`graph_view.rs:746`, `:931`). Cheapest: stamp the modal with its `RepoKey`.
+  *Files*: `src/app/mod.rs`, `src/app/render.rs`, `src/ui/graph_view.rs`.
+- ☐ **T4 — Inherited diff carries no staging affordance.** The render path destructures
+  `DiffState` without `inherited` (`render.rs:1206`), which is read only in the two
+  error handlers (`git_session.rs:575`, `:752`); the header shows file A while
+  `overlay_or_command` joins the intent to `path` = B (`keys.rs:52-70`). The window is a
+  full sequential-worker round-trip, so it is clickable. Keep rendering the frozen
+  content, suppress the granular intents. *Files*: `src/app/render.rs`,
+  `src/app/keys.rs`, `src/app/git_session.rs`.
+- ☐ **T5 — Discard-hunk confirmation invalidated by a diff reload.** The modal stores
+  `{path, hunk}` (`render.rs:2152`) while the 1 s poll swaps `loaded`
+  (`git_session.rs:227`). `DiffViewState::reconcile` already has the equivalent guard
+  one level down (`diff_view.rs:184`, banner `:797`). Minimal fix: drop a pending
+  `Modal::DiscardHunk` when `adopt` replaces `loaded` for that path — no content
+  re-matching. *Files*: `src/app/git_session.rs`, `src/app/render.rs`.
+- ☐ **T6 — Reset refused mid-operation + `ORIG_HEAD`.** ⚠ **re-scoped**: the rebase
+  scenario is unreachable — a conflicted rebase detaches HEAD and the "Reset `<branch>`
+  to here" section is only built for a named HEAD (`graph_view.rs:686`, `:1352`). What
+  is reachable: **merge / cherry-pick / revert** conflicts keep HEAD on a branch, and a
+  libgit2 Mixed/Hard reset then wipes `MERGE_HEAD`+`MERGE_MSG` (measured; Soft is
+  refused by libgit2 itself) ⇒ `git merge --abort` dead. Plus libgit2 never writes
+  `ORIG_HEAD` (recovery still possible via the HEAD reflog). Gate on `repo.state()` in
+  `branch::reset`, matching `commit.rs:2` / `sync.rs:154`.
+  *Files*: `src/git/branch.rs`, `src/ui/graph_view.rs`, `src/app/render.rs`.
+- ☐ **T7 — Worktree delete warns about ignored files.** ⚠ **re-scoped**: the current
+  behaviour matches two locked decisions — `worktrees.md:207` ("clean ⇒ immediate
+  deletion, no confirmation") and `git.md:64` ("ignored files: not listed") — and
+  mirrors `git worktree remove`. But `prune(working_tree(true))` → `rmdir_r` takes the
+  `.env` with it, and the post-create-script flow (`worktrees.md:195`) makes that the
+  normal case. Fix = surface it (count ignored, warn/confirm), **not** treat clean as
+  dirty. *Files*: `src/git/worktree.rs`, `src/ui/repo_sidebar.rs`.
+- ⏭ **T8 — AI rebase backup ref + outcome verification.** Closed: `classify()`
+  (`ai_rebase.rs:405`) implements `git.md:513-515` **verbatim** ("Completed (state
+  clean, HEAD moved) / Branch unchanged / Rebase left in progress"), and the spec's
+  designed restore is `--abort` only (`git.md:505`), with the branch reflog covering a
+  provider `reset --hard`. Stronger verification (checking the replayed commits are
+  reachable) would be a **spec change**, not a bug fix.
+- ☐ **T9 — Bulk ops never abort half-way, and a failed mutation never leaks into the
+  next commit.** 🔴 most severe of the lot. A plain nested clone is reported as one
+  untracked entry `vendor/` — `nested_in_workdir` only collects `repo.worktrees()`
+  (`worktree.rs:140`) so neither filter catches it. Measured: `index.add_path("vendor/")`
+  ⇒ `stage_all` `?`-exits (`stage.rs:91`) before `index.write()` (`:109`);
+  `remove_file("vendor/")` ⇒ `discard_all` `?`-exits (`discard.rs:43`) before the
+  restore checkout (`:60`), after having already deleted the untracked files it walked.
+  Then the corruption vector: the worker holds one long-lived `Repository`
+  (`worker.rs:513`) and `fresh_index`'s `index.read(false)` is a no-op because the
+  on-disk index never changed (`stage.rs:11`) ⇒ `commit`'s `write_tree` ships the
+  in-memory phantom entries (measured). Fix = collect errors instead of `?` in both
+  loops **and** make `fresh_index` re-read unconditionally.
+  *Files*: `src/git/stage.rs`, `src/git/discard.rs`.
+- ⏭ **T10 — Conflicted rows read-only.** Closed as invalid: `git_panel.rs:2020` returns
+  **before** the Stage/Discard pill block on `entry.kind == Conflicted` (not on
+  `repo.state()`), conflicted entries are excluded from `openable_files` (`:1834`), and
+  `stage_all`/`discard_all` skip `CONFLICTED`. The genuine residue is tracked as T36.
+
+### Lot B — Git correctness
+
+- ☐ **T11 — Hunk/line staging keeps raw bytes.** Reproduced: latin-1 line → index blob
+  `… 63 EF BF BD 64 …`, `apply` returns `Ok`, silent corruption; libgit2 does not flag
+  the delta binary so the Stage-hunk/Stage-lines pills reach it.
+  `diff.rs:432` `from_utf8_lossy` → `stage.rs:410` `body.push_str`. ⚠ **fix re-shaped**:
+  `content` is display-only elsewhere (`diff_view.rs`, `syntax_highlight.rs`,
+  `pull_requests_view.rs`), and adding `raw: Vec<u8>` to `DiffLine` would double a cache
+  holding up to `MAX_DIFF_BYTES` per entry — instead re-derive the raw line bytes from
+  `git2::Patch` inside the staging path and return `Vec<u8>` from `render_hunk_patch`
+  (`from_buffer` already takes `&[u8]`). Must land with T12 so line indices stay
+  aligned. *Files*: `src/git/diff.rs`, `src/git/stage.rs`.
+- ☐ **T12 — `*_EOFNL` are markers, not lines.** Worse than filed: 2 of the 3 shapes make
+  granular staging **fail outright** (`invalid patch hunk at line 9`), so every hunk
+  touching the tail of a no-final-newline file is unstageable. `line_origin`
+  (`diff.rs:469`) types the marker as real content, `push_line` then emits it twice, and
+  `+N −M` is off by one (`diff_view.rs:548`). The test
+  `line_origin_maps_eofnl_variants_to_base_kinds` (`diff.rs:480`) **asserts the bug** and
+  must flip. One-line fix verified: `None` for the three variants ⇒ all 3 shapes apply
+  with byte-identical blobs. *Files*: `src/git/diff.rs`, `src/git/stage.rs`.
+- ⏭ **T13 — Commit/amend honour signing (+ hooks).** Deferred (D-2026-07-21): the fix
+  hinges on routing the commit write through the `git` CLI, which blocks the sequential
+  worker on slow hooks and collides with the 120 s SIGKILL (T32); revisit as its own
+  decision. ⚠ **re-scoped**: the "rebase and
+  cherry-pick already run hooks" premise is **false** — measured with `core.hooksPath`,
+  only `git commit` runs `pre-commit`/`commit-msg`; the comment at `sync.rs:219`
+  claiming otherwise is wrong and should be fixed with this task. **Signing is a real
+  inconsistency**: cherry-pick/rebase do invoke gpg under `commit.gpgsign=true`, while
+  `commit.rs:31` never does (= `proposals.md` P20, itself flagged "correctness bug, not
+  a feature" — this task *is* its promotion). Risks to weigh before routing the write
+  through the CLI: a slow hook blocks the sequential worker (`worker.rs:505`) and gets
+  SIGKILLed at 120 s (`cli.rs:9`, see T32); `Stdio::null()` + `GIT_TERMINAL_PROMPT=0`
+  block TTY pinentry; `architecture.md:53,152` list commit under `git2`. Verified safe:
+  `amend_message` maps cleanly to `git commit --amend --only -m` (tree/author preserved,
+  committer refreshed, unrelated staged files untouched). Keep the libgit2 pre-flight
+  guards so `git_commit_e2e` stays green; `message_prettify` is cosmetic (only the
+  missing trailing `\n`). *Files*: `src/git/commit.rs`, `src/git/cli.rs`, `src/git/sync.rs`.
+- ☐ **T14 — Pull (ff) does not rebase.** Verified on git 2.55: with `pull.rebase=true`,
+  `git pull --ff` rebases and rewrites the local oid. `sync.rs:621` emits `--ff` for the
+  entry `git.md:707` names "Pull (fast-forward if possible)" and makes the default
+  (`:723`) ⇒ the default button silently rewrites history. `--ff-only` is unaffected.
+  One line: `--no-rebase --ff`. *Files*: `src/git/sync.rs`.
+- ☐ **T15 — `--force-with-lease` pinned to the displayed oid.** The bare lease
+  (`sync.rs:531`) compares against a remote-tracking ref that helm itself refreshes
+  every 10 s (`worker.rs:886`) ⇒ it can never refuse; `SyncError::StaleInfo` and its
+  toast (`graph_toolbar.rs:930`) were designed for a refusal that never fires, and
+  `git.md:748` states the contract it breaks. Capture the oid **when the modal is
+  armed** (`render.rs:1476`), not at push time. *Files*: `src/git/sync.rs`,
+  `src/app/mod.rs` (`Modal::ForcePush`), `src/git/worker.rs` (`SyncCommand::ForcePush`),
+  `src/app/render.rs`.
+- ☐ **T16 — Interactive reword targets its own commit.** Reproduced: `pick` + independent
+  `exec git commit --amend -F` (`sync.rs:414`); the pick conflicts, the user follows
+  git's own `--skip` hint (and `sync.rs:391` explicitly designs for continuing from the
+  terminal) ⇒ the message lands on the replayed onto-branch commit, "Successfully
+  rebased". Smallest fail-safe fix: guard the `exec` on the original message before
+  amending. *Files*: `src/git/sync.rs`.
+- ☐ **T17 — Push tag fully qualified.** ⚠ **downgraded to consistency**: git *refuses*
+  the ambiguous refspec (`src refspec v9 matches more than one`), so the remote is never
+  wrongly written — only a confusing toast, plus a very narrow race if the tag is
+  deleted between click and execution. Still worth the one-line `refs/tags/{name}` for
+  symmetry with `delete_remote_tag` (`sync.rs:583`). *Files*: `src/git/sync.rs`.
+
+### Lot C — fidelity
+
+- ☐ **T18 — Renames diff and count as renames.** `file_diff` (`diff.rs:103-121`) sets a
+  pathspec and never calls `find_similar` while `git.md:304` requires the rename to
+  show, and `git_diff_e2e.rs:411` already locks that intent for the *commit* diff.
+  Unstaged stats miss `for_untracked` (`status.rs:340`), which libgit2's own status pass
+  sets (`status.c:310`) ⇒ the row pairs the rename but the stats say `+<whole file> −0`.
+  ⚠ a bare `find_similar` is **not** enough on `file_diff` — the pathspec filters the old
+  side out, the trap already documented at `diff.rs:190-193`.
+  *Files*: `src/git/diff.rs`, `src/git/status.rs`.
+- ☐ **T19 — Symlinks staged by `symlink_metadata`.** `.exists()` follows the link
+  (`stage.rs:20`) ⇒ repointing a symlink at a not-yet-created target stages its
+  **deletion**; `stage_all` is immune (it switches on the delta status), so per-file
+  Stage and Stage All disagree on the same row. Nothing in specs/tests covers symlinks.
+  *Files*: `src/git/stage.rs`.
+- ⏭ **T20 — Submodules.** Closed: acknowledged backlog item `proposals.md:203` ("**P29 —
+  Submodule status** — niche; only if a target repo needs it"). `exclude_submodules(true)`
+  is consistent across `is_dirty` and `work_statuses` (`status.rs:209`, `:222`) so no
+  write path can act on a submodule — invisibility only, no corruption. Action: one line
+  in `git.md` §2 next to "Ignored files: not listed", pointing at P29.
+- ☐ **T21 — Conflict resolve preserves line endings.** `parse_regions` iterates
+  `text.lines()` (`conflict.rs:304`, drops `\r`), `compose_string` rejoins on `"\n"` and
+  force-appends `'\n'` (`conflict_view.rs:354`) while `conflicts.md:156` says "Save
+  writes the buffer verbatim". Compounded: `resolve_file` uses `std::fs::write`
+  (`conflict.rs:119`), bypassing git's smudge filters, so an `eol=crlf` repo is
+  normalized too. No test locks LF normalization. Detect the terminator from the
+  ours/theirs blob at reconstruction and re-apply at compose time.
+  *Files*: `src/git/conflict.rs`, `src/ui/conflict_view.rs`.
+- ☐ **T22 — `resolve_file_side` reads a fresh index.** Only index access in the module
+  that skips the refresh (`conflict.rs:144` vs `:58`, `:87`, `:116`, `:152`), violating
+  the invariant documented at `stage.rs:6-10`. Window bounded by the 1 s poll; can write
+  a stale side's blob over a file already resolved in a terminal pane. Take
+  `stage::fresh_index` once at `:144` and drop the second open at `:152`.
+  *Files*: `src/git/conflict.rs`.
+- ⏭ **T23 — Conflict markers block Continue.** Closed: `conflicts.md:72-74` locks the
+  behaviour verbatim ("**Mark All Resolved** — stages every conflicted file **as-is**
+  … without opening the editor"), the code matches exactly (`git_panel.rs:445`), the
+  *editor* path is guarded as specified (`conflict_view.rs:349`), and core git behaves
+  the same. If anything changes it is the spec (a marker warning in §2), not the code.
+- ☐ **T24 — Disk-divergence notice wired.** `flag_disk_divergence`
+  (`conflict_view.rs:255`) has **zero callers** ⇒ `whole_override` is dead code
+  (`:1449`, `:1469`) and `conflicts.md:178-181` (present tense, reinforced by the §7
+  fallback row `:208`) is unimplemented; `on_conflicts` never reads the working-tree
+  file (`git_session.rs:685`) and `resolve_file` overwrites it unconditionally ⇒ edits
+  made in a terminal pane are lost on Save. Compare disk vs reconstruction where the
+  editor adopts. *Files*: `src/ui/conflict_view.rs`, `src/app/git_session.rs`.
+- ☐ **T25 — Line selection anchored on content.** `reconcile` (`diff_view.rs:184-205`)
+  validates only bounds + origin, so a reload that keeps the hunk shape but changes the
+  content silently retargets the selection **and leaves `stale` false** — against
+  `git.md:306-308` ("report if a selection no longer applies"). Reached from the 1 s
+  poll; `stage_lines` then re-derives the diff from disk (`stage.rs:251`). The four
+  `reconcile_*` tests (`diff_view.rs:2942`) only cover out-of-range/became-context.
+  Storing the lines' content hash is enough — no selection-model change.
+  *Files*: `src/ui/diff_view.rs`.
+- ☐ **T26 — Scoped stash of a rename passes both sides.** The row menu sends the single
+  displayed path (`git_panel.rs:1670`) and `entry_path` reports a rename's **new** path
+  only ⇒ `stash_paths` never sees the old side (`stash.rs:100-133`). Unstaged rename is
+  the worse case: after Stash the old file is missing from disk with nothing recording
+  it; staged rename leaves a staged `D <old>`. `git.md:60-62` requires renames to act on
+  **both paths** (it enumerates Stage/Unstage/Discard, not Stash). Expand inside
+  `stash_paths` via `status::rename_old_path` so every caller is covered.
+  *Files*: `src/git/stash.rs`.
+- ☐ **T27 — Partial staging keeps the exec bit.** `new file mode 100644` hardcoded
+  (`stage.rs:349`); needs a *partial* selection on an untracked file (`apply_filtered`
+  short-circuits to `stage()` when the selection covers the whole add, `:256`). Stat the
+  worktree file and pass the mode in. *Files*: `src/git/stage.rs`.
+
+### Lot D — flow & robustness
+
+- ☐ **T28 — Sidebar pills greyed during a sync/AI op.** ⚠ **re-scoped**: refusing (not
+  queueing) is spec-locked — `git.md:502-504` ("staging, commits and sync ops are
+  **refused** meanwhile") — and the refusal *is* surfaced as a toast
+  (`git_session.rs:525`). The defect is only that the sidebar keeps offering pills that
+  are guaranteed to fail during a 30-min AI rebase. Project `sync.busy()` /
+  `ai_rebase.busy()` into `GitPanelState` like `mutation_busy`; **do not queue**.
+  *Files*: `src/ui/git_panel.rs`, `src/app/render.rs`, `src/app/git_session.rs`.
+- ☐ **T29 — `MutationLock` per repo, not per session.** `git_session.rs:328` mints a new
+  lock per spawn and `SyncRunner` has no `Drop` — its thread is deliberately left
+  running (`worker.rs:797`). The author already documented this exact race for the AI
+  case: `ai_rebase.rs:552` ("an unjoined run would race the fresh `MutationLock` of the
+  session reopened on the same repo") — the join in `Drop` is a workaround for the hole,
+  which sync ops still have. Keying the lock by `RepoKey` also lets that join go.
+  *Files*: `src/app/mod.rs`, `src/app/git_session.rs`.
+- ☐ **T30 — Checkout auto-stash.** ⚠ **re-scoped, 4 sub-claims:** (a) the *remote chip*
+  no-op is **invalid** — `merge_local_remote` (`graph/mod.rs:217`) drops a remote entry
+  sitting on the same commit, so a surviving chip is always a real move; the reachable
+  no-op is the **tag menu** ("a tag is always checkout-eligible", `graph_view.rs:518`)
+  with HEAD already detached on that tag ⇒ stash taken, never popped. (b) no success
+  toast (`git_session.rs:492`) — minor, mitigated by the toolbar Pop button and the
+  graph stash rows. (c) `is_dirty` lacks the `nested_in_workdir` filter
+  (`status.rs:207` vs `:257`) — only reachable with a *relative* worktree base
+  (`worktree.rs:181`, `worktrees.md:190`), then every checkout stashes a tree the panel
+  calls clean. (d) `set_target` moves the local ref **before** `checkout_reference` can
+  fail (`branch.rs:76-81`), and also moves a branch checked out in another worktree
+  (git2 does not enforce the CLI guard). *Files*: `src/git/branch.rs`, `src/git/tag.rs`,
+  `src/git/status.rs`, `src/app/git_session.rs`.
+- ☐ **T31 — Superseded command side effects.** ⚠ **re-scoped**: the panic watchdog is
+  dropped — 0 `unwrap`/`expect`/raw indexing outside `#[cfg(test)]` across `src/git/*.rs`,
+  so it would be defensive code for a case with no trigger. Kept: a `Commit` reply
+  superseded by a later mutation skips `panel.subject.clear()` (`git_session.rs:503`) ⇒
+  the committed message stays in the composer (same shape for the branch/tag editor,
+  `:515`); run command-scoped side effects **before** the `carries_state` gate. Minor
+  companion: an abandoned session's mutation refused by the lock is dropped with no
+  possible toast (`worker.rs:528`). *Files*: `src/app/git_session.rs`, `src/git/worker.rs`.
+- ☐ **T32 — Network ops are not SIGKILLed at 120 s.** `DEFAULT_TIMEOUT` (`cli.rs:9`)
+  reaches every sync op (`sync.rs:658` → `run_with_env` → `run_program_with_timeout`);
+  the cancellable path has exactly one caller (`ai_rebase.rs:294`). No spec or commit
+  documents the value (`git log -S DEFAULT_TIMEOUT` → only the initial squash) — the
+  only specified timeout is the AI rebase's 30 min. Also `git.md:686` states "never a
+  hung prompt" but only `GIT_TERMINAL_PROMPT=0` + null stdin are set (`cli.rs:101`): a
+  configured `GIT_ASKPASS`/`SSH_ASKPASS`/`core.askPass` still spawns a GUI helper and
+  burns the full timeout. (The `GIT_DIR` half is dropped — no path launches helm from a
+  git subprocess.) *Files*: `src/git/cli.rs`, `src/git/sync.rs`.
+- ☐ **T33 — Diff view render cost.** ⚠ **re-scoped by measurement**: `can_extend` is
+  quadratic but **not** the binding constraint — 50 hunks (the busiest single-file diff
+  in the last 50 commits) costs 62 µs/frame, 200 hunks 0.77 ms; only generated files
+  near `MAX_DIFF_LINES` reach the ms range, where the non-virtualised row loop already
+  co-dominates. Keep the trivial hoist, drop the urgency. Real: `display_rows` is
+  rebuilt every frame purely for a `max_chars` width measure (`diff_view.rs:844`, O(all
+  lines) + `chars().count()`), and `ScrollArea::both()` has no `id_salt` (`:855`) so the
+  offset is reused when switching files. *Files*: `src/ui/diff_view.rs`.
+- ☐ **T34 — `workspace_dirty_stats` off the UI thread.** ⚠ **re-framed**: not the render
+  path — the three sites are discrete events (sidebar Remove `render.rs:2420`, ⌘O
+  `mod.rs:3606`, Finder drop `:3630`); the recurring path was already moved to
+  `GroupRefreshRunner` ("the full diff per dirty repo froze the frame here",
+  `mod.rs:1157`). Still a full `is_dirty` + `load_repo` walk of **every** workspace repo
+  on the UI thread per event. Reuse `workspace_probes` + `GroupRefreshRunner::request`
+  and delete `workspace_dirty_stats`/`workspace_branches` (the only other caller is the
+  headless test seam). *Files*: `src/app/mod.rs`, `src/app/render.rs`.
+- ☐ **T35 — Nits batch (6 kept, 3 closed).** Kept: `forge.rs:47` host matched
+  case-sensitively ⇒ `git@GitHub.com:o/r` silently loses Create-PR **and** the PR
+  cockpit; `graph_view.rs:1061` selects the row under an expanded chip overlay
+  (`response.clicked()` without the `hover_lock` guard its right-click twin has at
+  `:1145`); `render.rs:2216` nulls `conflict_editor` even when `request_sync` refused,
+  **and** bypasses the editor's unsaved-work confirmation (`conflict_view.rs:174`);
+  stale "resolve from the terminal" copy contradicting `git.md:726` and `conflicts.md`
+  (`graph_toolbar.rs:289`, `commit.rs:4`, `:48` — 3 assertions at
+  `graph_toolbar.rs:859` move with it); tag editor validates with `valid_branch_name`
+  instead of `Tag::name_is_valid` (`graph_view.rs:1861`, cosmetic); shift-click anchor
+  left stale by a right-click (`git_panel.rs:1988` vs `range_select` `:1785`).
+  **Closed**: `fetch --all` prune (⏭ `git.md:701` names the command verbatim; the only
+  decided prune is pull's `RemoteBranchGone`, D-2026-06-16) · branch delete `-D` wording
+  (⏭ the modal already says "its commits stay in the reflog", `graph_view.rs:1671`, and
+  `git.md:548-562` never specifies a merged check) · `.git/helm-rebase` litter (⏭ the
+  lifecycle is stated in code, `sync.rs:366`, and every run wipes it first).
+- ⏭ **T36 — Conflicted entry outside an operation is a dead end.** Deferred
+  (D-2026-07-21): the answer is a spec change, to be taken with the other spec edits
+  (T20, T23). Surfaced by T0 while
+  closing T10: after a conflicting `stash pop` (or a merge run from a terminal pane)
+  `repo.state()` is `Clean` while the file is `CONFLICTED`, so `op_in_progress` is false
+  and `render.rs:714` nulls `self.conflict_editor` every frame ⇒ clicking the row does
+  nothing and no banner explains why. `conflicts.md:42` scopes the editor to
+  `state() != Clean`, so this is a **spec gap**, not a regression: decide between opening
+  the editor for a stateless conflict or showing an explicit banner, then fold the answer
+  back into `conflicts.md`. *Files*: `specs/conflicts.md`, `src/app/render.rs`,
+  `src/ui/git_panel.rs`.
+
+### Next actions (M-GitHard)
+- Order: **T9 → T4 → T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
+  then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
+- T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
+  worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
+- T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
+
+---
+
 ## ☑ Milestone — M-Amend · Amend HEAD's commit message
 
 Spec: [`specs/git.md`](../git.md) §9 (commit detail) + §1 (decided write). In-place
