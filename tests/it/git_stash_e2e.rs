@@ -348,6 +348,88 @@ fn stash_paths_leaves_a_staged_bystander_out_of_the_entry() {
     );
 }
 
+const RENAMED_BODY: &str = "one\ntwo\nthree\nfour\n";
+
+#[test]
+fn stash_paths_takes_both_sides_of_an_unstaged_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "old.txt", RENAMED_BODY);
+    fs::rename(tmp.path().join("old.txt"), tmp.path().join("new.txt")).unwrap();
+
+    // The row the sidebar offers carries the new path alone — that is what Stash sends.
+    let unstaged = load_repo(&repo).unwrap().unstaged;
+    assert_eq!(
+        unstaged.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        vec!["new.txt"],
+        "the rename shows as a single row on its new path"
+    );
+
+    stash::stash_paths(&repo, &["new.txt".to_owned()]).unwrap();
+
+    assert_eq!(stash::count(&repo).unwrap(), 1);
+    assert_eq!(
+        load_repo(&repo).unwrap().changed_file_count(),
+        0,
+        "neither side of the rename dangles in the tree"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("old.txt")).unwrap(),
+        RENAMED_BODY,
+        "the old path is back on disk, not lost with the stash"
+    );
+    assert!(!tmp.path().join("new.txt").exists());
+
+    stash::pop(&repo).unwrap();
+
+    assert!(!tmp.path().join("old.txt").exists());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+        RENAMED_BODY,
+        "popping restores the whole move"
+    );
+}
+
+#[test]
+fn stash_paths_takes_both_sides_of_a_staged_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "old.txt", RENAMED_BODY);
+    fs::rename(tmp.path().join("old.txt"), tmp.path().join("new.txt")).unwrap();
+    let mut index = repo.index().unwrap();
+    index.remove_path(Path::new("old.txt")).unwrap();
+    index.add_path(Path::new("new.txt")).unwrap();
+    index.write().unwrap();
+
+    let staged = load_repo(&repo).unwrap().staged;
+    assert_eq!(
+        staged.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        vec!["new.txt"]
+    );
+
+    stash::stash_paths(&repo, &["new.txt".to_owned()]).unwrap();
+
+    assert_eq!(stash::count(&repo).unwrap(), 1);
+    assert_eq!(
+        load_repo(&repo).unwrap().changed_file_count(),
+        0,
+        "no staged deletion of the old path is left behind"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("old.txt")).unwrap(),
+        RENAMED_BODY
+    );
+    assert!(!tmp.path().join("new.txt").exists());
+
+    stash::pop(&repo).unwrap();
+
+    assert!(!tmp.path().join("old.txt").exists());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+        RENAMED_BODY
+    );
+}
+
 #[test]
 fn stash_paths_with_no_paths_is_a_clear_error() {
     let tmp = tempfile::tempdir().unwrap();

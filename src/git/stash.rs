@@ -36,6 +36,7 @@ pub fn stash_paths(repo: &git2::Repository, paths: &[String]) -> Result<(), git2
     if paths.is_empty() {
         return Err(git2::Error::from_str("nothing to stash"));
     }
+    let paths = &with_rename_sources(repo, paths)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| git2::Error::from_str("repository has no working tree"))?;
@@ -131,6 +132,30 @@ pub fn stash_paths(repo: &git2::Repository, paths: &[String]) -> Result<(), git2
         }
     }
     Ok(())
+}
+
+/// `paths` plus the old path of every rename they name. A renamed entry is a
+/// single row carrying its **new** path, but the change spans both (git.md §3):
+/// stashing the new side alone would shelve the addition and leave the old path
+/// deleted with nothing recording it. Expanded here rather than at the call
+/// sites so every caller of [`stash_paths`] is covered.
+fn with_rename_sources(
+    repo: &git2::Repository,
+    paths: &[String],
+) -> Result<Vec<String>, git2::Error> {
+    let mut out = paths.to_vec();
+    for path in paths {
+        let old = match status::rename_old_path(repo, path, false)? {
+            Some(old) => Some(old),
+            None => status::rename_old_path(repo, path, true)?,
+        };
+        if let Some(old) = old {
+            if !out.contains(&old) {
+                out.push(old);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Reads `git stash push`'s outcome (shared by the whole-tree and the path-scoped

@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **27/37**.
+work**. Counter: **28/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -224,7 +224,7 @@ work**. Counter: **27/37**.
   `reconcile_*` tests (`diff_view.rs:2942`) only cover out-of-range/became-context.
   Storing the lines' content hash is enough — no selection-model change.
   *Files*: `src/ui/diff_view.rs`.
-- ☐ **T26 — Scoped stash of a rename passes both sides.** The row menu sends the single
+- ☑ **T26 — Scoped stash of a rename passes both sides.** The row menu sends the single
   displayed path (`git_panel.rs:1670`) and `entry_path` reports a rename's **new** path
   only ⇒ `stash_paths` never sees the old side (`stash.rs:100-133`). Unstaged rename is
   the worse case: after Stash the old file is missing from disk with nothing recording
@@ -329,7 +329,7 @@ work**. Counter: **27/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T26** (Lot C), then T27, then Lot D.
+- Order: **T27** (Lot C), then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
