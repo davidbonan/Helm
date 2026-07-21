@@ -8,7 +8,7 @@ pub enum DiffSource {
     Staged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LineOrigin {
     Context,
     Addition,
@@ -400,6 +400,21 @@ fn workdir_bytes(repo: &git2::Repository, path: &str) -> Result<Vec<u8>, git2::E
     std::fs::read(&full).map_err(|e| git2::Error::from_str(&format!("read {path}: {e}")))
 }
 
+/// The bytes git would **record** for an untracked file: the working-tree file put
+/// through the repository's filters (`text=auto` and the CRLF normalisation it
+/// implies, a `clean` driver…). The tracked side of a granular stage already gets
+/// them — libgit2 filters into the diff — and the whole-file `stage` gets them from
+/// `index.add_path`; reading the file raw here would make partial staging the one
+/// path that writes unfiltered bytes into the index.
+fn odb_bytes(repo: &git2::Repository, path: &str) -> Result<Vec<u8>, git2::Error> {
+    let full = repo
+        .workdir()
+        .map(|wd| wd.join(path))
+        .ok_or_else(|| git2::Error::from_str("bare repository has no workdir"))?;
+    let oid = repo.blob_path(&full)?;
+    Ok(repo.find_blob(oid)?.content().to_vec())
+}
+
 fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, git2::Error> {
     let content = workdir_bytes(repo, path)?;
     if content.contains(&0) {
@@ -517,7 +532,7 @@ pub(crate) fn hunk_line_bytes(
         return Ok(Vec::new());
     };
     if diff.get_delta(idx).map(|d| d.status()) == Some(git2::Delta::Untracked) {
-        let content = workdir_bytes(repo, path)?;
+        let content = odb_bytes(repo, path)?;
         let rel = Path::new(path);
         let patch = git2::Patch::from_buffers(b"", Some(rel), &content, Some(rel), None)?;
         return hunk_line_bytes_of(&patch, hunk_index);

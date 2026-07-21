@@ -1334,3 +1334,164 @@ fn whole_file_stage_of_an_untracked_executable_keeps_the_exec_bit() {
 
     assert_eq!(index_mode(&repo, "run.sh"), 0o100755);
 }
+
+/// `git apply --cached` of a single hunk leaves the entry's mode alone; a filtered
+/// patch that says nothing about the mode makes libgit2 re-record the default blob
+/// mode, so a tracked script loses its exec bit one hunk at a time.
+#[test]
+fn staging_a_hunk_of_a_tracked_executable_keeps_the_exec_bit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    let body: String = (1..=12).map(|i| format!("line{i}\n")).collect();
+    write_executable(tmp.path(), "run.sh", &body);
+    commit_file(&repo, "run.sh", &body, "init");
+    assert_eq!(index_mode(&repo, "run.sh"), 0o100755);
+
+    let edited = body
+        .replace("line1\n", "LINE1\n")
+        .replace("line12\n", "LINE12\n");
+    fs::write(tmp.path().join("run.sh"), &edited).unwrap();
+    assert_eq!(
+        diff::file_diff(&repo, "run.sh", DiffSource::Unstaged)
+            .unwrap()
+            .hunks
+            .len(),
+        2,
+        "the fixture must have two separate hunks"
+    );
+
+    stage::stage_hunk(&repo, "run.sh", 0).unwrap();
+
+    assert_eq!(
+        index_mode(&repo, "run.sh"),
+        0o100755,
+        "staging a hunk dropped the exec bit the entry already had"
+    );
+}
+
+#[test]
+fn unstaging_a_hunk_of_a_tracked_executable_keeps_the_exec_bit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    let body: String = (1..=12).map(|i| format!("line{i}\n")).collect();
+    write_executable(tmp.path(), "run.sh", &body);
+    commit_file(&repo, "run.sh", &body, "init");
+
+    let edited = body
+        .replace("line1\n", "LINE1\n")
+        .replace("line12\n", "LINE12\n");
+    fs::write(tmp.path().join("run.sh"), &edited).unwrap();
+    stage::stage(&repo, "run.sh").unwrap();
+    assert_eq!(index_mode(&repo, "run.sh"), 0o100755);
+
+    stage::unstage_hunk(&repo, "run.sh", 0).unwrap();
+
+    assert_eq!(
+        index_mode(&repo, "run.sh"),
+        0o100755,
+        "unstaging a hunk dropped the exec bit the entry already had"
+    );
+}
+
+/// The diff of an untracked symlink shows what the link points **at**, so it can
+/// carry several lines and the panel can offer a line selection on it. Staging
+/// part of it must still record a link, not a regular blob holding the target's
+/// content — the parity `stage` already keeps (git.md §2).
+#[test]
+fn partially_staging_an_untracked_symlink_stages_the_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "target.txt", "alpha\nbravo\ncharlie\n", "init");
+    std::os::unix::fs::symlink("target.txt", tmp.path().join("link")).unwrap();
+
+    stage::stage_lines(&repo, "link", 0, &[0]).unwrap();
+
+    assert_eq!(index_mode(&repo, "link"), 0o120000);
+    let entry = {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        index.get_path(Path::new("link"), 0).unwrap()
+    };
+    assert_eq!(
+        repo.find_blob(entry.id).unwrap().content(),
+        b"target.txt",
+        "the link was staged as a file holding its target's content"
+    );
+}
+
+/// `git add` normalises an untracked CRLF file under `text=auto`; so does the
+/// whole-file `stage`. Partial staging must record the same bytes rather than what
+/// the file happens to hold on disk.
+#[test]
+fn partially_staging_an_untracked_file_goes_through_the_repos_filters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, ".gitattributes", "* text=auto\n", "attrs");
+    fs::write(tmp.path().join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+
+    stage::stage_lines(&repo, "crlf.txt", 0, &[0, 1]).unwrap();
+
+    let entry = {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        index.get_path(Path::new("crlf.txt"), 0).unwrap()
+    };
+    assert_eq!(
+        repo.find_blob(entry.id).unwrap().content(),
+        b"one\ntwo\n",
+        "the selection was staged with the CRLF `git add` normalises away"
+    );
+}
+
+/// Reverse-applying a hunk whose old side ends without a newline: the marker has
+/// to close the body, not sit between the two sides.
+#[test]
+fn discarding_a_hunk_that_adds_the_final_newline_restores_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo\nthree", "init");
+    fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+
+    stage::discard_hunk(&repo, "a.txt", 0).unwrap();
+
+    assert_eq!(
+        fs::read(tmp.path().join("a.txt")).unwrap(),
+        b"one\ntwo\nthree"
+    );
+}
+
+#[test]
+fn discarding_a_hunk_that_appends_after_an_unterminated_line_restores_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo\nthree", "init");
+    fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+
+    stage::discard_hunk(&repo, "a.txt", 0).unwrap();
+
+    assert_eq!(
+        fs::read(tmp.path().join("a.txt")).unwrap(),
+        b"one\ntwo\nthree"
+    );
+}
+
+#[test]
+fn unstaging_a_hunk_of_a_file_without_a_final_newline_restores_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo\nthree", "init");
+    fs::write(tmp.path().join("a.txt"), "one\ntwo\nTHREE").unwrap();
+    stage::stage(&repo, "a.txt").unwrap();
+
+    stage::unstage_hunk(&repo, "a.txt", 0).unwrap();
+
+    let entry = {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        index.get_path(Path::new("a.txt"), 0).unwrap()
+    };
+    assert_eq!(
+        repo.find_blob(entry.id).unwrap().content(),
+        b"one\ntwo\nthree"
+    );
+}

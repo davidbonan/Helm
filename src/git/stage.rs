@@ -271,6 +271,16 @@ fn apply_filtered(
     line_indices: Option<&[usize]>,
     reverse: bool,
 ) -> Result<(), git2::Error> {
+    // A symlink has no sub-file selection to speak of: its "content" is the target
+    // path, and the diff shows what the link points **at** (`diff::workdir_bytes`
+    // reads through it), so a filtered patch would record a regular blob holding
+    // the target's lines. The link is staged or unstaged whole, as `stage` does.
+    if is_symlink(repo, path) {
+        return match source {
+            DiffSource::Unstaged => stage(repo, path),
+            DiffSource::Staged => unstage(repo, path),
+        };
+    }
     let file = diff::file_diff(repo, path, source)?;
     let hunk = file
         .hunks
@@ -290,7 +300,8 @@ fn apply_filtered(
     // the patch must create it, otherwise `apply` fails with "index does not
     // contain <path>". `fresh_index` also covers the `repo.apply` below, which
     // writes through the same cached index.
-    let new_file = fresh_index(repo)?.get_path(Path::new(path), 0).is_none();
+    let indexed = fresh_index(repo)?.get_path(Path::new(path), 0);
+    let new_file = indexed.is_none();
     // …unless it is the new side of an unstaged rename: the preimage the hunk
     // applies to is the **old** path's index entry, so the patch must move it
     // (libgit2 applies a `RENAMED` delta by reading the old path and dropping it
@@ -300,14 +311,17 @@ fn apply_filtered(
         (DiffSource::Unstaged, true) => status::rename_old_path(repo, path, false)?,
         _ => None,
     };
-    let new_file_mode = new_file.then(|| worktree_file_mode(repo, path));
+    let mode = match &indexed {
+        Some(entry) => PatchMode::Tracked(blob_mode(entry.mode)),
+        None => PatchMode::New(worktree_file_mode(repo, path)),
+    };
     let Some(rendered) = render_hunk_patch(
         &file.path,
         hunk,
         &raw,
         line_indices,
         reverse,
-        new_file_mode,
+        Some(mode),
         renamed_from.as_deref(),
     ) else {
         return Ok(());
@@ -377,19 +391,47 @@ fn worktree_file_mode(repo: &git2::Repository, path: &str) -> &'static str {
     }
 }
 
+/// What the filtered patch has to say about the file's mode.
+#[derive(Debug, Clone, Copy)]
+enum PatchMode<'a> {
+    /// Absent from the index: the patch must create it, with the working tree's
+    /// mode (`worktree_file_mode`).
+    New(&'a str),
+    /// Already indexed: the entry's mode is restated on an `index` line, because a
+    /// patch that says nothing about the mode makes libgit2 re-record the entry
+    /// with the default blob mode — an exec bit silently dropped on every
+    /// hunk-by-hunk stage of a tracked script.
+    Tracked(&'a str),
+}
+
+/// The mode an index entry declares, as the patch header spells it.
+fn blob_mode(mode: u32) -> &'static str {
+    match mode {
+        0o100755 => "100755",
+        0o120000 => "120000",
+        _ => "100644",
+    }
+}
+
+fn is_symlink(repo: &git2::Repository, path: &str) -> bool {
+    repo.workdir()
+        .and_then(|wd| wd.join(path).symlink_metadata().ok())
+        .is_some_and(|md| md.is_symlink())
+}
+
 fn render_hunk_patch(
     path: &str,
     hunk: &Hunk,
     raw: &[Vec<u8>],
     line_indices: Option<&[usize]>,
     reverse: bool,
-    new_file_mode: Option<&str>,
+    mode: Option<PatchMode>,
     renamed_from: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let mut body: Vec<u8> = Vec::new();
     let mut old_count = 0u32;
     let mut new_count = 0u32;
     let mut has_change = false;
+    let mut emitted: Vec<(LineOrigin, &[u8])> = Vec::new();
 
     for (idx, (line, bytes)) in hunk.lines.iter().zip(raw).enumerate() {
         let selected = line_indices.is_none_or(|sel| sel.contains(&idx));
@@ -410,11 +452,19 @@ fn render_hunk_patch(
                 has_change = true;
             }
         }
-        push_line(&mut body, patch_prefix(effective, reverse), bytes);
+        emitted.push((effective, bytes.as_slice()));
     }
 
     if !has_change {
         return None;
+    }
+
+    if reverse {
+        old_side_first(&mut emitted);
+    }
+    let mut body: Vec<u8> = Vec::new();
+    for (origin, bytes) in &emitted {
+        push_line(&mut body, patch_prefix(*origin, reverse), bytes);
     }
 
     let old_start = if reverse {
@@ -442,11 +492,17 @@ fn render_hunk_patch(
         }
         None => {
             patch.push_str(&format!("diff --git a/{path} b/{path}\n"));
-            if let Some(mode) = new_file_mode {
-                patch.push_str(&format!("new file mode {mode}\n"));
-                patch.push_str("--- /dev/null\n");
-            } else {
-                patch.push_str(&format!("--- a/{path}\n"));
+            match mode {
+                Some(PatchMode::New(mode)) => {
+                    patch.push_str(&format!("new file mode {mode}\n"));
+                    patch.push_str("--- /dev/null\n");
+                }
+                Some(PatchMode::Tracked(mode)) => {
+                    // The oids are metadata `apply` never reads — only the mode is.
+                    patch.push_str(&format!("index 0000000..0000000 {mode}\n"));
+                    patch.push_str(&format!("--- a/{path}\n"));
+                }
+                None => patch.push_str(&format!("--- a/{path}\n")),
             }
             patch.push_str(&format!("+++ b/{path}\n"));
         }
@@ -502,6 +558,33 @@ fn flip(origin: LineOrigin) -> LineOrigin {
         LineOrigin::Context => LineOrigin::Context,
         LineOrigin::Addition => LineOrigin::Deletion,
         LineOrigin::Deletion => LineOrigin::Addition,
+    }
+}
+
+/// Reorders each change block so the patch's **old** side comes first. Reversing
+/// only flips the prefixes, so a block keeps the forward hunk's order — additions
+/// (which become the reversed patch's deletions) after the deletions. That is
+/// harmless until a side ends without a newline: `push_line` closes that line with
+/// a `\ No newline at end of file` marker, which then sits between the two sides
+/// instead of ending the body, and libgit2 rejects the whole hunk. Emitting the
+/// forward additions first restores the shape `git diff -R` produces. Context
+/// lines separate blocks and never move.
+fn old_side_first(lines: &mut [(LineOrigin, &[u8])]) {
+    let mut start = 0;
+    while start < lines.len() {
+        if lines[start].0 == LineOrigin::Context {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < lines.len() && lines[end].0 != LineOrigin::Context {
+            end += 1;
+        }
+        lines[start..end].sort_by_key(|(origin, _)| match origin {
+            LineOrigin::Addition => 0,
+            _ => 1,
+        });
+        start = end;
     }
 }
 
