@@ -286,7 +286,9 @@ pub fn sync_failure_message(error: &SyncError) -> String {
         SyncError::NoUpstream => "No upstream to overwrite".to_owned(),
         SyncError::FfOnlyRefused => "Pull refused — not fast-forwardable".to_owned(),
         // Conflicts name their op in `sync_error_message` (Pull, Rebase or Merge).
-        SyncError::Conflicts => "stopped on conflicts — resolve from the terminal".to_owned(),
+        SyncError::Conflicts => {
+            "stopped on conflicts — resolve them in the conflict panel".to_owned()
+        }
         SyncError::NonFastForward => "Push rejected — not fast-forward, never forced".to_owned(),
         SyncError::StaleInfo => "Force push rejected — the remote moved, fetch first".to_owned(),
         // Surfaced silently by `drain_sync` (no toast) — never formatted.
@@ -857,15 +859,15 @@ mod tests {
         );
         assert_eq!(
             sync_error_message(SyncCommand::Pull(PullMode::Ff), &SyncError::Conflicts),
-            "Pull stopped on conflicts — resolve from the terminal"
+            "Pull stopped on conflicts — resolve them in the conflict panel"
         );
         assert_eq!(
             sync_error_message(SyncCommand::Rebase("main".into()), &SyncError::Conflicts),
-            "Rebase stopped on conflicts — resolve from the terminal"
+            "Rebase stopped on conflicts — resolve them in the conflict panel"
         );
         assert_eq!(
             sync_error_message(SyncCommand::Merge("feat".into()), &SyncError::Conflicts),
-            "Merge stopped on conflicts — resolve from the terminal"
+            "Merge stopped on conflicts — resolve them in the conflict panel"
         );
         assert_eq!(
             sync_error_message(

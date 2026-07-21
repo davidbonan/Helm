@@ -2019,6 +2019,9 @@ fn file_row(
         // target before the menu opens (Finder behaviour).
         if path_response.secondary_clicked() && !state.marked_files.contains(&sel) {
             state.marked_files = vec![sel.clone()];
+            // The row the menu acts on is also where a following shift-click
+            // ranges from — a stale anchor would select from another row.
+            state.selection_anchor = Some(sel.clone());
         }
         if selected {
             file_list::consume_row_scroll(ui, &path_response, file_scroll_id(), &sel);

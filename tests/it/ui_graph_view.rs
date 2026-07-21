@@ -1256,6 +1256,32 @@ fn create_tag_entry_opens_the_tag_editor_and_enter_emits_the_create_intent() {
 }
 
 #[test]
+fn the_tag_editor_refuses_a_name_git_rejects_for_a_tag() {
+    let mut harness = harness(sample_graph(), None);
+    harness.run();
+
+    let row = harness.get_by_label("0000002 Second commit").rect();
+    right_click_at(&mut harness, egui::pos2(row.left() + 20.0, row.center().y));
+    harness.run();
+    harness.get_by_label("Create tag").click();
+    harness.run();
+
+    // `git tag` refuses a leading dash even though `refs/tags/-rc1` passes
+    // check-ref-format: the editor validates with the tag rules, and names its
+    // error after what the field creates.
+    harness.state_mut().editor.name = "-rc1".into();
+    harness.key_press_modifiers(egui::Modifiers::default(), egui::Key::Enter);
+    harness.run();
+    assert_eq!(harness.state().create_tag_at, None);
+    harness.get_by_label("Invalid tag name");
+
+    harness.state_mut().editor.name = "v1.0".into();
+    harness.key_press_modifiers(egui::Modifiers::default(), egui::Key::Enter);
+    harness.run();
+    assert_eq!(harness.state().create_tag_at.as_deref(), Some("v1.0"));
+}
+
+#[test]
 fn row_menu_cherry_pick_emits_the_target_commit() {
     let mut harness = harness(sample_graph(), None);
     harness.run();
@@ -2404,6 +2430,32 @@ fn right_click_on_an_expanded_chip_over_another_row_targets_that_chip() {
         harness.state().checkout.as_deref(),
         Some("origin/feat"),
         "the expanded chip wins over the covered row's chip"
+    );
+}
+
+#[test]
+fn clicking_an_expanded_chip_over_another_row_does_not_select_that_row() {
+    // Same occlusion as the right-click twin: the covered row's `clicked()` used
+    // to fire under the overlay, selecting a commit the user never pointed at.
+    let mut harness = harness(overlay_over_chip_graph(), None);
+    harness.run();
+
+    let row = harness.get_by_label("0000003 Top commit").rect();
+    move_pointer_to(&mut harness, egui::pos2(row.left() + 20.0, row.center().y));
+    let second_chip = egui::pos2(row.left() + 20.0, row.center().y + 26.0);
+    move_pointer_to(&mut harness, second_chip);
+    double_click_at(&mut harness, second_chip);
+    harness.run();
+
+    assert_eq!(
+        harness.state().checkout.as_deref(),
+        Some("origin/feat"),
+        "the click landed on the expanded chip"
+    );
+    assert_eq!(
+        harness.state().clicked,
+        None,
+        "the row covered by the overlay is not selected"
     );
 }
 

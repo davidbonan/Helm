@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **36/37**.
+work**. Counter: **37/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -299,7 +299,7 @@ work**. Counter: **36/37**.
   on the UI thread per event. Reuse `workspace_probes` + `GroupRefreshRunner::request`
   and delete `workspace_dirty_stats`/`workspace_branches` (the only other caller is the
   headless test seam). *Files*: `src/app/mod.rs`, `src/app/render.rs`.
-- ☐ **T35 — Nits batch (6 kept, 3 closed).** Kept: `forge.rs:47` host matched
+- ☑ **T35 — Nits batch (6 kept, 3 closed).** Kept: `forge.rs:47` host matched
   case-sensitively ⇒ `git@GitHub.com:o/r` silently loses Create-PR **and** the PR
   cockpit; `graph_view.rs:1061` selects the row under an expanded chip overlay
   (`response.clicked()` without the `hover_lock` guard its right-click twin has at

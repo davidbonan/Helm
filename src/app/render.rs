@@ -2218,15 +2218,10 @@ impl HelmApp {
             self.request_create_worktree(root, source, None, base, ctx);
         }
 
-        // Banner Continue (conflicts.md §2): run the op's `--continue` through the
-        // sync runner (one op at a time) and close the editor; the resulting status
-        // refresh clears the banner once the op ends.
+        // Banner Continue (conflicts.md §2): the status refresh that follows clears
+        // the banner once the op ends.
         if continue_op_requested {
-            if let Some(git) = self.git.as_mut() {
-                let now = ctx.input(|i| i.time);
-                git.request_sync(SyncCommand::ContinueOp, &mut self.toasts, now);
-            }
-            self.conflict_editor = None;
+            self.continue_op(ctx.input(|i| i.time));
             ctx.request_repaint();
         }
 

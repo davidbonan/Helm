@@ -325,6 +325,26 @@ fn close_warns_on_an_unsaved_composition_then_discard_leaves() {
 }
 
 #[test]
+fn a_close_requested_from_outside_warns_on_an_unsaved_composition() {
+    // The footer's Continue closes the editor from outside the toolbar: it goes
+    // through the same warning instead of dropping the composition.
+    let mut harness = editor(vec![both_modified("x.rs")]);
+    harness.run();
+    assert!(
+        harness.state_mut().state.request_close(),
+        "nothing unsaved: the editor closes right away"
+    );
+
+    tick(&mut harness, 0);
+    assert!(
+        !harness.state_mut().state.request_close(),
+        "an unsaved composition holds the close back"
+    );
+    harness.run();
+    harness.get_by_label_contains("Unsaved resolution");
+}
+
+#[test]
 fn close_leaves_immediately_with_nothing_unsaved() {
     let mut harness = editor(vec![both_modified("x.rs")]);
     harness.run();

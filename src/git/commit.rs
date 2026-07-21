@@ -1,7 +1,7 @@
 pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {
     if repo.state() != git2::RepositoryState::Clean {
         return Err(git2::Error::from_str(
-            "merge/rebase in progress — resolve from the terminal",
+            "merge/rebase in progress — finish it in the conflict panel",
         ));
     }
     let signature = repo
@@ -45,7 +45,7 @@ pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2:
 pub fn amend_message(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {
     if repo.state() != git2::RepositoryState::Clean {
         return Err(git2::Error::from_str(
-            "merge/rebase in progress — resolve from the terminal",
+            "merge/rebase in progress — finish it in the conflict panel",
         ));
     }
     if message.trim().is_empty() {

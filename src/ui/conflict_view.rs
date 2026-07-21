@@ -256,6 +256,17 @@ impl ConflictEditorState {
     fn has_unsaved(&self) -> bool {
         self.resolutions.iter().any(|res| res.dirty)
     }
+
+    /// A close request (toolbar ✕, or the footer's Continue closing the editor):
+    /// `true` when it can happen now, `false` once unsaved work armed the discard
+    /// confirmation — nothing is dropped without the user saying so.
+    pub fn request_close(&mut self) -> bool {
+        if self.has_unsaved() {
+            self.confirm_close = true;
+            return false;
+        }
+        true
+    }
 }
 
 fn conflict_count(file: &ConflictFile) -> usize {
@@ -552,7 +563,6 @@ fn toolbar(
     let idx = state.file_index.min(state.files.len() - 1);
     let path = state.files[idx].path.clone();
     let total = conflict_count(&state.files[idx]);
-    let unsaved = state.has_unsaved();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("⚠").color(palette.git_conflict));
         ui.label(
@@ -565,12 +575,8 @@ fn toolbar(
             egui::RichText::new(format!("· {total} conflict{suffix}")).color(palette.text_muted),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("✕ Close").clicked() {
-                if unsaved {
-                    state.confirm_close = true;
-                } else {
-                    action.close = true;
-                }
+            if ui.button("✕ Close").clicked() && state.request_close() {
+                action.close = true;
             }
         });
     });

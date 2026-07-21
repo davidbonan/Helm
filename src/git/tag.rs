@@ -45,8 +45,26 @@ pub fn delete(repo: &git2::Repository, name: &str) -> Result<(), git2::Error> {
     repo.tag_delete(name)
 }
 
-/// `git2` validation of a tag's short name, via its fully-qualified ref
-/// (`refs/tags/<name>`) — the same `check-ref-format` rules as a branch name.
+/// `git2` validation of a tag's short name — `git tag`'s own rules: the
+/// `check-ref-format` rules on `refs/tags/<name>` plus the refusals a raw ref
+/// name would let through (leading `-`, `HEAD`).
 pub fn valid_tag_name(name: &str) -> bool {
-    git2::Reference::is_valid_name(&format!("refs/tags/{name}"))
+    git2::Tag::is_valid_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_tag_name;
+
+    #[test]
+    fn tag_names_follow_gits_tag_rules() {
+        assert!(valid_tag_name("v1.0"));
+        assert!(valid_tag_name("release/1.0-rc1"));
+        // Refused by `git tag` although `refs/tags/<name>` passes check-ref-format.
+        assert!(!valid_tag_name("-rc1"));
+        assert!(!valid_tag_name("HEAD"));
+        assert!(!valid_tag_name(""));
+        assert!(!valid_tag_name("v1..2"));
+        assert!(!valid_tag_name("with space"));
+    }
 }

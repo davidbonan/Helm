@@ -1640,6 +1640,28 @@ impl HelmApp {
         }
     }
 
+    /// Banner Continue (conflicts.md §2): runs the op's `--continue` on the sync
+    /// runner (one op at a time) and closes the editor. Unsaved editor work arms its
+    /// discard confirmation and holds the run back; a refused request (runner busy)
+    /// leaves the editor open — closing it would drop the composition for an op that
+    /// never started.
+    pub(crate) fn continue_op(&mut self, now: f64) {
+        let held_back = self
+            .conflict_editor
+            .as_mut()
+            .is_some_and(|editor| !editor.request_close());
+        if held_back {
+            return;
+        }
+        let accepted = self
+            .git
+            .as_mut()
+            .is_some_and(|git| git.request_sync(SyncCommand::ContinueOp, &mut self.toasts, now));
+        if accepted {
+            self.conflict_editor = None;
+        }
+    }
+
     fn create_runner(&mut self, ctx: &egui::Context) -> &mut crate::git::worktree::CreateRunner {
         self.worktree_create
             .get_or_insert_with(|| crate::git::worktree::CreateRunner::new(repainter(ctx)))

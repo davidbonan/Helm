@@ -105,7 +105,7 @@ fn commit_refuses_during_merge_or_rebase_state() {
     let err = commit::commit(&repo, "merge").unwrap_err();
 
     assert!(
-        err.message().contains("resolve from the terminal"),
+        err.message().contains("finish it in the conflict panel"),
         "unexpected error message: {}",
         err.message()
     );

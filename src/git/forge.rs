@@ -44,7 +44,8 @@ pub fn parse_remote(url: &str) -> Option<Forge> {
     let mut segments = path.split('/');
     let owner = segments.next().filter(|s| !s.is_empty())?;
     let repo = segments.next().filter(|s| !s.is_empty())?;
-    match host.as_str() {
+    // Host names are case-insensitive: `git@GitHub.com:o/r` is the same remote.
+    match host.to_ascii_lowercase().as_str() {
         "github.com" => Some(Forge::GitHub {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
@@ -121,6 +122,24 @@ mod tests {
         assert_eq!(
             parse_remote("https://github.com/acme/webapp/"),
             Some(expected)
+        );
+    }
+
+    #[test]
+    fn host_matching_is_case_insensitive() {
+        assert_eq!(
+            parse_remote("git@GitHub.com:acme/webapp.git"),
+            Some(Forge::GitHub {
+                owner: "acme".to_owned(),
+                repo: "webapp".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_remote("https://BITBUCKET.ORG/team/repo.git"),
+            Some(Forge::Bitbucket {
+                workspace: "team".to_owned(),
+                repo: "repo".to_owned(),
+            })
         );
     }
 

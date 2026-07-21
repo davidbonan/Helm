@@ -1741,6 +1741,39 @@ fn an_index_shift_on_the_same_repo_does_not_respawn_the_session() {
 }
 
 #[test]
+fn a_refused_continue_leaves_the_conflict_editor_open() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(dir.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+    app.conflict_editor = Some(ConflictEditorState::new(Vec::new()));
+
+    // Runner busy ⇒ the `ContinueOp` request is refused (toast, nothing queued):
+    // closing the editor here would drop the composition for an op never started.
+    assert!(app
+        .git
+        .as_mut()
+        .unwrap()
+        .sync
+        .request(SyncCommand::FetchAll));
+    app.continue_op(0.0);
+    assert!(
+        app.conflict_editor.is_some(),
+        "a refused Continue must not close the editor"
+    );
+
+    // Runner free again: the same Continue is accepted and closes the editor.
+    while app.git.as_mut().unwrap().sync.try_recv().is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.continue_op(0.0);
+    assert!(app.conflict_editor.is_none());
+}
+
+#[test]
 fn an_ai_generation_survives_a_repo_switch() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();

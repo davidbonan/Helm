@@ -1,5 +1,6 @@
 use crate::git::branch::valid_branch_name;
 use crate::git::graph::{Edge, Graph, GraphCommit, GraphRef, GraphRow, LaneCache, RefKind};
+use crate::git::tag::valid_tag_name;
 use crate::theme::{medium_family, Palette, BODY_SIZE, RADIUS_PILL};
 use crate::ui::repo_sidebar::DeleteModalAction;
 use crate::ui::spinner::Spinner;
@@ -80,8 +81,10 @@ const CHIP_DIM_ALPHA: u8 = 180;
 /// Graph loading spinner (a11y label, no visible text).
 const SPINNER_SIZE: f32 = 22.0;
 const LOADING_LABEL: &str = "Loading graph";
-/// Inline error of the Branch editor (git.md §10).
+/// Inline error of the Branch editor (git.md §10), named after what the field
+/// creates — the two names follow different git rules.
 const INVALID_NAME: &str = "Invalid branch name";
+const INVALID_TAG_NAME: &str = "Invalid tag name";
 const ERROR_SIZE: f32 = 12.0;
 
 /// Graph search box (⌘F, git.md §9): floating field at the top-right of the
@@ -1069,7 +1072,9 @@ fn commit_row_ui(
         ui.scroll_to_rect(rect, Some(egui::Align::Center));
     }
     let is_selected = ctx.selected == Some(commit.oid);
-    if response.clicked() {
+    // Same guard as the right-click below: while the pointer is over an expanded
+    // chip overlay the click belongs to the overlay, never to the row it covers.
+    if response.clicked() && ctx.hover_lock.is_none() {
         out.action.selected = Some(commit.oid);
     }
     // Branch editor open: the field is placed in place of the chips on its
@@ -1869,7 +1874,8 @@ fn branch_editor_field(
         // field silently rather than surfacing git's "already exists".
         if editor.rename.as_deref() == Some(name.as_str()) {
             *editor = BranchEditor::default();
-        } else if valid_branch_name(&name) {
+        } else if (editor.tag && valid_tag_name(&name)) || (!editor.tag && valid_branch_name(&name))
+        {
             editor.error = None;
             editor.pending = true;
             // A tag editor tags its commit; a rename editor renames its branch; a
@@ -1886,7 +1892,14 @@ fn branch_editor_field(
                 action.create_branch = Some(name);
             }
         } else {
-            editor.error = Some(INVALID_NAME.to_owned());
+            editor.error = Some(
+                if editor.tag {
+                    INVALID_TAG_NAME
+                } else {
+                    INVALID_NAME
+                }
+                .to_owned(),
+            );
             response.request_focus();
         }
     }

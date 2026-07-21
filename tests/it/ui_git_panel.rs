@@ -65,6 +65,16 @@ fn drive_with_state(
     initial_state: GitPanelState,
     actions: impl Fn(&mut Harness<'_, ()>) + 'static,
 ) -> Vec<GitIntent> {
+    drive_collect(status, initial_state, actions).0
+}
+
+/// Same drive, reporting the panel state left behind on top of the intents —
+/// for the selection bookkeeping (marked files, shift-click anchor).
+fn drive_collect(
+    status: RepoStatus,
+    initial_state: GitPanelState,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> (Vec<GitIntent>, Rc<RefCell<GitPanelState>>) {
     let palette = Palette::light();
     let intents = Rc::new(RefCell::new(Vec::new()));
     let sink = intents.clone();
@@ -92,7 +102,7 @@ fn drive_with_state(
     harness.run();
 
     let out = intents.borrow().clone();
-    out
+    (out, state)
 }
 
 #[test]
@@ -1557,6 +1567,34 @@ fn multi_select_menu_stages_every_marked_file() {
     });
     assert!(intents.contains(&GitIntent::Stage("src/main.rs".to_owned())));
     assert!(intents.contains(&GitIntent::Stage("src/lib.rs".to_owned())));
+}
+
+#[test]
+fn right_click_moves_the_shift_click_anchor_to_that_row() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("a.txt", ChangeKind::Modified),
+            file("b.txt", ChangeKind::Modified),
+            file("c.txt", ChangeKind::Modified),
+            file("d.txt", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let (_, state) = drive_collect(status, GitPanelState::default(), |h| {
+        // a.txt selected, then c.txt right-clicked: the menu's target becomes the
+        // selection, so the range must start there — not back at a.txt.
+        h.get_by_label("a.txt").click();
+        h.run();
+        h.get_by_label("c.txt").click_secondary();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.get_by_label("d.txt")
+            .click_modifiers(egui::Modifiers::SHIFT);
+    });
+    let state = state.borrow();
+    let marked: Vec<&str> = state.marked_files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(marked, ["c.txt", "d.txt"]);
 }
 
 #[test]
