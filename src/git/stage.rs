@@ -20,9 +20,12 @@ pub(crate) fn fresh_index(repo: &git2::Repository) -> Result<git2::Index, git2::
 pub fn stage(repo: &git2::Repository, path: &str) -> Result<(), git2::Error> {
     let mut index = fresh_index(repo)?;
     let rel = Path::new(path);
+    // `exists()` follows the link: a symlink repointed at a target that does
+    // not exist yet would read as removed and stage its deletion, where
+    // `stage_all` (switching on the delta status) stages the modification.
     let exists = repo
         .workdir()
-        .map(|wd| wd.join(rel).exists())
+        .map(|wd| wd.join(rel).symlink_metadata().is_ok())
         .unwrap_or(false);
     if exists {
         // New path of a detected rename (not yet in the index): the old path —

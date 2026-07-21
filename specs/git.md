@@ -61,6 +61,8 @@ Built from `git2::Statuses` (`StatusOptions` with `include_untracked` and
   move the old path's deletion together with the new path — never a
   half-staged rename residue. Discard restores the old path while deleting
   the new one.
+- **Symlinks** are staged as links, never followed: a link repointed at a target
+  that does not exist yet stages its new target, not a deletion.
 - **Ignored** files (`.gitignore`): not listed.
 - Conflicts (`CONFLICTED`): listed with a **Conflict** badge; resolution runs
   through the in-app conflict editor ([`conflicts.md`](conflicts.md)), with the

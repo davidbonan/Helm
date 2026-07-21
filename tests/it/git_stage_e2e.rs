@@ -1172,3 +1172,84 @@ fn unstage_hunk_of_a_staged_rename_keeps_the_move_staged() {
         vec![("new.txt", status::ChangeKind::Modified, 1, 1)],
     );
 }
+
+fn commit_symlink(repo: &git2::Repository, name: &str, target: &str, message: &str) {
+    let dir = repo.workdir().unwrap();
+    std::os::unix::fs::symlink(target, dir.join(name)).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(name)).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let parents: Vec<git2::Commit> = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|oid| repo.find_commit(oid).ok())
+        .into_iter()
+        .collect();
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+        .unwrap();
+}
+
+fn repoint_symlink(dir: &Path, name: &str, target: &str) {
+    fs::remove_file(dir.join(name)).unwrap();
+    std::os::unix::fs::symlink(target, dir.join(name)).unwrap();
+}
+
+#[test]
+fn stage_a_symlink_repointed_at_a_missing_target_stages_the_modification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "here.txt", "v1\n", "init");
+    commit_symlink(&repo, "link", "here.txt", "add link");
+    repoint_symlink(tmp.path(), "link", "not-yet-there.txt");
+
+    stage::stage(&repo, "link").unwrap();
+
+    let st = status::load_repo(&repo).unwrap();
+    assert!(st.unstaged.is_empty(), "got {:?}", st.unstaged);
+    assert_eq!(
+        st.staged
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind))
+            .collect::<Vec<_>>(),
+        vec![("link", status::ChangeKind::Modified)],
+        "the dangling link is staged as its new target, not as a deletion",
+    );
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let index = repo.index().unwrap();
+    let entry = index.get_path(Path::new("link"), 0).unwrap();
+    assert_eq!(
+        repo.find_blob(entry.id).unwrap().content(),
+        b"not-yet-there.txt",
+    );
+    assert_ne!(
+        entry.id,
+        head.tree()
+            .unwrap()
+            .get_path(Path::new("link"))
+            .unwrap()
+            .id()
+    );
+}
+
+#[test]
+fn stage_all_agrees_with_stage_on_a_symlink_repointed_at_a_missing_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "here.txt", "v1\n", "init");
+    commit_symlink(&repo, "link", "here.txt", "add link");
+    repoint_symlink(tmp.path(), "link", "not-yet-there.txt");
+
+    stage::stage_all(&repo).unwrap();
+    let batch = status::load_repo(&repo).unwrap();
+
+    stage::unstage(&repo, "link").unwrap();
+    stage::stage(&repo, "link").unwrap();
+    let per_file = status::load_repo(&repo).unwrap();
+
+    assert_eq!(batch.staged, per_file.staged);
+    assert_eq!(batch.unstaged, per_file.unstaged);
+}

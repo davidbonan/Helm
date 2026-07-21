@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **22/37**.
+work**. Counter: **23/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -180,7 +180,7 @@ work**. Counter: **22/37**.
   lines). Tests: 2 diff e2e + 2 status e2e + 2 stage e2e. A **pure** rename now shows
   *No changes* (0 hunks, 0/0) like `git diff` does. *Files*: `src/git/diff.rs`,
   `src/git/status.rs`, `src/git/stage.rs`.
-- ☐ **T19 — Symlinks staged by `symlink_metadata`.** `.exists()` follows the link
+- ☑ **T19 — Symlinks staged by `symlink_metadata`.** `.exists()` follows the link
   (`stage.rs:20`) ⇒ repointing a symlink at a not-yet-created target stages its
   **deletion**; `stage_all` is immune (it switches on the delta status), so per-file
   Stage and Stage All disagree on the same row. Nothing in specs/tests covers symlinks.
@@ -329,7 +329,7 @@ work**. Counter: **22/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T19** (Lot C), then the rest of Lot C, then Lot D.
+- Order: **T21** (Lot C), then the rest of Lot C (T22, T24–T27), then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
