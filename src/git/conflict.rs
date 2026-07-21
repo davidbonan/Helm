@@ -190,7 +190,8 @@ pub fn resolve_file_side(
     let workdir = repo
         .workdir()
         .ok_or_else(|| git2::Error::from_str("bare repository has no working tree"))?;
-    let conflict = find_conflict(&repo.index()?, path)?;
+    let mut index = stage::fresh_index(repo)?;
+    let conflict = find_conflict(&index, path)?;
     let entry = if ours { conflict.our } else { conflict.their }
         .ok_or_else(|| git2::Error::from_str("the chosen side is absent"))?;
     let content = repo.find_blob(entry.id)?.content().to_vec();
@@ -198,7 +199,6 @@ pub fn resolve_file_side(
     let rel = Path::new(path);
     std::fs::write(workdir.join(rel), content)
         .map_err(|err| git2::Error::from_str(&err.to_string()))?;
-    let mut index = stage::fresh_index(repo)?;
     index.add_path(rel)?;
     index.write()
 }

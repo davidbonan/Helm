@@ -6,7 +6,8 @@ use egui_kittest::Harness;
 
 use helm::git::cli;
 use helm::git::conflict::{
-    read_conflict, read_conflicts, resolve_file, ConflictFile, ConflictKind, Region,
+    read_conflict, read_conflicts, resolve_file, resolve_file_side, ConflictFile, ConflictKind,
+    Region,
 };
 use helm::git::sync::{self, SyncError, SyncOutcome};
 use helm::theme::Palette;
@@ -435,6 +436,39 @@ fn delete_modify_resolved_by_delete_then_continue_removes_the_file() {
         !tmp.path().join("doomed.txt").exists(),
         "the file is removed from the working tree"
     );
+}
+
+#[test]
+fn taking_a_side_sees_a_resolution_made_by_another_handle() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    // Worker-style long-lived handle: its in-memory index snapshot is loaded
+    // while base.txt still carries its merge stages.
+    let worker = git2::Repository::open(tmp.path()).unwrap();
+    assert!(worker.index().unwrap().has_conflicts());
+
+    // Terminal pane: the file is resolved by hand and staged through a separate
+    // handle, so the on-disk index holds no conflict for it any more.
+    let in_a_pane = "alpha\nresolved-in-a-pane\ncharlie\n";
+    fs::write(tmp.path().join("base.txt"), in_a_pane).unwrap();
+    let external = git2::Repository::open(tmp.path()).unwrap();
+    let mut index = external.index().unwrap();
+    index.add_path(Path::new("base.txt")).unwrap();
+    index.write().unwrap();
+
+    let err = resolve_file_side(&worker, "base.txt", true).unwrap_err();
+    assert!(
+        err.message().contains("no conflict"),
+        "a side cannot be taken on a path the index no longer reports as conflicted: {err}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("base.txt")).unwrap(),
+        in_a_pane,
+        "taking a side off a stale index clobbered the pane's resolution"
+    );
+    assert!(!index_has_conflicts(&worker));
 }
 
 /// Drives the real conflict editor headless: ticks the A (ours) take box of the

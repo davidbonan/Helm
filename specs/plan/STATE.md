@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **24/37**.
+work**. Counter: **25/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -198,7 +198,7 @@ work**. Counter: **24/37**.
   normalized too. No test locks LF normalization. Detect the terminator from the
   ours/theirs blob at reconstruction and re-apply at compose time.
   *Files*: `src/git/conflict.rs`, `src/ui/conflict_view.rs`.
-- ☐ **T22 — `resolve_file_side` reads a fresh index.** Only index access in the module
+- ☑ **T22 — `resolve_file_side` reads a fresh index.** Only index access in the module
   that skips the refresh (`conflict.rs:144` vs `:58`, `:87`, `:116`, `:152`), violating
   the invariant documented at `stage.rs:6-10`. Window bounded by the 1 s poll; can write
   a stale side's blob over a file already resolved in a terminal pane. Take
@@ -329,7 +329,7 @@ work**. Counter: **24/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T22** (Lot C), then the rest of Lot C (T24–T27), then Lot D.
+- Order: **T24** (Lot C), then the rest of Lot C (T25–T27), then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
