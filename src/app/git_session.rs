@@ -246,6 +246,9 @@ pub(crate) struct GitSession {
     pub(crate) sync: SyncRunner,
     /// Silent background fetch (git.md §7): refreshes `refs/remotes/*` on a fixed
     /// cadence so the graph reflects the real remote position without a manual pull.
+    /// Held, never read — it ticks on its own thread and its `Drop` stops it with
+    /// the session.
+    #[allow(dead_code)]
     pub(crate) fetch: FetchRunner,
     /// AI generation of the commit message, off the UI thread; one request at a time
     /// (`busy` ⇒ spinner on the commit card button).
@@ -325,7 +328,7 @@ impl GitSession {
         let mutation_lock = MutationLock::new();
         let worker = GitWorker::spawn_with_lock(path, mutation_lock.clone(), repainter(ctx));
         let sync = SyncRunner::new_with_lock(path, mutation_lock.clone(), repainter(ctx));
-        let fetch = FetchRunner::new(path, now, repainter(ctx));
+        let fetch = FetchRunner::new(path, mutation_lock.clone(), repainter(ctx));
         let ai_rebase = AiRebaseRunner::new(path, mutation_lock, repainter(ctx));
         Self {
             index,
@@ -391,17 +394,6 @@ impl GitSession {
             }
             self.last_poll = now;
         }
-    }
-
-    /// Silent background fetch (git.md §7) on its own cadence: defers to an in-flight
-    /// manual network op or AI rebase (which also move the remote refs), otherwise
-    /// refreshes `refs/remotes/*` so the next poll-driven graph reload shows the real
-    /// remote position without a manual pull.
-    pub(crate) fn poll_background_fetch(&mut self, now: f64) {
-        if self.sync.busy() || self.ai_rebase.busy() {
-            return;
-        }
-        self.fetch.tick(now, self.has_remote);
     }
 
     /// Requests the graph at the current pagination.

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -326,6 +327,13 @@ pub struct MutationLock {
 impl MutationLock {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Read-only peek, never acquires: the background fetch (which runs
+    /// lock-free) uses it to defer to an in-flight mutation without racing a
+    /// user op for the lock.
+    pub(crate) fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Acquire)
     }
 
     pub(crate) fn try_acquire(&self) -> Option<MutationGuard> {
@@ -875,67 +883,89 @@ impl SyncRunner {
 }
 
 /// Cadence of the silent background fetch (git.md §7).
-const BACKGROUND_FETCH_INTERVAL_SECS: f64 = 10.0;
+const BACKGROUND_FETCH_INTERVAL: Duration = Duration::from_secs(10);
 
-/// A background-fetch tick is due once the interval has elapsed, never while one
-/// is already running (single-flight) nor on a repo without a remote.
-fn background_fetch_due(now: f64, last_run: f64, in_flight: bool, has_remote: bool) -> bool {
-    has_remote && !in_flight && now - last_run >= BACKGROUND_FETCH_INTERVAL_SECS
-}
+/// Granularity of the sleep between ticks: the runner wakes this often to notice
+/// a dropped session, so a repo switch does not leave a thread idling ten seconds.
+const FETCH_STOP_POLL: Duration = Duration::from_millis(200);
 
-/// Silent `git fetch --all` of the active repo every `BACKGROUND_FETCH_INTERVAL_SECS`,
-/// off the UI thread: keeps `refs/remotes/*` fresh so the graph — reloaded by the
-/// poll (git.md §7) — shows the real remote position without a manual fetch/pull.
+/// Silent `git fetch --all` of the active repo every `BACKGROUND_FETCH_INTERVAL`,
+/// on its **own thread with its own clock**: keeps `refs/remotes/*` fresh so the graph
+/// — reloaded by the poll (git.md §7) — shows the real remote position without a manual
+/// fetch/pull. Driving it from the frame loop instead tied it to `egui`'s time, which
+/// stops advancing as soon as the window is hidden or occluded (macOS delivers no
+/// frames): the refs then froze for as long as the app stayed in the background.
 ///
 /// Lock-free on purpose: `sync::background_fetch_all` disables auto-maintenance, so a
 /// fetch only writes loose `refs/remotes` + objects (never a repack / `packed-refs`
 /// rewrite), disjoint from the index and local refs the mutation lock guards — holding
-/// it would instead spuriously fail user staging/commits on every tick. The caller
-/// defers a tick to any in-flight manual network op / AI rebase — the only op that
-/// also moves the remote refs.
+/// it would instead spuriously fail user staging/commits on every tick. A tick is
+/// skipped (never queued) while that lock is held: a manual network op / AI rebase
+/// moves the same remote refs, and `is_locked` only peeks — acquiring it would race
+/// the user op for the lock.
 /// Failures (offline / auth) are swallowed: the fetch stays invisible until it moves
-/// a ref the graph then shows. Single-flight: a fetch slower than the interval is not
-/// stacked. The thread is not joined: abandoning the session mid-fetch lets the
-/// subprocess finish, its result dropped.
+/// a ref the graph then shows. Sequential by construction: a fetch slower than the
+/// interval delays the next one instead of stacking. The thread is not joined:
+/// abandoning the session mid-fetch lets the subprocess finish, its result dropped.
 pub struct FetchRunner {
-    repo_path: PathBuf,
-    on_event: Arc<dyn Fn() + Send + Sync>,
-    in_flight: Arc<AtomicBool>,
-    last_run: f64,
+    stop: Arc<AtomicBool>,
 }
 
 impl FetchRunner {
     pub fn new(
         repo_path: &Path,
-        started: f64,
+        mutation_lock: MutationLock,
         on_event: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        Self {
-            repo_path: repo_path.to_path_buf(),
-            on_event: Arc::new(on_event),
-            in_flight: Arc::new(AtomicBool::new(false)),
-            last_run: started,
-        }
+        Self::with_interval(
+            repo_path,
+            mutation_lock,
+            BACKGROUND_FETCH_INTERVAL,
+            on_event,
+        )
     }
 
-    /// Spawns a fetch when the cadence allows it; a no-op otherwise. Only the UI
-    /// thread calls this, so the load-then-store of `in_flight` needs no CAS — the
-    /// fetch thread only ever clears it.
-    pub fn tick(&mut self, now: f64, has_remote: bool) {
-        let in_flight = self.in_flight.load(Ordering::Acquire);
-        if !background_fetch_due(now, self.last_run, in_flight, has_remote) {
-            return;
-        }
-        self.last_run = now;
-        self.in_flight.store(true, Ordering::Release);
-        let path = self.repo_path.clone();
-        let in_flight = Arc::clone(&self.in_flight);
-        let on_event = Arc::clone(&self.on_event);
+    /// Seam: the tests drive the cadence instead of waiting ten real seconds.
+    pub fn with_interval(
+        repo_path: &Path,
+        mutation_lock: MutationLock,
+        interval: Duration,
+        on_event: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let path = repo_path.to_path_buf();
+        let stopped = Arc::clone(&stop);
         std::thread::spawn(move || {
-            let _ = sync::background_fetch_all(&path);
-            in_flight.store(false, Ordering::Release);
-            on_event();
+            while sleep_until_due(&stopped, interval) {
+                // A repo with no remote costs one `Repository::open` per tick
+                // (`ensure_remote`), no network — no snapshot to wait for.
+                if mutation_lock.is_locked() {
+                    continue;
+                }
+                let _ = sync::background_fetch_all(&path);
+                on_event();
+            }
         });
+        Self { stop }
+    }
+}
+
+/// Sleeps one interval in `FETCH_STOP_POLL` slices; `false` once the session is
+/// abandoned, which ends the loop.
+fn sleep_until_due(stop: &AtomicBool, interval: Duration) -> bool {
+    let deadline = Instant::now() + interval;
+    while Instant::now() < deadline {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        std::thread::sleep(FETCH_STOP_POLL.min(interval));
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
+impl Drop for FetchRunner {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -1202,6 +1232,40 @@ mod tests {
 
     #[test]
     fn background_fetch_advances_remote_tracking_ref() {
+        let (_tmp, a, target) = clone_behind_its_remote();
+
+        // No UI frame is ever pumped here: the runner ticks on its own clock —
+        // exactly what keeps the refs fresh while the window is hidden.
+        let _fetch =
+            FetchRunner::with_interval(&a, MutationLock::new(), Duration::from_millis(50), || {});
+        assert!(
+            wait_until(200, || tracking_main(&a) == target),
+            "background fetch advanced refs/remotes/origin/main without a checkout"
+        );
+    }
+
+    #[test]
+    fn background_fetch_defers_to_a_held_mutation_lock() {
+        let (_tmp, a, target) = clone_behind_its_remote();
+        let lock = MutationLock::new();
+        let guard = lock.try_acquire().expect("free lock");
+
+        let _fetch = FetchRunner::with_interval(&a, lock, Duration::from_millis(50), || {});
+        assert!(
+            !wait_until(20, || tracking_main(&a) == target),
+            "no fetch while a mutation (manual pull, AI rebase) holds the lock"
+        );
+
+        drop(guard);
+        assert!(
+            wait_until(200, || tracking_main(&a) == target),
+            "the fetch resumes once the lock is released"
+        );
+    }
+
+    /// Clone `a` of a bare remote another clone has since advanced: its
+    /// `refs/remotes/origin/main` is one commit behind the returned oid.
+    fn clone_behind_its_remote() -> (tempfile::TempDir, PathBuf, git2::Oid) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let git = |args: &[&str], cwd: &Path| {
@@ -1251,41 +1315,27 @@ mod tests {
             .unwrap()
             .target()
             .unwrap();
-        let tracking = |repo: &Path| {
-            git2::Repository::open(repo)
-                .unwrap()
-                .find_reference("refs/remotes/origin/main")
-                .unwrap()
-                .target()
-                .unwrap()
-        };
-        assert_ne!(tracking(&a), target, "A is behind before the fetch");
-
-        let mut fetch = FetchRunner::new(&a, 0.0, || {});
-        fetch.tick(BACKGROUND_FETCH_INTERVAL_SECS, true);
-        let mut waited = 0;
-        while fetch.in_flight.load(Ordering::Acquire) && waited < 200 {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            waited += 1;
-        }
-        assert!(!fetch.in_flight.load(Ordering::Acquire), "fetch finished");
-        assert_eq!(
-            tracking(&a),
-            target,
-            "background fetch advanced refs/remotes/origin/main without a checkout"
-        );
+        assert_ne!(tracking_main(&a), target, "A is behind before the fetch");
+        (tmp, a, target)
     }
 
-    #[test]
-    fn background_fetch_fires_on_cadence_only() {
-        let interval = BACKGROUND_FETCH_INTERVAL_SECS;
-        // Before the interval has elapsed: not due.
-        assert!(!background_fetch_due(interval - 0.1, 0.0, false, true));
-        // Interval elapsed, idle, remote present: due.
-        assert!(background_fetch_due(interval, 0.0, false, true));
-        // Already fetching (single-flight): never due, even past the interval.
-        assert!(!background_fetch_due(interval * 3.0, 0.0, true, true));
-        // No remote: never due.
-        assert!(!background_fetch_due(interval * 3.0, 0.0, false, false));
+    fn tracking_main(repo: &Path) -> git2::Oid {
+        git2::Repository::open(repo)
+            .unwrap()
+            .find_reference("refs/remotes/origin/main")
+            .unwrap()
+            .target()
+            .unwrap()
+    }
+
+    /// Polls `done` every 25 ms, `tries` times (the fetch subprocess is the slow part).
+    fn wait_until(tries: usize, done: impl Fn() -> bool) -> bool {
+        for _ in 0..tries {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
     }
 }

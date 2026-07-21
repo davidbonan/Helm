@@ -279,11 +279,15 @@ file-level Discard). After application, we recompute the `status` (§7).
 - **Background fetch**: the active repo runs a silent `git fetch --all` on its own
   cadence (**10 s**) so `refs/remotes/*` stay fresh and the graph shows the **real
   remote position** (e.g. `origin/x` ahead of the local `x`) without a manual
-  fetch/pull. The poll reload above then renders the moved refs. It runs lock-free
+  fetch/pull. The poll reload above then renders the moved refs. It ticks on **its
+  own thread and its own clock**, not on the frame loop: a hidden or occluded window
+  gets no frames on macOS, which used to freeze the refs for as long as the app
+  stayed in the background. It runs lock-free
   with **auto-maintenance disabled** (`gc.auto=0`, `maintenance.auto=false`) so the
   cadence never repacks: a fetch only writes loose `refs/remotes` + objects, disjoint
-  from the index/local refs the mutation lock guards. It **defers** to any in-flight
-  manual network op / AI rebase; failures (offline/auth) are swallowed — invisible
+  from the index/local refs the mutation lock guards. A tick is **skipped** while the
+  mutation lock is held (manual network op / AI rebase, which move the same refs);
+  failures (offline/auth) are swallowed — invisible
   until a ref actually moves. **Local branches are never advanced** (that stays a pull/checkout); only
   the remote-tracking refs the graph draws are refreshed.
 - **Immediate refresh after each action** (stage/unstage/commit/discard):

@@ -852,7 +852,6 @@ impl HelmApp {
         if let Some(git) = &mut self.git {
             let now = ctx.input(|i| i.time);
             git.poll(now, self.diff.as_ref(), graph_mode);
-            git.poll_background_fetch(now);
             git.drain_sync(graph_mode, &mut self.toasts, now);
             git.drain_ai(&mut self.git_panel_state, &mut self.toasts, now);
             git.drain(
