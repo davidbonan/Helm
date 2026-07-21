@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **28/37**.
+work**. Counter: **29/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -232,7 +232,7 @@ work**. Counter: **28/37**.
   **both paths** (it enumerates Stage/Unstage/Discard, not Stash). Expand inside
   `stash_paths` via `status::rename_old_path` so every caller is covered.
   *Files*: `src/git/stash.rs`.
-- ☐ **T27 — Partial staging keeps the exec bit.** `new file mode 100644` hardcoded
+- ☑ **T27 — Partial staging keeps the exec bit.** `new file mode 100644` hardcoded
   (`stage.rs:349`); needs a *partial* selection on an untracked file (`apply_filtered`
   short-circuits to `stage()` when the selection covers the whole add, `:256`). Stat the
   worktree file and pass the mode in. *Files*: `src/git/stage.rs`.
@@ -328,8 +328,9 @@ work**. Counter: **28/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T27** (Lot C), then Lot D.
+- **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
+  (T18–T27 ☑/⏭).
+- Order: **T28**, then T29 → T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

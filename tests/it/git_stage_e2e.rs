@@ -1253,3 +1253,84 @@ fn stage_all_agrees_with_stage_on_a_symlink_repointed_at_a_missing_target() {
     assert_eq!(batch.staged, per_file.staged);
     assert_eq!(batch.unstaged, per_file.unstaged);
 }
+
+fn index_mode(repo: &git2::Repository, path: &str) -> u32 {
+    repo.index()
+        .unwrap()
+        .get_path(Path::new(path), 0)
+        .unwrap()
+        .mode
+}
+
+fn write_executable(dir: &Path, name: &str, content: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    fs::write(&path, content).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn partial_stage_of_an_untracked_executable_file_keeps_the_exec_bit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "base.txt", "base\n", "init");
+    write_executable(tmp.path(), "run.sh", "one\ntwo\n");
+
+    stage::stage_lines(&repo, "run.sh", 0, &[0]).unwrap();
+
+    assert_eq!(
+        index_mode(&repo, "run.sh"),
+        0o100755,
+        "the partial patch must declare the working tree's exec bit"
+    );
+    assert_eq!(
+        line_contents(&repo, "run.sh", DiffSource::Staged, LineOrigin::Addition),
+        vec!["one"],
+    );
+}
+
+#[test]
+fn partial_stage_of_an_untracked_plain_file_stays_non_executable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "base.txt", "base\n", "init");
+    fs::write(tmp.path().join("plain.txt"), "one\ntwo\n").unwrap();
+
+    stage::stage_lines(&repo, "plain.txt", 0, &[0]).unwrap();
+
+    assert_eq!(index_mode(&repo, "plain.txt"), 0o100644);
+}
+
+#[test]
+fn partial_stage_agrees_with_stage_when_core_filemode_is_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.filemode", false)
+        .unwrap();
+    commit_file(&repo, "base.txt", "base\n", "init");
+    write_executable(tmp.path(), "run.sh", "one\ntwo\n");
+    write_executable(tmp.path(), "whole.sh", "one\ntwo\n");
+
+    stage::stage_lines(&repo, "run.sh", 0, &[0]).unwrap();
+    stage::stage(&repo, "whole.sh").unwrap();
+
+    assert_eq!(
+        index_mode(&repo, "run.sh"),
+        index_mode(&repo, "whole.sh"),
+        "a repo that cannot carry the exec bit must not gain one from a partial stage"
+    );
+    assert_eq!(index_mode(&repo, "run.sh"), 0o100644);
+}
+
+#[test]
+fn whole_file_stage_of_an_untracked_executable_keeps_the_exec_bit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    write_executable(tmp.path(), "run.sh", "one\ntwo\n");
+
+    stage::stage(&repo, "run.sh").unwrap();
+
+    assert_eq!(index_mode(&repo, "run.sh"), 0o100755);
+}

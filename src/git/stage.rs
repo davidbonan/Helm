@@ -220,7 +220,7 @@ pub fn discard_hunk(
     let raw = raw_lines(repo, &file.path, DiffSource::Unstaged, hunk_index, hunk)?;
     // No rename header: the hunk is reverted **in place** in the working tree,
     // the move itself is what the file-level Discard undoes (git.md §4).
-    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, None, true, false, None) else {
+    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, None, true, None, None) else {
         return Ok(());
     };
     let parsed = git2::Diff::from_buffer(&rendered)?;
@@ -300,13 +300,14 @@ fn apply_filtered(
         (DiffSource::Unstaged, true) => status::rename_old_path(repo, path, false)?,
         _ => None,
     };
+    let new_file_mode = new_file.then(|| worktree_file_mode(repo, path));
     let Some(rendered) = render_hunk_patch(
         &file.path,
         hunk,
         &raw,
         line_indices,
         reverse,
-        new_file,
+        new_file_mode,
         renamed_from.as_deref(),
     ) else {
         return Ok(());
@@ -353,13 +354,36 @@ fn is_whole_file_add_or_delete(hunk: &Hunk) -> bool {
             || (hunk.new_lines == 0 && hunk.lines.iter().all(|l| l.origin == LineOrigin::Deletion)))
 }
 
+/// Mode the `new file mode` header must declare, mirroring what `index.add_path`
+/// would record for the same file: the working tree's exec bit, unless
+/// `core.filemode` is off (a filesystem that cannot carry it), where git records
+/// `100644` regardless. `symlink_metadata` so a link is not read through to its
+/// target (cf. `stage`); a link staged this way keeps the previous `100644`, its
+/// own mode being out of this path's reach.
+fn worktree_file_mode(repo: &git2::Repository, path: &str) -> &'static str {
+    use std::os::unix::fs::PermissionsExt;
+    let honored = repo
+        .config()
+        .and_then(|c| c.get_bool("core.filemode"))
+        .unwrap_or(true);
+    let executable = repo
+        .workdir()
+        .and_then(|wd| wd.join(path).symlink_metadata().ok())
+        .is_some_and(|md| md.is_file() && md.permissions().mode() & 0o111 != 0);
+    if honored && executable {
+        "100755"
+    } else {
+        "100644"
+    }
+}
+
 fn render_hunk_patch(
     path: &str,
     hunk: &Hunk,
     raw: &[Vec<u8>],
     line_indices: Option<&[usize]>,
     reverse: bool,
-    new_file: bool,
+    new_file_mode: Option<&str>,
     renamed_from: Option<&str>,
 ) -> Option<Vec<u8>> {
     let mut body: Vec<u8> = Vec::new();
@@ -418,8 +442,8 @@ fn render_hunk_patch(
         }
         None => {
             patch.push_str(&format!("diff --git a/{path} b/{path}\n"));
-            if new_file {
-                patch.push_str("new file mode 100644\n");
+            if let Some(mode) = new_file_mode {
+                patch.push_str(&format!("new file mode {mode}\n"));
                 patch.push_str("--- /dev/null\n");
             } else {
                 patch.push_str(&format!("--- a/{path}\n"));
