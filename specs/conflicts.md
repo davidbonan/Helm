@@ -179,7 +179,20 @@ top panes; the Output region follows:
 - **Already edited on disk**: on open, the disk file is compared to a clean
   reconstruction from the stages. If it **diverges** (hand-edited before opening),
   an in-editor notice offers *Load my version* (the disk content fills the
-  Output buffer) or *Start from the merge* (the default reconstruction).
+  Output buffer) or *Start from the merge* (the default reconstruction). The
+  comparison is **normalised** on both sides: git writes the working tree in
+  `merge` style with branch labels, the reconstruction is diff3 with fixed ones,
+  and diff3 keeps inside the hunk the lines the two sides share at its edges. So
+  neither the line terminator, the marker labels, nor the width of a conflict
+  hunk counts as a divergence — only the sides' content does. Otherwise every
+  untouched file would open on the notice.
+- **Modes and symlinks**: Save writes the resolution **through** the entry's
+  mode. The composed buffer replaces the file after an **unlink** (never a write
+  in place — the path may still be a symlink, whose target would be followed and
+  the wrong file overwritten); when the conflicted entry is a **symlink**, the
+  buffer becomes the link's new target rather than a regular file's content.
+  Taking a side on an **executable** conflict re-applies *that side's* exec bit
+  before staging, so the merge's working-tree mode never leaks into the result.
 
 ## 6. Conflict kinds (read from the index stages)
 
@@ -205,19 +218,24 @@ hence safe to parse), split into `Stable` (auto-merged / context) and `Conflict`
 | **Binary** conflict | no 3-zone editor → file-level *Use incoming / Use current* card |
 | **delete/modify** | focused *Keep / Delete* card (§6) |
 | **oversize** (> 2 MB / > 50k lines, git.md §8) | file-level only + "resolve in the terminal" note |
-| **submodule / rename-rename** | delegated to the terminal (the banner does not pretend otherwise) |
+| **submodule / rename-rename** | delegated to the terminal (the banner does not pretend otherwise); a conflicted **gitlink** is left out of the editor's file rail — its stages are commits of the submodule's own ODB, unreadable as blobs, and one of them must not take the whole rail down with it |
 | **disk reload mid-edit** (1 s poll, git.md §7/§8) | flagged like the diff; the composition is not clobbered |
 
 ## 8. Architecture
 
 - **Domain** (`git/conflict.rs`, new, `pub` from the lib): `ConflictFile { path,
-  kind, ours_label, theirs_label, regions, has_base }`, `ConflictKind`,
+  kind, ours_label, theirs_label, regions, has_base, eol, disk_divergence }`
+  (`eol` the detected line terminator, `disk_divergence` the working-tree content
+  when it no longer matches the reconstruction — both §5), `ConflictKind`,
   `Region::{Stable, Conflict { ours, theirs, base }}`. A new
   `GitCommand::ReadConflict` returns it over the worker channel (like `FileDiff`).
 - **Resolution write** (git2 worker): `GitCommand::ResolveFile { path, content }`
   writes the working tree + `index.add_path` (or removes the path for a delete
   resolution), mirroring `stage.rs`' filtered-apply / index-write off the UI
-  thread.
+  thread. The **merge stages are the write's precondition**, re-read from disk:
+  a path resolved meanwhile (another pane, the terminal) or an operation aborted
+  under the editor is **refused**, never overwritten from a buffer composed
+  against the old state.
 - **Finalisation** (subprocess runner): `SyncCommand::ContinueOp` generalises
   `AbortOp` — same flavor selection from `Repository::state()`.
 - **Rendering** (`ui/conflict_view.rs`, new): `fn(&mut egui::Ui, …)` driven by

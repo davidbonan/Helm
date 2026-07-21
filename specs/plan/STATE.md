@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **37/37**.
+work**. Counter: **38/38**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -327,9 +327,34 @@ work**. Counter: **37/37**.
   back into `conflicts.md`. *Files*: `specs/conflicts.md`, `src/app/render.rs`,
   `src/ui/git_panel.rs`.
 
+- ☑ **T37 — Branch review, 13 fixes.** Full read of the milestone's diff (adversarially
+  verified before applying; each fix carries a test proven to fail without it).
+  *Conflicts* (`git/conflict.rs`): the merge stages now gate `resolve_file` (a path
+  resolved elsewhere is refused, not overwritten) · the resolution is written after an
+  **unlink** and a `120000` entry comes back as a **symlink** (a write in place followed
+  the old link out of the repo) · deletion via `symlink_metadata`, `Path::exists` left a
+  dangling link behind · taking a side re-applies **that side's** exec bit · a conflicted
+  **gitlink** leaves the rail instead of failing every other file · the divergence notice
+  compares **normalised** regions (git's merge-style worktree vs the diff3
+  reconstruction, whose hunks keep the sides' common edges) — it used to fire on every
+  untouched file. *Staging* (`git/stage.rs`, `git/diff.rs`): symlinks fall back to
+  whole-file stage/unstage · the hunk patch header carries the **index entry's mode**
+  (staging a hunk dropped the exec bit) · a reverse patch emits the old side first
+  (`apply` rejected mixed runs) · untracked hunk bytes go through the **ODB** so
+  `text=auto` / clean filters apply. *Sync* (`git/sync.rs`): the network budget is read
+  past the `-c` pairs (the background fetch was on the 120 s budget) · branch pushes and
+  the remote delete use `refs/heads/<branch>` (a same-named tag made the refspec
+  ambiguous) · the reword guard reads both messages with `--no-show-signature`
+  (`log.showSignature=true` refused every reword). *UI*: the frozen working-tree surface
+  keeps its scroll salt (`ui/diff_view.rs`) · a line pick is fingerprinted on its
+  **origin** too (same text flipped side staged the opposite) · the file row's context
+  menu greys its mutating entries while a command runs (`ui/git_panel.rs`) · the
+  force-push lease is armed through `armed_force_push` (`app/render.rs`, testable).
+  Spec edits folded in: `git.md` §2/§4/§8/§9/§10, `conflicts.md` §5/§7/§8.
+
 ### Next actions (M-GitHard)
 - **Milestone complete**: Lot A (T1–T10), Lot B (T11–T17), Lot C (T18–T27), Lot D
-  (T28–T35), all ☑/⏭.
+  (T28–T35), T37 (branch review), all ☑/⏭.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

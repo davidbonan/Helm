@@ -62,7 +62,15 @@ Built from `git2::Statuses` (`StatusOptions` with `include_untracked` and
   half-staged rename residue. Discard restores the old path while deleting
   the new one. Stash shelves the whole move and leaves the old path back on disk.
 - **Symlinks** are staged as links, never followed: a link repointed at a target
-  that does not exist yet stages its new target, not a deletion.
+  that does not exist yet stages its new target, not a deletion. A link has no
+  sub-file selection either — its diff shows the file it points at, so hunk and
+  line staging fall back to the whole-link Stage / Unstage.
+- **File mode** is never a side effect: staging or unstaging a hunk keeps the
+  entry's mode, so a tracked executable does not lose its bit one hunk at a time.
+  A new file takes the working tree's mode (unless `core.filemode` is off).
+- **Filters** (`text=auto`, a `clean` driver) apply to granular staging exactly as
+  they do to whole-file Stage: what lands in the index is what `git add` would
+  record, not the bytes on disk.
 - **Ignored** files (`.gitignore`): not listed.
 - Conflicts (`CONFLICTED`): listed with a **Conflict** badge; resolution runs
   through the in-app conflict editor ([`conflicts.md`](conflicts.md)), with the
@@ -131,7 +139,9 @@ Finder** / **Open in editor** entries; a multi-selection ⇒ the batch
 **Stage** / **Unstage** / **Discard** / **Stash** only. **Stash** shelves the
 **whole** file — staged **and** unstaged changes together, untracked included,
 **never a partial stash** — and a multi-file stash lands in a **single** entry;
-behind a confirmation modal that spells this out.
+behind a confirmation modal that spells this out. While a git command is
+running (§10), the menu's **mutating** entries are greyed out like the toolbar's
+buttons — the copy / reveal / open entries stay live.
 
 **Discard** (**destructive** action, behind a confirmation modal):
 - *untracked file* → deletion from disk;
@@ -184,6 +194,11 @@ placeholder launches verbatim.
   the repo's terminal workspace. The diff's close action returns to the
   terminal (shortcut in [`keybindings.md`](keybindings.md)). A repo switch
   also closes it and shows the target repo's terminal.
+- **Scroll position** is kept **per file and per side**: leaving a diff and
+  coming back lands where it was left. While the requested diff loads, the file
+  already on screen stays displayed with its granular controls withdrawn (its
+  hunks belong to another path) — that freeze **keeps** the scroll, it never
+  sends the reader back to the top for the round-trip.
 - **Content**: unified diff of the file (`git2::Diff`). Depending on the originating section:
   - from Unstaged → **working tree vs index** diff (staging possible);
   - from Staged → **index vs HEAD** diff (unstaging possible).
@@ -307,7 +322,9 @@ file-level Discard). After application, we recompute the `status` (§7).
   `*_RENAMED` flags; the diff shows the deletion/rename.
 - **Disk change while editing the diff**: a refresh may
   invalidate the selection; we reload the diff and report if a selection no
-  longer applies.
+  longer applies. A picked line survives the reload only if **both its side and
+  its text** are unchanged at that position — same text flipped from added to
+  deleted would stage the opposite of what was picked.
 
 ## 9. Commit graph / history (post-MVP)
 
@@ -354,7 +371,11 @@ decided list of §1; everything else stays **read only**.
   **creation** of `x` on the remote's commit with **upstream configured**,
   then checkout. Dirty tree ⇒ the uncommitted changes (untracked included)
   go first into an **automatic stash** (`helm: auto-stash
-  before checkout <branch>`) — never a destructive checkout. Double-click on
+  before checkout <branch>`) — never a destructive checkout. A branch
+  **already checked out in another worktree** of the same repo (the main one
+  included) is **refused** with the worktree's path in the error, exactly as
+  `git checkout` refuses it — the fast-forward of the current branch onto its
+  remote stays allowed. Double-click on
   a tag or the current branch: **ignored**. The rest of the graph stays
   read only.
 - **Chips' context menu**: right
@@ -471,7 +492,9 @@ decided list of §1; everything else stays **read only**.
   Start greyed out, "Operation in progress" tooltip): `git rebase -i` with the
   **todo injected** through `GIT_SEQUENCE_EDITOR` — no editor ever opens; a
   Reword runs as `pick` + `exec git commit --amend -F <file>` (the message
-  never crosses a shell) **guarded on the commit's original message** — its
+  never crosses a shell) **guarded on the commit's original message** — read
+  back with `--no-show-signature`, so a `log.showSignature=true` config does not
+  push a signature header into the compared message and break every reword. Its
   `pick` skipped (`git rebase --skip` after a conflict) ⇒ the `exec` refuses
   and stops the rebase instead of rewording the commit below;
   `GIT_EDITOR=true` keeps git's combined message for
@@ -481,7 +504,8 @@ decided list of §1; everything else stays **read only**.
   already in progress at the menu click ⇒ refusal toast before the page
   opens (same with a detached HEAD); a conflict mid-run leaves the rebase
   **in progress** (same rule as the plain rebase: toast + banner §10,
-  resolution in the terminal or **Abort** from the banner).
+  resolution in the in-app conflict editor or the terminal, or **Abort** from the
+  banner).
 - **AI rebase from the chips' menu**: **AI rebase onto `<branch>`** (same
   eligibility as the other rebase flavors) opens a **recap modal** — loader
   while the worker lists `onto..HEAD` (same plan source as the interactive
@@ -563,7 +587,8 @@ decided list of §1; everything else stays **read only**.
   through a **confirmation modal** naming the branch(es) (Cancel /
   red Delete) — nothing goes out before it. Local: `git2` via the worker (graph
   reloaded afterwards; branch checked out in a worktree ⇒ clean failure as a
-  toast). Remote: `git push <remote> --delete <branch>` — a **network** op with the
+  toast). Remote: `git push <remote> --delete refs/heads/<branch>` (fully
+  qualified, so a same-named tag is never the one deleted) — a **network** op with the
   same rules as Pull/Push (§10: non-interactive subprocess, a single op at
   a time, success/failure as a toast); the local remote-tracking ref disappears
   with it, the graph follows on refresh. Combined: the network runner is requested
@@ -606,8 +631,8 @@ decided list of §1; everything else stays **read only**.
   the checked-out branch). On return: success toast ("Cherry-picked
   `<short sha>`" / "Reverted `<short sha>`") and status + graph refresh; a
   **conflict leaves the operation in progress** — same rule as a Pull conflict
-  (§10): toast + banner, resolution in the terminal or **Abort** from the
-  banner (whose flavor already follows `Repository::state()`, cherry-pick and
+  (§10): toast + banner, resolution in the in-app conflict editor or the
+  terminal, or **Abort** from the banner (whose flavor already follows `Repository::state()`, cherry-pick and
   revert included). A dirty working tree or an empty result (the change
   already on the branch) surfaces git's refusal as-is — no automatic stash,
   like the rebase flavors.
@@ -691,8 +716,12 @@ left.
   local operations (branch, repo state); stash save/pop also run via the `git`
   subprocess — local, no network — because libgit2's stash re-hashes the whole
   worktree single-threaded (~13 s vs ~0.6 s on a 20k-file repo). **Non-interactive** subprocess
-  (`GIT_TERMINAL_PROMPT=0`, stdin closed): a missing auth
-  fails cleanly, never a hung prompt.
+  (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=""`, `SSH_ASKPASS_REQUIRE=never`, stdin
+  closed — closing the terminal is not enough, a graphical asker configured in
+  `core.askPass` / `SSH_ASKPASS` would put the prompt back): a missing auth
+  fails cleanly, never a hung prompt. Every subprocess is **bounded by a
+  timeout** — 120 s for the local commands, **600 s** for those that talk to a
+  remote (fetch / pull / push), whose duration follows the transfer size.
 - **Asynchronous**: a network operation runs on a **dedicated thread** — the
   sequential git worker and the status poll (§7) continue. **A single network
   op at a time** per repo. While a **git command** is executing (network op
@@ -743,7 +772,9 @@ left.
   clean failure, tree intact.
 - **Push (split-button)**: the main area pushes the **current branch** to its
   upstream; without an upstream ⇒
-  `git push -u origin <branch>`. The plain push **never forces**: a non
+  `git push -u origin refs/heads/<branch>:refs/heads/<branch>` — **fully
+  qualified** on both sides like the tag pushes above, so a same-named tag never
+  makes the refspec ambiguous. The plain push **never forces**: a non
   fast-forward rejection is shown as is. The **chevron** opens a menu with a
   single **one-shot** entry, **Push (force with lease)** — unlike Pull's
   chevron it **executes**, it never sets a default: forcing must stay a
@@ -751,7 +782,8 @@ left.
   plain push is rejected. Greyed without a remote-tracking tip to overwrite —
   the plain `-u` push covers the first publication. A **confirmation modal**
   (Cancel / red Force push) names the branch and the remote, then `git push
-  --force-with-lease=refs/heads/<branch>:<oid> <remote> <branch>` runs on the
+  --force-with-lease=refs/heads/<branch>:<oid> <remote>
+  refs/heads/<branch>:refs/heads/<branch>` runs on the
   runner. The lease is **pinned to the oid the modal was armed on** — the remote
   tip helm was displaying: a bare `--force-with-lease` re-reads the
   remote-tracking ref at push time, and the background fetch (§10) refreshes it
