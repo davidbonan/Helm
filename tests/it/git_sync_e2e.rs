@@ -1336,3 +1336,59 @@ fn a_credential_prompt_fails_fast_instead_of_burning_the_timeout() {
         "the helper must never be spawned, took {elapsed:?}"
     );
 }
+
+/// A repository holding both a branch and a tag named `v1.0` makes a bare refspec
+/// ambiguous — git refuses the push outright. The branch pushes qualify their
+/// refspec for the same reason the tag pushes do (git.md §9).
+#[test]
+fn a_first_push_is_not_ambiguous_with_a_same_named_tag() {
+    let fx = fixture();
+    let repo_b = git2::Repository::open(&fx.b).unwrap();
+    let head = repo_b.head().unwrap().peel_to_commit().unwrap();
+    repo_b.branch("v1.0", &head, false).unwrap();
+    repo_b
+        .tag_lightweight("v1.0", head.as_object(), false)
+        .unwrap();
+    repo_b.set_head("refs/heads/v1.0").unwrap();
+
+    assert_eq!(sync::push(&fx.b), Ok(SyncOutcome::Updated));
+
+    let bare = git2::Repository::open(&fx.bare).unwrap();
+    assert_eq!(
+        bare.find_reference("refs/heads/v1.0")
+            .unwrap()
+            .target()
+            .unwrap(),
+        head.id()
+    );
+}
+
+#[test]
+fn deleting_a_remote_branch_is_not_ambiguous_with_a_same_named_tag() {
+    let fx = fixture();
+    let repo_b = git2::Repository::open(&fx.b).unwrap();
+    let head = repo_b.head().unwrap().peel_to_commit().unwrap();
+    repo_b.branch("v1.0", &head, false).unwrap();
+    repo_b
+        .tag_lightweight("v1.0", head.as_object(), false)
+        .unwrap();
+    for args in [
+        vec!["push", "-u", "origin", "refs/heads/v1.0:refs/heads/v1.0"],
+        vec!["push", "origin", "refs/tags/v1.0"],
+    ] {
+        let out = cli::run(&fx.b, &args).unwrap();
+        assert!(out.success(), "seed {args:?}: {}", out.stderr);
+    }
+
+    assert_eq!(
+        sync::delete_remote_branch(&fx.b, "v1.0"),
+        Ok(SyncOutcome::Updated)
+    );
+
+    let bare = git2::Repository::open(&fx.bare).unwrap();
+    assert!(bare.find_reference("refs/heads/v1.0").is_err());
+    assert!(
+        bare.find_reference("refs/tags/v1.0").is_ok(),
+        "the same-named tag must survive the branch deletion"
+    );
+}

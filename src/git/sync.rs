@@ -70,19 +70,18 @@ pub fn fetch_all(workdir: &Path) -> Result<SyncOutcome, SyncError> {
 /// `packed-refs` rewrite. The fetch then only writes loose `refs/remotes/*` +
 /// objects + `FETCH_HEAD` — disjoint from the index/local refs the mutation lock
 /// guards, which is what makes the background fetch safe to run lock-free.
+const BACKGROUND_FETCH_ARGS: [&str; 6] = [
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    "fetch",
+    "--all",
+];
+
 pub fn background_fetch_all(workdir: &Path) -> Result<SyncOutcome, SyncError> {
     ensure_remote(workdir)?;
-    let out = exec(
-        workdir,
-        &[
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-            "fetch",
-            "--all",
-        ],
-    )?;
+    let out = exec(workdir, &BACKGROUND_FETCH_ARGS)?;
     if out.success() {
         Ok(fetch_outcome(&out.stderr))
     } else {
@@ -420,9 +419,15 @@ fn build_todo(steps: &[RebaseStep], dir: &Path) -> std::io::Result<String> {
                 let path = dir.join(format!("message-{index}"));
                 std::fs::write(&path, message)?;
                 let file = shell_single_quote(&path.to_string_lossy());
+                // `--no-show-signature`: under `log.showSignature=true` git prefixes
+                // the output with the signature verification of the commit it reads,
+                // so a signed source commit and its unsigned replay never compare
+                // equal and the guard would refuse every reword.
                 format!(
-                    "pick {oid}\nexec if test \"$(git log -1 --format=%B)\" = \
-                     \"$(git log -1 --format=%B {oid})\"; then git commit --amend -F {file}; \
+                    "pick {oid}\nexec if test \
+                     \"$(git log --no-show-signature -1 --format=%B)\" = \
+                     \"$(git log --no-show-signature -1 --format=%B {oid})\"; \
+                     then git commit --amend -F {file}; \
                      else echo 'helm: reword skipped, HEAD is not the commit it targeted' >&2; \
                      false; fi"
                 )
@@ -510,7 +515,10 @@ pub fn push(workdir: &Path) -> Result<SyncOutcome, SyncError> {
     let out = if has_upstream {
         exec(workdir, &["push"])?
     } else {
-        exec(workdir, &["push", "-u", "origin", &branch_name])?
+        exec(
+            workdir,
+            &["push", "-u", "origin", &branch_refspec(&branch_name)],
+        )?
     };
     if out.success() {
         Ok(SyncOutcome::Updated)
@@ -550,7 +558,12 @@ pub fn force_push(
     };
     let out = exec(
         workdir,
-        &["push", &lease_arg(branch, lease), &remote, branch],
+        &[
+            "push",
+            &lease_arg(branch, lease),
+            &remote,
+            &branch_refspec(branch),
+        ],
     )?;
     if out.success() {
         Ok(SyncOutcome::Updated)
@@ -565,6 +578,14 @@ fn lease_arg(branch: &str, lease: git2::Oid) -> String {
     format!("--force-with-lease=refs/heads/{branch}:{lease}")
 }
 
+/// `refs/heads/<branch>:refs/heads/<branch>`, the fully qualified form of the
+/// refspec, for the same reason the tag pushes use `refs/tags/<tag>`: a repository
+/// holding both a branch and a tag named `v1.0` makes the bare name ambiguous and
+/// git refuses the push outright (`src refspec v1.0 matches more than one`).
+fn branch_refspec(branch: &str) -> String {
+    format!("refs/heads/{branch}:refs/heads/{branch}")
+}
+
 /// Deletes a branch on its remote (`git push <remote> --delete <branch>`, graph
 /// context menu — git.md §9). `name` is the name displayed by the chip: a remote
 /// ref `origin/x` as is, or a **local** branch name whose same-named remote
@@ -573,7 +594,8 @@ fn lease_arg(branch: &str, lease: git2::Oid) -> String {
 pub fn delete_remote_branch(workdir: &Path, name: &str) -> Result<SyncOutcome, SyncError> {
     let repo = open_repo(workdir)?;
     let (remote, branch) = resolve_remote_branch(&repo, name)?;
-    let out = exec(workdir, &["push", &remote, "--delete", &branch])?;
+    let refspec = format!("refs/heads/{branch}");
+    let out = exec(workdir, &["push", &remote, "--delete", &refspec])?;
     if out.success() {
         Ok(SyncOutcome::Updated)
     } else {
@@ -693,10 +715,21 @@ fn exec(workdir: &Path, args: &[&str]) -> Result<CliOutput, SyncError> {
 /// unbounded by anything local; every other command here (merge, rebase,
 /// cherry-pick, abort…) is local work and keeps the CLI default.
 fn timeout_for(args: &[&str]) -> std::time::Duration {
-    match args.first() {
-        Some(&"fetch" | &"pull" | &"push") => cli::NETWORK_TIMEOUT,
+    match subcommand(args) {
+        Some("fetch" | "pull" | "push") => cli::NETWORK_TIMEOUT,
         _ => cli::DEFAULT_TIMEOUT,
     }
+}
+
+/// The git subcommand, past the `-c <name>=<value>` pairs some invocations are
+/// prefixed with (`background_fetch_all`): reading `args.first()` would see `-c`
+/// and put a network transfer on the short budget.
+fn subcommand<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    let mut rest = args;
+    while let ["-c", _value, tail @ ..] = rest {
+        rest = tail;
+    }
+    rest.first().copied()
 }
 
 fn exec_with_env(
@@ -973,8 +1006,10 @@ mod tests {
         assert_eq!(
             todo,
             format!(
-                "pick {oid}\nexec if test \"$(git log -1 --format=%B)\" = \
-                 \"$(git log -1 --format=%B {oid})\"; then git commit --amend -F {}; \
+                "pick {oid}\nexec if test \
+                 \"$(git log --no-show-signature -1 --format=%B)\" = \
+                 \"$(git log --no-show-signature -1 --format=%B {oid})\"; \
+                 then git commit --amend -F {}; \
                  else echo 'helm: reword skipped, HEAD is not the commit it targeted' >&2; \
                  false; fi\n",
                 shell_single_quote(&message_path.to_string_lossy())
@@ -1059,6 +1094,18 @@ mod tests {
         ] {
             assert_eq!(timeout_for(&args), cli::DEFAULT_TIMEOUT, "{args:?}");
         }
+    }
+
+    /// The argv the background fetch really runs, `-c` pairs included: it is the
+    /// one that transfers on a cold repository, and reading `args.first()` put it
+    /// on the short budget.
+    #[test]
+    fn the_background_fetch_argv_gets_the_network_budget() {
+        assert_eq!(
+            timeout_for(&BACKGROUND_FETCH_ARGS),
+            cli::NETWORK_TIMEOUT,
+            "{BACKGROUND_FETCH_ARGS:?}"
+        );
     }
 
     #[test]
