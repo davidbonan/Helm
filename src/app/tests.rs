@@ -1202,6 +1202,79 @@ fn a_checkout_that_auto_stashed_says_where_the_changes_went() {
     );
 }
 
+#[test]
+fn a_superseded_status_reply_still_runs_its_command_side_effects() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feature", &head, false).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "Test").unwrap();
+    config.set_str("user.email", "test@example.com").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "one\n").unwrap();
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
+    );
+
+    // Every mutation replies with a status snapshot: queued back to back, each
+    // reply but the last is superseded. Their snapshots are droppable (the
+    // fresher one is in flight), but the commit that emptied the composer and
+    // the checkout that moved HEAD are reported by those replies and no other.
+    // The fresh reply here fails, so nothing can paper over the loss.
+    session.worker.send(GitCommand::StageAll);
+    session
+        .worker
+        .send(GitCommand::Commit("wip\n\nbody".into()));
+    session.worker.send(GitCommand::Checkout("feature".into()));
+    session.worker.send(GitCommand::Checkout("nope".into()));
+
+    let mut editor = BranchEditor::default();
+    let mut panel = GitPanelState {
+        subject: "wip".to_owned(),
+        description: "body".to_owned(),
+        ..GitPanelState::default()
+    };
+    let mut toasts = Toasts::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.worker.has_pending(ResultKind::Status) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checkouts never reported back"
+        );
+        session.drain(
+            &mut None,
+            &mut editor,
+            &mut panel,
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut toasts,
+            0.0,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(
+        panel.subject.is_empty() && panel.description.is_empty(),
+        "the committed message stayed in the composer"
+    );
+    let messages: Vec<&str> = toasts.items().iter().map(|t| t.message.as_str()).collect();
+    assert!(
+        messages.contains(&"Checked out feature"),
+        "the superseded reply took the checkout toast with it: {messages:?}"
+    );
+    assert!(
+        !session.status_loaded,
+        "the superseded snapshot was adopted"
+    );
+}
+
 /// Spawns a session the way `sync_git_session` does: the lock comes from the
 /// caches, not from the session.
 fn spawn_session(caches: &mut RepoCaches, path: &Path, ctx: &egui::Context) -> GitSession {

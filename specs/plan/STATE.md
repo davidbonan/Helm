@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **32/37**.
+work**. Counter: **33/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -266,7 +266,7 @@ work**. Counter: **32/37**.
   fail (`branch.rs:76-81`), and also moves a branch checked out in another worktree
   (git2 does not enforce the CLI guard). *Files*: `src/git/branch.rs`, `src/git/tag.rs`,
   `src/git/status.rs`, `src/app/git_session.rs`.
-- ☐ **T31 — Superseded command side effects.** ⚠ **re-scoped**: the panic watchdog is
+- ☑ **T31 — Superseded command side effects.** ⚠ **re-scoped**: the panic watchdog is
   dropped — 0 `unwrap`/`expect`/raw indexing outside `#[cfg(test)]` across `src/git/*.rs`,
   so it would be defensive code for a case with no trigger. Kept: a `Commit` reply
   superseded by a later mutation skips `panel.subject.clear()` (`git_session.rs:503`) ⇒
@@ -330,7 +330,7 @@ work**. Counter: **32/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T31**, then T32 → T35 (Lot D).
+- Order: **T32**, then T33 → T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

@@ -485,12 +485,16 @@ impl GitSession {
             // `CreateBranch` failure must surface even with a status poll
             // queued behind it. Exception: a `RebaseTodo` error is page state
             // and is gated like one (`GitResult::carries_state`).
-            if result.carries_state() && self.worker.superseded(generation, result.kind()) {
+            let stale = result.carries_state() && self.worker.superseded(generation, result.kind());
+            // A stale `Status` is still handed to `on_status`: its command-scoped
+            // side effects fire once, on the reply of the command that ran them —
+            // only the snapshot application is staleness-dependent.
+            if stale && !matches!(result, GitResult::Status { .. }) {
                 continue;
             }
             match result {
                 GitResult::Status { source, result } => {
-                    self.on_status(source, result, editor, panel, toasts, now)
+                    self.on_status(source, result, stale, editor, panel, toasts, now)
                 }
                 GitResult::Diff(result) => Self::on_diff(result, diff, modal, toasts, now),
                 GitResult::Graph { result, .. } => self.on_graph(result, diff, toasts, now),
@@ -514,11 +518,16 @@ impl GitSession {
     /// flavor opened from a chip (`CreateBranchAt`, no checkout ⇒ HEAD unchanged)
     /// resolves on its own command — editor closed on success, inline error on
     /// failure. Any other failure goes to a toast (git.md §10), routed by its
-    /// originating command.
+    /// originating command. `stale` ⇒ the snapshot was superseded by a newer
+    /// request and is dropped (the fresher reply is in flight, and re-derives
+    /// everything read off it); the **command-scoped** effects still run — they
+    /// answer `source`, which no other reply will ever carry again.
+    #[allow(clippy::too_many_arguments)]
     fn on_status(
         &mut self,
         source: GitCommand,
         result: Result<RepoSnapshot, git2::Error>,
+        stale: bool,
         editor: &mut BranchEditor,
         panel: &mut GitPanelState,
         toasts: &mut Toasts,
@@ -526,26 +535,38 @@ impl GitSession {
     ) {
         match result {
             Ok(snapshot) => {
-                // Compared before the field moves: the checkout auto-stash is the
-                // only way this count can grow on a checkout reply.
+                // Read before the fields move — and before the staleness gate: a
+                // checkout reply names the branch it landed on (DWIM resolves
+                // `origin/x` to `x`), and the auto-stash is the only way the count
+                // can grow on that reply.
                 let auto_stashed = snapshot.stash_count > self.stash_count;
-                self.status = snapshot.status;
-                self.branch = snapshot.branch;
-                self.stash_count = snapshot.stash_count;
-                self.has_remote = snapshot.has_remote;
-                self.upstream_remote = snapshot.upstream_remote;
-                self.upstream_oid = snapshot.upstream_oid;
-                self.pr_remote = snapshot.pr_remote;
-                self.op_in_progress = snapshot.op_in_progress;
-                self.op = snapshot.op;
-                self.status_loaded = true;
-                self.status_error_seen = false;
+                let checked_out = match &source {
+                    GitCommand::Checkout(_) => Some(snapshot.branch.label().to_owned()),
+                    GitCommand::CheckoutTag(name) => Some(name.clone()),
+                    _ => None,
+                };
+                if !stale {
+                    self.status = snapshot.status;
+                    self.branch = snapshot.branch;
+                    self.stash_count = snapshot.stash_count;
+                    self.has_remote = snapshot.has_remote;
+                    self.upstream_remote = snapshot.upstream_remote;
+                    self.upstream_oid = snapshot.upstream_oid;
+                    self.pr_remote = snapshot.pr_remote;
+                    self.op_in_progress = snapshot.op_in_progress;
+                    self.op = snapshot.op;
+                    self.status_loaded = true;
+                    self.status_error_seen = false;
+                    // Resolved against the adopted snapshot, not against `source`:
+                    // any status reply landing on the requested branch closes the
+                    // editor, so a dropped one costs nothing.
+                    if editor.pending && self.branch.label() == editor.name.trim() {
+                        *editor = BranchEditor::default();
+                    }
+                }
                 if matches!(source, GitCommand::Commit(_)) {
                     panel.subject.clear();
                     panel.description.clear();
-                }
-                if editor.pending && self.branch.label() == editor.name.trim() {
-                    *editor = BranchEditor::default();
                 }
                 // Create branch from a chip / Create tag / Rename of a
                 // **non-current** branch succeeded: HEAD did not move, so the
@@ -565,11 +586,6 @@ impl GitSession {
                 // A checkout only shows up as a moved branch indicator; when it
                 // auto-stashed a dirty tree the changes also left the panel, so
                 // the toast says where they went (git.md §9).
-                let checked_out = match &source {
-                    GitCommand::Checkout(_) => Some(self.branch.label().to_owned()),
-                    GitCommand::CheckoutTag(name) => Some(name.clone()),
-                    _ => None,
-                };
                 if let Some(name) = checked_out {
                     let message = if auto_stashed {
                         format!("Checked out {name} — your changes were stashed")
