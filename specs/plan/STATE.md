@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **12/37**.
+work**. Counter: **13/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -52,7 +52,7 @@ work**. Counter: **12/37**.
   full sequential-worker round-trip, so it is clickable. Keep rendering the frozen
   content, suppress the granular intents. *Files*: `src/app/render.rs`,
   `src/app/keys.rs`, `src/app/git_session.rs`.
-- ☐ **T5 — Discard-hunk confirmation invalidated by a diff reload.** The modal stores
+- ☑ **T5 — Discard-hunk confirmation invalidated by a diff reload.** The modal stores
   `{path, hunk}` (`render.rs:2152`) while the 1 s poll swaps `loaded`
   (`git_session.rs:227`). `DiffViewState::reconcile` already has the equivalent guard
   one level down (`diff_view.rs:184`, banner `:797`). Minimal fix: drop a pending
@@ -318,8 +318,7 @@ work**. Counter: **12/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T5** (Lot A, the wrong-target/corruption core),
-  then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
+- Order: **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

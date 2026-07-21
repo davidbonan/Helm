@@ -1176,6 +1176,88 @@ fn graph_poll_does_not_supersede_an_in_flight_graph() {
 }
 
 #[test]
+fn a_reload_that_changes_the_diff_disarms_the_discard_hunk_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+    );
+
+    let mut diff = Some(open_diff("a.txt", false));
+    let mut modal = None;
+    let mut toasts = Toasts::default();
+    let mut load =
+        |session: &mut GitSession, diff: &mut Option<DiffState>, modal: &mut Option<Modal>| {
+            session.worker.send(GitCommand::Diff {
+                path: "a.txt".to_owned(),
+                staged: false,
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while session.worker.has_pending(ResultKind::Diff) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the diff never arrived"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                session.drain(
+                    diff,
+                    &mut BranchEditor::default(),
+                    &mut GitPanelState::default(),
+                    &mut None,
+                    &mut None,
+                    modal,
+                    &mut toasts,
+                    0.0,
+                );
+            }
+        };
+
+    load(&mut session, &mut diff, &mut modal);
+    assert!(diff.as_ref().unwrap().loaded.is_some());
+
+    // Confirmation armed on the content displayed…
+    modal = Some(Modal::DiscardHunk {
+        path: "a.txt".to_owned(),
+        hunk: 0,
+    });
+    // …and the 1 s poll reloads the same file, unchanged: nothing addressed by the
+    // confirmation moved, it stays armed (otherwise the modal would never survive a
+    // second on screen).
+    load(&mut session, &mut diff, &mut modal);
+    assert!(
+        matches!(modal, Some(Modal::DiscardHunk { hunk: 0, .. })),
+        "an unchanged reload must not disarm the confirmation"
+    );
+
+    // The file changes on disk (editor, terminal `git` command): hunk 0 of the
+    // reloaded diff is no longer the one the user pointed at.
+    std::fs::write(&file, "zero\none\ntwo\n").unwrap();
+    load(&mut session, &mut diff, &mut modal);
+    assert!(
+        modal.is_none(),
+        "a reload that replaces the displayed diff must disarm the discard-hunk confirmation"
+    );
+
+    // A confirmation aimed at another file is not this reload's business.
+    modal = Some(Modal::DiscardHunk {
+        path: "b.txt".to_owned(),
+        hunk: 0,
+    });
+    std::fs::write(&file, "one\n").unwrap();
+    load(&mut session, &mut diff, &mut modal);
+    assert!(matches!(
+        modal,
+        Some(Modal::DiscardHunk { ref path, .. }) if path == "b.txt"
+    ));
+}
+
+#[test]
 fn cached_graph_defers_the_head_autoscroll_to_the_fresh_one() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();

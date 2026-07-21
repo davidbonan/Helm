@@ -463,7 +463,7 @@ impl GitSession {
                 GitResult::Status { source, result } => {
                     self.on_status(source, result, editor, panel, toasts, now)
                 }
-                GitResult::Diff(result) => Self::on_diff(result, diff, toasts, now),
+                GitResult::Diff(result) => Self::on_diff(result, diff, modal, toasts, now),
                 GitResult::Graph { result, .. } => self.on_graph(result, diff, toasts, now),
                 GitResult::RebaseTodo { onto, result } => {
                     Self::on_rebase_todo(onto, result, rebase_page, modal)
@@ -563,6 +563,7 @@ impl GitSession {
     fn on_diff(
         result: Result<FileDiff, git2::Error>,
         diff: &mut Option<DiffState>,
+        modal: &mut Option<Modal>,
         toasts: &mut Toasts,
         now: f64,
     ) {
@@ -572,7 +573,19 @@ impl GitSession {
                     if matches!(open.source, DiffSource::WorkingTree { .. })
                         && open.path == file.path
                     {
+                        let replaced = open.loaded.as_ref() != Some(&file);
                         open.adopt(file);
+                        // A pending confirmation names its hunk by **index** in the
+                        // content it was armed on; the 1 s poll (git.md §8) can swap
+                        // that content under it, and the same index then addresses
+                        // another hunk. Disarmed rather than fired on the wrong lines —
+                        // the same guard `DiffViewState::reconcile` applies to the
+                        // selection.
+                        if replaced
+                            && matches!(modal, Some(Modal::DiscardHunk { path, .. }) if *path == open.path)
+                        {
+                            *modal = None;
+                        }
                     }
                 }
             }
