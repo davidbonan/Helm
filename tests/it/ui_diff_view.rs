@@ -219,6 +219,159 @@ fn a_line_longer_than_the_preview_extends_the_row_past_the_viewport() {
     );
 }
 
+/// Single-hunk diff of `path` whose one line carries `content` — the row width is
+/// measured over it.
+fn one_line_diff(path: &str, content: &str) -> FileDiff {
+    FileDiff {
+        path: path.into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![line(LineOrigin::Addition, &format!("{content}\n"))],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+    }
+}
+
+/// 80-line hunk of `path`, each line tagged `<marker>_<n>` — taller than the
+/// viewport, so the view scrolls.
+fn tall_diff(path: &str, marker: &str) -> FileDiff {
+    FileDiff {
+        path: path.into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,80 +1,80 @@".into(),
+            old_start: 1,
+            old_lines: 80,
+            new_start: 1,
+            new_lines: 80,
+            lines: (0..80)
+                .map(|n| line(LineOrigin::Context, &format!("{marker}_{n:03}()\n")))
+                .collect(),
+        }],
+        source_lines: Vec::new(),
+        image: None,
+    }
+}
+
+#[test]
+fn extending_context_re_measures_the_row_width() {
+    // The row width is measured over every displayed line and kept across frames:
+    // extended context can bring in a line longer than any hunk line.
+    let mut diff = extendable_diff();
+    diff.source_lines[1] = format!("src-line-2-{}", "y".repeat(300));
+    let (_, _) = drive(diff, false, |h| {
+        let narrow = h.get_by_label_contains("mid()").rect().width();
+        h.get_by_label("Extend context").click();
+        h.run();
+        let wide = h.get_by_label_contains("mid()").rect().width();
+        assert!(
+            wide > narrow + 300.0,
+            "the extension brings a 300-char line into view: rows must widen from \
+             {narrow} px, got {wide} px"
+        );
+    });
+}
+
+#[test]
+fn a_reload_that_keeps_the_hunk_shape_re_measures_the_row_width() {
+    // Same path, same hunk geometry, a longer line: the kept width measure has to
+    // be dropped or the row stays too narrow to scroll to the end of the line.
+    let palette = Palette::light();
+    let shown = Rc::new(RefCell::new(one_line_diff("src/main.rs", "short()")));
+    let in_ui = shown.clone();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &in_ui.borrow(),
+            DiffSurface::WorkingTree { staged: false },
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+    let narrow = harness.get_by_label_contains("short()").rect().width();
+
+    let reloaded = one_line_diff("src/main.rs", &format!("reload_marker_{}", "z".repeat(300)));
+    state.borrow_mut().reconcile(&reloaded);
+    *shown.borrow_mut() = reloaded;
+    harness.run();
+
+    let wide = harness
+        .get_by_label_contains("reload_marker_")
+        .rect()
+        .width();
+    assert!(
+        wide > narrow + 300.0,
+        "the reloaded line is 300 chars longer: rows must widen from {narrow} px, \
+         got {wide} px"
+    );
+}
+
+#[test]
+fn opening_another_file_does_not_inherit_the_previous_scroll_offset() {
+    // The scroll offset lives in egui, keyed on the scroll area's id: without a
+    // per-file salt the next file opens scrolled where the previous one was left.
+    let palette = Palette::light();
+    let shown = Rc::new(RefCell::new(tall_diff("src/a.rs", "alpha")));
+    let in_ui = shown.clone();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &in_ui.borrow(),
+            DiffSurface::WorkingTree { staged: false },
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+    let top = harness.get_by_label_contains("alpha_000()").rect().top();
+
+    let over_diff = harness.get_by_label_contains("alpha_005()").rect().center();
+    for _ in 0..10 {
+        harness.event(egui::Event::PointerMoved(over_diff));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.step();
+    }
+    assert!(
+        harness.query_by_label_contains("alpha_000()").is_none(),
+        "the wheel must scroll the first row out of the viewport"
+    );
+
+    // What the app does when another file is opened: the view state is reset.
+    *shown.borrow_mut() = tall_diff("src/b.rs", "beta");
+    state.borrow_mut().clear();
+    harness.run();
+
+    let opened = harness.get_by_label_contains("beta_000()").rect().top();
+    assert!(
+        (opened - top).abs() < 10.0,
+        "the newly opened file must start at the top ({top} px), got {opened} px"
+    );
+}
+
 #[test]
 fn adjacent_changed_lines_are_contiguous_so_backgrounds_connect() {
     let palette = Palette::light();

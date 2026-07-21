@@ -22,6 +22,9 @@ pub struct DiffViewState {
     extensions: HashMap<usize, u32>,
     text_selection: Option<TextSelection>,
     syntax_cache: Option<HighlightedDiffCache>,
+    /// Widest displayed line, kept across frames: measuring it walks every
+    /// displayed line, and only the diff content or an extension moves it.
+    width_cache: Option<WidthCache>,
     /// Raised when a diff reload (disk change, git.md §8) dropped a selection that
     /// became invalid; the overlay shows it as a banner until the next interaction.
     stale: bool,
@@ -67,6 +70,16 @@ pub struct DiffViewState {
     expanded_resolved: HashSet<u64>,
 }
 
+/// Character width of the widest displayed line, with what it was measured on:
+/// the diff's shape and the extension amounts (extended context can bring in a
+/// longer line).
+#[derive(Debug)]
+struct WidthCache {
+    shape: u64,
+    extensions: HashMap<usize, u32>,
+    chars: usize,
+}
+
 /// The open reply composer under a top-level conversation card at the given
 /// conversation index (pull-requests.md §11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +93,7 @@ impl DiffViewState {
         self.extensions.clear();
         self.text_selection = None;
         self.syntax_cache = None;
+        self.width_cache = None;
         self.stale = false;
         self.image = None;
         self.active_comment = None;
@@ -202,6 +216,9 @@ impl DiffViewState {
             !lines.is_empty()
         });
         self.stale |= dropped;
+        // A reload can rewrite a line without moving the hunk shape the width cache
+        // is keyed on, so re-measure on every reload.
+        self.width_cache = None;
         // Display only: an orphaned extension is dropped without flagging stale.
         self.extensions.retain(|&hunk, _| hunk < diff.hunks.len());
         self.reconcile_text_selection(diff);
@@ -283,6 +300,30 @@ impl DiffViewState {
 
     fn syntax_line(&self, hunk: usize, line: usize) -> Option<&[HighlightedSpan]> {
         self.syntax_cache.as_ref()?.line(hunk, line)
+    }
+
+    /// Width of the widest displayed line, in characters — the rows are allocated
+    /// at it so egui exposes a horizontal scrollbar. Measuring rebuilds every
+    /// display row, so it is served from the cache while the diff and the
+    /// extensions are unchanged.
+    fn content_chars(&mut self, diff: &FileDiff) -> usize {
+        let shape = shape_fingerprint(diff);
+        if let Some(cache) = &self.width_cache {
+            if cache.shape == shape && cache.extensions == self.extensions {
+                return cache.chars;
+            }
+        }
+        let chars = display_rows(diff, &self.extensions)
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
+        self.width_cache = Some(WidthCache {
+            shape,
+            extensions: self.extensions.clone(),
+            chars,
+        });
+        chars
     }
 }
 
@@ -517,10 +558,17 @@ fn context_extensions(diff: &FileDiff, amounts: &HashMap<usize, u32>) -> Vec<Con
 }
 
 /// `true` if an Extend click on this hunk would show at least one more line.
-fn can_extend(diff: &FileDiff, amounts: &HashMap<usize, u32>, hunk: usize) -> bool {
+/// `current` is the extension set already computed for `amounts` — asked once per
+/// hunk while rendering, so it is passed in rather than recomputed per call.
+fn can_extend(
+    diff: &FileDiff,
+    amounts: &HashMap<usize, u32>,
+    current: &[ContextExtension],
+    hunk: usize,
+) -> bool {
     let mut more = amounts.clone();
     *more.entry(hunk).or_insert(0) += EXTEND_STEP;
-    context_extensions(diff, &more) != context_extensions(diff, amounts)
+    context_extensions(diff, &more) != current
 }
 
 /// Old-side number of an extended context line **above** the hunk: outside the
@@ -658,7 +706,7 @@ pub struct DiffReview<'a> {
 /// Which surface the diff is shown on — selects the available affordances.
 /// Bundling the old `staged` / `read_only` flags into one value keeps a caller
 /// from assembling an impossible combination (e.g. staged history).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiffSurface {
     /// Working tree: per-hunk / per-line staging; `staged` picks the direction
     /// (the index unstages, the worktree stages).
@@ -863,15 +911,15 @@ pub fn diff_view(
         // Width of the widest displayed line: rows are allocated at this width
         // (not the viewport's) so egui exposes a horizontal scrollbar for lines
         // longer than the preview.
-        let max_chars = display_rows(diff, &state.extensions)
-            .iter()
-            .map(|row| row.chars().count())
-            .max()
-            .unwrap_or(0);
+        let max_chars = state.content_chars(diff);
         let content_width =
             layout.content_left(0.0) + max_chars as f32 * char_w + CONTENT_TRAILING_PAD;
         let mut extend_requests = Vec::new();
         egui::ScrollArea::both()
+            // Without a salt the offset is keyed on the position in the Ui tree
+            // alone, so the next file opened here inherits the scroll of the
+            // previous one.
+            .id_salt((surface, diff.path.as_str()))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let row_w = content_width.max(ui.available_width());
@@ -886,7 +934,7 @@ pub fn diff_view(
                         read_only,
                         hunk_idx,
                         state,
-                        can_extend(diff, &state.extensions, hunk_idx),
+                        can_extend(diff, &state.extensions, &extensions, hunk_idx),
                         intents,
                     ) {
                         extend_requests.push(hunk_idx);
@@ -1958,6 +2006,24 @@ fn truncate_code(code: &str) -> String {
     }
 }
 
+/// Identity of the diff the width measure was taken on. Only the per-hunk geometry
+/// is hashed: hashing every line costs *more* than the measure it would spare, and
+/// a same-shape reload already invalidates through `reconcile`.
+fn shape_fingerprint(diff: &FileDiff) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    diff.path.hash(&mut hasher);
+    diff.hunks.len().hash(&mut hasher);
+    for hunk in &diff.hunks {
+        hunk.header.hash(&mut hasher);
+        hunk.old_start.hash(&mut hasher);
+        hunk.old_lines.hash(&mut hasher);
+        hunk.new_start.hash(&mut hasher);
+        hunk.new_lines.hash(&mut hasher);
+        hunk.lines.len().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// What a line selection is anchored on: the line's content, so a reload that
 /// keeps the hunk shape but rewrites the line invalidates the pick (git.md §8).
 fn line_fingerprint(line: &DiffLine) -> u64 {
@@ -2929,16 +2995,19 @@ mod tests {
 
     #[test]
     fn can_extend_reflects_remaining_context() {
+        let extendable = |diff: &FileDiff, amounts: &HashMap<usize, u32>, hunk: usize| {
+            can_extend(diff, amounts, &context_extensions(diff, amounts), hunk)
+        };
         let diff = ext_diff(vec![(5, 3, 5, 3)], 10);
-        assert!(can_extend(&diff, &HashMap::new(), 0));
+        assert!(extendable(&diff, &HashMap::new(), 0));
         assert!(
-            !can_extend(&diff, &amounts(&[(0, 10)]), 0),
+            !extendable(&diff, &amounts(&[(0, 10)]), 0),
             "the whole file is shown: nothing to extend"
         );
 
         let full = ext_diff(vec![(1, 4, 1, 4)], 4);
         assert!(
-            !can_extend(&full, &HashMap::new(), 0),
+            !extendable(&full, &HashMap::new(), 0),
             "the hunk already covers the whole file"
         );
     }

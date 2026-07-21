@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **34/37**.
+work**. Counter: **35/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -283,7 +283,7 @@ work**. Counter: **34/37**.
   configured `GIT_ASKPASS`/`SSH_ASKPASS`/`core.askPass` still spawns a GUI helper and
   burns the full timeout. (The `GIT_DIR` half is dropped — no path launches helm from a
   git subprocess.) *Files*: `src/git/cli.rs`, `src/git/sync.rs`.
-- ☐ **T33 — Diff view render cost.** ⚠ **re-scoped by measurement**: `can_extend` is
+- ☑ **T33 — Diff view render cost.** ⚠ **re-scoped by measurement**: `can_extend` is
   quadratic but **not** the binding constraint — 50 hunks (the busiest single-file diff
   in the last 50 commits) costs 62 µs/frame, 200 hunks 0.77 ms; only generated files
   near `MAX_DIFF_LINES` reach the ms range, where the non-virtualised row loop already
@@ -330,7 +330,7 @@ work**. Counter: **34/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T33**, then T34 → T35 (Lot D).
+- Order: **T34**, then T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
