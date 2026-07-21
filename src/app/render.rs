@@ -1216,7 +1216,9 @@ impl HelmApp {
                             // macOS traffic-light line above the diff.
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             let surface = if *inherited {
-                                crate::ui::diff_view::DiffSurface::WorkingTreeFrozen
+                                crate::ui::diff_view::DiffSurface::WorkingTreeFrozen {
+                                    staged: *staged,
+                                }
                             } else {
                                 crate::ui::diff_view::DiffSurface::WorkingTree { staged: *staged }
                             };
@@ -1484,17 +1486,9 @@ impl HelmApp {
                 // read at push time it would already have been refreshed by the
                 // background fetch and could never refuse.
                 if toolbar_action.force_push {
-                    if let Some(git) = self.git.as_ref() {
-                        if let (Branch::Named(branch), Some(remote), Some(lease)) =
-                            (&git.branch, &git.upstream_remote, git.upstream_oid)
-                        {
-                            self.modal = Some(Modal::ForcePush {
-                                branch: branch.clone(),
-                                remote: remote.clone(),
-                                lease,
-                            });
-                            ctx.request_repaint();
-                        }
+                    if let Some(modal) = armed_force_push(self.git.as_ref()) {
+                        self.modal = Some(modal);
+                        ctx.request_repaint();
                     }
                 }
                 // Cancel on the AI rebase chip: the runner kills the provider,
@@ -2806,6 +2800,26 @@ impl HelmApp {
         self.persist_sidebar_visibility_if_changed(sidebars_were);
         self.flush_prefs_if_due(ctx);
     }
+}
+
+/// The force-push confirmation, pinned to the remote tip the session is
+/// **displaying** (git.md §10). The pin belongs here, not to the runner: a lease
+/// read at push time is compared against a remote-tracking ref the background
+/// fetch refreshes every 10 s, so it would always agree with itself and never
+/// refuse. `None` when there is nothing to arm — no session, detached HEAD, or no
+/// upstream tip to overwrite.
+pub(crate) fn armed_force_push(git: Option<&super::git_session::GitSession>) -> Option<Modal> {
+    let git = git?;
+    let (Branch::Named(branch), Some(remote), Some(lease)) =
+        (&git.branch, &git.upstream_remote, git.upstream_oid)
+    else {
+        return None;
+    };
+    Some(Modal::ForcePush {
+        branch: branch.clone(),
+        remote: remote.clone(),
+        lease,
+    })
 }
 
 /// Compact caption for a finished agent on the dashboard (the green arms ~6 s

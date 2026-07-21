@@ -2960,3 +2960,57 @@ fn a_group_refresh_requested_mid_pass_is_re_issued_once_that_pass_lands() {
         "the requests coalesce into a single re-run"
     );
 }
+
+/// The lease the confirmation carries is the remote tip the session is showing,
+/// captured when the modal is armed. Read at push time instead, it would be the
+/// ref the background fetch had just refreshed — a lease that can never refuse.
+#[test]
+fn the_force_push_confirmation_pins_the_lease_to_the_displayed_tip() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(dir.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    let displayed = git2::Oid::from_str(&"1".repeat(40)).unwrap();
+    {
+        let git = app.git.as_mut().expect("a session for the active repo");
+        git.branch = Branch::Named("main".to_owned());
+        git.upstream_remote = Some("origin".to_owned());
+        git.upstream_oid = Some(displayed);
+    }
+
+    match crate::app::render::armed_force_push(app.git.as_ref()) {
+        Some(Modal::ForcePush {
+            branch,
+            remote,
+            lease,
+        }) => {
+            assert_eq!(branch, "main");
+            assert_eq!(remote, "origin");
+            assert_eq!(lease, displayed, "the lease is not the tip that was shown");
+        }
+        _ => panic!("expected an armed force push confirmation"),
+    }
+}
+
+#[test]
+fn without_an_upstream_tip_there_is_no_force_push_to_arm() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(dir.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+    {
+        let git = app.git.as_mut().expect("a session for the active repo");
+        git.branch = Branch::Named("main".to_owned());
+        git.upstream_remote = Some("origin".to_owned());
+        git.upstream_oid = None;
+    }
+
+    assert!(crate::app::render::armed_force_push(app.git.as_ref()).is_none());
+}

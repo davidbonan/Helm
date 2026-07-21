@@ -675,18 +675,22 @@ fn frozen_inherited_diff_shows_its_content_without_any_staging_control() {
     // While the requested file loads, the previous one stays on screen frozen:
     // its hunks belong to another path, so no granular control is offered and a
     // click on a line emits nothing.
-    let (intents, _) = drive_surface(two_hunk_diff(), DiffSurface::WorkingTreeFrozen, |h| {
-        h.get_by_label_contains("new()").click();
-        h.run();
-        assert!(h.query_by_label("Stage hunk").is_none());
-        assert!(h.query_by_label("Stage lines").is_none());
-        assert!(h.query_by_label("Stage line").is_none());
-        assert!(h.query_by_label("Unstage hunk").is_none());
-        assert!(h.query_by_label("Unstage line").is_none());
-        assert!(h.query_by_label("Discard hunk").is_none());
-        h.get_by_label_contains("src/main.rs");
-        h.get_by_label_contains("new()");
-    });
+    let (intents, _) = drive_surface(
+        two_hunk_diff(),
+        DiffSurface::WorkingTreeFrozen { staged: false },
+        |h| {
+            h.get_by_label_contains("new()").click();
+            h.run();
+            assert!(h.query_by_label("Stage hunk").is_none());
+            assert!(h.query_by_label("Stage lines").is_none());
+            assert!(h.query_by_label("Stage line").is_none());
+            assert!(h.query_by_label("Unstage hunk").is_none());
+            assert!(h.query_by_label("Unstage line").is_none());
+            assert!(h.query_by_label("Discard hunk").is_none());
+            h.get_by_label_contains("src/main.rs");
+            h.get_by_label_contains("new()");
+        },
+    );
     assert!(
         intents.is_empty(),
         "a frozen inherited diff emits no staging intent, got {intents:?}"
@@ -1625,5 +1629,68 @@ fn clicking_outside_the_editor_validates_the_note() {
                     && comment.note == "outside save"
         )),
         "losing focus must emit SaveComment for the annotated line, got {intents:?}",
+    );
+}
+
+#[test]
+fn freezing_the_diff_keeps_the_scroll_of_the_file_still_on_screen() {
+    // Clicking another file freezes the one on screen for the worker round-trip:
+    // same path, same content, only the granular controls withdrawn. Keying the
+    // scroll offset on the surface variant would send it back to the top for the
+    // whole window.
+    let palette = Palette::light();
+    let diff = tall_diff("src/a.rs", "alpha");
+    let surface = Rc::new(RefCell::new(DiffSurface::WorkingTree { staged: false }));
+    let surface_in_ui = surface.clone();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            *surface_in_ui.borrow(),
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+
+    let over_diff = harness.get_by_label_contains("alpha_005()").rect().center();
+    for _ in 0..10 {
+        harness.event(egui::Event::PointerMoved(over_diff));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.step();
+    }
+    assert!(
+        harness.query_by_label_contains("alpha_000()").is_none(),
+        "the wheel must scroll the first row out of the viewport"
+    );
+    let first_visible = |h: &mut Harness<'_, ()>| -> usize {
+        (0..80)
+            .find(|n| {
+                h.query_by_label_contains(&format!("alpha_{n:03}()"))
+                    .is_some()
+            })
+            .expect("some row must remain visible")
+    };
+    let scrolled = first_visible(&mut harness);
+    assert!(scrolled > 10, "the wheel barely moved: row {scrolled}");
+
+    *surface.borrow_mut() = DiffSurface::WorkingTreeFrozen { staged: false };
+    harness.run();
+
+    let frozen = first_visible(&mut harness);
+    assert!(
+        frozen.abs_diff(scrolled) <= 5,
+        "freezing the diff moved the view from row {scrolled} to row {frozen} \
+         (row 0 = scrolled back to the top)"
     );
 }

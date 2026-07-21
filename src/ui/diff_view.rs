@@ -713,8 +713,11 @@ pub enum DiffSurface {
     WorkingTree { staged: bool },
     /// Working tree, showing the **previously** open file frozen while the
     /// requested one loads: the hunks on screen belong to another path, so the
-    /// granular controls stay out until the requested diff arrives.
-    WorkingTreeFrozen,
+    /// granular controls stay out until the requested diff arrives. It carries the
+    /// frozen surface's own `staged` so the scroll salt does not change under the
+    /// file that is still on screen — the freeze would otherwise send it back to
+    /// the top for the whole round-trip.
+    WorkingTreeFrozen { staged: bool },
     /// A historical commit (M9-7 / git.md §9): read-only, no staging.
     Commit,
     /// The PR review surface (pull-requests.md §11): read-only, with the same
@@ -728,6 +731,20 @@ impl DiffSurface {
     /// every line.
     fn read_only(self) -> bool {
         !matches!(self, DiffSurface::WorkingTree { .. })
+    }
+
+    /// Identity the scroll offset is keyed on, alongside the path. Freezing a
+    /// working-tree diff does not change *which* file is on screen, so both
+    /// working-tree surfaces answer the same key — keying on the variant itself
+    /// would drop the offset to 0 the moment the freeze starts.
+    fn scroll_key(self) -> (u8, bool) {
+        match self {
+            DiffSurface::WorkingTree { staged } | DiffSurface::WorkingTreeFrozen { staged } => {
+                (0, staged)
+            }
+            DiffSurface::Commit => (1, false),
+            DiffSurface::PrReview => (2, false),
+        }
     }
 
     fn staged(self) -> bool {
@@ -919,7 +936,7 @@ pub fn diff_view(
             // Without a salt the offset is keyed on the position in the Ui tree
             // alone, so the next file opened here inherits the scroll of the
             // previous one.
-            .id_salt((surface, diff.path.as_str()))
+            .id_salt((surface.scroll_key(), diff.path.as_str()))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let row_w = content_width.max(ui.available_width());
@@ -2024,10 +2041,14 @@ fn shape_fingerprint(diff: &FileDiff) -> u64 {
     hasher.finish()
 }
 
-/// What a line selection is anchored on: the line's content, so a reload that
-/// keeps the hunk shape but rewrites the line invalidates the pick (git.md §8).
+/// What a line selection is anchored on: the line's origin and content, so a
+/// reload that keeps the hunk shape but rewrites the line invalidates the pick
+/// (git.md §8). The origin is part of it because the same text flipping from
+/// added to deleted at the same index would otherwise keep the pick and stage
+/// the opposite of what was selected.
 fn line_fingerprint(line: &DiffLine) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.origin.hash(&mut hasher);
     line.content.hash(&mut hasher);
     hasher.finish()
 }
@@ -3113,6 +3134,26 @@ mod tests {
         let reloaded = diff_of(vec![vec![
             (LineOrigin::Context, "fn main() {"),
             (LineOrigin::Addition, "    something_else();"),
+        ]]);
+
+        assert!(state.reconcile(&reloaded));
+        assert!(state.is_stale());
+        assert!(state.selected_lines(0).is_empty());
+    }
+
+    #[test]
+    fn reconcile_drops_a_selection_whose_line_flipped_side() {
+        let picked = diff_of(vec![vec![
+            (LineOrigin::Context, "fn main() {"),
+            (LineOrigin::Addition, "    new();"),
+        ]]);
+        let mut state = DiffViewState::default();
+        state.toggle(&picked, 0, 1);
+        // Same shape, same text: staging it now would remove the line the user
+        // picked to add.
+        let reloaded = diff_of(vec![vec![
+            (LineOrigin::Context, "fn main() {"),
+            (LineOrigin::Deletion, "    new();"),
         ]]);
 
         assert!(state.reconcile(&reloaded));

@@ -1775,3 +1775,63 @@ fn arrow_navigation_follows_the_tree_order() {
         "tree-order nav skips src/x.rs (the flat successor), got {intents:?}"
     );
 }
+
+/// The row's right-click menu writes to the same repository as its pills, so it
+/// follows the same gate — otherwise Discard still arms its confirmation for a
+/// command the worker is going to refuse.
+#[test]
+fn a_lock_holding_op_greys_the_row_context_menu_too() {
+    let (intents, state) = drive_collect(mixed_status(), lock_busy_state(true), |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        // "Stage" / "Discard" also label the row's inline pills; "Stash" is the
+        // menu's alone.
+        for label in ["Stage", "Discard", "Stash"] {
+            let nodes = h.query_all_by_label(label).count();
+            assert!(nodes > 0, "no {label} entry rendered");
+            for entry in h.query_all_by_label(label) {
+                assert!(
+                    entry.accesskit_node().is_disabled(),
+                    "every {label} affordance must be greyed out while the lock is held"
+                );
+            }
+        }
+        h.get_by_label("Stash").click();
+        h.run();
+    });
+
+    assert!(
+        intents
+            .iter()
+            .all(|intent| matches!(intent, GitIntent::OpenDiff { .. })),
+        "no mutation may be emitted while the lock is held, got {intents:?}"
+    );
+    let state = state.borrow();
+    assert!(
+        state.pending_discard.is_none(),
+        "Discard armed under a lock"
+    );
+    assert!(state.pending_stash.is_none(), "Stash armed under a lock");
+}
+
+#[test]
+fn the_row_context_menu_comes_back_once_the_lock_is_released() {
+    let (intents, state) = drive_collect(mixed_status(), lock_busy_state(false), |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        h.get_by_label("Stash").click();
+        h.run();
+    });
+
+    assert!(
+        intents.is_empty()
+            || intents
+                .iter()
+                .all(|i| matches!(i, GitIntent::OpenDiff { .. }))
+    );
+    assert_eq!(
+        state.borrow().pending_stash.as_deref(),
+        Some(&["src/main.rs".to_owned()][..]),
+        "the menu entry must arm the stash outside a lock-holding op"
+    );
+}

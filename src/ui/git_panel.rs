@@ -1664,43 +1664,43 @@ fn wip_file_context_menu(
                 let mut all: Vec<String> = marked.iter().map(|f| f.path.clone()).collect();
                 all.sort();
                 all.dedup();
-                if !unstaged.is_empty() && ui.button("Stage").clicked() {
+                if !unstaged.is_empty() && mutation_entry(ui, state, "Stage").clicked() {
                     for path in &unstaged {
                         intents.push(GitIntent::Stage(path.clone()));
                     }
                     ui.close();
                 }
-                if !to_unstage.is_empty() && ui.button("Unstage").clicked() {
+                if !to_unstage.is_empty() && mutation_entry(ui, state, "Unstage").clicked() {
                     for path in &to_unstage {
                         intents.push(GitIntent::Unstage(path.clone()));
                     }
                     ui.close();
                 }
-                if !unstaged.is_empty() && ui.button("Discard").clicked() {
+                if !unstaged.is_empty() && mutation_entry(ui, state, "Discard").clicked() {
                     state.pending_discard = Some(DiscardTarget::Files(unstaged.clone()));
                     ui.close();
                 }
-                if ui.button("Stash").clicked() {
+                if mutation_entry(ui, state, "Stash").clicked() {
                     state.pending_stash = Some(all.clone());
                     ui.close();
                 }
             } else {
                 if staged {
-                    if ui.button("Unstage").clicked() {
+                    if mutation_entry(ui, state, "Unstage").clicked() {
                         intents.push(GitIntent::Unstage(rel_path.to_owned()));
                         ui.close();
                     }
                 } else {
-                    if ui.button("Stage").clicked() {
+                    if mutation_entry(ui, state, "Stage").clicked() {
                         intents.push(GitIntent::Stage(rel_path.to_owned()));
                         ui.close();
                     }
-                    if ui.button("Discard").clicked() {
+                    if mutation_entry(ui, state, "Discard").clicked() {
                         state.pending_discard = Some(DiscardTarget::File(rel_path.to_owned()));
                         ui.close();
                     }
                 }
-                if ui.button("Stash").clicked() {
+                if mutation_entry(ui, state, "Stash").clicked() {
                     state.pending_stash = Some(vec![rel_path.to_owned()]);
                     ui.close();
                 }
@@ -1708,6 +1708,14 @@ fn wip_file_context_menu(
                 file_menu_entries(ui, rel_path, menu);
             }
         });
+}
+
+/// A context-menu entry that writes to the repository. It follows the same
+/// `lock_busy` gate as the row's inline pills: while a long operation holds the
+/// mutation lock the worker refuses the write anyway, so offering it would only
+/// arm a confirmation for a command that cannot run.
+fn mutation_entry(ui: &mut egui::Ui, state: &GitPanelState, label: &str) -> egui::Response {
+    ui.add_enabled(!state.lock_busy, egui::Button::new(label))
 }
 
 /// The Commit binding (keybindings §3, `Cmd+Enter` by default) — equivalent to
