@@ -1151,6 +1151,57 @@ fn a_superseded_graph_reply_is_discarded() {
     assert_eq!(session.graph_limit, graph::PAGE_SIZE);
 }
 
+#[test]
+fn a_checkout_that_auto_stashed_says_where_the_changes_went() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feature", &head, false).unwrap();
+    std::fs::write(tmp.path().join("wip.txt"), "x\n").unwrap();
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
+    );
+
+    session.worker.send(GitCommand::Checkout("feature".into()));
+
+    let mut editor = BranchEditor::default();
+    let mut panel = GitPanelState::default();
+    let mut toasts = Toasts::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checkout never reported back"
+        );
+        session.drain(
+            &mut None,
+            &mut editor,
+            &mut panel,
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut toasts,
+            0.0,
+        );
+        if session.branch.label() == "feature" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let messages: Vec<&str> = toasts.items().iter().map(|t| t.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["Checked out feature — your changes were stashed"],
+        "the working tree left with the auto-stash: the toast must say so"
+    );
+}
+
 /// Spawns a session the way `sync_git_session` does: the lock comes from the
 /// caches, not from the session.
 fn spawn_session(caches: &mut RepoCaches, path: &Path, ctx: &egui::Context) -> GitSession {

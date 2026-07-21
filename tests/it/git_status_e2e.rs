@@ -319,3 +319,24 @@ fn ignored_file_is_absent_from_status() {
     assert!(!st.staged.iter().any(|f| f.path == "ignored.log"));
     assert!(st.unstaged.iter().any(|f| f.path == ".gitignore"));
 }
+
+#[test]
+fn is_dirty_ignores_a_worktree_nested_in_the_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    let repo = git2::Repository::init(&root).unwrap();
+    commit_file(&repo, "a.txt", "v1\n", "init");
+    // Relative worktree base (worktrees.md §6): the linked worktree lands inside
+    // the workdir, where libgit2 reports it as one untracked directory entry —
+    // the panel hides it, so the checkout auto-stash must not see it either.
+    repo.worktree("nested", &root.join("nested"), None).unwrap();
+
+    assert!(status::load_repo(&repo).unwrap().unstaged.is_empty());
+    assert!(!status::is_dirty(&repo).unwrap());
+
+    fs::write(root.join("b.txt"), "new\n").unwrap();
+    assert!(
+        status::is_dirty(&repo).unwrap(),
+        "a real change still counts"
+    );
+}

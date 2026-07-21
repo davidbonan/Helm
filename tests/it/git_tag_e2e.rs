@@ -157,6 +157,36 @@ fn checkout_detached_lands_on_the_tag_commit_and_auto_stashes() {
 }
 
 #[test]
+fn checkout_detached_on_the_tag_head_already_sits_on_takes_no_stash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut repo = init_repo_with_identity(tmp.path());
+    let c1 = commit_file(&repo, tmp.path(), "a.txt");
+    commit_file(&repo, tmp.path(), "b.txt");
+    tag::create_lightweight(&repo, "v1.0", c1).unwrap();
+    // The tag menu offers the checkout whatever HEAD is: here it already sits
+    // detached on the tag, so the checkout moves nothing and the dirty tree
+    // must stay in place (an auto-stash there is never popped back).
+    tag::checkout_detached(&repo, "v1.0").unwrap();
+    fs::write(tmp.path().join("a.txt"), "dirty\n").unwrap();
+
+    tag::checkout_detached(&repo, "v1.0").unwrap();
+
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "dirty\n",
+        "a no-op checkout leaves the working tree alone"
+    );
+    let mut stashes = 0;
+    repo.stash_foreach(|_, _, _| {
+        stashes += 1;
+        true
+    })
+    .unwrap();
+    assert_eq!(stashes, 0, "nothing was set aside");
+    assert_eq!(repo.head().unwrap().target(), Some(c1));
+}
+
+#[test]
 fn worker_checkout_tag_detaches_head() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_with_identity(tmp.path());

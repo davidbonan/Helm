@@ -526,6 +526,9 @@ impl GitSession {
     ) {
         match result {
             Ok(snapshot) => {
+                // Compared before the field moves: the checkout auto-stash is the
+                // only way this count can grow on a checkout reply.
+                let auto_stashed = snapshot.stash_count > self.stash_count;
                 self.status = snapshot.status;
                 self.branch = snapshot.branch;
                 self.stash_count = snapshot.stash_count;
@@ -558,6 +561,22 @@ impl GitSession {
                     )
                 {
                     *editor = BranchEditor::default();
+                }
+                // A checkout only shows up as a moved branch indicator; when it
+                // auto-stashed a dirty tree the changes also left the panel, so
+                // the toast says where they went (git.md §9).
+                let checked_out = match &source {
+                    GitCommand::Checkout(_) => Some(self.branch.label().to_owned()),
+                    GitCommand::CheckoutTag(name) => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = checked_out {
+                    let message = if auto_stashed {
+                        format!("Checked out {name} — your changes were stashed")
+                    } else {
+                        format!("Checked out {name}")
+                    };
+                    toasts.success(message, now);
                 }
             }
             Err(err) => match source {

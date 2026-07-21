@@ -21,13 +21,18 @@ pub fn create_lightweight(
 /// included) is auto-stashed first, restored if the checkout never lands. The tag
 /// name is resolved before stashing so a missing tag fails without setting the
 /// tree aside. Menu-only: a tag is never checked out by a double-click (a detached
-/// HEAD must not be one slip away).
+/// HEAD must not be one slip away). A tag is offered whatever HEAD is: when HEAD
+/// is already detached on its commit the checkout is a no-op, and the auto-stash
+/// would set the working tree aside for nothing (never popped back).
 pub fn checkout_detached(repo: &git2::Repository, name: &str) -> Result<(), git2::Error> {
     let owned = git2::Repository::open(repo.path())?;
     let oid = owned
         .revparse_single(&format!("refs/tags/{name}"))?
         .peel_to_commit()?
         .id();
+    if owned.head_detached()? && owned.head()?.target() == Some(oid) {
+        return Ok(());
+    }
     crate::git::branch::with_auto_stash(&owned, &format!("checkout {name}"), |repo| {
         crate::git::branch::checkout_detached(repo, oid)
     })

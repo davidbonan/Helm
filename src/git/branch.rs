@@ -74,11 +74,16 @@ fn finish_checkout(repo: &git2::Repository, name: &str) -> Result<(), git2::Erro
             if local_oid == remote_oid {
                 checkout_reference(repo, local.into_reference())
             } else if repo.graph_descendant_of(remote_oid, local_oid)? {
-                let updated = local.get_mut().set_target(
+                let refname = local.get().name()?.to_owned();
+                ensure_free_of_other_worktrees(repo, &refname)?;
+                // The tree lands before the ref moves: a failed checkout must not
+                // leave the local branch fast-forwarded to a commit HEAD never got.
+                repo.checkout_tree(&repo.find_object(remote_oid, None)?, None)?;
+                local.get_mut().set_target(
                     remote_oid,
                     &format!("helm: fast-forward {local_name} to {name}"),
                 )?;
-                checkout_reference(repo, updated)
+                repo.set_head(&refname)
             } else {
                 checkout_detached(repo, remote_oid)
             }
@@ -97,9 +102,65 @@ fn checkout_reference(
     repo: &git2::Repository,
     reference: git2::Reference<'_>,
 ) -> Result<(), git2::Error> {
+    ensure_free_of_other_worktrees(repo, reference.name()?)?;
     let target = reference.peel(git2::ObjectType::Commit)?;
     repo.checkout_tree(&target, None)?;
     repo.set_head(reference.name()?)
+}
+
+/// Refuses what `git checkout` refuses and libgit2 does not enforce: pointing
+/// HEAD at — or fast-forwarding — a branch that **another** worktree of the same
+/// repo has checked out. `refname` is fully qualified; the branch checked out
+/// *here* passes, that case being the fast-forward of the current branch onto
+/// its remote.
+fn ensure_free_of_other_worktrees(
+    repo: &git2::Repository,
+    refname: &str,
+) -> Result<(), git2::Error> {
+    let names = repo.worktrees()?;
+    if names.is_empty() || head_ref_name(repo).as_deref() == Some(refname) {
+        return Ok(());
+    }
+    // The main worktree is not part of `worktrees()`: its HEAD is the one in the
+    // common dir. A bare root has no checkout of its own.
+    let main = git2::Repository::open(repo.commondir())?;
+    if !main.is_bare() && head_ref_name(&main).as_deref() == Some(refname) {
+        return Err(already_checked_out(refname, main.workdir()));
+    }
+    for name in names.iter() {
+        let Ok(Some(name)) = name else { continue };
+        let Ok(worktree) = repo.find_worktree(name) else {
+            continue;
+        };
+        let Ok(other) = git2::Repository::open_from_worktree(&worktree) else {
+            continue;
+        };
+        if head_ref_name(&other).as_deref() == Some(refname) {
+            return Err(already_checked_out(refname, Some(worktree.path())));
+        }
+    }
+    Ok(())
+}
+
+/// Branch `HEAD` points at, fully qualified; `None` on a detached `HEAD`.
+fn head_ref_name(repo: &git2::Repository) -> Option<String> {
+    repo.find_reference("HEAD")
+        .ok()?
+        .symbolic_target()
+        .ok()
+        .flatten()
+        .map(str::to_owned)
+}
+
+fn already_checked_out(refname: &str, at: Option<&std::path::Path>) -> git2::Error {
+    let name = strip_branch_prefix(refname).unwrap_or(refname);
+    match at {
+        Some(path) => git2::Error::from_str(&format!(
+            "'{name}' is already checked out at '{}'",
+            path.display()
+        )),
+        None => git2::Error::from_str(&format!("'{name}' is already checked out")),
+    }
 }
 
 pub(crate) fn checkout_detached(

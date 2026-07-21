@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **31/37**.
+work**. Counter: **32/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -253,7 +253,7 @@ work**. Counter: **31/37**.
   session reopened on the same repo") — the join in `Drop` is a workaround for the hole,
   which sync ops still have. Keying the lock by `RepoKey` also lets that join go.
   *Files*: `src/app/mod.rs`, `src/app/git_session.rs`.
-- ☐ **T30 — Checkout auto-stash.** ⚠ **re-scoped, 4 sub-claims:** (a) the *remote chip*
+- ☑ **T30 — Checkout auto-stash.** ⚠ **re-scoped, 4 sub-claims:** (a) the *remote chip*
   no-op is **invalid** — `merge_local_remote` (`graph/mod.rs:217`) drops a remote entry
   sitting on the same commit, so a surviving chip is always a real move; the reachable
   no-op is the **tag menu** ("a tag is always checkout-eligible", `graph_view.rs:518`)
@@ -330,7 +330,7 @@ work**. Counter: **31/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T30**, then T31 → T35 (Lot D).
+- Order: **T31**, then T32 → T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

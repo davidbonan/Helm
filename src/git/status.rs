@@ -203,11 +203,20 @@ pub fn load(repo_path: &Path) -> Result<RepoStatus, git2::Error> {
 /// At least one staged / unstaged / untracked change. Cheap dirty check for the
 /// stash guards (`stash`, checkout auto-stash): no line stats, no untracked
 /// recursion (a dirty directory entry is enough) — `load_repo` pays a `Patch`
-/// per changed file just to answer yes/no.
+/// per changed file just to answer yes/no. Nested worktrees are skipped like in
+/// `load_repo`: they are untracked directories the panel never shows, and
+/// counting them dirty stashes a working tree the user sees as clean.
 pub fn is_dirty(repo: &git2::Repository) -> Result<bool, git2::Error> {
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).exclude_submodules(true);
-    Ok(!repo.statuses(Some(&mut opts))?.is_empty())
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let nested = crate::git::worktree::nested_in_workdir(repo);
+    if nested.is_empty() {
+        return Ok(!statuses.is_empty());
+    }
+    Ok(statuses
+        .iter()
+        .any(|entry| !nested.contains(Path::new(&entry_path(&entry)))))
 }
 
 /// Status pass with the same flags as `load_repo` but **without the line

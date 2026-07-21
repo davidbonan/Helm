@@ -314,6 +314,133 @@ fn failed_checkout_restores_the_auto_stashed_changes() {
 }
 
 #[test]
+fn a_failed_checkout_leaves_the_local_branch_where_it_was() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    let c1 = commit_file(&repo, tmp.path(), "a.txt");
+    let c2 = commit_file(&repo, tmp.path(), "b.txt");
+    repo.branch("feature", &repo.find_commit(c1).unwrap(), false)
+        .unwrap();
+    repo.remote("origin", "https://example.invalid/repo.git")
+        .unwrap();
+    repo.reference("refs/remotes/origin/feature", c2, false, "remote")
+        .unwrap();
+    // A held index lock fails the checkout of the fast-forward target: the local
+    // ref must not have moved onto a commit HEAD never reached.
+    fs::write(tmp.path().join(".git/index.lock"), "").unwrap();
+
+    assert!(branch::checkout(&repo, "origin/feature").is_err());
+
+    let local = repo
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap();
+    assert_eq!(
+        local.get().target(),
+        Some(c1),
+        "the fast-forward landed although the checkout failed"
+    );
+}
+
+/// Adds a linked worktree on the **existing** branch `name`.
+fn worktree_on(repo: &git2::Repository, name: &str, path: &Path) {
+    let reference = repo
+        .find_branch(name, git2::BranchType::Local)
+        .unwrap()
+        .into_reference();
+    let mut opts = git2::WorktreeAddOptions::new();
+    opts.reference(Some(&reference));
+    repo.worktree(name, path, Some(&opts)).unwrap();
+}
+
+#[test]
+fn a_branch_checked_out_in_another_worktree_is_refused_before_it_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    fs::create_dir_all(&root).unwrap();
+    let repo = init_repo_with_identity(&root);
+    let c1 = commit_file(&repo, &root, "a.txt");
+    let c2 = commit_file(&repo, &root, "b.txt");
+    repo.branch("feature", &repo.find_commit(c1).unwrap(), false)
+        .unwrap();
+    worktree_on(&repo, "feature", &tmp.path().join("feature"));
+    repo.remote("origin", "https://example.invalid/repo.git")
+        .unwrap();
+    repo.reference("refs/remotes/origin/feature", c2, false, "remote")
+        .unwrap();
+
+    let err = branch::checkout(&repo, "origin/feature").unwrap_err();
+
+    assert!(
+        err.message().contains("already checked out"),
+        "message: {}",
+        err.message()
+    );
+    let local = repo
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap();
+    assert_eq!(
+        local.get().target(),
+        Some(c1),
+        "the branch another worktree has checked out must not be fast-forwarded"
+    );
+}
+
+#[test]
+fn a_worktree_refuses_the_branch_the_main_checkout_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    fs::create_dir_all(&root).unwrap();
+    let repo = init_repo_with_identity(&root);
+    let c1 = commit_file(&repo, &root, "a.txt");
+    commit_file(&repo, &root, "b.txt");
+    let main_branch = head_branch(&repo);
+    repo.branch("feature", &repo.find_commit(c1).unwrap(), false)
+        .unwrap();
+    let wt_path = tmp.path().join("feature");
+    worktree_on(&repo, "feature", &wt_path);
+    let wt_repo = git2::Repository::open(&wt_path).unwrap();
+
+    let err = branch::checkout(&wt_repo, &main_branch).unwrap_err();
+
+    assert!(
+        err.message().contains("already checked out"),
+        "message: {}",
+        err.message()
+    );
+    assert_eq!(head_branch(&wt_repo), "feature");
+    assert!(
+        !wt_path.join("b.txt").exists(),
+        "the refusal comes before the tree is switched"
+    );
+}
+
+#[test]
+fn the_current_branch_still_fast_forwards_next_to_a_sibling_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    fs::create_dir_all(&root).unwrap();
+    let repo = init_repo_with_identity(&root);
+    let c1 = commit_file(&repo, &root, "a.txt");
+    let c2 = commit_file(&repo, &root, "b.txt");
+    repo.branch("feature", &repo.find_commit(c1).unwrap(), false)
+        .unwrap();
+    branch::checkout(&repo, "feature").unwrap();
+    repo.remote("origin", "https://example.invalid/repo.git")
+        .unwrap();
+    repo.reference("refs/remotes/origin/feature", c2, false, "remote")
+        .unwrap();
+    // Another worktree exists but holds another branch: the guard must not
+    // refuse the fast-forward of the branch checked out **here**.
+    repo.worktree("other", &tmp.path().join("other"), None)
+        .unwrap();
+
+    branch::checkout(&repo, "origin/feature").unwrap();
+
+    assert_eq!(head_branch(&repo), "feature");
+    assert_eq!(repo.head().unwrap().target(), Some(c2));
+}
+
+#[test]
 fn delete_local_removes_a_non_checked_out_branch() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_with_identity(tmp.path());
