@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
-use crate::git::diff::{FileDiff, Hunk, ImageBlob, LineOrigin};
+use crate::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
@@ -8,11 +9,13 @@ use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, Highlighte
 use crate::ui::with_alpha;
 
 /// Per-hunk line selection, kept across frames. The key is the hunk index in
-/// `FileDiff::hunks`; the value, the set of chosen line indices in `Hunk::lines`.
+/// `FileDiff::hunks`; the value maps each chosen line index in `Hunk::lines` to
+/// the fingerprint of the content it was chosen on, so a reload that keeps the
+/// shape but changes the line drops it instead of retargeting (git.md §8).
 /// Empty ⇒ the whole hunk (the Stage/Unstage hunk buttons take precedence).
 #[derive(Debug, Default)]
 pub struct DiffViewState {
-    selection: HashMap<usize, HashSet<usize>>,
+    selection: HashMap<usize, HashMap<usize, u64>>,
     /// Extended context per hunk (git.md §4): number of extra context lines
     /// requested above **and** below (multiples of `EXTEND_STEP`). Display only —
     /// never enters staging.
@@ -179,8 +182,9 @@ impl DiffViewState {
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
-    /// line) pairs now out of bounds or turned back into context. Returns `true`
-    /// if a selection was lost (to signal to the user, git.md §8).
+    /// line) pairs now out of bounds, turned back into context, or whose content
+    /// no longer matches what was picked. Returns `true` if a selection was lost
+    /// (to signal to the user, git.md §8).
     pub fn reconcile(&mut self, diff: &FileDiff) -> bool {
         let mut dropped = false;
         self.selection.retain(|&hunk, lines| {
@@ -189,10 +193,10 @@ impl DiffViewState {
                 return false;
             };
             let before = lines.len();
-            lines.retain(|&line| {
-                h.lines
-                    .get(line)
-                    .is_some_and(|l| l.origin != LineOrigin::Context)
+            lines.retain(|&line, &mut picked| {
+                h.lines.get(line).is_some_and(|l| {
+                    l.origin != LineOrigin::Context && line_fingerprint(l) == picked
+                })
             });
             dropped |= lines.len() != before;
             !lines.is_empty()
@@ -212,24 +216,34 @@ impl DiffViewState {
         self.stale
     }
 
-    fn toggle(&mut self, hunk: usize, line: usize) {
+    fn toggle(&mut self, diff: &FileDiff, hunk: usize, line: usize) {
+        let Some(picked) = diff
+            .hunks
+            .get(hunk)
+            .and_then(|h| h.lines.get(line))
+            .map(line_fingerprint)
+        else {
+            return;
+        };
         self.stale = false;
         self.text_selection = None;
         let set = self.selection.entry(hunk).or_default();
-        if !set.insert(line) {
+        if set.insert(line, picked).is_some() {
             set.remove(&line);
         }
     }
 
     fn selected(&self, hunk: usize, line: usize) -> bool {
-        self.selection.get(&hunk).is_some_and(|s| s.contains(&line))
+        self.selection
+            .get(&hunk)
+            .is_some_and(|s| s.contains_key(&line))
     }
 
     fn selected_lines(&self, hunk: usize) -> Vec<usize> {
         let mut lines: Vec<usize> = self
             .selection
             .get(&hunk)
-            .map(|s| s.iter().copied().collect())
+            .map(|s| s.keys().copied().collect())
             .unwrap_or_default();
         lines.sort_unstable();
         lines
@@ -900,7 +914,7 @@ pub fn diff_view(
                             &mut text_rows,
                         );
                         text_row += 1;
-                        apply_line_action(state, intents, action);
+                        apply_line_action(state, diff, intents, action);
                     }
                     for (line_idx, line) in hunk.lines.iter().enumerate() {
                         let text = display_text(&line.content);
@@ -940,7 +954,7 @@ pub fn diff_view(
                                 };
                                 open_inline_editor(state, pool, store, &diff.path, old, new);
                             }
-                            other => apply_line_action(state, intents, other),
+                            other => apply_line_action(state, diff, intents, other),
                         }
                         existing_block(
                             ui,
@@ -1002,7 +1016,7 @@ pub fn diff_view(
                             &mut text_rows,
                         );
                         text_row += 1;
-                        apply_line_action(state, intents, action);
+                        apply_line_action(state, diff, intents, action);
                     }
                     ui.spacing_mut().item_spacing.y = previous_spacing_y;
                     ui.add_space(12.0);
@@ -1944,14 +1958,23 @@ fn truncate_code(code: &str) -> String {
     }
 }
 
+/// What a line selection is anchored on: the line's content, so a reload that
+/// keeps the hunk shape but rewrites the line invalidates the pick (git.md §8).
+fn line_fingerprint(line: &DiffLine) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.content.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn apply_line_action(
     state: &mut DiffViewState,
+    diff: &FileDiff,
     intents: &mut Vec<GitIntent>,
     action: Option<DiffLineAction>,
 ) {
     match action {
         Some(DiffLineAction::Intent(intent)) => intents.push(intent),
-        Some(DiffLineAction::ToggleSelection { hunk, line }) => state.toggle(hunk, line),
+        Some(DiffLineAction::ToggleSelection { hunk, line }) => state.toggle(diff, hunk, line),
         Some(DiffLineAction::SelectText(selection)) => {
             state.selection.clear();
             state.text_selection = Some(selection);
@@ -2761,22 +2784,30 @@ mod tests {
 
     #[test]
     fn toggling_a_line_adds_then_removes_it_from_the_selection() {
+        let diff = diff_of(vec![vec![
+            (LineOrigin::Context, "ctx"),
+            (LineOrigin::Addition, "add"),
+        ]]);
         let mut state = DiffViewState::default();
         assert!(!state.selected(0, 1));
-        state.toggle(0, 1);
+        state.toggle(&diff, 0, 1);
         assert!(state.selected(0, 1));
         assert_eq!(state.selected_lines(0), vec![1]);
-        state.toggle(0, 1);
+        state.toggle(&diff, 0, 1);
         assert!(!state.selected(0, 1));
         assert!(state.selected_lines(0).is_empty());
     }
 
     #[test]
     fn selected_lines_are_sorted_and_scoped_per_hunk() {
+        let diff = diff_of(vec![
+            vec![(LineOrigin::Addition, "a"); 4],
+            vec![(LineOrigin::Addition, "b"); 6],
+        ]);
         let mut state = DiffViewState::default();
-        state.toggle(0, 3);
-        state.toggle(0, 1);
-        state.toggle(1, 5);
+        state.toggle(&diff, 0, 3);
+        state.toggle(&diff, 0, 1);
+        state.toggle(&diff, 1, 5);
         assert_eq!(state.selected_lines(0), vec![1, 3]);
         assert_eq!(state.selected_lines(1), vec![5]);
         assert!(state.selected_lines(2).is_empty());
@@ -2785,26 +2816,35 @@ mod tests {
     use crate::git::diff::DiffLine;
 
     fn diff_with(lines: Vec<LineOrigin>) -> FileDiff {
+        diff_of(vec![lines.into_iter().map(|origin| (origin, "")).collect()])
+    }
+
+    /// Multi-hunk diff whose lines carry content — what a line selection is
+    /// anchored on.
+    fn diff_of(hunks: Vec<Vec<(LineOrigin, &str)>>) -> FileDiff {
         FileDiff {
             path: "f".into(),
             binary: false,
             oversize: false,
-            hunks: vec![Hunk {
-                header: String::new(),
-                old_start: 1,
-                old_lines: 0,
-                new_start: 1,
-                new_lines: 0,
-                lines: lines
-                    .into_iter()
-                    .map(|origin| DiffLine {
-                        origin,
-                        content: String::new(),
-                        old_lineno: None,
-                        new_lineno: None,
-                    })
-                    .collect(),
-            }],
+            hunks: hunks
+                .into_iter()
+                .map(|lines| Hunk {
+                    header: String::new(),
+                    old_start: 1,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: 0,
+                    lines: lines
+                        .into_iter()
+                        .map(|(origin, content)| DiffLine {
+                            origin,
+                            content: content.to_owned(),
+                            old_lineno: None,
+                            new_lineno: None,
+                        })
+                        .collect(),
+                })
+                .collect(),
             source_lines: Vec::new(),
             image: None,
         }
@@ -2959,9 +2999,12 @@ mod tests {
 
     #[test]
     fn reconcile_keeps_a_still_valid_selection_without_flagging_stale() {
+        let diff = diff_of(vec![vec![
+            (LineOrigin::Context, "ctx"),
+            (LineOrigin::Addition, "add"),
+        ]]);
         let mut state = DiffViewState::default();
-        state.toggle(0, 1);
-        let diff = diff_with(vec![LineOrigin::Context, LineOrigin::Addition]);
+        state.toggle(&diff, 0, 1);
 
         assert!(!state.reconcile(&diff));
         assert!(!state.is_stale());
@@ -2971,7 +3014,7 @@ mod tests {
     #[test]
     fn reconcile_drops_an_out_of_range_selection_and_flags_stale() {
         let mut state = DiffViewState::default();
-        state.toggle(2, 0);
+        state.toggle(&diff_of(vec![vec![(LineOrigin::Addition, "add")]; 3]), 2, 0);
         let diff = diff_with(vec![LineOrigin::Addition]);
 
         assert!(state.reconcile(&diff));
@@ -2982,11 +3025,30 @@ mod tests {
     #[test]
     fn reconcile_drops_a_selection_that_became_context() {
         let mut state = DiffViewState::default();
-        state.toggle(0, 0);
+        state.toggle(&diff_with(vec![LineOrigin::Addition]), 0, 0);
         let diff = diff_with(vec![LineOrigin::Context]);
 
         assert!(state.reconcile(&diff));
         assert!(state.is_stale());
+    }
+
+    #[test]
+    fn reconcile_drops_a_selection_whose_line_content_changed() {
+        let picked = diff_of(vec![vec![
+            (LineOrigin::Context, "fn main() {"),
+            (LineOrigin::Addition, "    new();"),
+        ]]);
+        let mut state = DiffViewState::default();
+        state.toggle(&picked, 0, 1);
+        // Same shape, same origins: only the content of the picked line moved on.
+        let reloaded = diff_of(vec![vec![
+            (LineOrigin::Context, "fn main() {"),
+            (LineOrigin::Addition, "    something_else();"),
+        ]]);
+
+        assert!(state.reconcile(&reloaded));
+        assert!(state.is_stale());
+        assert!(state.selected_lines(0).is_empty());
     }
 
     #[test]

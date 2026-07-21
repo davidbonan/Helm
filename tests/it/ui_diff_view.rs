@@ -841,6 +841,51 @@ fn reloading_a_shrunk_diff_drops_a_stale_selection_and_signals_it() {
     harness.get_by_label_contains("selection no longer applies");
 }
 
+#[test]
+fn reloading_a_rewritten_line_drops_the_selection_and_refuses_granular_staging() {
+    let palette = Palette::light();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let diff = Rc::new(RefCell::new(sample_diff()));
+    let diff_in_ui = diff.clone();
+
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff_in_ui.borrow(),
+            DiffSurface::WorkingTree { staged: false },
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+    harness.get_by_label_contains("new()").click();
+    harness.run();
+    harness.get_by_label("Stage lines");
+
+    // Disk edit: same hunk shape, same origins, but the picked line was rewritten
+    // ⇒ line index 2 no longer points at what the user selected.
+    let mut reloaded = sample_diff();
+    reloaded.hunks[0].lines[2] = line(LineOrigin::Addition, "    something_else();\n");
+    let dropped = state.borrow_mut().reconcile(&reloaded);
+    *diff.borrow_mut() = reloaded;
+    assert!(
+        dropped,
+        "a selection whose line content changed no longer applies"
+    );
+    harness.run();
+
+    harness.get_by_label_contains("selection no longer applies");
+    assert!(
+        harness.query_by_label("Stage lines").is_none(),
+        "the dropped selection leaves whole-hunk staging only"
+    );
+    harness.get_by_label("Stage hunk");
+}
+
 fn tiny_png() -> Vec<u8> {
     let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 40, 40, 255]));
     let mut bytes = Vec::new();

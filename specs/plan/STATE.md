@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **26/37**.
+work**. Counter: **27/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -216,7 +216,7 @@ work**. Counter: **26/37**.
   file (`git_session.rs:685`) and `resolve_file` overwrites it unconditionally ⇒ edits
   made in a terminal pane are lost on Save. Compare disk vs reconstruction where the
   editor adopts. *Files*: `src/ui/conflict_view.rs`, `src/app/git_session.rs`.
-- ☐ **T25 — Line selection anchored on content.** `reconcile` (`diff_view.rs:184-205`)
+- ☑ **T25 — Line selection anchored on content.** `reconcile` (`diff_view.rs:184-205`)
   validates only bounds + origin, so a reload that keeps the hunk shape but changes the
   content silently retargets the selection **and leaves `stale` false** — against
   `git.md:306-308` ("report if a selection no longer applies"). Reached from the 1 s
@@ -329,7 +329,7 @@ work**. Counter: **26/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T25** (Lot C), then the rest of Lot C (T26–T27), then Lot D.
+- Order: **T26** (Lot C), then T27, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
