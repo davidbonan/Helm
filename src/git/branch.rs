@@ -167,11 +167,20 @@ pub fn create_at(repo: &git2::Repository, name: &str, committish: &str) -> Resul
 /// unstaged), **Hard** resets both (destructive — untracked files survive, git
 /// semantics). Detached HEAD is gated out in the UI; a missing branch surfaces
 /// as git's `Err`.
+///
+/// An operation in progress refuses (git.md §9, like `commit` / `rebase_onto`):
+/// a merge/cherry-pick/revert conflict keeps HEAD on a branch, and a libgit2
+/// reset there wipes `MERGE_HEAD`+`MERGE_MSG` — killing `git merge --abort`.
 pub fn reset(
     repo: &git2::Repository,
     target: git2::Oid,
     kind: git2::ResetType,
 ) -> Result<(), git2::Error> {
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(git2::Error::from_str(
+            "an operation is in progress — resolve or abort it first",
+        ));
+    }
     let object = repo.find_object(target, None)?;
     repo.reset(&object, kind, None)
 }

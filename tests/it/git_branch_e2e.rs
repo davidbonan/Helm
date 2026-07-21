@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use helm::git::branch::{self, Branch};
+use helm::git::cli;
 use helm::git::worker::{GitCommand, GitResult, GitWorker};
 
 fn init_repo_with_identity(dir: &Path) -> git2::Repository {
@@ -658,6 +659,57 @@ fn reset_hard_leaves_untracked_files_in_place() {
         fs::read_to_string(tmp.path().join("scratch.txt")).unwrap(),
         "keep\n",
         "untracked file survives a hard reset (git semantics)"
+    );
+}
+
+#[test]
+fn reset_refuses_during_a_conflicted_merge_and_keeps_abort_possible() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    let base = commit_content(&repo, tmp.path(), "f.txt", "base\n");
+    let theirs = {
+        let blob = repo.blob(b"theirs\n").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("f.txt", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.find_commit(base).unwrap();
+        repo.commit(None, &sig, &sig, "theirs", &tree, &[&parent])
+            .unwrap()
+    };
+    repo.branch("other", &repo.find_commit(theirs).unwrap(), false)
+        .unwrap();
+    let ours = commit_content(&repo, tmp.path(), "f.txt", "ours\n");
+    let merged = cli::run(tmp.path(), &["merge", "other"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+    assert_eq!(repo.state(), git2::RepositoryState::Merge);
+
+    for kind in [
+        git2::ResetType::Soft,
+        git2::ResetType::Mixed,
+        git2::ResetType::Hard,
+    ] {
+        let err = branch::reset(&repo, base, kind).unwrap_err();
+        assert!(
+            err.message().contains("an operation is in progress"),
+            "unexpected error message: {}",
+            err.message()
+        );
+    }
+
+    assert!(
+        repo.path().join("MERGE_HEAD").exists(),
+        "MERGE_HEAD survives the refusal"
+    );
+    assert_eq!(repo.head().unwrap().target(), Some(ours));
+    let aborted = cli::run(tmp.path(), &["merge", "--abort"]).unwrap();
+    assert!(aborted.success(), "merge --abort still works: {aborted:?}");
+    let reopened = git2::Repository::open(tmp.path()).unwrap();
+    assert_eq!(reopened.state(), git2::RepositoryState::Clean);
+    assert_eq!(reopened.head().unwrap().target(), Some(ours));
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("f.txt")).unwrap(),
+        "ours\n"
     );
 }
 

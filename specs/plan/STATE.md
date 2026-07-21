@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **13/37**.
+work**. Counter: **14/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -58,7 +58,7 @@ work**. Counter: **13/37**.
   one level down (`diff_view.rs:184`, banner `:797`). Minimal fix: drop a pending
   `Modal::DiscardHunk` when `adopt` replaces `loaded` for that path — no content
   re-matching. *Files*: `src/app/git_session.rs`, `src/app/render.rs`.
-- ☐ **T6 — Reset refused mid-operation + `ORIG_HEAD`.** ⚠ **re-scoped**: the rebase
+- ☑ **T6 — Reset refused mid-operation + `ORIG_HEAD`.** ⚠ **re-scoped**: the rebase
   scenario is unreachable — a conflicted rebase detaches HEAD and the "Reset `<branch>`
   to here" section is only built for a named HEAD (`graph_view.rs:686`, `:1352`). What
   is reachable: **merge / cherry-pick / revert** conflicts keep HEAD on a branch, and a
