@@ -362,6 +362,17 @@ struct ChipMenu {
     expanded: Option<(git2::Oid, usize)>,
 }
 
+fn chip_menu_id() -> egui::Id {
+    egui::Id::new("graph_chip_menu")
+}
+
+/// Closes the chip menu from outside the graph: its sections name the refs of the
+/// repo it was opened on, while the state itself lives in egui memory — a repo
+/// switch would leave it open, aiming its entries at the new repo (git.md §9).
+pub fn close_chip_menu(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<ChipMenu>(chip_menu_id()));
+}
+
 /// Ordering bucket of a context-menu section: [`chip_menu`] renders the sections
 /// grouped by bucket, in this declaration order, with a separator between
 /// buckets — related actions stay together and the destructive ones land last.
@@ -743,7 +754,7 @@ pub fn graph_view(
     let search_scroll = search_active && search_out.scroll;
 
     let mut out = RowsOut::default();
-    let menu_id = egui::Id::new("graph_chip_menu");
+    let menu_id = chip_menu_id();
     // Hover frozen while the context menu is open: the expanded-chips overlay
     // (Tooltip layer, painted after the Areas of the same tier) would otherwise
     // pass back over the menu as soon as the pointer descends to reach it. The

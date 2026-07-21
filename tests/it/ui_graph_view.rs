@@ -4,9 +4,9 @@ use egui_kittest::Harness;
 use helm::git::graph::{Graph, GraphCommit, GraphRef, LaneCache, RefKind};
 use helm::theme::Palette;
 use helm::ui::graph_view::{
-    delete_branch_modal, delete_stash_modal, delete_tag_modal, graph_view, BranchEditor,
-    BranchEditorTarget, CreateBranchRequest, DeleteBranchTarget, GraphSearch, GraphViewState,
-    RenameRequest, StashTarget, WipRow,
+    close_chip_menu, delete_branch_modal, delete_stash_modal, delete_tag_modal, graph_view,
+    BranchEditor, BranchEditorTarget, CreateBranchRequest, DeleteBranchTarget, GraphSearch,
+    GraphViewState, RenameRequest, StashTarget, WipRow,
 };
 use helm::ui::repo_sidebar::DeleteModalAction;
 
@@ -1558,6 +1558,27 @@ fn tag_chip_delete_tag_emits_the_target_for_the_modal() {
         harness.query_by_label("Delete tag").is_none(),
         "the menu closes once the entry is activated"
     );
+}
+
+/// The menu state lives in egui memory, outside any session: a repo switch closes
+/// it from the app, otherwise its entries keep naming the previous repo's refs.
+#[test]
+fn close_chip_menu_dismisses_the_open_menu() {
+    let mut harness = harness(
+        two_branch_graph(graph_ref("feat/x", RefKind::Local, false)),
+        None,
+    );
+    harness.run();
+
+    let row = harness.get_by_label("0000001 First commit").rect();
+    right_click_at(&mut harness, egui::pos2(row.left() + 20.0, row.center().y));
+    harness.run();
+    assert!(harness.query_by_label("Checkout").is_some());
+
+    close_chip_menu(&harness.ctx);
+    harness.run();
+
+    assert!(harness.query_by_label("Checkout").is_none());
 }
 
 #[test]

@@ -1343,6 +1343,63 @@ fn a_repo_switch_disarms_the_panel_confirmations_and_selection() {
 }
 
 #[test]
+fn a_repo_switch_drops_the_confirmation_armed_on_the_previous_repo() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(a.path().to_path_buf()));
+    ws.add(Repo::new(b.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    // Force push confirmed on A. The modal names no branch at all: confirmed over
+    // B's session it would `--force-with-lease` B's HEAD.
+    app.modal = Some(Modal::ForcePush {
+        branch: "main".to_owned(),
+        remote: "origin".to_owned(),
+    });
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+    assert!(app.modal.is_none());
+    assert!(app.modal_repo.is_none());
+
+    // Same for a confirmation that acts by name — B may well have a `main` too.
+    app.modal = Some(Modal::DeleteBranch(DeleteBranchTarget::Local(
+        "main".to_owned(),
+    )));
+    app.workspace.set_active(0);
+    app.sync_git_session(&ctx);
+    assert!(app.modal.is_none());
+
+    // A modal that addresses no repo is not the switch's business.
+    app.modal = Some(Modal::WhatsNew);
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+    assert!(matches!(app.modal, Some(Modal::WhatsNew)));
+}
+
+#[test]
+fn a_respawn_on_the_same_repo_keeps_the_armed_confirmation() {
+    let a = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(a.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    app.modal = Some(Modal::AbortOp);
+    // Index shift (sidebar reorder, worktree discovery): the session respawns on
+    // the very repo the confirmation was armed on.
+    app.git.as_mut().unwrap().index = 7;
+    app.sync_git_session(&ctx);
+    assert!(matches!(app.modal, Some(Modal::AbortOp)));
+}
+
+#[test]
 fn an_ai_generation_survives_a_repo_switch() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();

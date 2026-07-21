@@ -36,9 +36,9 @@ use crate::ui::graph_toolbar::{
     BusyAction, PullDefault, ToolbarAction, ToolbarState,
 };
 use crate::ui::graph_view::{
-    delete_branch_modal, delete_stash_modal, delete_tag_modal, graph_view, BranchEditor,
-    BranchEditorTarget, DeleteBranchTarget, GraphAction, GraphSearch, GraphViewState, StashTarget,
-    WipRow,
+    close_chip_menu, delete_branch_modal, delete_stash_modal, delete_tag_modal, graph_view,
+    BranchEditor, BranchEditorTarget, DeleteBranchTarget, GraphAction, GraphSearch, GraphViewState,
+    StashTarget, WipRow,
 };
 use crate::ui::preferences::{preferences_page, KeyboardState, PreferencesSection, UpdatesView};
 use crate::ui::rebase_view::{rebase_view, RebasePage, RebasePageAction};
@@ -358,6 +358,32 @@ enum Modal {
     WhatsNew,
 }
 
+impl Modal {
+    /// Confirmations resolved against `self.git` at confirm time: they name a
+    /// branch/tag/stash/hunk of the repo they were armed on — or nothing at all
+    /// for `ForcePush`, which pushes whatever the session's HEAD is. Stamped with
+    /// their repo and dropped when it stops being the active one
+    /// ([`HelmApp::drop_foreign_modal`]). The worktree, feedback and release-notes
+    /// modals address themselves (a path, a form) and survive a switch.
+    fn targets_active_repo(&self) -> bool {
+        match self {
+            Modal::DeleteBranch(_)
+            | Modal::DropStash(_)
+            | Modal::DeleteTag { .. }
+            | Modal::ResetHard { .. }
+            | Modal::AbortOp
+            | Modal::ForcePush { .. }
+            | Modal::DiscardHunk { .. }
+            | Modal::AiRebase(_)
+            | Modal::AiRebaseReport(_) => true,
+            Modal::DeleteWorktree(_)
+            | Modal::CreateWorktree(_)
+            | Modal::Feedback(_)
+            | Modal::WhatsNew => false,
+        }
+    }
+}
+
 /// The only truly exclusive route (M17-10): Preferences replaces the 3 zones
 /// full-window (preferences.md §2); everything else — sidebars, central mode,
 /// overlays — composes within `Main`.
@@ -460,6 +486,10 @@ pub struct HelmApp {
     right_sidebar_width: f32,
     tab_rename: Option<TabRename>,
     modal: Option<Modal>,
+    /// Repo the open modal was armed on ([`Modal::targets_active_repo`]), stamped
+    /// on the frame after it opened — the session cannot have changed in between,
+    /// `self.git` only swaps inside `sync_git_session`.
+    modal_repo: Option<RepoKey>,
     /// Worktree deletion running on a **dedicated thread**: pruning the folder (dirty
     /// status included) took long seconds on a large worktree and froze the UI thread.
     /// Created on the first Delete (it carries the `ctx` repaint).
@@ -691,6 +721,7 @@ impl HelmApp {
             right_sidebar_width: prefs.right_sidebar_width,
             tab_rename: None,
             modal: None,
+            modal_repo: None,
             worktree_delete: None,
             worktree_sources: None,
             worktree_create: None,
@@ -788,6 +819,7 @@ impl HelmApp {
     /// non-git repo or in the absence of an active repo. A repo change also closes the
     /// diff overlay view (git.md §4) and the fullscreen commit diff (§9).
     fn sync_git_session(&mut self, ctx: &egui::Context) {
+        self.stamp_modal_repo();
         let target = self
             .workspace
             .active()
@@ -799,6 +831,13 @@ impl HelmApp {
                     // Owned before parking: `park_active_session` reborrows all of `self`,
                     // while `repo` still borrows `self.workspace`.
                     let path = repo.path.clone();
+                    let key = RepoKey::of(&path);
+                    // The chip menu lives in egui memory, outside any session: left
+                    // open, its entries name the previous repo's refs. A respawn on
+                    // the same repo (index shift) leaves it alone.
+                    if self.git.as_ref().map(|g| &g.key) != Some(&key) {
+                        close_chip_menu(ctx);
+                    }
                     // Park the left-behind repo's state (graph for an instant redraw,
                     // commit draft + AI runner so a draft never shows under another repo
                     // and an in-flight generation is not cancelled).
@@ -806,7 +845,6 @@ impl HelmApp {
                     // Restore this repo's parked draft (the active draft lives in
                     // `git_panel_state`), reattaching its runner — a fresh one for a repo
                     // opened for the first time this session.
-                    let key = RepoKey::of(&path);
                     let ai = match self.caches.commit_drafts.remove(&key) {
                         Some(draft) => {
                             self.git_panel_state.subject = draft.subject;
@@ -838,18 +876,20 @@ impl HelmApp {
                     self.rebase_page = None;
                     // The editor's rail belongs to the previous repo's index.
                     self.conflict_editor = None;
-                    self.close_ai_rebase_modal();
                 }
             }
             None => {
+                if self.git.is_some() {
+                    close_chip_menu(ctx);
+                }
                 self.park_active_session();
                 self.diff = None;
                 self.branch_editor = BranchEditor::default();
                 self.rebase_page = None;
                 self.conflict_editor = None;
-                self.close_ai_rebase_modal();
             }
         }
+        self.drop_foreign_modal();
         let graph_mode = self.central_mode == CentralMode::Graph;
         if let Some(git) = &mut self.git {
             let now = ctx.input(|i| i.time);
@@ -886,15 +926,28 @@ impl HelmApp {
         }
     }
 
-    /// Closes the AI rebase surfaces on repo switch: the recap targets the left
-    /// repo's refs and the report describes it — both stale here. The other
-    /// modal variants survive the switch unchanged.
-    fn close_ai_rebase_modal(&mut self) {
-        if matches!(
-            self.modal,
-            Some(Modal::AiRebase(_) | Modal::AiRebaseReport(_))
-        ) {
+    /// Stamps the open confirmation with the session it was armed on, at the top
+    /// of the frame — before any switch is applied, so the stamp is the repo that
+    /// was active when the click landed.
+    fn stamp_modal_repo(&mut self) {
+        if self.modal.as_ref().is_some_and(Modal::targets_active_repo) && self.modal_repo.is_none()
+        {
+            self.modal_repo = self.git.as_ref().map(|git| git.key.clone());
+        }
+    }
+
+    /// Drops a confirmation whose repo is no longer the active one: it resolves
+    /// `self.git` at confirm time, so it would fire on the new session — a
+    /// `ForcePush` naming no branch would force-push the new repo's HEAD.
+    fn drop_foreign_modal(&mut self) {
+        let active = self.git.as_ref().map(|git| &git.key);
+        if self.modal.as_ref().is_some_and(Modal::targets_active_repo)
+            && self.modal_repo.as_ref() != active
+        {
             self.modal = None;
+        }
+        if self.modal.is_none() {
+            self.modal_repo = None;
         }
     }
 

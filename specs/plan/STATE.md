@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **10/37**.
+work**. Counter: **11/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -37,7 +37,7 @@ work**. Counter: **10/37**.
   `DiscardAll` on the wrong repo. Scope: clear `pending_discard`, `pending_stash`,
   `marked_files`, `selection_anchor`, `selected_file`; **collapsed-dirs sets are not
   worth parking** (review). *Files*: `src/app/mod.rs`, `src/ui/git_panel.rs`.
-- ☐ **T3 — Destructive modals + graph menu dropped on repo switch.** Modals carry a
+- ☑ **T3 — Destructive modals + graph menu dropped on repo switch.** Modals carry a
   name/oid and resolve `self.git` at confirm time (`render.rs:2674-2760`);
   `close_ai_rebase_modal` deliberately clears only the AI variants. `ForcePush` carries
   **no branch at all** ⇒ force-pushes the new repo's current branch; `DeleteBranch`/
@@ -318,7 +318,7 @@ work**. Counter: **10/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
+- Order: **T1 → T5** (Lot A, the wrong-target/corruption core),
   then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
