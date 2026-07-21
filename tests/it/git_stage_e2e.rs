@@ -7,6 +7,10 @@ use helm::git::stage;
 use helm::git::status;
 
 fn commit_file(repo: &git2::Repository, name: &str, content: &str, message: &str) -> git2::Oid {
+    commit_bytes(repo, name, content.as_bytes(), message)
+}
+
+fn commit_bytes(repo: &git2::Repository, name: &str, content: &[u8], message: &str) -> git2::Oid {
     let dir = repo.workdir().unwrap();
     fs::write(dir.join(name), content).unwrap();
     let mut index = repo.index().unwrap();
@@ -993,4 +997,103 @@ fn a_missing_final_newline_marker_is_not_a_diff_line() {
             .any(|l| l.content.contains("No newline at end of file")),
         "the marker must not be materialized as a line"
     );
+}
+
+/// Latin-1 payload: `é` `è` `û` `ç` `É` `Ç` as single high bytes. No NUL, so
+/// libgit2 does not flag the delta binary and the granular staging pills reach it.
+const LATIN1_HEAD: &[u8] = b"one\nqu\xe9bec\ntwo\nfran\xe7ais\n";
+const LATIN1_WORKTREE: &[u8] = b"one\nQU\xc9BEC\ntwo\nFRAN\xc7AIS\n";
+
+/// `DiffLine::content` is `from_utf8_lossy`'d for display: staging must re-derive
+/// the diff's raw bytes, otherwise every high byte lands in the index as U+FFFD.
+#[test]
+fn stage_hunk_on_a_non_utf8_file_is_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_bytes(&repo, "a.txt", LATIN1_HEAD, "init");
+    fs::write(tmp.path().join("a.txt"), LATIN1_WORKTREE).unwrap();
+
+    stage::stage_hunk(&repo, "a.txt", 0).unwrap();
+
+    assert_eq!(
+        staged_bytes(tmp.path(), "a.txt"),
+        LATIN1_WORKTREE,
+        "staged blob must match the working tree byte for byte"
+    );
+}
+
+/// The silent shape: a high byte inside an **added** line only. Every context line
+/// is ASCII, so `apply` happily reports `Ok` and the corruption reaches the index.
+#[test]
+fn stage_hunk_adding_a_non_utf8_line_is_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_bytes(&repo, "a.txt", b"one\ntwo\n", "init");
+    let worktree: &[u8] = b"one\ncaf\xe9\ntwo\n";
+    fs::write(tmp.path().join("a.txt"), worktree).unwrap();
+
+    stage::stage_hunk(&repo, "a.txt", 0).unwrap();
+
+    assert_eq!(staged_bytes(tmp.path(), "a.txt"), worktree);
+}
+
+/// A line selection stages the chosen lines verbatim **and** leaves the unchosen
+/// deletion — re-emitted as a context line — with its own bytes intact.
+#[test]
+fn stage_lines_on_a_non_utf8_file_is_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_bytes(&repo, "a.txt", LATIN1_HEAD, "init");
+    fs::write(tmp.path().join("a.txt"), LATIN1_WORKTREE).unwrap();
+
+    let hunk = &diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+        .unwrap()
+        .hunks[0];
+    let origins: Vec<LineOrigin> = hunk.lines.iter().map(|l| l.origin).collect();
+    assert_eq!(
+        origins,
+        vec![
+            LineOrigin::Context,
+            LineOrigin::Deletion,
+            LineOrigin::Addition,
+            LineOrigin::Context,
+            LineOrigin::Deletion,
+            LineOrigin::Addition,
+        ]
+    );
+
+    stage::stage_lines(&repo, "a.txt", 0, &[1, 2]).unwrap();
+
+    assert_eq!(
+        staged_bytes(tmp.path(), "a.txt"),
+        b"one\nQU\xc9BEC\ntwo\nfran\xe7ais\n",
+        "only the first change is staged, both sides byte for byte"
+    );
+}
+
+/// Non-UTF-8 **and** no final newline: the `*_EOFNL` markers must be filtered out
+/// of the raw bytes exactly as `file_diff` filters them out of `hunk.lines`, or the
+/// selection indices the UI hands over address the wrong lines.
+#[test]
+fn stage_lines_on_a_non_utf8_tail_without_a_final_newline_is_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_bytes(&repo, "a.txt", b"one\ncaf\xe9", "init");
+    fs::write(tmp.path().join("a.txt"), b"one\nCAF\xc9").unwrap();
+
+    let hunk = &diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+        .unwrap()
+        .hunks[0];
+    let changed: Vec<usize> = hunk
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.origin != LineOrigin::Context)
+        .map(|(idx, _)| idx)
+        .collect();
+    assert_eq!(changed, vec![1, 2]);
+
+    stage::stage_lines(&repo, "a.txt", 0, &changed).unwrap();
+
+    assert_eq!(staged_bytes(tmp.path(), "a.txt"), b"one\nCAF\xc9");
 }

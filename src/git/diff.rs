@@ -100,11 +100,11 @@ fn tree_blob_bytes(repo: &git2::Repository, tree: &git2::Tree, path: &str) -> Op
 pub(crate) const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_DIFF_LINES: usize = 50_000;
 
-pub fn file_diff(
-    repo: &git2::Repository,
+fn source_diff<'r>(
+    repo: &'r git2::Repository,
     path: &str,
     source: DiffSource,
-) -> Result<FileDiff, git2::Error> {
+) -> Result<git2::Diff<'r>, git2::Error> {
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(path)
         .disable_pathspec_match(true)
@@ -112,13 +112,21 @@ pub fn file_diff(
         .recurse_untracked_dirs(true)
         .show_binary(true);
 
-    let diff = match source {
-        DiffSource::Unstaged => repo.diff_index_to_workdir(None, Some(&mut opts))?,
+    match source {
+        DiffSource::Unstaged => repo.diff_index_to_workdir(None, Some(&mut opts)),
         DiffSource::Staged => {
             let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
+            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
         }
-    };
+    }
+}
+
+pub fn file_diff(
+    repo: &git2::Repository,
+    path: &str,
+    source: DiffSource,
+) -> Result<FileDiff, git2::Error> {
+    let diff = source_diff(repo, path, source)?;
 
     let Some(idx) = delta_index(&diff, path) else {
         return Ok(FileDiff {
@@ -351,13 +359,16 @@ fn delta_index(diff: &git2::Diff, path: &str) -> Option<usize> {
         .position(|delta| delta_path(&delta).is_some_and(|p| p == target))
 }
 
-fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, git2::Error> {
+fn workdir_bytes(repo: &git2::Repository, path: &str) -> Result<Vec<u8>, git2::Error> {
     let full = repo
         .workdir()
         .map(|wd| wd.join(path))
         .ok_or_else(|| git2::Error::from_str("bare repository has no workdir"))?;
-    let content =
-        std::fs::read(&full).map_err(|e| git2::Error::from_str(&format!("read {path}: {e}")))?;
+    std::fs::read(&full).map_err(|e| git2::Error::from_str(&format!("read {path}: {e}")))
+}
+
+fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, git2::Error> {
+    let content = workdir_bytes(repo, path)?;
     if content.contains(&0) {
         return Ok(FileDiff {
             path: path.to_string(),
@@ -453,6 +464,50 @@ fn file_diff_from_patch(patch: git2::Patch, path: &str) -> Result<FileDiff, git2
         source_lines: Vec::new(),
         image: None,
     })
+}
+
+/// Raw bytes of hunk `hunk_index`'s lines, positionally aligned with
+/// `file_diff(…).hunks[hunk_index].lines`: both keep exactly the `line_in_hunk`
+/// entries `line_origin` types as content, so the indices the UI hands to
+/// `stage_lines` address the same lines here. Granular staging must write the
+/// file's own bytes — `DiffLine::content` went through `from_utf8_lossy` and is
+/// display-only. Re-derived on demand rather than carried by `DiffLine`, whose
+/// diffs are cached at up to `MAX_DIFF_BYTES` per entry.
+pub(crate) fn hunk_line_bytes(
+    repo: &git2::Repository,
+    path: &str,
+    source: DiffSource,
+    hunk_index: usize,
+) -> Result<Vec<Vec<u8>>, git2::Error> {
+    let diff = source_diff(repo, path, source)?;
+    let Some(idx) = delta_index(&diff, path) else {
+        return Ok(Vec::new());
+    };
+    if diff.get_delta(idx).map(|d| d.status()) == Some(git2::Delta::Untracked) {
+        let content = workdir_bytes(repo, path)?;
+        let rel = Path::new(path);
+        let patch = git2::Patch::from_buffers(b"", Some(rel), &content, Some(rel), None)?;
+        return hunk_line_bytes_of(&patch, hunk_index);
+    }
+    match git2::Patch::from_diff(&diff, idx)? {
+        Some(patch) => hunk_line_bytes_of(&patch, hunk_index),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn hunk_line_bytes_of(patch: &git2::Patch, hunk_index: usize) -> Result<Vec<Vec<u8>>, git2::Error> {
+    if hunk_index >= patch.num_hunks() {
+        return Ok(Vec::new());
+    }
+    let (_, line_count) = patch.hunk(hunk_index)?;
+    let mut lines = Vec::with_capacity(line_count);
+    for line_idx in 0..line_count {
+        let line = patch.line_in_hunk(hunk_index, line_idx)?;
+        if line_origin(line.origin_value()).is_some() {
+            lines.push(line.content().to_vec());
+        }
+    }
+    Ok(lines)
 }
 
 /// A diff is "oversize" beyond ~2 MB of text or ~50,000 lines (git.md §8).

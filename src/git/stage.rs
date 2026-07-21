@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::git::diff::{self, DiffLine, DiffSource, Hunk, LineOrigin};
+use crate::git::diff::{self, DiffSource, Hunk, LineOrigin};
 use crate::git::status;
 
 /// Reloads the repo's in-memory index from disk before a mutation. The worker
@@ -214,10 +214,11 @@ pub fn discard_hunk(
         // disk / restore from the index), exactly the file-level Discard.
         return crate::git::discard::discard_file(repo, path);
     }
-    let Some(rendered) = render_hunk_patch(&file.path, hunk, None, true, false) else {
+    let raw = raw_lines(repo, &file.path, DiffSource::Unstaged, hunk_index, hunk)?;
+    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, None, true, false) else {
         return Ok(());
     };
-    let parsed = git2::Diff::from_buffer(rendered.as_bytes())?;
+    let parsed = git2::Diff::from_buffer(&rendered)?;
     repo.apply(&parsed, git2::ApplyLocation::WorkDir, None)
 }
 
@@ -279,17 +280,38 @@ fn apply_filtered(
             DiffSource::Staged => unstage(repo, path),
         };
     }
+    let raw = raw_lines(repo, &file.path, source, hunk_index, hunk)?;
     // File absent from the index (untracked, or whole-file deletion staged):
     // the patch must create it, otherwise `apply` fails with "index does not
     // contain <path>". `fresh_index` also covers the `repo.apply` below, which
     // writes through the same cached index.
     let new_file = fresh_index(repo)?.get_path(Path::new(path), 0).is_none();
-    let Some(rendered) = render_hunk_patch(&file.path, hunk, line_indices, reverse, new_file)
+    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, line_indices, reverse, new_file)
     else {
         return Ok(());
     };
-    let parsed = git2::Diff::from_buffer(rendered.as_bytes())?;
+    let parsed = git2::Diff::from_buffer(&rendered)?;
     repo.apply(&parsed, git2::ApplyLocation::Index, None)
+}
+
+/// The hunk's lines as the bytes they really are, one entry per `hunk.lines`
+/// entry (`diff::hunk_line_bytes` applies the same `line_origin` filter). A
+/// length mismatch means the diff moved between the two reads: refuse rather than
+/// apply a patch whose selection indices have shifted.
+fn raw_lines(
+    repo: &git2::Repository,
+    path: &str,
+    source: DiffSource,
+    hunk_index: usize,
+    hunk: &Hunk,
+) -> Result<Vec<Vec<u8>>, git2::Error> {
+    let raw = diff::hunk_line_bytes(repo, path, source, hunk_index)?;
+    if raw.len() != hunk.lines.len() {
+        return Err(git2::Error::from_str(
+            "the diff changed while it was being staged",
+        ));
+    }
+    Ok(raw)
 }
 
 /// `true` if the selection covers every changed line of the hunk (or if there is
@@ -313,16 +335,17 @@ fn is_whole_file_add_or_delete(hunk: &Hunk) -> bool {
 fn render_hunk_patch(
     path: &str,
     hunk: &Hunk,
+    raw: &[Vec<u8>],
     line_indices: Option<&[usize]>,
     reverse: bool,
     new_file: bool,
-) -> Option<String> {
-    let mut body = String::new();
+) -> Option<Vec<u8>> {
+    let mut body: Vec<u8> = Vec::new();
     let mut old_count = 0u32;
     let mut new_count = 0u32;
     let mut has_change = false;
 
-    for (idx, line) in hunk.lines.iter().enumerate() {
+    for (idx, (line, bytes)) in hunk.lines.iter().zip(raw).enumerate() {
         let selected = line_indices.is_none_or(|sel| sel.contains(&idx));
         let Some(effective) = effective_origin(line.origin, selected, reverse) else {
             continue;
@@ -341,7 +364,7 @@ fn render_hunk_patch(
                 has_change = true;
             }
         }
-        push_line(&mut body, patch_prefix(effective, reverse), line);
+        push_line(&mut body, patch_prefix(effective, reverse), bytes);
     }
 
     if !has_change {
@@ -373,7 +396,8 @@ fn render_hunk_patch(
         "@@ -{},{} +{},{} @@\n",
         old_start, old_count, new_start, new_count
     ));
-    patch.push_str(&body);
+    let mut patch = patch.into_bytes();
+    patch.extend_from_slice(&body);
     Some(patch)
 }
 
@@ -405,12 +429,12 @@ fn isolated_new_start(old_start: u32, old_count: u32, new_count: u32) -> u32 {
     }
 }
 
-fn patch_prefix(origin: LineOrigin, reverse: bool) -> char {
+fn patch_prefix(origin: LineOrigin, reverse: bool) -> u8 {
     let origin = if reverse { flip(origin) } else { origin };
     match origin {
-        LineOrigin::Context => ' ',
-        LineOrigin::Addition => '+',
-        LineOrigin::Deletion => '-',
+        LineOrigin::Context => b' ',
+        LineOrigin::Addition => b'+',
+        LineOrigin::Deletion => b'-',
     }
 }
 
@@ -422,11 +446,11 @@ fn flip(origin: LineOrigin) -> LineOrigin {
     }
 }
 
-fn push_line(body: &mut String, prefix: char, line: &DiffLine) {
+fn push_line(body: &mut Vec<u8>, prefix: u8, line: &[u8]) {
     body.push(prefix);
-    body.push_str(&line.content);
-    if !line.content.ends_with('\n') {
-        body.push('\n');
-        body.push_str("\\ No newline at end of file\n");
+    body.extend_from_slice(line);
+    if !line.ends_with(b"\n") {
+        body.push(b'\n');
+        body.extend_from_slice(b"\\ No newline at end of file\n");
     }
 }
