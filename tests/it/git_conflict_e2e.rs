@@ -663,3 +663,212 @@ fn save_loading_my_version(file: ConflictFile) -> String {
         other => panic!("expected a Compose resolve, got {other:?}"),
     }
 }
+
+/// Commits `name` as a symlink pointing at `target`.
+fn commit_symlink(repo: &git2::Repository, dir: &Path, name: &str, target: &str, message: &str) {
+    let full = dir.join(name);
+    if fs::symlink_metadata(&full).is_ok() {
+        fs::remove_file(&full).unwrap();
+    }
+    std::os::unix::fs::symlink(target, &full).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(name)).unwrap();
+    index.write().unwrap();
+    commit(repo, &mut index, message);
+}
+
+fn index_entry(repo: &git2::Repository, path: &str) -> git2::IndexEntry {
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    index.get_path(Path::new(path), 0).unwrap()
+}
+
+/// `link` points at a different tracked file on each side, so the merge leaves
+/// `120000` stages. Taking a side must re-create the **link**: writing the chosen
+/// blob through the link would land in the file it points at.
+#[test]
+fn taking_a_side_on_a_symlink_conflict_rewrites_the_link_not_its_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    set_test_config(&repo);
+    commit_file(&repo, tmp.path(), "target_a.txt", "A-PRISTINE\n", "targets");
+    commit_file(
+        &repo,
+        tmp.path(),
+        "target_b.txt",
+        "B-PRISTINE\n",
+        "targets b",
+    );
+    commit_file(
+        &repo,
+        tmp.path(),
+        "target_base.txt",
+        "BASE\n",
+        "targets base",
+    );
+    commit_symlink(&repo, tmp.path(), "link", "target_base.txt", "c1");
+    let main = repo.head().unwrap().shorthand().unwrap().to_string();
+    let base = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feature", &base, false).unwrap();
+
+    checkout(&repo, "feature");
+    commit_symlink(&repo, tmp.path(), "link", "target_b.txt", "c-feature");
+    checkout(&repo, &main);
+    commit_symlink(&repo, tmp.path(), "link", "target_a.txt", "c-main");
+
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    resolve_file_side(&repo, "link", false).unwrap();
+
+    let full = tmp.path().join("link");
+    assert!(
+        fs::symlink_metadata(&full).unwrap().is_symlink(),
+        "the resolution replaced the link with a regular file"
+    );
+    assert_eq!(fs::read_link(&full).unwrap(), Path::new("target_b.txt"));
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("target_a.txt")).unwrap(),
+        "A-PRISTINE\n",
+        "the resolution was written through the link, into the file it pointed at"
+    );
+    assert_eq!(index_entry(&repo, "link").mode, 0o120000);
+    assert!(!index_has_conflicts(&repo));
+}
+
+/// A composed Save is a resolution too: it must see the same index the side-taking
+/// path sees, or an editor left open over an aborted merge writes its buffer into
+/// a clean tree.
+#[test]
+fn saving_a_composition_on_a_path_no_longer_conflicted_is_refused() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let editor = git2::Repository::open(tmp.path()).unwrap();
+    assert!(editor.index().unwrap().has_conflicts());
+
+    let aborted = cli::run(tmp.path(), &["merge", "--abort"]).unwrap();
+    assert!(aborted.success(), "abort should succeed");
+    let on_disk = fs::read_to_string(tmp.path().join("base.txt")).unwrap();
+
+    let err = resolve_file(&editor, "base.txt", Some("alpha\nstale\ncharlie\n")).unwrap_err();
+    assert!(
+        err.message().contains("no conflict"),
+        "a composition cannot be saved on a path the index no longer reports as conflicted: {err}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("base.txt")).unwrap(),
+        on_disk,
+        "the stale composition was written over the aborted merge's working tree"
+    );
+    assert!(!index_has_conflicts(&editor));
+}
+
+/// `git checkout --ours/--theirs` restores that side's mode; taking a side must
+/// record the same thing rather than whatever mode the merge left on disk.
+#[test]
+fn taking_a_side_records_that_sides_exec_bit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (tmp, main) = diverged();
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    checkout(&repo, "feature");
+    fs::set_permissions(
+        tmp.path().join("base.txt"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_file(
+        &repo,
+        tmp.path(),
+        "base.txt",
+        "alpha\nbravo-feature\ncharlie\n",
+        "c-feature-exec",
+    );
+    checkout(&repo, &main);
+
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    // The merge left the working tree executable (theirs' mode), so staging what is
+    // on disk would record `100755` for a side that never carried the bit.
+    assert_eq!(
+        fs::metadata(tmp.path().join("base.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0o111
+    );
+
+    resolve_file_side(&repo, "base.txt", true).unwrap();
+
+    assert_eq!(
+        index_entry(&repo, "base.txt").mode,
+        0o100644,
+        "taking ours recorded an exec bit ours never carried"
+    );
+}
+
+/// A conflicted submodule cannot be read as a blob. It must be left out of the
+/// rail instead of failing the whole read — the editor would otherwise refuse to
+/// open for every other conflicted file of the repository.
+#[test]
+fn a_conflicted_gitlink_does_not_hide_the_other_conflicts() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let commit_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+    let mut index = repo.index().unwrap();
+    for stage in 1..=3u16 {
+        index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o160000,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: commit_oid,
+                flags: stage << 12,
+                flags_extended: 0,
+                path: b"sub".to_vec(),
+            })
+            .unwrap();
+    }
+    index.write().unwrap();
+
+    let files = read_conflicts(&repo).unwrap();
+    assert_eq!(
+        files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        vec!["base.txt"],
+        "the gitlink should be skipped, not fail the whole rail"
+    );
+}
+
+/// Both sides added the same line next to their own change: git trims it out of
+/// the conflict when it writes the working tree, the diff3 reconstruction keeps it
+/// inside. Same file, no hand edit — no notice.
+#[test]
+fn sides_sharing_a_boundary_line_are_not_a_disk_divergence() {
+    let (tmp, _main) = diverged_text(
+        "alpha\ncharlie\n",
+        "alpha\nshared\nbravo-feature\ncharlie\n",
+        "alpha\nshared\nbravo-main\ncharlie\n",
+    );
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+
+    assert_eq!(
+        cf.disk_divergence, None,
+        "an untouched working tree was reported as edited outside helm"
+    );
+}

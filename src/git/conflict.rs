@@ -155,27 +155,53 @@ fn hand_edited(repo: &git2::Repository, path: &str, regions: &[Region]) -> Optio
     Some(text.replace("\r\n", "\n"))
 }
 
-/// Region-by-region equality over the stable and the two conflicting sides. The
-/// base section is skipped: a `merge`-style working-tree file carries none, which
-/// says nothing about a hand edit.
+/// Region-by-region equality over the stable and the two conflicting sides, both
+/// brought to the same shape by `hoisted` first. The base section is skipped: a
+/// `merge`-style working-tree file carries none, which says nothing about a hand
+/// edit.
 fn same_sides(a: &[Region], b: &[Region]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|pair| match pair {
-            (Region::Stable(left), Region::Stable(right)) => left == right,
-            (
-                Region::Conflict {
-                    ours: lo,
-                    theirs: lt,
-                    ..
-                },
-                Region::Conflict {
-                    ours: ro,
-                    theirs: rt,
-                    ..
-                },
-            ) => lo == ro && lt == rt,
-            _ => false,
-        })
+    hoisted(a) == hoisted(b)
+}
+
+/// The regions with the lines common to both sides lifted out of each conflict.
+/// git writes the working tree in `merge` style, which trims the shared head and
+/// tail of a conflict into the surrounding context, while the diff3 reconstruction
+/// keeps them inside the region — without this normalisation, any conflict whose
+/// two sides share a boundary line reports a divergence on a file nobody touched.
+/// The base is dropped: it is absent from the working-tree file by construction.
+fn hoisted(regions: &[Region]) -> Vec<Region> {
+    let mut out: Vec<Region> = Vec::new();
+    let mut stable: Vec<String> = Vec::new();
+    for region in regions {
+        match region {
+            Region::Stable(lines) => stable.extend(lines.iter().cloned()),
+            Region::Conflict { ours, theirs, .. } => {
+                let head = common_run(ours.iter(), theirs.iter());
+                let tail = common_run(ours[head..].iter().rev(), theirs[head..].iter().rev());
+                stable.extend(ours[..head].iter().cloned());
+                if !stable.is_empty() {
+                    out.push(Region::Stable(std::mem::take(&mut stable)));
+                }
+                out.push(Region::Conflict {
+                    ours: ours[head..ours.len() - tail].to_vec(),
+                    theirs: theirs[head..theirs.len() - tail].to_vec(),
+                    base: Vec::new(),
+                });
+                stable.extend(ours[ours.len() - tail..].iter().cloned());
+            }
+        }
+    }
+    if !stable.is_empty() {
+        out.push(Region::Stable(stable));
+    }
+    out
+}
+
+fn common_run<'a>(
+    left: impl Iterator<Item = &'a String>,
+    right: impl Iterator<Item = &'a String>,
+) -> usize {
+    left.zip(right).take_while(|(l, r)| l == r).count()
 }
 
 /// Reads every conflicted file of the index (conflicts.md §8) for the editor's
@@ -188,6 +214,14 @@ pub fn read_conflicts(repo: &git2::Repository) -> Result<Vec<ConflictFile>, git2
     let mut paths: Vec<String> = Vec::new();
     for conflict in index.conflicts()? {
         let conflict = conflict?;
+        // A conflicted submodule has `160000` stages whose oids are commits of the
+        // submodule's own ODB: reading one back as a blob fails, and collecting the
+        // rail into a `Result` would close the editor for every other file of the
+        // repo. Submodules are delegated to the terminal (conflicts.md §7), so the
+        // gitlink is simply left out of the rail.
+        if side_mode(&conflict) == 0o160000 {
+            continue;
+        }
         if let Some(bytes) = conflict_path(&conflict) {
             let path = String::from_utf8_lossy(bytes).into_owned();
             if !paths.contains(&path) {
@@ -213,20 +247,60 @@ pub fn resolve_file(
     let rel = Path::new(path);
     let full = workdir.join(rel);
     let mut index = stage::fresh_index(repo)?;
+    // The stages are the resolution's own precondition: a path already resolved
+    // (another pane, a terminal) or an operation aborted underneath the editor
+    // must not be written over from a buffer composed against the old state —
+    // the same refusal `resolve_file_side` makes.
+    let conflict = find_conflict(&index, path)?;
     match content {
         Some(text) => {
-            std::fs::write(&full, text).map_err(|err| git2::Error::from_str(&err.to_string()))?;
+            write_resolution(&full, text.as_bytes(), side_mode(&conflict))
+                .map_err(|err| git2::Error::from_str(&err.to_string()))?;
             index.add_path(rel)?;
         }
         None => {
-            if full.exists() {
-                std::fs::remove_file(&full)
-                    .map_err(|err| git2::Error::from_str(&err.to_string()))?;
-            }
+            remove_resolution(&full).map_err(|err| git2::Error::from_str(&err.to_string()))?;
             index.remove_path(rel)?;
         }
     }
     index.write()
+}
+
+/// Mode the resolved path must come back as: the ours stage, else theirs, else the
+/// ancestor. Only `120000` vs a regular blob matters here — the exec bit of a
+/// composed resolution follows the working-tree file, as `git add` would.
+fn side_mode(conflict: &git2::IndexConflict) -> u32 {
+    conflict
+        .our
+        .as_ref()
+        .or(conflict.their.as_ref())
+        .or(conflict.ancestor.as_ref())
+        .map_or(0o100644, |entry| entry.mode)
+}
+
+/// Writes the resolution at `full`, replacing whatever is there. The path is
+/// unlinked first: writing through an existing symlink would land in its target —
+/// an arbitrary file, possibly outside the repository (cf. `stage`'s
+/// `symlink_metadata`). A `120000` resolution comes back as a link, not as a
+/// regular file holding the target's path.
+fn write_resolution(full: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+    remove_resolution(full)?;
+    if mode == 0o120000 {
+        let target = String::from_utf8_lossy(content);
+        std::os::unix::fs::symlink(target.trim_end_matches('\n'), full)
+    } else {
+        std::fs::write(full, content)
+    }
+}
+
+/// `remove_file` on the path itself, never on what it points to: `Path::exists`
+/// follows the link and would leave a dangling one in the tree.
+fn remove_resolution(full: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(full) {
+        Ok(_) => std::fs::remove_file(full),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Resolves a conflict by taking one whole side (conflicts.md §5): writes that
@@ -247,10 +321,25 @@ pub fn resolve_file_side(
     let content = repo.find_blob(entry.id)?.content().to_vec();
 
     let rel = Path::new(path);
-    std::fs::write(workdir.join(rel), content)
+    let full = workdir.join(rel);
+    write_resolution(&full, &content, entry.mode)
         .map_err(|err| git2::Error::from_str(&err.to_string()))?;
+    // `git checkout --ours/--theirs` restores that side's mode too, and `add_path`
+    // stats the working tree: without the chmod the merge's own mode would be
+    // recorded and the side would silently gain or lose its exec bit.
+    apply_side_mode(&full, entry.mode).map_err(|err| git2::Error::from_str(&err.to_string()))?;
     index.add_path(rel)?;
     index.write()
+}
+
+fn apply_side_mode(full: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let bits = match mode {
+        0o100755 => 0o755,
+        0o100644 => 0o644,
+        _ => return Ok(()),
+    };
+    std::fs::set_permissions(full, std::fs::Permissions::from_mode(bits))
 }
 
 fn find_conflict(index: &git2::Index, path: &str) -> Result<git2::IndexConflict, git2::Error> {
