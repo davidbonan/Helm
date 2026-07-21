@@ -16,7 +16,9 @@ fn fake_tool(dir: &Path, name: &str, capture: &Path, code: i32) -> PathBuf {
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit {code}\n",
+            // Written aside then moved: the reader polls for the file, and a
+            // direct redirect lets it observe the argv half-flushed.
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.part'\nmv '{0}.part' '{0}'\nexit {code}\n",
             capture.display()
         ),
     )
