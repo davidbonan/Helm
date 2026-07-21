@@ -408,6 +408,46 @@ fn commit_file_diff_flags_binary_change_with_no_hunks() {
 }
 
 #[test]
+fn unstaged_rename_diffs_as_a_rename_instead_of_full_additions() {
+    // The sidebar pairs the move as a rename: the diff must show the edit that
+    // rides along with it, not the whole file as additions (git.md §8). The
+    // pathspec alone keeps only the new (untracked) side, so `find_similar` has
+    // nothing to pair — the old path has to be diffed in too.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "old.txt", "line1\nline2\nline3\nline4\n", "init");
+
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(tmp.path().join("new.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+
+    let d = diff::file_diff(&repo, "new.txt", DiffSource::Unstaged).unwrap();
+
+    assert_eq!(d.path, "new.txt");
+    assert_eq!(contents(&d, LineOrigin::Deletion), vec!["line2"]);
+    assert_eq!(contents(&d, LineOrigin::Addition), vec!["CHANGED"]);
+}
+
+#[test]
+fn staged_rename_diffs_as_a_rename_instead_of_full_additions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "old.txt", "line1\nline2\nline3\nline4\n", "init");
+
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(tmp.path().join("new.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.remove_path(Path::new("old.txt")).unwrap();
+    index.add_path(Path::new("new.txt")).unwrap();
+    index.write().unwrap();
+
+    let d = diff::file_diff(&repo, "new.txt", DiffSource::Staged).unwrap();
+
+    assert_eq!(d.path, "new.txt");
+    assert_eq!(contents(&d, LineOrigin::Deletion), vec!["line2"]);
+    assert_eq!(contents(&d, LineOrigin::Addition), vec!["CHANGED"]);
+}
+
+#[test]
 fn commit_file_diff_follows_renames_instead_of_showing_full_additions() {
     // The commit detail reports the file as `Renamed` (find_similar): the
     // full-screen diff must show the rename's real edits, not the whole file as

@@ -215,7 +215,9 @@ pub fn discard_hunk(
         return crate::git::discard::discard_file(repo, path);
     }
     let raw = raw_lines(repo, &file.path, DiffSource::Unstaged, hunk_index, hunk)?;
-    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, None, true, false) else {
+    // No rename header: the hunk is reverted **in place** in the working tree,
+    // the move itself is what the file-level Discard undoes (git.md §4).
+    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, None, true, false, None) else {
         return Ok(());
     };
     let parsed = git2::Diff::from_buffer(&rendered)?;
@@ -286,8 +288,24 @@ fn apply_filtered(
     // contain <path>". `fresh_index` also covers the `repo.apply` below, which
     // writes through the same cached index.
     let new_file = fresh_index(repo)?.get_path(Path::new(path), 0).is_none();
-    let Some(rendered) = render_hunk_patch(&file.path, hunk, &raw, line_indices, reverse, new_file)
-    else {
+    // …unless it is the new side of an unstaged rename: the preimage the hunk
+    // applies to is the **old** path's index entry, so the patch must move it
+    // (libgit2 applies a `RENAMED` delta by reading the old path and dropping it
+    // from the index). Declaring a new file instead makes `apply` reject the
+    // hunk's context lines.
+    let renamed_from = match (source, new_file) {
+        (DiffSource::Unstaged, true) => status::rename_old_path(repo, path, false)?,
+        _ => None,
+    };
+    let Some(rendered) = render_hunk_patch(
+        &file.path,
+        hunk,
+        &raw,
+        line_indices,
+        reverse,
+        new_file,
+        renamed_from.as_deref(),
+    ) else {
         return Ok(());
     };
     let parsed = git2::Diff::from_buffer(&rendered)?;
@@ -339,6 +357,7 @@ fn render_hunk_patch(
     line_indices: Option<&[usize]>,
     reverse: bool,
     new_file: bool,
+    renamed_from: Option<&str>,
 ) -> Option<Vec<u8>> {
     let mut body: Vec<u8> = Vec::new();
     let mut old_count = 0u32;
@@ -384,14 +403,27 @@ fn render_hunk_patch(
     let new_start = isolated_new_start(old_start, old_count, new_count);
 
     let mut patch = String::new();
-    patch.push_str(&format!("diff --git a/{path} b/{path}\n"));
-    if new_file {
-        patch.push_str("new file mode 100644\n");
-        patch.push_str("--- /dev/null\n");
-    } else {
-        patch.push_str(&format!("--- a/{path}\n"));
+    match renamed_from {
+        // libgit2's parser only reaches `rename from` through a `similarity
+        // index` line and then takes the two rename paths verbatim, with no
+        // `---`/`+++` pair. The percentage is metadata `apply` never reads.
+        Some(old) => {
+            patch.push_str(&format!("diff --git a/{old} b/{path}\n"));
+            patch.push_str("similarity index 100%\n");
+            patch.push_str(&format!("rename from {old}\n"));
+            patch.push_str(&format!("rename to {path}\n"));
+        }
+        None => {
+            patch.push_str(&format!("diff --git a/{path} b/{path}\n"));
+            if new_file {
+                patch.push_str("new file mode 100644\n");
+                patch.push_str("--- /dev/null\n");
+            } else {
+                patch.push_str(&format!("--- a/{path}\n"));
+            }
+            patch.push_str(&format!("+++ b/{path}\n"));
+        }
     }
-    patch.push_str(&format!("+++ b/{path}\n"));
     patch.push_str(&format!(
         "@@ -{},{} +{},{} @@\n",
         old_start, old_count, new_start, new_count

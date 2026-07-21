@@ -105,11 +105,44 @@ fn source_diff<'r>(
     path: &str,
     source: DiffSource,
 ) -> Result<git2::Diff<'r>, git2::Error> {
+    let diff = pathspec_diff(repo, &[path], source)?;
+
+    // A rename's new side alone reads as a whole-file addition: the pathspec
+    // filters the old side out, so `find_similar` has nothing to pair it with
+    // (same trap as `commit_file_diff` below). The sidebar labels the row a
+    // rename (`status::work_statuses`), so the diff must show the rename's real
+    // edits (git.md §8). Only an unpaired new side can be one: re-diff with both
+    // ends in the pathspec and pair them.
+    let unpaired = delta_index(&diff, path)
+        .and_then(|idx| diff.get_delta(idx))
+        .is_some_and(|d| matches!(d.status(), git2::Delta::Untracked | git2::Delta::Added));
+    if !unpaired {
+        return Ok(diff);
+    }
+    let staged = source == DiffSource::Staged;
+    let Some(old) = crate::git::status::rename_old_path(repo, path, staged)? else {
+        return Ok(diff);
+    };
+    let mut paired = pathspec_diff(repo, &[path, old.as_str()], source)?;
+    crate::git::status::find_renames(&mut paired)?;
+    Ok(paired)
+}
+
+fn pathspec_diff<'r>(
+    repo: &'r git2::Repository,
+    paths: &[&str],
+    source: DiffSource,
+) -> Result<git2::Diff<'r>, git2::Error> {
     let mut opts = git2::DiffOptions::new();
-    opts.pathspec(path)
-        .disable_pathspec_match(true)
+    for path in paths {
+        opts.pathspec(path);
+    }
+    opts.disable_pathspec_match(true)
         .include_untracked(true)
         .recurse_untracked_dirs(true)
+        // The new side of an unstaged rename is still untracked: without this
+        // flag its lines stay unloaded and the paired patch would be empty.
+        .show_untracked_content(true)
         .show_binary(true);
 
     match source {

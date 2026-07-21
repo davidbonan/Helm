@@ -337,9 +337,13 @@ fn unstaged_line_stats(repo: &git2::Repository) -> Result<LineStats, git2::Error
 
 /// Pairs renames the way `statuses` does (renames_*): without this a renamed file
 /// would count as a full deletion + full addition instead of its real delta.
-fn find_renames(diff: &mut git2::Diff) -> Result<(), git2::Error> {
+/// `for_untracked` is what libgit2's own status pass sets unconditionally
+/// (`status.c`): the new side of an **unstaged** rename is still untracked, and
+/// without it the pair is never formed — the row would show as a rename while its
+/// stats read `+<whole file> −0`.
+pub(crate) fn find_renames(diff: &mut git2::Diff) -> Result<(), git2::Error> {
     let mut find = git2::DiffFindOptions::new();
-    find.renames(true);
+    find.renames(true).for_untracked(true);
     diff.find_similar(Some(&mut find))
 }
 

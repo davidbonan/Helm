@@ -1097,3 +1097,78 @@ fn stage_lines_on_a_non_utf8_tail_without_a_final_newline_is_byte_identical() {
 
     assert_eq!(staged_bytes(tmp.path(), "a.txt"), b"one\nCAF\xc9");
 }
+
+#[test]
+fn stage_hunk_of_an_unstaged_rename_moves_the_file_with_that_hunk_only() {
+    // The rename's new path is not in the index: the filtered patch has to move
+    // the old one (rename headers) instead of declaring a new file, otherwise
+    // its context lines have no preimage to apply to.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(
+        &repo,
+        "old.txt",
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n",
+        "init",
+    );
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(
+        tmp.path().join("new.txt"),
+        "l1\nFIRST\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nSECOND\nl17\nl18\nl19\nl20\n",
+    )
+    .unwrap();
+    let d = diff::file_diff(&repo, "new.txt", DiffSource::Unstaged).unwrap();
+    assert_eq!(d.hunks.len(), 2, "precondition: two separate edits");
+
+    stage::stage_hunk(&repo, "new.txt", 0).unwrap();
+
+    let st = status::load_repo(&repo).unwrap();
+    assert_eq!(
+        st.staged
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.additions, f.deletions))
+            .collect::<Vec<_>>(),
+        vec![("new.txt", status::ChangeKind::Renamed, 1, 1)],
+        "the rename lands staged carrying the first hunk only"
+    );
+    assert_eq!(
+        st.unstaged
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.additions, f.deletions))
+            .collect::<Vec<_>>(),
+        vec![("new.txt", status::ChangeKind::Modified, 1, 1)],
+        "the second hunk stays unstaged on the new path"
+    );
+}
+
+#[test]
+fn unstage_hunk_of_a_staged_rename_keeps_the_move_staged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "old.txt", "l1\nl2\nl3\nl4\n", "init");
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(tmp.path().join("new.txt"), "l1\nCHANGED\nl3\nl4\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.remove_path(Path::new("old.txt")).unwrap();
+    index.add_path(Path::new("new.txt")).unwrap();
+    index.write().unwrap();
+
+    stage::unstage_hunk(&repo, "new.txt", 0).unwrap();
+
+    let st = status::load_repo(&repo).unwrap();
+    assert_eq!(
+        st.staged
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.additions, f.deletions))
+            .collect::<Vec<_>>(),
+        vec![("new.txt", status::ChangeKind::Renamed, 0, 0)],
+        "the move itself stays staged, stripped of the edit"
+    );
+    assert_eq!(
+        st.unstaged
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.additions, f.deletions))
+            .collect::<Vec<_>>(),
+        vec![("new.txt", status::ChangeKind::Modified, 1, 1)],
+    );
+}

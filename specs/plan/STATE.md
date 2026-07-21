@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **21/37**.
+work**. Counter: **22/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -167,14 +167,19 @@ work**. Counter: **21/37**.
 
 ### Lot C — fidelity
 
-- ☐ **T18 — Renames diff and count as renames.** `file_diff` (`diff.rs:103-121`) sets a
-  pathspec and never calls `find_similar` while `git.md:304` requires the rename to
-  show, and `git_diff_e2e.rs:411` already locks that intent for the *commit* diff.
-  Unstaged stats miss `for_untracked` (`status.rs:340`), which libgit2's own status pass
-  sets (`status.c:310`) ⇒ the row pairs the rename but the stats say `+<whole file> −0`.
-  ⚠ a bare `find_similar` is **not** enough on `file_diff` — the pathspec filters the old
-  side out, the trap already documented at `diff.rs:190-193`.
-  *Files*: `src/git/diff.rs`, `src/git/status.rs`.
+- ☑ **T18 — Renames diff and count as renames.** `source_diff` keeps its single-path
+  pathspec on the fast path and, only when the delta comes back unpaired
+  (`Untracked`/`Added`), re-diffs with `status::rename_old_path`'s old path in the
+  pathspec then `find_similar` — the old side has to be *in* the diff before it can be
+  paired. `hunk_line_bytes` shares `source_diff`, so both stay on the same hunk
+  sequence. `status::find_renames` gains `for_untracked` (what libgit2's own status pass
+  sets), fixing `+<whole file> −0` on an unstaged rename. Fallout fixed in the same
+  breath: the filtered patch of a rename target absent from the index now carries
+  `similarity index` + `rename from`/`rename to` instead of `new file mode`, which
+  libgit2 applies as a `RENAMED` delta (a `/dev/null` header rejected the hunk's context
+  lines). Tests: 2 diff e2e + 2 status e2e + 2 stage e2e. A **pure** rename now shows
+  *No changes* (0 hunks, 0/0) like `git diff` does. *Files*: `src/git/diff.rs`,
+  `src/git/status.rs`, `src/git/stage.rs`.
 - ☐ **T19 — Symlinks staged by `symlink_metadata`.** `.exists()` follows the link
   (`stage.rs:20`) ⇒ repointing a symlink at a not-yet-created target stages its
   **deletion**; `stage_all` is immune (it switches on the delta status), so per-file
@@ -324,7 +329,7 @@ work**. Counter: **21/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭).
-- Order: **T18** (Lot C), then the rest of Lot C, then Lot D.
+- Order: **T19** (Lot C), then the rest of Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

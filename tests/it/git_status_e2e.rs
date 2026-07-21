@@ -269,6 +269,44 @@ fn deleted_file_counts_its_lines_as_deletions() {
 }
 
 #[test]
+fn unstaged_rename_counts_only_the_edit_not_the_whole_file() {
+    // The row is paired as a rename (statuses sets FIND_FOR_UNTRACKED): its
+    // stats must be the rename's own delta, not `+<whole file> −0` (git.md §8).
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "old.txt", "line1\nline2\nline3\nline4\n", "init");
+
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(tmp.path().join("new.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+
+    let st = status::load(tmp.path()).unwrap();
+
+    let renamed = st.unstaged.iter().find(|f| f.path == "new.txt").unwrap();
+    assert_eq!(renamed.kind, ChangeKind::Renamed);
+    assert_eq!((renamed.additions, renamed.deletions), (1, 1));
+}
+
+#[test]
+fn staged_rename_counts_only_the_edit_not_the_whole_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "old.txt", "line1\nline2\nline3\nline4\n", "init");
+
+    fs::remove_file(tmp.path().join("old.txt")).unwrap();
+    fs::write(tmp.path().join("new.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.remove_path(Path::new("old.txt")).unwrap();
+    index.add_path(Path::new("new.txt")).unwrap();
+    index.write().unwrap();
+
+    let st = status::load(tmp.path()).unwrap();
+
+    let renamed = st.staged.iter().find(|f| f.path == "new.txt").unwrap();
+    assert_eq!(renamed.kind, ChangeKind::Renamed);
+    assert_eq!((renamed.additions, renamed.deletions), (1, 1));
+}
+
+#[test]
 fn ignored_file_is_absent_from_status() {
     let tmp = tempfile::tempdir().unwrap();
     git2::Repository::init(tmp.path()).unwrap();
