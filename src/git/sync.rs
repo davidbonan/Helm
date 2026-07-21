@@ -619,12 +619,15 @@ fn resolve_remote_branch(
 }
 
 pub fn pull_args(mode: PullMode, upstream: Option<(&str, &str)>) -> Vec<String> {
-    let flag = match mode {
-        PullMode::Ff => "--ff",
-        PullMode::FfOnly => "--ff-only",
-        PullMode::Rebase => "--rebase",
+    // `--ff` alone still rebases under `pull.rebase=true` (git 2.55), which rewrites
+    // the local commits behind the default button — pin the merge explicitly.
+    let flags: &[&str] = match mode {
+        PullMode::Ff => &["--no-rebase", "--ff"],
+        PullMode::FfOnly => &["--ff-only"],
+        PullMode::Rebase => &["--rebase"],
     };
-    let mut args = vec!["pull".to_string(), flag.to_string()];
+    let mut args = vec!["pull".to_string()];
+    args.extend(flags.iter().map(|flag| flag.to_string()));
     if let Some((remote, branch)) = upstream {
         args.push(remote.to_string());
         args.push(branch.to_string());
@@ -766,7 +769,10 @@ mod tests {
 
     #[test]
     fn pull_args_map_modes_to_flags() {
-        assert_eq!(pull_args(PullMode::Ff, None), ["pull", "--ff"]);
+        assert_eq!(
+            pull_args(PullMode::Ff, None),
+            ["pull", "--no-rebase", "--ff"]
+        );
         assert_eq!(pull_args(PullMode::FfOnly, None), ["pull", "--ff-only"]);
         assert_eq!(pull_args(PullMode::Rebase, None), ["pull", "--rebase"]);
     }
@@ -775,7 +781,7 @@ mod tests {
     fn pull_args_target_the_upstream_branch_when_known() {
         assert_eq!(
             pull_args(PullMode::Ff, Some(("origin", "main"))),
-            ["pull", "--ff", "origin", "main"]
+            ["pull", "--no-rebase", "--ff", "origin", "main"]
         );
         assert_eq!(
             pull_args(PullMode::Rebase, Some(("upstream", "feat/x"))),

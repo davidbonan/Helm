@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **17/37**.
+work**. Counter: **18/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -135,7 +135,7 @@ work**. Counter: **17/37**.
   committer refreshed, unrelated staged files untouched). Keep the libgit2 pre-flight
   guards so `git_commit_e2e` stays green; `message_prettify` is cosmetic (only the
   missing trailing `\n`). *Files*: `src/git/commit.rs`, `src/git/cli.rs`, `src/git/sync.rs`.
-- ☐ **T14 — Pull (ff) does not rebase.** Verified on git 2.55: with `pull.rebase=true`,
+- ☑ **T14 — Pull (ff) does not rebase.** Verified on git 2.55: with `pull.rebase=true`,
   `git pull --ff` rebases and rewrites the local oid. `sync.rs:621` emits `--ff` for the
   entry `git.md:707` names "Pull (fast-forward if possible)" and makes the default
   (`:723`) ⇒ the default button silently rewrites history. `--ff-only` is unaffected.
@@ -319,7 +319,7 @@ work**. Counter: **17/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭).
-- Order: **T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
+- Order: **T15 → T16 → T17** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

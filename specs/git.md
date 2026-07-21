@@ -699,7 +699,9 @@ left.
 - **Pull (split-button)**: the main area runs the **default
   operation**; the chevron opens a radio menu "Select a default pull/fetch
   operation to execute when clicking this button": **Fetch All**
-  (`git fetch --all`) · **Pull (fast-forward if possible)** (`git pull --ff`) ·
+  (`git fetch --all`) · **Pull (fast-forward if possible)**
+  (`git pull --no-rebase --ff` — `--no-rebase` so a `pull.rebase=true` config
+  cannot turn this entry into a history rewrite) ·
   **Pull (fast-forward only)** (`git pull --ff-only`) · **Pull (rebase)**
   (`git pull --rebase`). Choosing an option **sets the default without
   running it**; the button label reflects the default ("Pull" / "Fetch").

@@ -254,6 +254,30 @@ fn pull_rebase_replays_local_commits_on_remote_tip() {
     assert_eq!(repo_b.state(), git2::RepositoryState::Clean);
 }
 
+// "Pull (fast-forward if possible)" merges when the branches diverged: a machine
+// with `pull.rebase=true` must not turn the default button into a history rewrite
+// (git.md §10, git 2.55 lets the config win over a bare `--ff`).
+#[test]
+fn pull_ff_merges_instead_of_rebasing_under_pull_rebase_true() {
+    let fx = fixture();
+    let repo_b = git2::Repository::open(&fx.b).unwrap();
+    repo_b
+        .config()
+        .unwrap()
+        .set_bool("pull.rebase", true)
+        .unwrap();
+    let c2 = commit_and_push_upstream(&fx, "base.txt", "v2\n", "c2");
+    let c3 = commit_file(&repo_b, &fx.b, "local.txt", "local\n", "c3");
+
+    assert_eq!(sync::pull(&fx.b, PullMode::Ff), Ok(SyncOutcome::Updated));
+
+    let head = repo_b.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.parent_count(), 2, "expected a merge commit");
+    assert_eq!(head.parent(0).unwrap().id(), c3, "local commit rewritten");
+    assert_eq!(head.parent(1).unwrap().id(), c2);
+    assert_eq!(repo_b.state(), git2::RepositoryState::Clean);
+}
+
 #[test]
 fn pull_conflict_reports_conflicts_and_leaves_repo_in_progress() {
     let fx = fixture();
@@ -263,9 +287,8 @@ fn pull_conflict_reports_conflicts_and_leaves_repo_in_progress() {
 
     assert_eq!(sync::pull(&fx.b, PullMode::Ff), Err(SyncError::Conflicts));
 
-    // Left as is (git.md §10): merge — or rebase if the machine config forces
-    // pull.rebase; in both cases an "in progress" state.
-    assert_ne!(repo_b.state(), git2::RepositoryState::Clean);
+    // Left as is (git.md §10): the merge stays "in progress".
+    assert_eq!(repo_b.state(), git2::RepositoryState::Merge);
 }
 
 // Local repo with two diverged branches: `feature` (checked out) and the
