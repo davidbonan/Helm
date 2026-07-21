@@ -69,6 +69,30 @@ fn subprocess_is_non_interactive() {
 }
 
 #[test]
+fn subprocess_askpass_helpers_are_neutralized() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    let mut cfg = repo.config().unwrap();
+    cfg.set_str(
+        "alias.askpass-probe",
+        "!printf '[%s][%s]' \"$GIT_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\"",
+    )
+    .unwrap();
+
+    // An explicit env would otherwise win: the hardening must be the last word,
+    // exactly as it must beat a GIT_ASKPASS inherited from the login environment.
+    let out = cli::run_with_env(
+        tmp.path(),
+        &["askpass-probe"],
+        &[("GIT_ASKPASS", "/nonexistent/helm-askpass".to_string())],
+    )
+    .unwrap();
+
+    assert!(out.success());
+    assert_eq!(out.stdout, "[][never]");
+}
+
+#[test]
 fn subprocess_locale_is_pinned_to_c() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

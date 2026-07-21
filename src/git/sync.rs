@@ -689,12 +689,22 @@ fn exec(workdir: &Path, args: &[&str]) -> Result<CliOutput, SyncError> {
     exec_with_env(workdir, args, &[])
 }
 
+/// fetch/pull/push wait on the remote and the user's link, so their duration is
+/// unbounded by anything local; every other command here (merge, rebase,
+/// cherry-pick, abort…) is local work and keeps the CLI default.
+fn timeout_for(args: &[&str]) -> std::time::Duration {
+    match args.first() {
+        Some(&"fetch" | &"pull" | &"push") => cli::NETWORK_TIMEOUT,
+        _ => cli::DEFAULT_TIMEOUT,
+    }
+}
+
 fn exec_with_env(
     workdir: &Path,
     args: &[&str],
     envs: &[(&str, String)],
 ) -> Result<CliOutput, SyncError> {
-    match cli::run_with_env(workdir, args, envs) {
+    match cli::run_with_env_timeout(workdir, args, timeout_for(args), envs) {
         Ok(out) => Ok(out),
         Err(CliError::NotFound) => Err(SyncError::GitNotFound),
         Err(CliError::TimedOut(_)) => Err(SyncError::TimedOut),
@@ -1029,6 +1039,26 @@ mod tests {
             "To file:///remote.git\n ! [rejected]        main -> main (stale info)\nerror: failed to push some refs to 'file:///remote.git'\n",
         );
         assert_eq!(classify_failure(&out), SyncError::StaleInfo);
+    }
+
+    #[test]
+    fn only_the_remote_ops_get_the_network_budget() {
+        assert!(cli::NETWORK_TIMEOUT > cli::DEFAULT_TIMEOUT);
+        for args in [
+            vec!["fetch", "--all"],
+            vec!["pull", "--no-rebase", "--ff", "origin", "main"],
+            vec!["push", "-u", "origin", "main"],
+        ] {
+            assert_eq!(timeout_for(&args), cli::NETWORK_TIMEOUT, "{args:?}");
+        }
+        for args in [
+            vec!["merge", "feat"],
+            vec!["rebase", "-i", "main"],
+            vec!["cherry-pick", "abc1234"],
+            vec!["revert", "--no-edit", "abc1234"],
+        ] {
+            assert_eq!(timeout_for(&args), cli::DEFAULT_TIMEOUT, "{args:?}");
+        }
     }
 
     #[test]

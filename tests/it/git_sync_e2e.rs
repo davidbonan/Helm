@@ -1284,3 +1284,55 @@ fn operations_without_remote_report_no_remote() {
         Err(SyncError::NoRemote)
     );
 }
+
+// A remote that always answers 401: enough to make git ask for credentials,
+// without leaving the loopback interface.
+fn spawn_unauthorized_remote() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut request = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 401 Unauthorized\r\n\
+                  WWW-Authenticate: Basic realm=\"helm\"\r\n\
+                  Content-Length: 0\r\n\r\n",
+            );
+        }
+    });
+    format!("http://127.0.0.1:{port}/r.git")
+}
+
+#[test]
+fn a_credential_prompt_fails_fast_instead_of_burning_the_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    set_test_config(&repo);
+    commit_file(&repo, tmp.path(), "a.txt", "a\n", "c1");
+    repo.remote("origin", &spawn_unauthorized_remote()).unwrap();
+    // A helper that never answers in time: `GIT_TERMINAL_PROMPT=0` and a closed
+    // stdin do not stop git from running it, so without the askpass hardening the
+    // fetch waits on it (twice: username, then password) far past this budget.
+    let askpass = tmp.path().join("askpass.sh");
+    fs::write(&askpass, "#!/bin/sh\nsleep 30\necho helm\n").unwrap();
+    fs::set_permissions(&askpass, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("core.askPass", askpass.to_str().unwrap())
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let outcome = sync::fetch_all(tmp.path());
+    let elapsed = start.elapsed();
+
+    assert_eq!(outcome, Err(SyncError::AuthFailed));
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "the helper must never be spawned, took {elapsed:?}"
+    );
+}

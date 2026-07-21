@@ -6,7 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Budget for the ops that wait on a remote: their duration is the user's link and
+/// the transfer size, not local work, so [`DEFAULT_TIMEOUT`] cannot bound them —
+/// `sync.rs` picks this one for fetch/pull/push. Still bounded: a wedged transfer
+/// must eventually release the repo's single network slot.
+pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug)]
 pub enum CliError {
@@ -43,7 +49,18 @@ pub fn run_with_env(
     args: &[&str],
     envs: &[(&str, String)],
 ) -> Result<CliOutput, CliError> {
-    run_program_with_timeout(Path::new("git"), workdir, args, DEFAULT_TIMEOUT, envs)
+    run_with_env_timeout(workdir, args, DEFAULT_TIMEOUT, envs)
+}
+
+/// [`run_with_env`] on a caller-chosen budget ([`NETWORK_TIMEOUT`] for sync's
+/// remote ops).
+pub fn run_with_env_timeout(
+    workdir: &Path,
+    args: &[&str],
+    timeout: Duration,
+    envs: &[(&str, String)],
+) -> Result<CliOutput, CliError> {
+    run_program_with_timeout(Path::new("git"), workdir, args, timeout, envs)
 }
 
 /// Proactive detection of the `git` binary (greyed-out toolbar, M12-9): same PATH
@@ -107,6 +124,15 @@ pub fn run_program_cancellable(
         // overrides LANG and every LC_* category (POSIX), pinning the output.
         .env("LC_ALL", "C")
         .envs(envs.iter().map(|(key, value)| (key, value)))
+        // Set last so nothing inherited from the login environment, nor `envs`,
+        // can put a prompt back. `GIT_TERMINAL_PROMPT=0` + a null stdin only close
+        // the terminal: an empty `GIT_ASKPASS` is what shadows `core.askPass` and
+        // `SSH_ASKPASS` (git reads the first non-empty of the three), and
+        // `SSH_ASKPASS_REQUIRE=never` is ssh's own switch. Without them a missing
+        // credential spawns a GUI helper that waits for the user and burns the
+        // whole timeout, killing the op mid-flight instead of failing cleanly.
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **33/37**.
+work**. Counter: **34/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -274,7 +274,7 @@ work**. Counter: **33/37**.
   `:515`); run command-scoped side effects **before** the `carries_state` gate. Minor
   companion: an abandoned session's mutation refused by the lock is dropped with no
   possible toast (`worker.rs:528`). *Files*: `src/app/git_session.rs`, `src/git/worker.rs`.
-- ☐ **T32 — Network ops are not SIGKILLed at 120 s.** `DEFAULT_TIMEOUT` (`cli.rs:9`)
+- ☑ **T32 — Network ops are not SIGKILLed at 120 s.** `DEFAULT_TIMEOUT` (`cli.rs:9`)
   reaches every sync op (`sync.rs:658` → `run_with_env` → `run_program_with_timeout`);
   the cancellable path has exactly one caller (`ai_rebase.rs:294`). No spec or commit
   documents the value (`git log -S DEFAULT_TIMEOUT` → only the initial squash) — the
@@ -330,7 +330,7 @@ work**. Counter: **33/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T32**, then T33 → T35 (Lot D).
+- Order: **T33**, then T34 → T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
