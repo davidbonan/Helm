@@ -604,6 +604,53 @@ fn pressing_enter_confirms_the_discard_modal() {
 }
 
 #[test]
+fn a_disarmed_panel_drops_the_armed_discard_modal() {
+    let palette = Palette::light();
+    let intents = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let state = Rc::new(RefCell::new(GitPanelState::default()));
+    let state_in_ui = state.clone();
+    let status = sample_status();
+
+    let mut harness = git_panel_harness(move |ui| {
+        git_panel(
+            ui,
+            &palette,
+            "main",
+            &status,
+            false,
+            None,
+            &mut state_in_ui.borrow_mut(),
+            &Keymap::default(),
+            &mut sink.borrow_mut(),
+            None,
+            &mut FileMenuOutput::default(),
+            FileViewMode::Flat,
+        );
+    });
+    harness.run();
+    harness.get_by_label("Discard all").click();
+    harness.run();
+    assert!(harness.query_by_label("Discard changes?").is_some());
+
+    // The repo switch disarms the panel before the next frame renders.
+    state.borrow_mut().disarm_on_repo_switch();
+    harness.run();
+    assert!(
+        harness.query_by_label("Discard changes?").is_none(),
+        "the confirmation must not re-render over the new repo"
+    );
+
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let intents = intents.borrow().clone();
+    assert!(
+        !intents.iter().any(|i| matches!(i, GitIntent::DiscardAll)),
+        "a confirmation armed before the switch must not discard the new repo"
+    );
+}
+
+#[test]
 fn cancelling_discard_emits_no_intent() {
     let intents = drive(sample_status(), "", |h| {
         h.get_by_label("Discard all").click();

@@ -762,8 +762,10 @@ impl HelmApp {
     /// commit-drafting state — the message draft (so it never shows under another repo)
     /// and the AI runner (so an in-flight generation survives the switch instead of
     /// being cancelled with the dropped session). Empties `git_panel_state` so the next
-    /// repo starts from its own draft.
+    /// repo starts from its own draft. Disarms the panel's per-repo confirmations
+    /// and file selection, which point at files the next session does not own.
     fn park_active_session(&mut self) {
+        self.git_panel_state.disarm_on_repo_switch();
         let Some(old) = self.git.take() else {
             return;
         };

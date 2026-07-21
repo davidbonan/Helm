@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **9/37**.
+work**. Counter: **10/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -30,7 +30,7 @@ work**. Counter: **9/37**.
   `sync_workspace_groups` got none. Keying on `RepoKey` removes the fixup and the
   spurious respawn that drops diff/branch-editor/rebase/conflict state.
   *Files*: `src/app/mod.rs`, `src/app/render.rs`.
-- ☐ **T2 — Discard/stash arming cleared on repo switch.** `park_active_session`
+- ☑ **T2 — Discard/stash arming cleared on repo switch.** `park_active_session`
   (`mod.rs:766-783`) parks only the commit draft; `Ctrl+Tab` is routed with no modal
   gate (`keys.rs:307`) so an armed confirm re-renders and fires into the **new**
   session (`git_panel.rs:1524`). Worst case `DiscardTarget::All` ⇒ unconditional
@@ -318,7 +318,7 @@ work**. Counter: **9/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
+- Order: **T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
   then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.

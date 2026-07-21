@@ -139,6 +139,19 @@ pub struct GitPanelState {
     pub mutation_busy: bool,
 }
 
+impl GitPanelState {
+    /// Drops everything aimed at the leaving repo's files when its session is
+    /// dropped on a repo switch: an armed confirmation re-renders on the next
+    /// frame and its intent would be routed to the **new** session.
+    pub fn disarm_on_repo_switch(&mut self) {
+        self.pending_discard = None;
+        self.pending_stash = None;
+        self.selected_file = None;
+        self.marked_files.clear();
+        self.selection_anchor = None;
+    }
+}
+
 const BRANCH_SIZE: f32 = 13.0;
 const PILL_PAD_X: f32 = 11.0;
 const PILL_PAD_Y: f32 = 5.0;

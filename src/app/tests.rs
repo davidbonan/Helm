@@ -1307,6 +1307,42 @@ fn a_commit_draft_stays_with_its_repo_across_a_switch() {
 }
 
 #[test]
+fn a_repo_switch_disarms_the_panel_confirmations_and_selection() {
+    use crate::ui::git_panel::{DiscardTarget, GitFileSelection};
+
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(a.path().to_path_buf()));
+    ws.add(Repo::new(b.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    // Confirmations armed on A's files, plus its selection.
+    let selection = GitFileSelection {
+        path: "a.txt".to_owned(),
+        staged: false,
+    };
+    app.git_panel_state.pending_discard = Some(DiscardTarget::All);
+    app.git_panel_state.pending_stash = Some(vec!["a.txt".to_owned()]);
+    app.git_panel_state.selected_file = Some(selection.clone());
+    app.git_panel_state.marked_files = vec![selection.clone()];
+    app.git_panel_state.selection_anchor = Some(selection);
+
+    // Switch A → B: nothing armed against A may re-render over B's session.
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+    assert!(app.git_panel_state.pending_discard.is_none());
+    assert!(app.git_panel_state.pending_stash.is_none());
+    assert!(app.git_panel_state.selected_file.is_none());
+    assert!(app.git_panel_state.marked_files.is_empty());
+    assert!(app.git_panel_state.selection_anchor.is_none());
+}
+
+#[test]
 fn an_ai_generation_survives_a_repo_switch() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
