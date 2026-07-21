@@ -6,7 +6,7 @@
 
 ---
 
-## ◐ Milestone — M-GitHard · Git actions hardening
+## ☑ Milestone — M-GitHard · Git actions hardening
 
 Spec: [`specs/git.md`](../git.md) + [`specs/conflicts.md`](../conflicts.md) +
 [`specs/worktrees.md`](../worktrees.md). Audit of every Git write path (staging,
@@ -328,9 +328,8 @@ work**. Counter: **37/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
-  (T18–T27 ☑/⏭).
-- Order: **T35** (Lot D) — last open task.
+- **Milestone complete**: Lot A (T1–T10), Lot B (T11–T17), Lot C (T18–T27), Lot D
+  (T28–T35), all ☑/⏭.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.
