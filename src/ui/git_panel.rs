@@ -137,6 +137,11 @@ pub struct GitPanelState {
     /// `GitWorker::pending_mutation()` written by the app: spinner in place of
     /// the Refresh icon (feedback for a slow stage-all / discard / checkout).
     pub mutation_busy: bool,
+    /// A long op (sync, AI rebase — minutes) holds the repo's mutation lock —
+    /// per-frame projection of `GitSession::lock_busy()` written by the app:
+    /// the staging / discard / commit actions are greyed out, since the worker
+    /// refuses every mutation meanwhile (git.md §9).
+    pub lock_busy: bool,
 }
 
 impl GitPanelState {
@@ -424,7 +429,7 @@ fn conflicted_section(
                 palette,
                 "Mark All Resolved",
                 palette.git_added,
-                count > 0,
+                count > 0 && !state.lock_busy,
             );
         });
     });
@@ -811,7 +816,7 @@ fn header_band(
                 ui,
                 palette,
                 palette.git_deleted,
-                can_discard,
+                can_discard && !state.lock_busy,
                 "Discard all",
                 lucide_icons::Icon::Trash2,
             ) && state.pending_discard.is_none()
@@ -982,7 +987,13 @@ fn unstaged_section(
     band(ui, SECTION_HEADER_H, |ui| {
         toggled = section_toggle(ui, palette, "Unstaged", count, state.unstaged_collapsed);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            stage_all = intent_pill(ui, palette, "Stage All", palette.git_added, count > 0);
+            stage_all = intent_pill(
+                ui,
+                palette,
+                "Stage All",
+                palette.git_added,
+                count > 0 && !state.lock_busy,
+            );
         });
     });
     if toggled {
@@ -1033,7 +1044,13 @@ fn staged_section(
     band(ui, SECTION_HEADER_H, |ui| {
         toggled = section_toggle(ui, palette, "Staged", count, state.staged_collapsed);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            unstage_all = intent_pill(ui, palette, "Unstage All", palette.git_deleted, count > 0);
+            unstage_all = intent_pill(
+                ui,
+                palette,
+                "Unstage All",
+                palette.git_deleted,
+                count > 0 && !state.lock_busy,
+            );
         });
     });
     if toggled {
@@ -1296,8 +1313,10 @@ fn commit_card(
     }
 
     ui.add_space(2.0);
-    let can_commit =
-        !op_in_progress && !state.commit_busy && commit_enabled(status, &state.subject);
+    let can_commit = !op_in_progress
+        && !state.commit_busy
+        && !state.lock_busy
+        && commit_enabled(status, &state.subject);
     let clicked = commit_button(
         ui,
         palette,
@@ -2055,18 +2074,35 @@ fn file_row(
     }
     match section {
         RowSection::Unstaged => {
-            if intent_pill(&mut col, palette, "Stage", palette.git_added, true) {
+            if intent_pill(
+                &mut col,
+                palette,
+                "Stage",
+                palette.git_added,
+                !state.lock_busy,
+            ) {
                 intents.push(GitIntent::Stage(entry.path.clone()));
             }
             col.add_space(ACTION_GAP);
-            if intent_pill(&mut col, palette, "Discard", palette.git_deleted, true)
-                && state.pending_discard.is_none()
+            if intent_pill(
+                &mut col,
+                palette,
+                "Discard",
+                palette.git_deleted,
+                !state.lock_busy,
+            ) && state.pending_discard.is_none()
             {
                 state.pending_discard = Some(DiscardTarget::File(entry.path.clone()));
             }
         }
         RowSection::Staged => {
-            if intent_pill(&mut col, palette, "Unstage", palette.git_deleted, true) {
+            if intent_pill(
+                &mut col,
+                palette,
+                "Unstage",
+                palette.git_deleted,
+                !state.lock_busy,
+            ) {
                 intents.push(GitIntent::Unstage(entry.path.clone()));
             }
         }

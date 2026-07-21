@@ -441,6 +441,7 @@ impl HelmApp {
             .git
             .as_ref()
             .is_some_and(|g| g.worker.pending_mutation().is_some());
+        self.git_panel_state.lock_busy = self.git.as_ref().is_some_and(|g| g.lock_busy());
     }
 
     pub(super) fn render_page(

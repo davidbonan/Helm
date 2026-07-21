@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use helm::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
@@ -1088,6 +1088,76 @@ fn mutation_replaces_refresh_with_a_spinner() {
 
     harness.get_by_label("Working");
     assert!(harness.query_by_label("Refresh").is_none());
+}
+
+fn mixed_status() -> RepoStatus {
+    RepoStatus {
+        unstaged: vec![file("src/main.rs", ChangeKind::Modified)],
+        staged: vec![file("src/lib.rs", ChangeKind::Modified)],
+    }
+}
+
+fn lock_busy_state(busy: bool) -> GitPanelState {
+    GitPanelState {
+        subject: "message".to_owned(),
+        lock_busy: busy,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_lock_holding_op_greys_the_sidebar_actions() {
+    // A sync op / AI rebase holds the repo's mutation lock for its whole run
+    // (git.md §9): every staging or commit sent meanwhile is refused by the
+    // worker, so the sidebar must not keep offering the click.
+    let intents = drive_with_state(mixed_status(), lock_busy_state(true), |h| {
+        for label in ["Stage All", "Unstage All", "Commit 1 file", "Discard all"] {
+            assert!(
+                h.get_by_label(label).accesskit_node().is_disabled(),
+                "{label} must be greyed out while the mutation lock is held"
+            );
+            h.get_by_label(label).click();
+            h.run();
+        }
+        h.get_by_label("src/main.rs").hover();
+        h.run();
+        for label in ["Stage", "Discard"] {
+            assert!(
+                h.get_by_label(label).accesskit_node().is_disabled(),
+                "the {label} pill must be greyed out while the mutation lock is held"
+            );
+            h.get_by_label(label).click();
+            h.run();
+        }
+    });
+    assert!(
+        intents
+            .iter()
+            .all(|intent| matches!(intent, GitIntent::OpenDiff { .. })),
+        "no mutation may be emitted while the lock is held, got {intents:?}"
+    );
+}
+
+#[test]
+fn the_sidebar_actions_come_back_once_the_lock_is_released() {
+    let intents = drive_with_state(mixed_status(), lock_busy_state(false), |h| {
+        for label in ["Stage All", "Unstage All", "Commit 1 file"] {
+            assert!(
+                !h.get_by_label(label).accesskit_node().is_disabled(),
+                "{label} must be clickable outside a lock-holding op"
+            );
+            h.get_by_label(label).click();
+            h.run();
+        }
+    });
+    assert!(
+        intents.contains(&GitIntent::StageAll)
+            && intents.contains(&GitIntent::UnstageAll)
+            && intents
+                .iter()
+                .any(|intent| matches!(intent, GitIntent::Commit(_))),
+        "got {intents:?}"
+    );
 }
 
 #[test]

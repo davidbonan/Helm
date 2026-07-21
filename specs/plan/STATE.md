@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **29/37**.
+work**. Counter: **30/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -239,7 +239,7 @@ work**. Counter: **29/37**.
 
 ### Lot D — flow & robustness
 
-- ☐ **T28 — Sidebar pills greyed during a sync/AI op.** ⚠ **re-scoped**: refusing (not
+- ☑ **T28 — Sidebar pills greyed during a sync/AI op.** ⚠ **re-scoped**: refusing (not
   queueing) is spec-locked — `git.md:502-504` ("staging, commits and sync ops are
   **refused** meanwhile") — and the refusal *is* surfaced as a toast
   (`git_session.rs:525`). The defect is only that the sidebar keeps offering pills that
@@ -330,7 +330,7 @@ work**. Counter: **29/37**.
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭). **Lot B complete** (T11–T17 ☑/⏭). **Lot C complete**
   (T18–T27 ☑/⏭).
-- Order: **T28**, then T29 → T35 (Lot D).
+- Order: **T29**, then T30 → T35 (Lot D).
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

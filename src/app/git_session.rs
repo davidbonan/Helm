@@ -787,6 +787,13 @@ impl GitSession {
         }
     }
 
+    /// A long op holds the repo's **mutation lock** (git.md §9): every staging,
+    /// discard or commit sent meanwhile is refused by the worker, so the sidebar
+    /// greys them out instead of offering a click that can only fail.
+    pub(crate) fn lock_busy(&self) -> bool {
+        self.sync.busy() || self.ai_rebase.busy()
+    }
+
     /// Git command in progress, as seen by the graph toolbar: network op first
     /// (spinner on its button), otherwise the first mutating command pending in the
     /// worker. Any command ⇒ loader + all other buttons greyed out
