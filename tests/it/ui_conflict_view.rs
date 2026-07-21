@@ -1,7 +1,7 @@
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
-use helm::git::conflict::{ConflictFile, ConflictKind, Region};
+use helm::git::conflict::{ConflictFile, ConflictKind, LineEnding, Region};
 use helm::theme::Palette;
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState, ResolveRequest};
 
@@ -21,6 +21,7 @@ fn both_modified(path: &str) -> ConflictFile {
             Region::Stable(vec!["}".to_owned()]),
         ],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 
@@ -46,6 +47,7 @@ fn two_conflicts(path: &str) -> ConflictFile {
             Region::Stable(vec!["}".to_owned()]),
         ],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 
@@ -67,6 +69,7 @@ fn long_context(path: &str) -> ConflictFile {
             },
         ],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 
@@ -78,6 +81,7 @@ fn deleted_by_them(path: &str) -> ConflictFile {
         theirs_label: "Incoming · theirs".to_owned(),
         regions: vec![],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 
@@ -89,6 +93,7 @@ fn binary(path: &str) -> ConflictFile {
         theirs_label: "Incoming · theirs".to_owned(),
         regions: vec![],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 
@@ -106,6 +111,7 @@ fn single_conflict(path: &str) -> ConflictFile {
             base: vec!["BASE_LINE".to_owned()],
         }],
         has_base: true,
+        eol: LineEnding::default(),
     }
 }
 

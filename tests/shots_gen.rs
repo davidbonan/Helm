@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use helm::agent_watch::AgentBadge;
 use helm::ai::AiProvider;
 use helm::git::commit_detail::{CommitDetail, CommitFile, CommitMeta};
-use helm::git::conflict::{ConflictFile, ConflictKind, Region};
+use helm::git::conflict::{ConflictFile, ConflictKind, LineEnding, Region};
 use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
 use helm::git::graph::{Graph, GraphCommit, GraphRef, LaneCache, RefKind};
 use helm::git::rebase::RebaseCommit;
@@ -948,6 +948,7 @@ fn conflict_files() -> Vec<ConflictFile> {
             Region::Stable(vec!["    Ok(session)".to_owned(), "}".to_owned()]),
         ],
         has_base: true,
+        eol: LineEnding::default(),
     }]
 }
 

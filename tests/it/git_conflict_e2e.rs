@@ -1,15 +1,24 @@
 use std::fs;
 use std::path::Path;
 
+use egui_kittest::kittest::Queryable;
+use egui_kittest::Harness;
+
 use helm::git::cli;
-use helm::git::conflict::{read_conflict, read_conflicts, resolve_file, ConflictKind, Region};
+use helm::git::conflict::{
+    read_conflict, read_conflicts, resolve_file, ConflictFile, ConflictKind, Region,
+};
 use helm::git::sync::{self, SyncError, SyncOutcome};
+use helm::theme::Palette;
+use helm::ui::conflict_view::{conflict_view, ConflictEditorState, ResolveRequest};
 
 fn set_test_config(repo: &git2::Repository) {
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "Test").unwrap();
     cfg.set_str("user.email", "test@example.com").unwrap();
     cfg.set_bool("commit.gpgsign", false).unwrap();
+    // A global `core.autocrlf` would rewrite the fixtures' terminators on commit.
+    cfg.set_bool("core.autocrlf", false).unwrap();
 }
 
 fn commit_file(repo: &git2::Repository, dir: &Path, name: &str, content: &str, message: &str) {
@@ -52,36 +61,28 @@ fn checkout(repo: &git2::Repository, branch: &str) {
 /// `alpha\nbravo\ncharlie` ancestor. Leaves the repo on `main`. Returns
 /// `(tmp, main_branch_name)`.
 fn diverged() -> (tempfile::TempDir, String) {
+    diverged_text(
+        "alpha\nbravo\ncharlie\n",
+        "alpha\nbravo-feature\ncharlie\n",
+        "alpha\nbravo-main\ncharlie\n",
+    )
+}
+
+/// `diverged` with explicit byte-for-byte contents, so a test can pick the file's
+/// line terminator and trailing newline.
+fn diverged_text(base: &str, feature: &str, main_side: &str) -> (tempfile::TempDir, String) {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();
     set_test_config(&repo);
-    commit_file(
-        &repo,
-        tmp.path(),
-        "base.txt",
-        "alpha\nbravo\ncharlie\n",
-        "c1",
-    );
+    commit_file(&repo, tmp.path(), "base.txt", base, "c1");
     let main = repo.head().unwrap().shorthand().unwrap().to_string();
     let base = repo.head().unwrap().peel_to_commit().unwrap();
     repo.branch("feature", &base, false).unwrap();
 
     checkout(&repo, "feature");
-    commit_file(
-        &repo,
-        tmp.path(),
-        "base.txt",
-        "alpha\nbravo-feature\ncharlie\n",
-        "c-feature",
-    );
+    commit_file(&repo, tmp.path(), "base.txt", feature, "c-feature");
     checkout(&repo, &main);
-    commit_file(
-        &repo,
-        tmp.path(),
-        "base.txt",
-        "alpha\nbravo-main\ncharlie\n",
-        "c-main",
-    );
+    commit_file(&repo, tmp.path(), "base.txt", main_side, "c-main");
     (tmp, main)
 }
 
@@ -433,5 +434,92 @@ fn delete_modify_resolved_by_delete_then_continue_removes_the_file() {
     assert!(
         !tmp.path().join("doomed.txt").exists(),
         "the file is removed from the working tree"
+    );
+}
+
+/// Drives the real conflict editor headless: ticks the A (ours) take box of the
+/// single conflict region and clicks Save, returning the content it asks to write.
+fn save_taking_ours(file: ConflictFile) -> String {
+    struct Page {
+        state: ConflictEditorState,
+        resolve: Option<ResolveRequest>,
+    }
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(960.0, 720.0))
+        .build_ui_state(
+            |ui, page: &mut Page| {
+                let action = conflict_view(ui, &Palette::dark(), &mut page.state, false);
+                if let Some(resolve) = action.resolve {
+                    page.resolve = Some(resolve);
+                }
+            },
+            Page {
+                state: ConflictEditorState::new(vec![file]),
+                resolve: None,
+            },
+        );
+    harness.run();
+    // Pane A's take boxes render first — index 0 is the first conflict on ours.
+    harness
+        .get_all_by(|node| format!("{:?}", node.role()) == "CheckBox")
+        .next()
+        .expect("take checkbox present")
+        .click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    match harness.state().resolve.clone() {
+        Some(ResolveRequest::Compose { content, .. }) => content,
+        other => panic!("expected a Compose resolve, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolving_a_crlf_file_through_the_editor_keeps_crlf() {
+    let (tmp, _main) = diverged_text(
+        "alpha\r\nbravo\r\ncharlie\r\n",
+        "alpha\r\nbravo-feature\r\ncharlie\r\n",
+        "alpha\r\nbravo-main\r\ncharlie\r\n",
+    );
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+    assert!(cf.eol.crlf, "the CRLF terminator is detected from the blob");
+    assert!(cf.eol.final_newline);
+
+    let content = save_taking_ours(cf);
+    resolve_file(&repo, "base.txt", Some(&content)).unwrap();
+
+    assert_eq!(
+        fs::read(tmp.path().join("base.txt")).unwrap(),
+        b"alpha\r\nbravo-main\r\ncharlie\r\n"
+    );
+    assert!(!index_has_conflicts(&repo));
+}
+
+#[test]
+fn resolving_a_file_without_a_final_newline_does_not_add_one() {
+    let (tmp, _main) = diverged_text(
+        "alpha\nbravo\ncharlie",
+        "alpha\nbravo-feature\ncharlie",
+        "alpha\nbravo-main\ncharlie",
+    );
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+    assert!(!cf.eol.crlf);
+    assert!(!cf.eol.final_newline, "the blob has no trailing newline");
+
+    let content = save_taking_ours(cf);
+    resolve_file(&repo, "base.txt", Some(&content)).unwrap();
+
+    assert_eq!(
+        fs::read(tmp.path().join("base.txt")).unwrap(),
+        b"alpha\nbravo-main\ncharlie"
     );
 }

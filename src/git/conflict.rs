@@ -20,6 +20,54 @@ pub struct ConflictFile {
     pub regions: Vec<Region>,
     /// Stage 1 (common ancestor) present — drives the per-region base toggle.
     pub has_base: bool,
+    /// Line terminator of the file, re-applied when the editor saves (conflicts.md §5).
+    pub eol: LineEnding,
+}
+
+/// How a conflicted file terminates its lines. The 3-way reconstruction splits on
+/// `\n` and drops any `\r`, so the shape is detected once from the ours (else
+/// theirs) blob and re-applied at compose time — otherwise Save would silently
+/// rewrite a CRLF file to LF (conflicts.md §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineEnding {
+    /// Lines end with `\r\n`.
+    pub crlf: bool,
+    /// The file ends with a newline (its last line is terminated).
+    pub final_newline: bool,
+}
+
+impl Default for LineEnding {
+    fn default() -> Self {
+        LineEnding {
+            crlf: false,
+            final_newline: true,
+        }
+    }
+}
+
+impl LineEnding {
+    /// Reads the shape off raw file bytes: CRLF as soon as the first `\n` is
+    /// preceded by a `\r`. An empty side keeps the default (LF, terminated).
+    pub fn detect(content: &[u8]) -> Self {
+        if content.is_empty() {
+            return LineEnding::default();
+        }
+        let first_nl = content.iter().position(|&b| b == b'\n');
+        LineEnding {
+            crlf: first_nl.is_some_and(|i| i > 0 && content[i - 1] == b'\r'),
+            final_newline: content.ends_with(b"\n"),
+        }
+    }
+
+    /// Rewrites an LF-joined buffer with this terminator. The trailing newline is
+    /// left exactly as the buffer has it — Save writes the buffer verbatim.
+    pub fn apply(&self, text: &str) -> String {
+        if self.crlf {
+            text.replace("\r\n", "\n").replace('\n', "\r\n")
+        } else {
+            text.to_owned()
+        }
+    }
 }
 
 /// Conflict class, decided by the stages present in the index (conflicts.md §6).
@@ -62,11 +110,11 @@ pub fn read_conflict(repo: &git2::Repository, path: &str) -> Result<ConflictFile
     let (ours_label, theirs_label) = labels_for_state(repo.state());
     let has_base = conflict.ancestor.is_some();
     let kind = classify(repo, &conflict)?;
-    let regions = match kind {
+    let (regions, eol) = match kind {
         ConflictKind::BothModified | ConflictKind::AddedByBoth => {
             reconstruct_regions(repo, &conflict)?
         }
-        _ => Vec::new(),
+        _ => (Vec::new(), LineEnding::default()),
     };
 
     Ok(ConflictFile {
@@ -76,6 +124,7 @@ pub fn read_conflict(repo: &git2::Repository, path: &str) -> Result<ConflictFile
         theirs_label,
         regions,
         has_base,
+        eol,
     })
 }
 
@@ -253,7 +302,7 @@ fn labels_for_state(state: git2::RepositoryState) -> (String, String) {
 fn reconstruct_regions(
     repo: &git2::Repository,
     conflict: &git2::IndexConflict,
-) -> Result<Vec<Region>, git2::Error> {
+) -> Result<(Vec<Region>, LineEnding), git2::Error> {
     let ancestor = blob_bytes(repo, conflict.ancestor.as_ref())?;
     let ours = blob_bytes(repo, conflict.our.as_ref())?;
     let theirs = blob_bytes(repo, conflict.their.as_ref())?;
@@ -269,7 +318,11 @@ fn reconstruct_regions(
     opts.style_diff3(true);
 
     let merged = git2::merge_file(&ancestor_in, &ours_in, &theirs_in, Some(&mut opts))?;
-    Ok(parse_regions(&String::from_utf8_lossy(merged.content())))
+    let eol = LineEnding::detect(if ours.is_empty() { &theirs } else { &ours });
+    Ok((
+        parse_regions(&String::from_utf8_lossy(merged.content())),
+        eol,
+    ))
 }
 
 fn blob_bytes(
@@ -433,6 +486,78 @@ charlie\n";
                 Region::Stable(vec!["charlie".to_string()]),
             ]
         );
+    }
+
+    #[test]
+    fn line_ending_detects_the_terminator_and_the_final_newline() {
+        assert_eq!(
+            LineEnding::detect(b"alpha\r\nbravo\r\n"),
+            LineEnding {
+                crlf: true,
+                final_newline: true
+            }
+        );
+        assert_eq!(
+            LineEnding::detect(b"alpha\r\nbravo"),
+            LineEnding {
+                crlf: true,
+                final_newline: false
+            }
+        );
+        assert_eq!(
+            LineEnding::detect(b"alpha\nbravo\n"),
+            LineEnding {
+                crlf: false,
+                final_newline: true
+            }
+        );
+        assert_eq!(
+            LineEnding::detect(b"one line, no terminator"),
+            LineEnding {
+                crlf: false,
+                final_newline: false
+            }
+        );
+        assert_eq!(LineEnding::detect(b""), LineEnding::default());
+    }
+
+    #[test]
+    fn a_crlf_buffer_round_trips_through_parse_and_apply() {
+        let buffer = "alpha\r\n\
+<<<<<<< ours\r\n\
+bravo-ours\r\n\
+||||||| base\r\n\
+bravo\r\n\
+=======\r\n\
+bravo-theirs\r\n\
+>>>>>>> theirs\r\n\
+charlie\r\n";
+        let eol = LineEnding::detect(buffer.as_bytes());
+        assert_eq!(
+            parse_regions(buffer),
+            vec![
+                Region::Stable(vec!["alpha".to_string()]),
+                Region::Conflict {
+                    ours: vec!["bravo-ours".to_string()],
+                    theirs: vec!["bravo-theirs".to_string()],
+                    base: vec!["bravo".to_string()],
+                },
+                Region::Stable(vec!["charlie".to_string()]),
+            ]
+        );
+        // The editor composes LF; Save puts the terminator back.
+        assert_eq!(
+            eol.apply("alpha\nbravo-ours\ncharlie\n"),
+            "alpha\r\nbravo-ours\r\ncharlie\r\n"
+        );
+        // Idempotent on a buffer that already carries CRLF (a hand-loaded file).
+        assert_eq!(
+            eol.apply("alpha\r\nbravo-ours\r\n"),
+            "alpha\r\nbravo-ours\r\n"
+        );
+        // An LF file is written verbatim, trailing newline included or not.
+        let lf = LineEnding::detect(b"alpha\nbravo");
+        assert_eq!(lf.apply("alpha\nbravo"), "alpha\nbravo");
     }
 
     #[test]

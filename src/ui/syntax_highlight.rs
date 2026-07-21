@@ -505,6 +505,7 @@ mod tests {
                 Region::Stable(vec!["}".to_owned()]),
             ],
             has_base: true,
+            eol: crate::git::conflict::LineEnding::default(),
         }
     }
 

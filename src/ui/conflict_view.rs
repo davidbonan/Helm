@@ -350,14 +350,18 @@ fn file_resolved(res: &FileResolution) -> bool {
     res.whole_override || res.choices.iter().all(|c| *c != RegionChoice::Unresolved)
 }
 
-/// The Output text composed from the current picks, region by region, newline-terminated.
+/// The Output text composed from the current picks, region by region. Always LF —
+/// the editable buffer stays newline-normalised, `compose_content` re-applies the
+/// file's terminator on Save. The final newline follows the original file's.
 fn compose_string(file: &ConflictFile, res: &FileResolution) -> String {
     let mut content: String = compose_rows(file, res)
         .into_iter()
         .map(|row| row.text)
         .collect::<Vec<_>>()
         .join("\n");
-    content.push('\n');
+    if file.eol.final_newline {
+        content.push('\n');
+    }
     content
 }
 
@@ -372,16 +376,17 @@ fn recompose_output(file: &ConflictFile, res: &mut FileResolution) {
 }
 
 /// The content Save writes: `None` while a region is still unresolved, else the
-/// editable buffer (falling back to a fresh compose before it has been seeded).
+/// editable buffer (falling back to a fresh compose before it has been seeded)
+/// with the file's line terminator re-applied.
 fn compose_content(file: &ConflictFile, res: &FileResolution) -> Option<String> {
     if !file_resolved(res) {
         return None;
     }
-    Some(
-        res.whole_manual
-            .clone()
-            .unwrap_or_else(|| compose_string(file, res)),
-    )
+    let buffer = res
+        .whole_manual
+        .clone()
+        .unwrap_or_else(|| compose_string(file, res));
+    Some(file.eol.apply(&buffer))
 }
 
 /// The two sides of a conflict. `A` = ours (left, teal), `B` = theirs (right, gold).
@@ -1552,6 +1557,7 @@ fn side_choice_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::conflict::LineEnding;
 
     fn both_modified() -> ConflictFile {
         ConflictFile {
@@ -1569,6 +1575,7 @@ mod tests {
                 Region::Stable(vec!["}".to_owned()]),
             ],
             has_base: true,
+            eol: LineEnding::default(),
         }
     }
 
@@ -1630,6 +1637,39 @@ mod tests {
         assert_eq!(
             compose_content(&file, &res),
             Some("fn run() {\n    hand_edited\n}\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn save_re_applies_the_files_line_terminator() {
+        let mut file = both_modified();
+        file.eol = LineEnding {
+            crlf: true,
+            final_newline: true,
+        };
+        let res = resolution(&file, RegionChoice::Ours);
+        assert_eq!(
+            compose_content(&file, &res),
+            Some("fn run() {\r\n    ours_a\r\n    ours_b\r\n}\r\n".to_owned())
+        );
+        // The editable buffer itself stays LF — no `\r` glyph in the TextEdit.
+        assert_eq!(
+            compose_string(&file, &res),
+            "fn run() {\n    ours_a\n    ours_b\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_final_newline_does_not_gain_one() {
+        let mut file = both_modified();
+        file.eol = LineEnding {
+            crlf: false,
+            final_newline: false,
+        };
+        let res = resolution(&file, RegionChoice::Ours);
+        assert_eq!(
+            compose_content(&file, &res),
+            Some("fn run() {\n    ours_a\n    ours_b\n}".to_owned())
         );
     }
 

@@ -153,7 +153,8 @@ top panes; the Output region follows:
 - The Output is **always a live `egui::TextEdit::multiline`** (no painted/edit
   toggle): seeded from the picks' composition and **recomposed** whenever an A/B box
   changes; a **hand edit** keeps the typed text verbatim. Save writes the buffer
-  verbatim.
+  verbatim, with the file's own **line terminator** (detected from the ours/theirs
+  blob) re-applied and no trailing newline added — a CRLF file stays CRLF.
 - **Like a real editor**: a **line-number gutter** (numbered once per logical line,
   derived from the laid-out galley), a **soft band** behind each conflict region
   (purple resolved / orange unresolved) and a **scrollbar tick** per region. The
