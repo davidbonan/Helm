@@ -805,6 +805,47 @@ fn a_conflict_stopped_plan_survives_a_terminal_continue_with_a_pending_reword() 
 }
 
 #[test]
+fn a_skipped_pick_never_hands_its_reword_to_the_commit_below() {
+    // The reworded commit is the conflicting one: following git's own `--skip`
+    // hint drops the `pick` but leaves the `exec` — it must not amend the
+    // commit the rebase happens to sit on (the replayed target tip).
+    let (tmp, onto, onto_tip) = rebase_fixture(true);
+    let steps = plan(
+        tmp.path(),
+        &onto,
+        &[RebaseAction::Reword("c-feat reworded".into())],
+    );
+
+    assert_eq!(
+        sync::interactive_rebase(tmp.path(), "feature", &onto, &steps),
+        Err(SyncError::Conflicts)
+    );
+
+    let skipped = cli::run_with_env(
+        tmp.path(),
+        &["rebase", "--skip"],
+        &[("GIT_EDITOR", "true".to_string())],
+    )
+    .unwrap();
+    assert!(
+        !skipped.success(),
+        "the guarded exec must stop the rebase instead of rewording the wrong commit: {}",
+        skipped.stdout
+    );
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.id(), onto_tip, "the target tip commit was rewritten");
+    assert_eq!(head.message().unwrap().trim_end(), "c2");
+    assert_ne!(repo.state(), git2::RepositoryState::Clean);
+
+    assert_eq!(sync::abort_op(tmp.path()), Ok(SyncOutcome::Updated));
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.message().unwrap().trim_end(), "c-feat");
+    assert_eq!(repo.state(), git2::RepositoryState::Clean);
+}
+
+#[test]
 fn interactive_rebase_refuses_when_the_checked_out_branch_changed() {
     let (tmp, onto, _) = interactive_fixture();
     let steps = plan(tmp.path(), &onto, &[RebaseAction::Pick, RebaseAction::Pick]);

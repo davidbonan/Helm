@@ -400,7 +400,12 @@ const SCRATCH_DIR: &str = "helm-rebase";
 
 /// Todo lines for the injected plan, **oldest first** (git todo order). A
 /// reword becomes `pick` + an `exec` amending from a message file — the
-/// sequence stays non-interactive whatever the message contains.
+/// sequence stays non-interactive whatever the message contains. The `exec` is
+/// **guarded on the original message**: it runs on whatever `HEAD` is, and a
+/// `pick` conflict the user resolves with git's own `git rebase --skip` hint
+/// would otherwise hand the new message to the commit below (the replayed
+/// target tip). Both sides of the comparison are read from git, so nothing but
+/// the commit oid and the message file's path crosses the shell.
 fn build_todo(steps: &[RebaseStep], dir: &Path) -> std::io::Result<String> {
     use std::fmt::Write;
     let mut todo = String::new();
@@ -414,9 +419,12 @@ fn build_todo(steps: &[RebaseStep], dir: &Path) -> std::io::Result<String> {
             RebaseAction::Reword(message) => {
                 let path = dir.join(format!("message-{index}"));
                 std::fs::write(&path, message)?;
+                let file = shell_single_quote(&path.to_string_lossy());
                 format!(
-                    "pick {oid}\nexec git commit --amend -F {}",
-                    shell_single_quote(&path.to_string_lossy())
+                    "pick {oid}\nexec if test \"$(git log -1 --format=%B)\" = \
+                     \"$(git log -1 --format=%B {oid})\"; then git commit --amend -F {file}; \
+                     else echo 'helm: reword skipped, HEAD is not the commit it targeted' >&2; \
+                     false; fi"
                 )
             }
         };
@@ -952,7 +960,10 @@ mod tests {
         assert_eq!(
             todo,
             format!(
-                "pick {oid}\nexec git commit --amend -F {}\n",
+                "pick {oid}\nexec if test \"$(git log -1 --format=%B)\" = \
+                 \"$(git log -1 --format=%B {oid})\"; then git commit --amend -F {}; \
+                 else echo 'helm: reword skipped, HEAD is not the commit it targeted' >&2; \
+                 false; fi\n",
                 shell_single_quote(&message_path.to_string_lossy())
             )
         );

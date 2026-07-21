@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **19/37**.
+work**. Counter: **20/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -150,12 +150,14 @@ work**. Counter: **19/37**.
   when HEAD left the armed branch. `git.md` §10 rewritten to state the pinned contract.
   *Files*: `src/git/sync.rs`, `src/git/worker.rs`, `src/app/git_session.rs`,
   `src/app/mod.rs`, `src/app/render.rs`, `src/ui/graph_toolbar.rs`, `specs/git.md`.
-- ☐ **T16 — Interactive reword targets its own commit.** Reproduced: `pick` + independent
+- ☑ **T16 — Interactive reword targets its own commit.** Reproduced: `pick` + independent
   `exec git commit --amend -F` (`sync.rs:414`); the pick conflicts, the user follows
   git's own `--skip` hint (and `sync.rs:391` explicitly designs for continuing from the
   terminal) ⇒ the message lands on the replayed onto-branch commit, "Successfully
-  rebased". Smallest fail-safe fix: guard the `exec` on the original message before
-  amending. *Files*: `src/git/sync.rs`.
+  rebased". Fixed: the `exec` is guarded on the original message
+  (`test "$(git log -1 --format=%B)" = "$(git log -1 --format=%B <oid>)"`) — mismatch ⇒
+  stderr note + non-zero exit, the rebase stops instead of rewording the commit below.
+  `git.md` §9 states the guard. *Files*: `src/git/sync.rs`, `specs/git.md`.
 - ☐ **T17 — Push tag fully qualified.** ⚠ **downgraded to consistency**: git *refuses*
   the ambiguous refspec (`src refspec v9 matches more than one`), so the remote is never
   wrongly written — only a confusing toast, plus a very narrow race if the tag is
@@ -321,7 +323,7 @@ work**. Counter: **19/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭).
-- Order: **T16 → T17** (Lot B), then Lot C, then Lot D.
+- Order: **T17** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

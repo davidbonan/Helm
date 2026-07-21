@@ -469,7 +469,10 @@ decided list of §1; everything else stays **read only**.
   Start greyed out, "Operation in progress" tooltip): `git rebase -i` with the
   **todo injected** through `GIT_SEQUENCE_EDITOR` — no editor ever opens; a
   Reword runs as `pick` + `exec git commit --amend -F <file>` (the message
-  never crosses a shell), `GIT_EDITOR=true` keeps git's combined message for
+  never crosses a shell) **guarded on the commit's original message** — its
+  `pick` skipped (`git rebase --skip` after a conflict) ⇒ the `exec` refuses
+  and stops the rebase instead of rewording the commit below;
+  `GIT_EDITOR=true` keeps git's combined message for
   squashes. The plan is **re-derived and compared** before running: the
   branch moved since the page opened ⇒ clean refusal ("reopen Interactive
   rebase") — a stale todo would silently drop the new commits. An operation
