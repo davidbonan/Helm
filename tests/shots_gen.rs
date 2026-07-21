@@ -949,6 +949,7 @@ fn conflict_files() -> Vec<ConflictFile> {
         ],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }]
 }
 

@@ -557,3 +557,109 @@ fn resolving_a_file_without_a_final_newline_does_not_add_one() {
         b"alpha\nbravo-main\ncharlie"
     );
 }
+
+#[test]
+fn an_untouched_working_tree_file_reports_no_disk_divergence() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+
+    // git writes the working tree in `merge` style (no base section, branch names
+    // on the markers) while the reconstruction is diff3 — not a divergence.
+    assert_eq!(cf.disk_divergence, None);
+}
+
+#[test]
+fn a_hand_edited_working_tree_file_reports_its_content() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    fs::write(tmp.path().join("base.txt"), "alpha\nbravo-mine\ncharlie\n").unwrap();
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+
+    assert_eq!(
+        cf.disk_divergence.as_deref(),
+        Some("alpha\nbravo-mine\ncharlie\n")
+    );
+}
+
+#[test]
+fn an_untouched_crlf_working_tree_file_is_not_a_divergence() {
+    let (tmp, _main) = diverged_text(
+        "alpha\r\nbravo\r\ncharlie\r\n",
+        "alpha\r\nbravo-feature\r\ncharlie\r\n",
+        "alpha\r\nbravo-main\r\ncharlie\r\n",
+    );
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+    assert!(cf.eol.crlf);
+
+    // The reconstruction is LF; the terminator alone must not read as a hand edit.
+    assert_eq!(cf.disk_divergence, None);
+}
+
+#[test]
+fn the_diverging_content_reaches_the_editor_and_save_writes_it_back() {
+    let (tmp, _main) = diverged();
+    let merged = cli::run(tmp.path(), &["merge", "feature"]).unwrap();
+    assert!(!merged.success(), "merge should conflict");
+
+    let mine = "alpha\nbravo-mine\ncharlie\n";
+    fs::write(tmp.path().join("base.txt"), mine).unwrap();
+
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    let cf = read_conflict(&repo, "base.txt").unwrap();
+
+    let content = save_loading_my_version(cf);
+    assert_eq!(content, mine);
+
+    resolve_file(&repo, "base.txt", Some(&content)).unwrap();
+    assert_eq!(
+        fs::read(tmp.path().join("base.txt")).unwrap(),
+        mine.as_bytes()
+    );
+    assert!(!index_has_conflicts(&repo));
+}
+
+/// Drives the real editor headless over a file flagged as diverging: takes the
+/// notice's *Load my version* and saves — no region pick, the whole-file override
+/// alone unlocks Save (conflicts.md §5).
+fn save_loading_my_version(file: ConflictFile) -> String {
+    struct Page {
+        state: ConflictEditorState,
+        resolve: Option<ResolveRequest>,
+    }
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(960.0, 720.0))
+        .build_ui_state(
+            |ui, page: &mut Page| {
+                let action = conflict_view(ui, &Palette::dark(), &mut page.state, false);
+                if let Some(resolve) = action.resolve {
+                    page.resolve = Some(resolve);
+                }
+            },
+            Page {
+                state: ConflictEditorState::new(vec![file]),
+                resolve: None,
+            },
+        );
+    harness.run();
+    harness.get_by_label("Load my version").click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    match harness.state().resolve.clone() {
+        Some(ResolveRequest::Compose { content, .. }) => content,
+        other => panic!("expected a Compose resolve, got {other:?}"),
+    }
+}

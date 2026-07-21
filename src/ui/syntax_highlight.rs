@@ -506,6 +506,7 @@ mod tests {
             ],
             has_base: true,
             eol: crate::git::conflict::LineEnding::default(),
+            disk_divergence: None,
         }
     }
 

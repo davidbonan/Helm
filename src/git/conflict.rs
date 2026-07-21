@@ -22,6 +22,11 @@ pub struct ConflictFile {
     pub has_base: bool,
     /// Line terminator of the file, re-applied when the editor saves (conflicts.md §5).
     pub eol: LineEnding,
+    /// Working-tree content when it no longer matches the reconstruction — the file
+    /// was hand-edited before the editor opened. Drives the divergence notice
+    /// (*Load my version* / *Start from the merge*, conflicts.md §5); `None` when the
+    /// file on disk is still the conflict git left there.
+    pub disk_divergence: Option<String>,
 }
 
 /// How a conflicted file terminates its lines. The 3-way reconstruction splits on
@@ -117,6 +122,12 @@ pub fn read_conflict(repo: &git2::Repository, path: &str) -> Result<ConflictFile
         _ => (Vec::new(), LineEnding::default()),
     };
 
+    let disk_divergence = if regions.is_empty() {
+        None
+    } else {
+        hand_edited(repo, path, &regions)
+    };
+
     Ok(ConflictFile {
         path: path.to_string(),
         kind,
@@ -125,7 +136,46 @@ pub fn read_conflict(repo: &git2::Repository, path: &str) -> Result<ConflictFile
         regions,
         has_base,
         eol,
+        disk_divergence,
     })
+}
+
+/// The working-tree file when it diverges from `regions` (conflicts.md §5). Both
+/// sides go through `parse_regions`, so neither the line terminator nor the marker
+/// style is a divergence: git writes the working tree in `merge` style with branch
+/// labels, the reconstruction is diff3 with fixed ones. The content read back is
+/// newline-normalised — the editor's Output buffer is LF and `LineEnding::apply`
+/// restores the terminator on Save. Unreadable (deleted, binary) ⇒ no notice.
+fn hand_edited(repo: &git2::Repository, path: &str, regions: &[Region]) -> Option<String> {
+    let bytes = std::fs::read(repo.workdir()?.join(path)).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    if same_sides(regions, &parse_regions(&text)) {
+        return None;
+    }
+    Some(text.replace("\r\n", "\n"))
+}
+
+/// Region-by-region equality over the stable and the two conflicting sides. The
+/// base section is skipped: a `merge`-style working-tree file carries none, which
+/// says nothing about a hand edit.
+fn same_sides(a: &[Region], b: &[Region]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Region::Stable(left), Region::Stable(right)) => left == right,
+            (
+                Region::Conflict {
+                    ours: lo,
+                    theirs: lt,
+                    ..
+                },
+                Region::Conflict {
+                    ours: ro,
+                    theirs: rt,
+                    ..
+                },
+            ) => lo == ro && lt == rt,
+            _ => false,
+        })
 }
 
 /// Reads every conflicted file of the index (conflicts.md §8) for the editor's
@@ -558,6 +608,33 @@ charlie\r\n";
         // An LF file is written verbatim, trailing newline included or not.
         let lf = LineEnding::detect(b"alpha\nbravo");
         assert_eq!(lf.apply("alpha\nbravo"), "alpha\nbravo");
+    }
+
+    #[test]
+    fn same_sides_ignores_the_base_and_the_marker_labels() {
+        let diff3 = parse_regions(
+            "stable\n\
+<<<<<<< ours\n\
+mine\n\
+||||||| base\n\
+old\n\
+=======\n\
+yours\n\
+>>>>>>> theirs\n",
+        );
+        // What git leaves in the working tree: `merge` style, branch labels, CRLF.
+        let on_disk = parse_regions(
+            "stable\r\n\
+<<<<<<< HEAD\r\n\
+mine\r\n\
+=======\r\n\
+yours\r\n\
+>>>>>>> feature\r\n",
+        );
+        assert!(same_sides(&diff3, &on_disk));
+
+        let edited = parse_regions("stable\nmine\n");
+        assert!(!same_sides(&diff3, &edited));
     }
 
     #[test]

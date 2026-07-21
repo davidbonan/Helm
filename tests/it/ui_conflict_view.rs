@@ -22,6 +22,7 @@ fn both_modified(path: &str) -> ConflictFile {
         ],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn two_conflicts(path: &str) -> ConflictFile {
         ],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -70,6 +72,7 @@ fn long_context(path: &str) -> ConflictFile {
         ],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -82,6 +85,7 @@ fn deleted_by_them(path: &str) -> ConflictFile {
         regions: vec![],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -94,6 +98,7 @@ fn binary(path: &str) -> ConflictFile {
         regions: vec![],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -112,6 +117,7 @@ fn single_conflict(path: &str) -> ConflictFile {
         }],
         has_base: true,
         eol: LineEnding::default(),
+        disk_divergence: None,
     }
 }
 
@@ -443,5 +449,82 @@ fn the_delete_modify_card_keeps_or_deletes() {
         Some(ResolveRequest::Delete {
             path: "doomed.txt".to_owned()
         })
+    );
+}
+
+/// The working-tree file no longer matches the reconstruction (conflicts.md §5):
+/// the rail carries the disk content read with the conflict.
+fn diverged_on_disk(path: &str, disk: &str) -> ConflictFile {
+    ConflictFile {
+        disk_divergence: Some(disk.to_owned()),
+        ..both_modified(path)
+    }
+}
+
+#[test]
+fn a_file_matching_the_reconstruction_shows_no_divergence_notice() {
+    let mut harness = editor(vec![both_modified("x.rs")]);
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("This file was edited outside helm.")
+            .is_none(),
+        "no notice without a divergence"
+    );
+}
+
+#[test]
+fn a_file_diverging_on_disk_shows_the_notice_with_both_offers() {
+    let mut harness = editor(vec![diverged_on_disk("x.rs", "my own version\n")]);
+    harness.run();
+
+    harness.get_by_label_contains("This file was edited outside helm.");
+    harness.get_by_label("Load my version");
+    harness.get_by_label("Start from the merge");
+}
+
+#[test]
+fn load_my_version_saves_the_disk_content_without_a_pick() {
+    let mut harness = editor(vec![diverged_on_disk("x.rs", "my own version\n")]);
+    harness.run();
+    harness.get_by_label("Load my version").click();
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("This file was edited outside helm.")
+            .is_none(),
+        "the notice is answered"
+    );
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    let ResolveRequest::Compose { content, .. } =
+        harness.state().resolve.as_ref().expect("resolve emitted")
+    else {
+        panic!("expected Compose");
+    };
+    assert_eq!(content, "my own version\n");
+}
+
+#[test]
+fn start_from_the_merge_dismisses_the_notice_and_keeps_save_gated() {
+    let mut harness = editor(vec![diverged_on_disk("x.rs", "my own version\n")]);
+    harness.run();
+    harness.get_by_label("Start from the merge").click();
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("This file was edited outside helm.")
+            .is_none(),
+        "the notice is answered"
+    );
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(
+        harness.state().resolve.is_none(),
+        "the region is still unresolved — Save stays disabled"
     );
 }

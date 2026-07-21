@@ -133,8 +133,8 @@ struct FileResolution {
     saved: bool,
     /// Touched since the last open/save — drives the unsaved-close warning.
     dirty: bool,
-    /// Disk file diverges from a clean reconstruction (set by the app on load):
-    /// the content read off disk, offered as *Load my version* (conflicts.md §5).
+    /// Disk file diverges from a clean reconstruction (read with the rail): the
+    /// content read off disk, offered as *Load my version* (conflicts.md §5).
     disk_divergence: Option<String>,
     /// The editable Output buffer (conflicts.md §5): seeded from the composition on
     /// first render and recomposed whenever a pick changes; Save writes it verbatim.
@@ -159,6 +159,7 @@ impl FileResolution {
         FileResolution {
             choices: vec![RegionChoice::Unresolved; n],
             manual: vec![String::new(); n],
+            disk_divergence: file.disk_divergence.clone(),
             ..Default::default()
         }
     }
@@ -250,14 +251,6 @@ impl ConflictEditorState {
     pub fn reload(&mut self) {
         self.loading = true;
         self.focus = None;
-    }
-
-    /// Flags the current file as hand-edited on disk (conflicts.md §5): the editor
-    /// offers *Load my version* / *Start from the merge*.
-    pub fn flag_disk_divergence(&mut self, disk_content: String) {
-        if let Some(res) = self.resolutions.get_mut(self.file_index) {
-            res.disk_divergence = Some(disk_content);
-        }
     }
 
     fn has_unsaved(&self) -> bool {
@@ -1576,6 +1569,7 @@ mod tests {
             ],
             has_base: true,
             eol: LineEnding::default(),
+            disk_divergence: None,
         }
     }
 
