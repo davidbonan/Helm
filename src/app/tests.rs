@@ -1744,6 +1744,66 @@ fn discard_hunk_is_never_routed_straight_to_the_worker() {
 }
 
 #[test]
+fn granular_staging_intents_are_dropped_while_the_diff_is_inherited() {
+    // The overlay still shows `a.rs` frozen while `b.rs` loads: joining a hunk
+    // index to `b.rs` would stage a hunk of the file on screen into another file.
+    let mut slot = Some(open_diff("a.rs", false));
+    slot.as_mut().unwrap().adopt(loaded_file("a.rs"));
+    DiffState::open(
+        &mut slot,
+        DiffSource::WorkingTree { staged: false },
+        "b.rs".into(),
+    );
+    let open = slot.as_ref().unwrap();
+    assert!(open.inherited);
+
+    assert_eq!(
+        overlay_or_command(GitIntent::StageHunk(0), Some(open)),
+        None
+    );
+    assert_eq!(
+        overlay_or_command(GitIntent::UnstageHunk(0), Some(open)),
+        None
+    );
+    assert_eq!(
+        overlay_or_command(
+            GitIntent::StageLines {
+                hunk: 0,
+                lines: vec![1],
+            },
+            Some(open),
+        ),
+        None
+    );
+    assert_eq!(
+        overlay_or_command(
+            GitIntent::UnstageLines {
+                hunk: 0,
+                lines: vec![1],
+            },
+            Some(open),
+        ),
+        None
+    );
+
+    // File-level intents keep flowing: they carry their own path.
+    assert_eq!(
+        overlay_or_command(GitIntent::Stage("c.rs".into()), Some(open)),
+        Some(GitCommand::Stage("c.rs".into()))
+    );
+
+    // The requested diff arrives ⇒ the granular path reopens on `b.rs`.
+    slot.as_mut().unwrap().adopt(loaded_file("b.rs"));
+    assert_eq!(
+        overlay_or_command(GitIntent::StageHunk(0), slot.as_ref()),
+        Some(GitCommand::StageHunk {
+            path: "b.rs".into(),
+            hunk: 0,
+        })
+    );
+}
+
+#[test]
 fn granular_staging_intents_are_dropped_without_an_open_diff() {
     assert_eq!(overlay_or_command(GitIntent::StageHunk(0), None), None);
     assert_eq!(overlay_or_command(GitIntent::UnstageHunk(0), None), None);

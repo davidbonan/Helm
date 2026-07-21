@@ -42,12 +42,13 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
 /// Maps an intent to a `GitCommand`. The granular staging intents
 /// (`StageHunk`/`UnstageHunk`/`StageLines`/`UnstageLines`) carry only the hunk index:
 /// the open overlay's file path is joined to them. Without an open working-tree
-/// overlay they are ignored — a fullscreen commit diff is read-only (M9-7).
+/// overlay they are ignored — a fullscreen commit diff is read-only (M9-7), and an
+/// inherited (still-loading) overlay shows another file's hunks.
 pub(crate) fn overlay_or_command(
     intent: GitIntent,
     open: Option<&DiffState>,
 ) -> Option<GitCommand> {
-    let open = open.filter(|d| matches!(d.source, DiffSource::WorkingTree { .. }));
+    let open = open.filter(|d| d.granular_writes_allowed());
     match intent {
         GitIntent::StageHunk(hunk) => open.map(|d| GitCommand::StageHunk {
             path: d.path.clone(),

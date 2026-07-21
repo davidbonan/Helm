@@ -1206,6 +1206,7 @@ impl HelmApp {
                         else if let Some(DiffState {
                             source: DiffSource::WorkingTree { staged },
                             loaded: Some(file),
+                            inherited,
                             view,
                             ..
                         }) = diff.as_mut()
@@ -1213,11 +1214,16 @@ impl HelmApp {
                             // Replaces the title row (switch); still clear the
                             // macOS traffic-light line above the diff.
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
+                            let surface = if *inherited {
+                                crate::ui::diff_view::DiffSurface::WorkingTreeFrozen
+                            } else {
+                                crate::ui::diff_view::DiffSurface::WorkingTree { staged: *staged }
+                            };
                             close_diff = diff_view(
                                 ui,
                                 &palette,
                                 file,
-                                crate::ui::diff_view::DiffSurface::WorkingTree { staged: *staged },
+                                surface,
                                 view,
                                 &mut diff_intents,
                                 Some(&mut crate::ui::diff_view::DiffReview {
@@ -2144,10 +2150,7 @@ impl HelmApp {
                     // confirmation modal capturing the open file — never straight
                     // to the worker.
                     GitIntent::DiscardHunk(hunk) => {
-                        if let Some(d) = self
-                            .diff
-                            .as_ref()
-                            .filter(|d| matches!(d.source, DiffSource::WorkingTree { .. }))
+                        if let Some(d) = self.diff.as_ref().filter(|d| d.granular_writes_allowed())
                         {
                             self.modal = Some(Modal::DiscardHunk {
                                 path: d.path.clone(),

@@ -649,6 +649,10 @@ pub enum DiffSurface {
     /// Working tree: per-hunk / per-line staging; `staged` picks the direction
     /// (the index unstages, the worktree stages).
     WorkingTree { staged: bool },
+    /// Working tree, showing the **previously** open file frozen while the
+    /// requested one loads: the hunks on screen belong to another path, so the
+    /// granular controls stay out until the requested diff arrives.
+    WorkingTreeFrozen,
     /// A historical commit (M9-7 / git.md §9): read-only, no staging.
     Commit,
     /// The PR review surface (pull-requests.md §11): read-only, with the same
@@ -657,8 +661,9 @@ pub enum DiffSurface {
 }
 
 impl DiffSurface {
-    /// History and PR review are read-only: no staging controls, no line
-    /// selection — only review annotation stays available on every line.
+    /// History, PR review and a frozen inherited diff are read-only: no staging
+    /// controls, no line selection — only review annotation stays available on
+    /// every line.
     fn read_only(self) -> bool {
         !matches!(self, DiffSurface::WorkingTree { .. })
     }

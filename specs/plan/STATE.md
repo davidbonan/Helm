@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **8/37**.
+work**. Counter: **9/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -45,7 +45,7 @@ work**. Counter: **8/37**.
   clean "not found" — not part of the fix. Chip menu is global egui state
   (`graph_view.rs:746`, `:931`). Cheapest: stamp the modal with its `RepoKey`.
   *Files*: `src/app/mod.rs`, `src/app/render.rs`, `src/ui/graph_view.rs`.
-- ☐ **T4 — Inherited diff carries no staging affordance.** The render path destructures
+- ☑ **T4 — Inherited diff carries no staging affordance.** The render path destructures
   `DiffState` without `inherited` (`render.rs:1206`), which is read only in the two
   error handlers (`git_session.rs:575`, `:752`); the header shows file A while
   `overlay_or_command` joins the intent to `path` = B (`keys.rs:52-70`). The window is a
@@ -318,7 +318,7 @@ work**. Counter: **8/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T4 → T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
+- Order: **T2 → T3 → T1 → T5** (Lot A, the wrong-target/corruption core),
   then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.

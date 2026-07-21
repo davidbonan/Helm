@@ -460,6 +460,14 @@ fn drive_read_only(
     diff: FileDiff,
     actions: impl Fn(&mut Harness<'_, ()>) + 'static,
 ) -> (Vec<GitIntent>, bool) {
+    drive_surface(diff, DiffSurface::Commit, actions)
+}
+
+fn drive_surface(
+    diff: FileDiff,
+    surface: DiffSurface,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> (Vec<GitIntent>, bool) {
     let palette = Palette::light();
     let intents = Rc::new(RefCell::new(Vec::new()));
     let sink = intents.clone();
@@ -473,7 +481,7 @@ fn drive_read_only(
             ui,
             &palette,
             &diff,
-            DiffSurface::Commit,
+            surface,
             &mut state_in_ui.borrow_mut(),
             &mut sink.borrow_mut(),
             None,
@@ -506,6 +514,29 @@ fn read_only_diff_renders_lines_but_no_staging_controls() {
     assert!(
         intents.is_empty(),
         "clicking a line in a read-only diff emits no intent, got {intents:?}"
+    );
+}
+
+#[test]
+fn frozen_inherited_diff_shows_its_content_without_any_staging_control() {
+    // While the requested file loads, the previous one stays on screen frozen:
+    // its hunks belong to another path, so no granular control is offered and a
+    // click on a line emits nothing.
+    let (intents, _) = drive_surface(two_hunk_diff(), DiffSurface::WorkingTreeFrozen, |h| {
+        h.get_by_label_contains("new()").click();
+        h.run();
+        assert!(h.query_by_label("Stage hunk").is_none());
+        assert!(h.query_by_label("Stage lines").is_none());
+        assert!(h.query_by_label("Stage line").is_none());
+        assert!(h.query_by_label("Unstage hunk").is_none());
+        assert!(h.query_by_label("Unstage line").is_none());
+        assert!(h.query_by_label("Discard hunk").is_none());
+        h.get_by_label_contains("src/main.rs");
+        h.get_by_label_contains("new()");
+    });
+    assert!(
+        intents.is_empty(),
+        "a frozen inherited diff emits no staging intent, got {intents:?}"
     );
 }
 

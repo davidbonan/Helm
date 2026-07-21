@@ -232,6 +232,13 @@ impl DiffState {
         self.view.reconcile(&file);
         self.loaded = Some(file);
     }
+
+    /// Per-hunk / per-line writes target `path`, but while `inherited` the hunks on
+    /// screen still belong to the **previously** open file — acting on them would
+    /// stage/discard a hunk index the user never pointed at, in another file.
+    pub(crate) fn granular_writes_allowed(&self) -> bool {
+        matches!(self.source, DiffSource::WorkingTree { .. }) && !self.inherited
+    }
 }
 
 /// Git session of the active repo: libgit2 worker (off the UI thread, architecture §3)
