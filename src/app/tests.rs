@@ -1447,11 +1447,12 @@ fn a_repo_switch_drops_the_confirmation_armed_on_the_previous_repo() {
     let ctx = egui::Context::default();
     app.sync_git_session(&ctx);
 
-    // Force push confirmed on A. The modal names no branch at all: confirmed over
-    // B's session it would `--force-with-lease` B's HEAD.
+    // Force push confirmed on A: its branch and lease describe A's remote, so
+    // confirmed over B's session it would resolve the push against B.
     app.modal = Some(Modal::ForcePush {
         branch: "main".to_owned(),
         remote: "origin".to_owned(),
+        lease: git2::Oid::ZERO_SHA1,
     });
     app.workspace.set_active(1);
     app.sync_git_session(&ctx);

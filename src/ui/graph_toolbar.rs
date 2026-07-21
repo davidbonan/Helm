@@ -327,7 +327,7 @@ pub fn sync_success_message(command: SyncCommand, outcome: SyncOutcome) -> Strin
         (SyncCommand::Pull(_), SyncOutcome::UpToDate) => "Pulled — already up to date".to_owned(),
         (SyncCommand::Pull(_), SyncOutcome::Updated) => "Pulled — branch updated".to_owned(),
         (SyncCommand::Push, _) => "Pushed".to_owned(),
-        (SyncCommand::ForcePush, _) => "Force-pushed".to_owned(),
+        (SyncCommand::ForcePush { .. }, _) => "Force-pushed".to_owned(),
         (SyncCommand::Rebase(_), SyncOutcome::UpToDate) => "Rebase — already up to date".to_owned(),
         (SyncCommand::Rebase(onto), SyncOutcome::Updated) => format!("Rebased onto {onto}"),
         (SyncCommand::InteractiveRebase { onto, .. }, _) => {
@@ -357,7 +357,7 @@ fn sync_op_label(command: SyncCommand) -> &'static str {
         SyncCommand::FetchAll => "Fetch",
         SyncCommand::Pull(_) => "Pull",
         SyncCommand::Push => "Push",
-        SyncCommand::ForcePush => "Force push",
+        SyncCommand::ForcePush { .. } => "Force push",
         SyncCommand::Rebase(_) => "Rebase",
         SyncCommand::InteractiveRebase { .. } => "Interactive rebase",
         SyncCommand::Merge(_) => "Merge",
@@ -921,17 +921,21 @@ mod tests {
 
     #[test]
     fn force_push_toasts_describe_the_outcome_and_the_lease_refusal() {
+        let forced = || SyncCommand::ForcePush {
+            branch: "feat/x".to_owned(),
+            lease: git2::Oid::ZERO_SHA1,
+        };
         assert_eq!(
-            sync_success_message(SyncCommand::ForcePush, SyncOutcome::Updated),
+            sync_success_message(forced(), SyncOutcome::Updated),
             "Force-pushed"
         );
         // Self-describing — no "Force push failed —" double prefix.
         assert_eq!(
-            sync_error_message(SyncCommand::ForcePush, &SyncError::StaleInfo),
+            sync_error_message(forced(), &SyncError::StaleInfo),
             "Force push rejected — the remote moved, fetch first"
         );
         assert_eq!(
-            sync_error_message(SyncCommand::ForcePush, &SyncError::NoUpstream),
+            sync_error_message(forced(), &SyncError::NoUpstream),
             "Force push failed — No upstream to overwrite"
         );
     }

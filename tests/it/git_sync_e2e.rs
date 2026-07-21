@@ -84,6 +84,17 @@ fn commit_and_push_upstream(fx: &Fixture, name: &str, content: &str, message: &s
     oid
 }
 
+/// Tip of `refs/remotes/origin/<branch>` in B — what helm displays, and what the
+/// force-push modal pins its lease to when it is armed.
+fn tracked_tip(fx: &Fixture) -> git2::Oid {
+    git2::Repository::open(&fx.b)
+        .unwrap()
+        .find_reference(&format!("refs/remotes/origin/{}", fx.branch))
+        .unwrap()
+        .target()
+        .unwrap()
+}
+
 #[test]
 fn fetch_all_brings_remote_refs_without_touching_head() {
     let fx = fixture();
@@ -1031,8 +1042,12 @@ fn force_push_with_lease_overwrites_after_an_amend() {
         .target()
         .unwrap();
 
+    let lease = tracked_tip(&fx);
     assert_eq!(sync::push(&fx.b), Err(SyncError::NonFastForward));
-    assert_eq!(sync::force_push(&fx.b), Ok(SyncOutcome::Updated));
+    assert_eq!(
+        sync::force_push(&fx.b, &fx.branch, lease),
+        Ok(SyncOutcome::Updated)
+    );
 
     let bare = git2::Repository::open(&fx.bare).unwrap();
     assert_eq!(
@@ -1047,13 +1062,17 @@ fn force_push_with_lease_overwrites_after_an_amend() {
 #[test]
 fn force_push_with_lease_is_refused_when_the_remote_moved() {
     let fx = fixture();
+    let lease = tracked_tip(&fx);
     // The remote advances, but B never fetches: its remote-tracking ref is stale,
     // so the lease must make git refuse rather than overwrite c2.
     let c2 = commit_and_push_upstream(&fx, "base.txt", "v2\n", "c2");
     let amended = cli::run(&fx.b, &["commit", "--amend", "-m", "c1 amended"]).unwrap();
     assert!(amended.success(), "amend: {}", amended.stderr);
 
-    assert_eq!(sync::force_push(&fx.b), Err(SyncError::StaleInfo));
+    assert_eq!(
+        sync::force_push(&fx.b, &fx.branch, lease),
+        Err(SyncError::StaleInfo)
+    );
 
     let bare = git2::Repository::open(&fx.bare).unwrap();
     assert_eq!(
@@ -1075,12 +1094,73 @@ fn force_push_without_an_upstream_is_refused() {
     repo_b.set_head("refs/heads/feature").unwrap();
     commit_file(&repo_b, &fx.b, "feat.txt", "f\n", "feat");
 
-    assert_eq!(sync::force_push(&fx.b), Err(SyncError::NoUpstream));
+    assert_eq!(
+        sync::force_push(&fx.b, "feature", git2::Oid::ZERO_SHA1),
+        Err(SyncError::NoUpstream)
+    );
 
     let bare = git2::Repository::open(&fx.bare).unwrap();
     assert!(
         bare.find_reference("refs/heads/feature").is_err(),
         "nothing published without an upstream"
+    );
+}
+
+#[test]
+fn force_push_lease_is_refused_when_a_fetch_moved_the_tracking_ref() {
+    let fx = fixture();
+    // The lease is armed on the tip B is displaying...
+    let lease = tracked_tip(&fx);
+    let amended = cli::run(&fx.b, &["commit", "--amend", "-m", "c1 amended"]).unwrap();
+    assert!(amended.success(), "amend: {}", amended.stderr);
+
+    // ...then someone else publishes and helm's own 10 s background fetch brings
+    // the new tip in. A bare `--force-with-lease` re-reads the tracking ref here
+    // and would happily overwrite c2; pinned to the armed oid, it must refuse.
+    let c2 = commit_and_push_upstream(&fx, "base.txt", "v2\n", "c2");
+    assert_eq!(sync::fetch_all(&fx.b), Ok(SyncOutcome::Updated));
+    assert_eq!(
+        tracked_tip(&fx),
+        c2,
+        "the fetch refreshed the lease's target"
+    );
+
+    assert_eq!(
+        sync::force_push(&fx.b, &fx.branch, lease),
+        Err(SyncError::StaleInfo)
+    );
+
+    let bare = git2::Repository::open(&fx.bare).unwrap();
+    assert_eq!(
+        bare.find_reference(&format!("refs/heads/{}", fx.branch))
+            .unwrap()
+            .target()
+            .unwrap(),
+        c2,
+        "the pinned lease held: the fetched-in commit was never overwritten"
+    );
+}
+
+#[test]
+fn force_push_is_refused_when_head_left_the_armed_branch() {
+    let fx = fixture();
+    let lease = tracked_tip(&fx);
+    let repo_b = git2::Repository::open(&fx.b).unwrap();
+    let head_commit = repo_b.head().unwrap().peel_to_commit().unwrap();
+    repo_b.branch("side", &head_commit, false).unwrap();
+    repo_b.set_head("refs/heads/side").unwrap();
+
+    // The modal was armed on the tracked branch; a checkout in between must not
+    // aim its lease at whatever HEAD is now.
+    assert!(matches!(
+        sync::force_push(&fx.b, &fx.branch, lease),
+        Err(SyncError::Other(_))
+    ));
+
+    let bare = git2::Repository::open(&fx.bare).unwrap();
+    assert!(
+        bare.find_reference("refs/heads/side").is_err(),
+        "nothing was pushed"
     );
 }
 

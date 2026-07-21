@@ -742,13 +742,17 @@ left.
   single **one-shot** entry, **Push (force with lease)** — unlike Pull's
   chevron it **executes**, it never sets a default: forcing must stay a
   deliberate act each time. It is the outlet for a rebased branch (§9) whose
-  plain push is rejected. Greyed without an upstream (nothing to overwrite —
-  the plain `-u` push covers the first publication). A **confirmation modal**
+  plain push is rejected. Greyed without a remote-tracking tip to overwrite —
+  the plain `-u` push covers the first publication. A **confirmation modal**
   (Cancel / red Force push) names the branch and the remote, then `git push
-  --force-with-lease <remote> <branch>` runs on the runner — the lease makes
-  git refuse if the remote moved past the last fetch (refusal as a
-  toast suggesting a fetch first). Bare `--force` is never used. Detached
-  HEAD ⇒ Pull and Push disabled.
+  --force-with-lease=refs/heads/<branch>:<oid> <remote> <branch>` runs on the
+  runner. The lease is **pinned to the oid the modal was armed on** — the remote
+  tip helm was displaying: a bare `--force-with-lease` re-reads the
+  remote-tracking ref at push time, and the background fetch (§10) refreshes it
+  every 10 s, so it would always agree with itself and never refuse. Pinned, a
+  remote that moved since the user looked is refused (toast suggesting a fetch
+  first), and a checkout away from the armed branch in between is refused too.
+  Bare `--force` is never used. Detached HEAD ⇒ Pull and Push disabled.
 - **Branch**: the button opens an **inline field in the graph**, BRANCH / TAG
   column, placed on the **HEAD row** in place of its chips —
   exactly where the new branch's chip will appear (the view scrolls

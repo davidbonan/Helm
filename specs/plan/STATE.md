@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **18/37**.
+work**. Counter: **19/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -140,14 +140,16 @@ work**. Counter: **18/37**.
   entry `git.md:707` names "Pull (fast-forward if possible)" and makes the default
   (`:723`) ⇒ the default button silently rewrites history. `--ff-only` is unaffected.
   One line: `--no-rebase --ff`. *Files*: `src/git/sync.rs`.
-- ☐ **T15 — `--force-with-lease` pinned to the displayed oid.** The bare lease
+- ☑ **T15 — `--force-with-lease` pinned to the displayed oid.** The bare lease
   (`sync.rs:531`) compares against a remote-tracking ref that helm itself refreshes
   every 10 s (`worker.rs:886`) ⇒ it can never refuse; `SyncError::StaleInfo` and its
   toast (`graph_toolbar.rs:930`) were designed for a refusal that never fires, and
-  `git.md:748` states the contract it breaks. Capture the oid **when the modal is
-  armed** (`render.rs:1476`), not at push time. *Files*: `src/git/sync.rs`,
-  `src/app/mod.rs` (`Modal::ForcePush`), `src/git/worker.rs` (`SyncCommand::ForcePush`),
-  `src/app/render.rs`.
+  `git.md:748` states the contract it breaks. The snapshot carries `upstream_oid`,
+  the modal is armed with it (`Modal::ForcePush { branch, remote, lease }`) and
+  `force_push` emits `--force-with-lease=refs/heads/<branch>:<lease>`; it also refuses
+  when HEAD left the armed branch. `git.md` §10 rewritten to state the pinned contract.
+  *Files*: `src/git/sync.rs`, `src/git/worker.rs`, `src/app/git_session.rs`,
+  `src/app/mod.rs`, `src/app/render.rs`, `src/ui/graph_toolbar.rs`, `specs/git.md`.
 - ☐ **T16 — Interactive reword targets its own commit.** Reproduced: `pick` + independent
   `exec git commit --amend -F` (`sync.rs:414`); the pick conflicts, the user follows
   git's own `--skip` hint (and `sync.rs:391` explicitly designs for continuing from the
@@ -319,7 +321,7 @@ work**. Counter: **18/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭).
-- Order: **T15 → T16 → T17** (Lot B), then Lot C, then Lot D.
+- Order: **T16 → T17** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

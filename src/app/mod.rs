@@ -339,7 +339,13 @@ enum Modal {
     AbortOp,
     /// Force push (with lease) from the toolbar Push chevron (git.md §10): names
     /// the `branch` and its `remote`; confirmed before `--force-with-lease` runs.
-    ForcePush { branch: String, remote: String },
+    /// `lease` is the remote-tracking tip **at arming time** — the oid the user was
+    /// shown, which the push is pinned to so a remote that moved since is refused.
+    ForcePush {
+        branch: String,
+        remote: String,
+        lease: git2::Oid,
+    },
     /// Discard of a single unstaged hunk from the diff view (git.md §4): reverting
     /// the working tree cannot be undone — confirmed before it runs. `path` is the
     /// open file, captured when the intent is raised.
@@ -360,8 +366,7 @@ enum Modal {
 
 impl Modal {
     /// Confirmations resolved against `self.git` at confirm time: they name a
-    /// branch/tag/stash/hunk of the repo they were armed on — or nothing at all
-    /// for `ForcePush`, which pushes whatever the session's HEAD is. Stamped with
+    /// branch/tag/stash/hunk of the repo they were armed on. Stamped with
     /// their repo and dropped when it stops being the active one
     /// ([`HelmApp::drop_foreign_modal`]). The worktree, feedback and release-notes
     /// modals address themselves (a path, a form) and survive a switch.
@@ -938,7 +943,7 @@ impl HelmApp {
 
     /// Drops a confirmation whose repo is no longer the active one: it resolves
     /// `self.git` at confirm time, so it would fire on the new session — a
-    /// `ForcePush` naming no branch would force-push the new repo's HEAD.
+    /// `ForcePush` armed on A resolves its remote against B's session.
     fn drop_foreign_modal(&mut self) {
         let active = self.git.as_ref().map(|git| &git.key);
         if self.modal.as_ref().is_some_and(Modal::targets_active_repo)

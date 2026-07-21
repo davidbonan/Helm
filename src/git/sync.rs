@@ -511,29 +511,50 @@ pub fn push(workdir: &Path) -> Result<SyncOutcome, SyncError> {
     }
 }
 
-/// Force-pushes the current branch to its upstream **with a lease** (toolbar Push
-/// chevron — git.md §10): `git push --force-with-lease <remote> <branch>`. The
-/// lease makes git refuse if the remote moved past the last fetch (`StaleInfo` ⇒
-/// toast suggesting a fetch first); bare `--force` is never used. The deliberate
-/// outlet for a rebased branch (§9) whose plain push is rejected. Requires an
-/// upstream — the UI greys it out otherwise (the first publication goes through
-/// the plain `-u` push, [`push`]).
-pub fn force_push(workdir: &Path) -> Result<SyncOutcome, SyncError> {
+/// Force-pushes `branch` to its upstream **with a lease pinned to `lease`**
+/// (toolbar Push chevron — git.md §10):
+/// `git push --force-with-lease=refs/heads/<branch>:<lease> <remote> <branch>`.
+/// `lease` is the remote-tracking oid captured when the confirmation modal was
+/// armed — i.e. the tip helm was *displaying*. A bare `--force-with-lease` would
+/// re-read that ref at push time, and the background fetch refreshes it every
+/// 10 s, so it would always agree with itself and never refuse; pinned, a remote
+/// that moved after the user looked yields `StaleInfo` ⇒ toast suggesting a fetch
+/// first. Bare `--force` is never used. The deliberate outlet for a rebased branch
+/// (§9) whose plain push is rejected. Requires an upstream — the UI greys it out
+/// otherwise (the first publication goes through the plain `-u` push, [`push`]).
+pub fn force_push(
+    workdir: &Path,
+    branch: &str,
+    lease: git2::Oid,
+) -> Result<SyncOutcome, SyncError> {
     let repo = open_repo(workdir)?;
     let head = repo.head().map_err(|err| git_err(&err))?;
     if !head.is_branch() {
         return Err(SyncError::Other("HEAD is detached".into()));
     }
+    // The lease is only meaningful for the branch it was captured on: a checkout
+    // between arming the modal and confirming it would aim it at another branch.
+    if head.shorthand() != Ok(branch) {
+        return Err(SyncError::Other(format!("HEAD is no longer '{branch}'")));
+    }
     let Some((remote, _)) = current_upstream(&repo) else {
         return Err(SyncError::NoUpstream);
     };
-    let branch = head.shorthand().unwrap_or_default().to_string();
-    let out = exec(workdir, &["push", "--force-with-lease", &remote, &branch])?;
+    let out = exec(
+        workdir,
+        &["push", &lease_arg(branch, lease), &remote, branch],
+    )?;
     if out.success() {
         Ok(SyncOutcome::Updated)
     } else {
         Err(classify_failure(&out))
     }
+}
+
+/// `--force-with-lease=<ref>:<oid>`: the ref is **fully qualified** so a same-named
+/// tag can never be the one leased, and the oid is the expected current tip.
+fn lease_arg(branch: &str, lease: git2::Oid) -> String {
+    format!("--force-with-lease=refs/heads/{branch}:{lease}")
 }
 
 /// Deletes a branch on its remote (`git push <remote> --delete <branch>`, graph
@@ -976,6 +997,15 @@ mod tests {
             "To file:///remote.git\n ! [rejected]        master -> master (fetch first)\nerror: failed to push some refs to 'file:///remote.git'\n",
         );
         assert_eq!(classify_failure(&out), SyncError::NonFastForward);
+    }
+
+    #[test]
+    fn lease_arg_pins_the_fully_qualified_ref_to_the_expected_oid() {
+        let oid = git2::Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap();
+        assert_eq!(
+            lease_arg("feat/x", oid),
+            "--force-with-lease=refs/heads/feat/x:0123456789abcdef0123456789abcdef01234567"
+        );
     }
 
     #[test]

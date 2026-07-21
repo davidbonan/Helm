@@ -273,6 +273,10 @@ pub(crate) struct GitSession {
     /// Remote name of the current branch's upstream (worker snapshot, git.md §10):
     /// `None` ⇒ force push greyed out; otherwise names the remote in its modal.
     pub(crate) upstream_remote: Option<String>,
+    /// Tip of the remote-tracking ref a force push would overwrite (worker
+    /// snapshot, git.md §10): the oid the lease is pinned to when the modal is
+    /// armed. `None` ⇒ nothing recorded to overwrite, force push greyed out.
+    pub(crate) upstream_oid: Option<git2::Oid>,
     /// Cloud forge behind `origin` (worker snapshot, git.md §9): `Some` ⇒ the
     /// **Create pull request** graph entry is offered and this builds its URL.
     pub(crate) pr_remote: Option<crate::git::forge::Forge>,
@@ -350,6 +354,7 @@ impl GitSession {
             stash_count: 0,
             has_remote: false,
             upstream_remote: None,
+            upstream_oid: None,
             pr_remote: None,
             op_in_progress: false,
             op: None,
@@ -502,6 +507,7 @@ impl GitSession {
                 self.stash_count = snapshot.stash_count;
                 self.has_remote = snapshot.has_remote;
                 self.upstream_remote = snapshot.upstream_remote;
+                self.upstream_oid = snapshot.upstream_oid;
                 self.pr_remote = snapshot.pr_remote;
                 self.op_in_progress = snapshot.op_in_progress;
                 self.op = snapshot.op;
@@ -795,7 +801,7 @@ impl GitSession {
             });
         }
         match self.sync.in_flight() {
-            Some(SyncCommand::Push | SyncCommand::ForcePush) => Some(BusyAction::Push),
+            Some(SyncCommand::Push | SyncCommand::ForcePush { .. }) => Some(BusyAction::Push),
             // Remote deletion and rebase: no dedicated button — generic end-of-row
             // spinner, all buttons greyed out. Exhaustive on purpose: a future
             // command must pick its spinner, not inherit Pull's.

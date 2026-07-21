@@ -307,6 +307,11 @@ pub struct RepoSnapshot {
     /// the force-push gating (greyed without it) and names the remote in its
     /// confirmation modal.
     pub upstream_remote: Option<String>,
+    /// Tip of the remote-tracking ref a force push would overwrite
+    /// (`refs/remotes/<remote>/<branch>`, git.md §10): the oid helm displays, and
+    /// the lease the confirmation modal is armed on. `None` ⇒ nothing recorded to
+    /// overwrite, force push greyed out.
+    pub upstream_oid: Option<git2::Oid>,
     /// Merge / rebase in progress (M12-8): banner in the status sidebar.
     pub op_in_progress: bool,
     /// One-line summary of that op (conflicts.md §2): verb + best-effort
@@ -693,12 +698,16 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
 }
 
 fn snapshot(repo: &git2::Repository) -> Result<RepoSnapshot, git2::Error> {
+    let upstream = upstream_remote(repo);
     Ok(RepoSnapshot {
         status: load_repo(repo)?,
         branch: branch::current(repo)?,
         stash_count: stash::count(repo)?,
         has_remote: !repo.remotes()?.is_empty(),
-        upstream_remote: upstream_remote(repo),
+        upstream_oid: upstream
+            .as_deref()
+            .and_then(|remote| remote_tracking_oid(repo, remote)),
+        upstream_remote: upstream,
         op_in_progress: op_in_progress(repo),
         op: op_summary(repo),
         pr_remote: pr_remote(repo),
@@ -728,16 +737,31 @@ fn upstream_remote(repo: &git2::Repository) -> Option<String> {
         .ok()
 }
 
+/// Tip of `refs/remotes/<remote>/<current branch>` — the ref a force push of the
+/// current branch overwrites (git.md §10). HEAD is known to be a branch here:
+/// [`upstream_remote`] returns `None` otherwise.
+fn remote_tracking_oid(repo: &git2::Repository, remote: &str) -> Option<git2::Oid> {
+    let head = repo.head().ok()?;
+    let name = head.shorthand().ok()?;
+    repo.find_reference(&format!("refs/remotes/{remote}/{name}"))
+        .ok()?
+        .target()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncCommand {
     FetchAll,
     Pull(PullMode),
     Push,
-    /// Force-pushes the current branch to its upstream with a lease (toolbar Push
-    /// chevron, git.md §10): `git push --force-with-lease`. Confirmed by a modal;
-    /// same execution rules as `Push` (the lease keeps it safe — never bare
-    /// `--force`).
-    ForcePush,
+    /// Force-pushes `branch` to its upstream with a lease (toolbar Push chevron,
+    /// git.md §10): `git push --force-with-lease=<ref>:<lease>`. Both fields are
+    /// captured when the confirmation modal is armed — `lease` is the
+    /// remote-tracking oid helm was displaying, so the push refuses if the remote
+    /// moved since. Same execution rules as `Push` (never bare `--force`).
+    ForcePush {
+        branch: String,
+        lease: git2::Oid,
+    },
     /// Rebases the current branch onto the named ref (graph context menu,
     /// git.md §9). Local op via the `git` subprocess — same execution rules as
     /// Pull/Push (dedicated thread, one op at a time, toasts on completion).
@@ -989,7 +1013,7 @@ fn execute_sync(path: &Path, command: &SyncCommand) -> Result<SyncOutcome, SyncE
         SyncCommand::FetchAll => sync::fetch_all(path),
         SyncCommand::Pull(mode) => sync::pull(path, *mode),
         SyncCommand::Push => sync::push(path),
-        SyncCommand::ForcePush => sync::force_push(path),
+        SyncCommand::ForcePush { branch, lease } => sync::force_push(path, branch, *lease),
         SyncCommand::Rebase(onto) => sync::rebase_onto(path, onto),
         SyncCommand::InteractiveRebase {
             current,

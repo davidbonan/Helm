@@ -688,7 +688,7 @@ impl HelmApp {
             pull_default: self.pull_default,
             busy: g.busy_action(),
             has_remote: g.has_remote,
-            has_upstream: g.upstream_remote.is_some(),
+            has_upstream: g.upstream_oid.is_some(),
             detached: matches!(g.branch, Branch::Detached(_)),
             unborn: matches!(g.branch, Branch::Unborn(_)),
             dirty: g.status.changed_file_count() > 0,
@@ -1478,15 +1478,19 @@ impl HelmApp {
                 // Force push (Push chevron, git.md §10): a deliberate, one-shot
                 // act behind a confirmation modal naming the branch + remote —
                 // nothing runs before it. The entry is only emittable with an
-                // upstream (`has_upstream`), so the remote is always present.
+                // upstream (`has_upstream`), so the remote is always present. The
+                // lease is pinned here, to the remote tip the user is looking at:
+                // read at push time it would already have been refreshed by the
+                // background fetch and could never refuse.
                 if toolbar_action.force_push {
                     if let Some(git) = self.git.as_ref() {
-                        if let (Branch::Named(branch), Some(remote)) =
-                            (&git.branch, &git.upstream_remote)
+                        if let (Branch::Named(branch), Some(remote), Some(lease)) =
+                            (&git.branch, &git.upstream_remote, git.upstream_oid)
                         {
                             self.modal = Some(Modal::ForcePush {
                                 branch: branch.clone(),
                                 remote: remote.clone(),
+                                lease,
                             });
                             ctx.request_repaint();
                         }
@@ -2655,7 +2659,7 @@ impl HelmApp {
                     reset_hard_modal(ui, &palette, branch, short, &mut modal_action)
                 }
                 Modal::AbortOp => abort_op_modal(ui, &palette, &mut modal_action),
-                Modal::ForcePush { branch, remote } => {
+                Modal::ForcePush { branch, remote, .. } => {
                     force_push_modal(ui, &palette, branch, remote, &mut modal_action)
                 }
                 Modal::DiscardHunk { .. } => discard_hunk_modal(ui, &palette, &mut modal_action),
@@ -2744,12 +2748,13 @@ impl HelmApp {
                         }
                     }
                     // Force push confirmed (Push chevron, git.md §10): to the sync
-                    // runner — `--force-with-lease`, outcome toast + refresh via
-                    // drain_sync (a lease refusal surfaces as a persistent toast).
-                    Some(Modal::ForcePush { .. }) => {
+                    // runner — `--force-with-lease` pinned to the oid captured when
+                    // the modal was armed, outcome toast + refresh via drain_sync
+                    // (a lease refusal surfaces as a persistent toast).
+                    Some(Modal::ForcePush { branch, lease, .. }) => {
                         if let Some(git) = self.git.as_mut() {
                             git.request_sync(
-                                SyncCommand::ForcePush,
+                                SyncCommand::ForcePush { branch, lease },
                                 &mut self.toasts,
                                 ctx.input(|i| i.time),
                             );
