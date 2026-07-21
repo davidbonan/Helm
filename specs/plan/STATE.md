@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **11/37**.
+work**. Counter: **12/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -22,7 +22,7 @@ work**. Counter: **11/37**.
 
 ### Lot A — cross-repo safety & destructive gating
 
-- ☐ **T1 — Git session keyed by repo identity.** `sync_git_session` gates on the
+- ☑ **T1 — Git session keyed by repo identity.** `sync_git_session` gates on the
   workspace **index** (`app/mod.rs:795`) while `Workspace::remove` reassigns `active`
   to the same index now holding another repo (`workspace.rs:645-656`) ⇒ the panel
   reads/writes the removed repo. The reorder path already carries a manual
@@ -318,7 +318,7 @@ work**. Counter: **11/37**.
   `src/ui/git_panel.rs`.
 
 ### Next actions (M-GitHard)
-- Order: **T1 → T5** (Lot A, the wrong-target/corruption core),
+- Order: **T5** (Lot A, the wrong-target/corruption core),
   then **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.

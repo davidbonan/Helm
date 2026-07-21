@@ -820,24 +820,24 @@ impl HelmApp {
     /// diff overlay view (git.md §4) and the fullscreen commit diff (§9).
     fn sync_git_session(&mut self, ctx: &egui::Context) {
         self.stamp_modal_repo();
+        // Keyed by repo **identity**, never by workspace index: a removal or a
+        // regroup reassigns `active` to another repo at the same index (and shifts a
+        // kept repo to another index) — an index gate would then read/write the
+        // wrong repo, and respawn on a mere shift.
         let target = self
             .workspace
             .active()
-            .and_then(|i| self.workspace.repo(i).map(|r| (i, r)));
+            .and_then(|i| Some((self.caches.keys.get(i)?.clone(), self.workspace.repo(i)?)));
         match target {
-            Some((index, repo)) => {
-                let needs_spawn = self.git.as_ref().map(|g| g.index) != Some(index);
+            Some((key, repo)) => {
+                let needs_spawn = self.git.as_ref().map(|g| &g.key) != Some(&key);
                 if needs_spawn {
                     // Owned before parking: `park_active_session` reborrows all of `self`,
                     // while `repo` still borrows `self.workspace`.
                     let path = repo.path.clone();
-                    let key = RepoKey::of(&path);
                     // The chip menu lives in egui memory, outside any session: left
-                    // open, its entries name the previous repo's refs. A respawn on
-                    // the same repo (index shift) leaves it alone.
-                    if self.git.as_ref().map(|g| &g.key) != Some(&key) {
-                        close_chip_menu(ctx);
-                    }
+                    // open, its entries name the previous repo's refs.
+                    close_chip_menu(ctx);
                     // Park the left-behind repo's state (graph for an instant redraw,
                     // commit draft + AI runner so a draft never shows under another repo
                     // and an in-flight generation is not cancelled).
@@ -853,7 +853,7 @@ impl HelmApp {
                         }
                         None => AiRunner::new(&path, repainter(ctx)),
                     };
-                    let mut session = GitSession::spawn(index, &path, ctx, ai);
+                    let mut session = GitSession::spawn(key, &path, ctx, ai);
                     if let Some((graph, limit)) = self.caches.graph_cache.remove(&session.key) {
                         // HEAD may have moved during the absence (checkout in the repo's
                         // terminal): the scroll-to-head auto-scroll waits for the fresh

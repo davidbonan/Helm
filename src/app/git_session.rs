@@ -244,8 +244,9 @@ impl DiffState {
 /// Git session of the active repo: libgit2 worker (off the UI thread, architecture §3)
 /// + last received snapshot (status + branch). Re-spawned on repo switch.
 pub(crate) struct GitSession {
-    pub(crate) index: usize,
-    /// Stable repo identity: graph-cache key on switch, branch-label key live.
+    /// Stable repo identity: what the session is aligned on (a workspace index
+    /// shifts under a removal/regroup), graph-cache key on switch, branch-label
+    /// key live.
     pub(crate) key: RepoKey,
     pub(crate) worker: GitWorker,
     /// Network ops (M12-3) on dedicated threads: the sequential worker and the poll
@@ -330,7 +331,7 @@ pub(crate) fn repainter(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'stati
 impl GitSession {
     /// Sends no command: the caller orders the first load itself (graph before status
     /// in Graph mode — the worker is sequential).
-    pub(crate) fn spawn(index: usize, path: &Path, ctx: &egui::Context, ai: AiRunner) -> Self {
+    pub(crate) fn spawn(key: RepoKey, path: &Path, ctx: &egui::Context, ai: AiRunner) -> Self {
         let now = ctx.input(|i| i.time);
         let mutation_lock = MutationLock::new();
         let worker = GitWorker::spawn_with_lock(path, mutation_lock.clone(), repainter(ctx));
@@ -338,8 +339,7 @@ impl GitSession {
         let fetch = FetchRunner::new(path, mutation_lock.clone(), repainter(ctx));
         let ai_rebase = AiRebaseRunner::new(path, mutation_lock, repainter(ctx));
         Self {
-            index,
-            key: RepoKey::of(path),
+            key,
             worker,
             sync,
             fetch,

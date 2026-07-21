@@ -1101,7 +1101,12 @@ fn a_superseded_graph_reply_is_discarded() {
     add_empty_commit(tmp.path(), "c2");
     add_empty_commit(tmp.path(), "c3");
     let ctx = egui::Context::default();
-    let mut session = GitSession::spawn(0, tmp.path(), &ctx, AiRunner::new(tmp.path(), || {}));
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+    );
 
     // FIFO worker: a graph request superseded by a fresher one (reset on
     // entering Graph mode, **Load more**) precedes it — the staleness gate
@@ -1150,7 +1155,12 @@ fn graph_poll_does_not_supersede_an_in_flight_graph() {
     let tmp = tempfile::tempdir().unwrap();
     init_repo_with_commit(tmp.path());
     let ctx = egui::Context::default();
-    let mut session = GitSession::spawn(0, tmp.path(), &ctx, AiRunner::new(tmp.path(), || {}));
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+    );
 
     session.worker.send(GitCommand::Graph {
         limit: graph::PAGE_SIZE,
@@ -1252,7 +1262,7 @@ fn repo_switch_in_graph_mode_serves_the_cached_graph_instantly() {
     app.workspace.set_active(0);
     app.sync_git_session(&ctx);
     let git = app.git.as_ref().unwrap();
-    assert_eq!(git.index, 0);
+    assert_eq!(git.key, RepoKey::of(a.path()));
     let graph = git.graph.as_ref().expect("graph served from the cache");
     assert_eq!(graph.commits.len(), 1);
 }
@@ -1382,21 +1392,91 @@ fn a_repo_switch_drops_the_confirmation_armed_on_the_previous_repo() {
 }
 
 #[test]
-fn a_respawn_on_the_same_repo_keeps_the_armed_confirmation() {
+fn an_index_shift_on_the_same_repo_keeps_the_armed_confirmation() {
     let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
     init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
     let mut ws = Workspace::new();
     ws.add(Repo::new(a.path().to_path_buf()));
+    ws.add(Repo::new(b.path().to_path_buf()));
+    ws.set_active(0);
     let mut app = HelmApp::with_workspace(ws);
     let ctx = egui::Context::default();
     app.sync_git_session(&ctx);
 
     app.modal = Some(Modal::AbortOp);
-    // Index shift (sidebar reorder, worktree discovery): the session respawns on
-    // the very repo the confirmation was armed on.
-    app.git.as_mut().unwrap().index = 7;
+    // Index shift (sidebar reorder, worktree discovery): the active repo keeps its
+    // identity, the confirmation stays armed on it.
+    assert!(app.workspace.reorder(0, 1, true));
+    app.caches.sync(&app.workspace);
+    assert_eq!(app.workspace.active(), Some(1));
     app.sync_git_session(&ctx);
     assert!(matches!(app.modal, Some(Modal::AbortOp)));
+}
+
+#[test]
+fn removing_the_active_repo_moves_the_session_to_the_repo_taking_its_place() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(a.path().to_path_buf()));
+    ws.add(Repo::new(b.path().to_path_buf()));
+    ws.set_active(0);
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+    assert_eq!(app.git.as_ref().unwrap().key, RepoKey::of(a.path()));
+
+    // Remove-from-sidebar on the active repo: `active` stays index 0, which now
+    // holds B. A session keyed by index would keep reading — and writing — the
+    // removed repo.
+    remove_repo_or_group(&mut app.workspace, 0);
+    app.caches.sync(&app.workspace);
+    assert_eq!(app.workspace.active(), Some(0));
+    app.sync_git_session(&ctx);
+    assert_eq!(app.git.as_ref().unwrap().key, RepoKey::of(b.path()));
+}
+
+#[test]
+fn an_index_shift_on_the_same_repo_does_not_respawn_the_session() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(a.path().to_path_buf()));
+    ws.add(Repo::new(b.path().to_path_buf()));
+    ws.set_active(0);
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    app.diff = Some(open_diff("a.txt", false));
+    app.branch_editor.open = true;
+    app.rebase_page = Some(RebasePage {
+        current: "main".to_owned(),
+        onto: "origin/main".to_owned(),
+        loading: true,
+        error: None,
+        entries: Vec::new(),
+    });
+    app.conflict_editor = Some(ConflictEditorState::new(Vec::new()));
+
+    // Sidebar reorder: the active repo only shifts index, so nothing is a switch —
+    // the open diff, branch editor, rebase plan and conflict editor all survive.
+    assert!(app.workspace.reorder(0, 1, true));
+    app.caches.sync(&app.workspace);
+    assert_eq!(app.workspace.active(), Some(1));
+    app.sync_git_session(&ctx);
+
+    assert_eq!(app.git.as_ref().unwrap().key, RepoKey::of(a.path()));
+    assert!(app.diff.is_some(), "the open diff was closed by a respawn");
+    assert!(app.branch_editor.open);
+    assert!(app.rebase_page.is_some());
+    assert!(app.conflict_editor.is_some());
 }
 
 #[test]

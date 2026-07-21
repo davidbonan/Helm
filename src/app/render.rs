@@ -2457,13 +2457,6 @@ impl HelmApp {
                 .reorder(reorder.from, reorder.anchor, reorder.after)
             {
                 self.caches.sync(&self.workspace);
-                // The active repo kept its identity; only its index shifted. Realign
-                // the git session's stored index so `sync_git_session` does not read
-                // the shift as a repo switch (which would kill the worker and close
-                // the open diff / branch editor).
-                if let (Some(git), Some(active)) = (self.git.as_mut(), self.workspace.active()) {
-                    git.index = active;
-                }
                 let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
                 self.persist(move |_| next);
             }
