@@ -14,7 +14,7 @@ discard, commit, sync, branch/tag/stash, rebase/conflicts, graph, worktrees, wor
 threading, panel/diff UI) followed by an adversarial **review pass** (T0) that
 confirmed each finding against the specs, `git log` and the test suite. Goal: **no Git
 action acts on a target the user did not point at, and none silently corrupts or drops
-work**. Counter: **15/37**.
+work**. Counter: **16/37**.
 
 - ☑ **T0 — Review pass.** 35 findings triaged against specs + history + tests:
   **28 to fix** (8 re-scoped by the review), **4 closed** (T8, T10, T20, T23) plus
@@ -110,7 +110,7 @@ work**. Counter: **15/37**.
   `git2::Patch` inside the staging path and return `Vec<u8>` from `render_hunk_patch`
   (`from_buffer` already takes `&[u8]`). Must land with T12 so line indices stay
   aligned. *Files*: `src/git/diff.rs`, `src/git/stage.rs`.
-- ☐ **T12 — `*_EOFNL` are markers, not lines.** Worse than filed: 2 of the 3 shapes make
+- ☑ **T12 — `*_EOFNL` are markers, not lines.** Worse than filed: 2 of the 3 shapes make
   granular staging **fail outright** (`invalid patch hunk at line 9`), so every hunk
   touching the tail of a no-final-newline file is unstageable. `line_origin`
   (`diff.rs:469`) types the marker as real content, `push_line` then emits it twice, and
@@ -319,7 +319,7 @@ work**. Counter: **15/37**.
 
 ### Next actions (M-GitHard)
 - **Lot A complete** (T1–T10 ☑/⏭).
-- Order: **T12 → T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
+- Order: **T11 → T14 → T15 → T16** (Lot B), then Lot C, then Lot D.
 - T13 ⏭ (decision pending: route the commit write through the `git` CLI, with the
   worker-blocking and timeout risks above) — it promotes `proposals.md` P20.
 - T20 / T23 / T36 are spec edits, not code: fold them in when touching their spec.

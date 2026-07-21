@@ -892,3 +892,105 @@ fn stage_sees_index_changes_made_by_another_handle() {
     );
     assert!(st.staged.iter().any(|f| f.path == "b.txt"));
 }
+
+/// Bytes of `path` as recorded in the on-disk index (read through a fresh handle).
+fn staged_bytes(dir: &Path, path: &str) -> Vec<u8> {
+    let repo = git2::Repository::open(dir).unwrap();
+    let index = repo.index().unwrap();
+    let entry = index
+        .get_path(Path::new(path), 0)
+        .expect("path must be staged");
+    let blob = repo.find_blob(entry.id).unwrap();
+    blob.content().to_vec()
+}
+
+/// The three "no final newline" shapes: the `\ No newline at end of file` marker
+/// is a marker, not a diff line — staging the tail hunk must stage the working
+/// tree bytes verbatim.
+fn stage_tail_hunk_is_byte_identical(head: &str, worktree: &str) {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", head, "init");
+    fs::write(tmp.path().join("a.txt"), worktree).unwrap();
+
+    stage::stage_hunk(&repo, "a.txt", 0).unwrap();
+
+    assert_eq!(
+        staged_bytes(tmp.path(), "a.txt"),
+        worktree.as_bytes(),
+        "staged blob must match the working tree byte for byte"
+    );
+}
+
+#[test]
+fn stage_hunk_adds_a_missing_final_newline() {
+    stage_tail_hunk_is_byte_identical("one\ntwo", "one\ntwo\n");
+}
+
+#[test]
+fn stage_hunk_removes_a_final_newline() {
+    stage_tail_hunk_is_byte_identical("one\ntwo\n", "one\ntwo");
+}
+
+#[test]
+fn stage_hunk_edits_a_tail_line_that_never_had_a_final_newline() {
+    stage_tail_hunk_is_byte_identical("one\ntwo", "one\nTWO");
+}
+
+#[test]
+fn stage_lines_on_a_tail_without_a_final_newline_is_byte_identical() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo", "init");
+    fs::write(tmp.path().join("a.txt"), "one\nTWO").unwrap();
+
+    let hunk = &diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+        .unwrap()
+        .hunks[0];
+    let changed: Vec<usize> = hunk
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.origin != LineOrigin::Context)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    stage::stage_lines(&repo, "a.txt", 0, &changed).unwrap();
+
+    assert_eq!(staged_bytes(tmp.path(), "a.txt"), b"one\nTWO");
+}
+
+#[test]
+fn a_missing_final_newline_marker_is_not_a_diff_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo", "init");
+    fs::write(tmp.path().join("a.txt"), "one\nTWO").unwrap();
+
+    let hunk = &diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+        .unwrap()
+        .hunks[0];
+
+    assert_eq!(
+        hunk.lines
+            .iter()
+            .filter(|l| l.origin == LineOrigin::Addition)
+            .count(),
+        1,
+        "one added line, no phantom marker row"
+    );
+    assert_eq!(
+        hunk.lines
+            .iter()
+            .filter(|l| l.origin == LineOrigin::Deletion)
+            .count(),
+        1
+    );
+    assert!(
+        !hunk
+            .lines
+            .iter()
+            .any(|l| l.content.contains("No newline at end of file")),
+        "the marker must not be materialized as a line"
+    );
+}

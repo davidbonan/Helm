@@ -466,9 +466,13 @@ fn is_oversize(patch: &git2::Patch) -> Result<bool, git2::Error> {
 fn line_origin(value: git2::DiffLineType) -> Option<LineOrigin> {
     use git2::DiffLineType as T;
     match value {
-        T::Context | T::ContextEOFNL => Some(LineOrigin::Context),
-        T::Addition | T::AddEOFNL => Some(LineOrigin::Addition),
-        T::Deletion | T::DeleteEOFNL => Some(LineOrigin::Deletion),
+        T::Context => Some(LineOrigin::Context),
+        T::Addition => Some(LineOrigin::Addition),
+        T::Deletion => Some(LineOrigin::Deletion),
+        // The `*_EOFNL` variants carry the `\ No newline at end of file` marker,
+        // not file content: the missing newline is already visible on the
+        // preceding line, and `stage::push_line` re-emits the marker itself.
+        T::ContextEOFNL | T::AddEOFNL | T::DeleteEOFNL => None,
         T::FileHeader | T::HunkHeader | T::Binary => None,
     }
 }
@@ -478,19 +482,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_origin_maps_eofnl_variants_to_base_kinds() {
-        assert_eq!(
-            line_origin(git2::DiffLineType::ContextEOFNL),
-            Some(LineOrigin::Context)
-        );
-        assert_eq!(
-            line_origin(git2::DiffLineType::AddEOFNL),
-            Some(LineOrigin::Addition)
-        );
-        assert_eq!(
-            line_origin(git2::DiffLineType::DeleteEOFNL),
-            Some(LineOrigin::Deletion)
-        );
+    fn line_origin_drops_eofnl_markers() {
+        assert_eq!(line_origin(git2::DiffLineType::ContextEOFNL), None);
+        assert_eq!(line_origin(git2::DiffLineType::AddEOFNL), None);
+        assert_eq!(line_origin(git2::DiffLineType::DeleteEOFNL), None);
     }
 
     #[test]
