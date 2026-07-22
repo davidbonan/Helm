@@ -158,6 +158,7 @@ fn page_harness_full(
             &mut keymap.borrow_mut(),
             &mut keyboard.borrow_mut(),
             &updates,
+            &helm::cli::ShellCommand::Unbundled,
             &mut cache.borrow_mut(),
             None,
         );
@@ -963,6 +964,7 @@ fn project_harness(
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
+                &helm::cli::ShellCommand::Unbundled,
                 &mut release_notes_cache,
                 project,
             );
@@ -1080,6 +1082,7 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
+                &helm::cli::ShellCommand::Unbundled,
                 &mut release_notes_cache,
                 None,
             );
@@ -1553,6 +1556,7 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &updates,
+                &helm::cli::ShellCommand::Unbundled,
                 &mut release_notes_cache,
                 None,
             );

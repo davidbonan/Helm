@@ -15,6 +15,7 @@
 | [`pull-requests.md`](pull-requests.md) | Workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud sources, list/detail/checkout |
 | [`preferences.md`](preferences.md) | Full-window Preferences page: left nav + settings cards, Appearance/Git sections |
 | [`update.md`](update.md) | Distribution (.app bundle, GitHub releases) + built-in update: check, download, replace, relaunch |
+| [`cli.md`](cli.md) | `helm <path>` and the `helm://` scheme: opening a project/worktree from a terminal or another app, single instance |
 | [`keybindings.md`](keybindings.md) | Complete shortcut reference |
 | [`design-system.md`](design-system.md) | Visual tokens (colors / typography / spacing) + components |
 

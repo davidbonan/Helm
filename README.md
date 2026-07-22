@@ -215,6 +215,24 @@ switched from the titlebar and remembered across launches:
 
 ---
 
+### Open it from anywhere
+
+Install the shell command once (*Preferences › Terminal › Shell command*) and
+`helm .` opens the repository you are standing in — from any subdirectory, and a
+worktree path lands straight on that worktree. An unknown project is imported
+with its whole worktree group; a known one is just raised and focused. Helm
+stays a **single instance**: the command hands the target to the window already
+open instead of starting a second one.
+
+```sh
+helm                                  # launch
+helm .                                # open the repo containing the current directory
+helm ~/dev/api.worktrees/feature-x    # open that worktree
+```
+
+Other applications get the same door through the `helm://open?path=…` URL
+scheme — a Raycast script, an Alfred workflow, a link in your notes.
+
 ### Make it yours
 
 A full-window **Preferences** (`⌘,`) with a left nav and focused settings cards:
@@ -279,6 +297,7 @@ The `specs/` folder freezes the product intent; `specs/plan/` tracks execution.
 | [`agents.md`](specs/agents.md) | AI agent detection & activity badges |
 | [`preferences.md`](specs/preferences.md) | Preferences page & settings |
 | [`update.md`](specs/update.md) | Distribution & built-in app update |
+| [`cli.md`](specs/cli.md) | `helm <path>`, the `helm://` scheme, single instance |
 | [`keybindings.md`](specs/keybindings.md) | Complete shortcut reference |
 | [`design-system.md`](specs/design-system.md) | Tokens & components |
 

@@ -138,6 +138,8 @@ use git_session::{
 
 mod render;
 
+pub mod url_scheme;
+
 /// What the central area renders (M9-4). The header switch toggles between the
 /// terminal (MVP core) and the Git graph (post-MVP, read-only). Graph rendering
 /// arrives in M9-5; switching to `Graph` reveals the git sidebar and triggers a
@@ -1215,6 +1217,27 @@ impl HelmApp {
             self.persist(move |_| next);
         }
         self.request_group_refresh(ctx);
+    }
+
+    /// Applies a target handed over by the CLI or a `helm://` URL (specs/cli.md §4):
+    /// imports the group when it is unknown, reveals the row, and activates it.
+    /// Activation goes through plain `set_active`, i.e. the same path a sidebar
+    /// click takes — `sync_git_session` then parks the leaving session and drops
+    /// the modals armed on it, exactly as on any repo switch.
+    fn open_cli_target(&mut self, target: &Path, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        match activate_target(&mut self.workspace, target) {
+            Ok(()) => {
+                self.caches.sync(&self.workspace);
+                self.page = Page::Main;
+                self.central_mode = CentralMode::Terminal;
+                let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+                self.persist(move |_| next);
+                self.request_group_refresh(ctx);
+                ctx.request_repaint();
+            }
+            Err(message) => self.toasts.error(message, now),
+        }
     }
 
     /// Single entry point for the workspace-wide branch/dirty read: the sync triggers
@@ -3007,6 +3030,66 @@ pub fn add_picked_folders(workspace: &mut Workspace, paths: Vec<PathBuf>) -> Imp
     ImportOutcome { syncs, rejected }
 }
 
+/// Brings a CLI / `helm://` target into the workspace and makes it the active
+/// row (specs/cli.md §4): unknown project ⇒ full group import (worktrees.md §2),
+/// then the row is revealed and activated. `Err` carries the toast text.
+///
+/// Activation is a plain `set_active`, the very move a sidebar click makes, so
+/// `sync_git_session` parks the leaving session and drops the modals armed on it
+/// exactly as on any repo switch.
+pub fn activate_target(workspace: &mut Workspace, target: &Path) -> Result<(), String> {
+    // The URL may come from anywhere, and the repo may have vanished between the
+    // CLI's own check and this frame.
+    if crate::git::worktree::resolve_root(target).is_err() {
+        return Err(non_git_toast(&[target.to_path_buf()]));
+    }
+    let target = canonical_path(target);
+    if index_of(workspace, &target).is_none() {
+        let rejected = add_picked_folders(workspace, vec![target.clone()]).rejected;
+        if !rejected.is_empty() {
+            return Err(non_git_toast(&rejected));
+        }
+    }
+    // A bare root owns no selectable row (worktrees.md §8): refused by the CLI, but
+    // a hand-written URL lands here with the group imported and nothing to activate.
+    let Some(index) = index_of(workspace, &target) else {
+        return Err(format!(
+            "“{}” has no working tree to open",
+            target.display()
+        ));
+    };
+    reveal_row(workspace, index);
+    workspace.set_active(index);
+    Ok(())
+}
+
+fn index_of(workspace: &Workspace, target: &Path) -> Option<usize> {
+    workspace
+        .repos()
+        .position(|repo| canonical_path(&repo.path) == target)
+}
+
+/// Makes a row actually visible before selecting it: an opened target must be
+/// seen. A hidden project would send the central area back to the agents
+/// dashboard (worktrees.md §1); a folded group hides even the root's own main
+/// row (§3).
+fn reveal_row(workspace: &mut Workspace, index: usize) {
+    let root = match workspace.parent_root(index) {
+        Some(parent) => {
+            let parent = parent.to_path_buf();
+            (0..workspace.len()).find(|&i| {
+                workspace.parent_root(i).is_none()
+                    && workspace.repo(i).is_some_and(|r| r.path == parent)
+            })
+        }
+        None => Some(index),
+    };
+    if let Some(root) = root {
+        workspace.set_user_hidden(root, false);
+        workspace.set_collapsed(root, false);
+    }
+}
+
 fn add_resolved_project(
     workspace: &mut Workspace,
     root: &Path,
@@ -3562,6 +3645,11 @@ impl eframe::App for HelmApp {
         self.poll_update_runner(&ctx);
         self.poll_group_refresh();
 
+        // Before the Preferences gate too: a CLI target leaves the page (§4).
+        if let Some(target) = url_scheme::take() {
+            self.open_cli_target(&target, &ctx);
+        }
+
         // Sync triggers on focus regain (M11-6) and on a periodic tick while focused
         // (worktrees.md §4): active even with the Preferences page open — the app keeps
         // living behind the page. The tick is gated on focus because off-focus the
@@ -3933,17 +4021,32 @@ fn exe_in_app_bundle(exe: &Path) -> bool {
         .any(|dir| dir.extension().is_some_and(|ext| ext == "app"))
 }
 
-pub fn run() -> eframe::Result<()> {
+/// `open_url` is the dev/test injection of a startup target (specs/cli.md §5);
+/// a bundled launch receives the same URL through the Apple Event handler.
+pub fn run(open_url: Option<String>) -> eframe::Result<()> {
+    // Before anything touches the prefs: a second instance would rewrite the
+    // whole TOML and erase the running one's workspace (specs/cli.md §6).
+    let Some(_instance) = crate::cli::acquire_instance_lock() else {
+        crate::cli::activate_running_instance();
+        return Ok(());
+    };
     #[cfg(target_os = "macos")]
     import_login_shell_path();
     #[cfg(target_os = "macos")]
     raise_ui_thread_priority();
+    // Installed before the event loop runs: on a cold launch the URL that caused
+    // the launch is delivered as soon as the loop starts.
+    url_scheme::install_handler();
+    if let Some(url) = open_url.as_deref() {
+        url_scheme::push_url(url);
+    }
     eframe::run_native(
         "helm",
         native_options(),
         Box::new(|cc| {
             #[cfg(target_os = "macos")]
             titlebar::extend_native_titlebar(cc);
+            url_scheme::arm(&cc.egui_ctx);
             theme::install_fonts(&cc.egui_ctx);
             let mut prefs = Prefs::load();
             if prefs.purge_missing_repos() {

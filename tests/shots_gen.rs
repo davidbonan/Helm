@@ -1584,6 +1584,7 @@ fn gen_preferences() {
                 &mut keymap,
                 &mut keyboard,
                 &updates,
+                &helm::cli::ShellCommand::Unbundled,
                 &mut release_notes_cache,
                 None,
             );

@@ -1,3 +1,8 @@
+use helm::cli;
+
 fn main() -> eframe::Result<()> {
-    helm::app::run()
+    match cli::parse(std::env::args_os().skip(1)) {
+        cli::Args::Gui { open_url } => helm::app::run(open_url),
+        other => std::process::exit(cli::execute(other)),
+    }
 }

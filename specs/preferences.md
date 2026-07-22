@@ -115,6 +115,7 @@ action shows a muted `unbound` placeholder.
 | Setting | Description (UI) | Control | Behavior |
 |---------|------------------|----------|--------------|
 | **Editor** | IDE opened by a Cmd+click on a file link in the terminal ([`terminal.md`](terminal.md) §12) | Dropdown, 3 options: **VS Code** / **Cursor** / **Zed** (`links::Editor` domain, product names from `label`, default VS Code) | Opens the file (with its line) in the chosen IDE's CLI — `code`/`cursor -g {file}:{line}`, `zed {file}:{line}` — spawned detached; a CLI that fails surfaces an error toast naming it (no silent fallback). Persisted on change (`editor`); **never opens** anything by itself. |
+| **Shell command** | Run `helm <path>` in a terminal to open a repository or worktree ([`cli.md`](cli.md) §7) | **Install** button when absent, **Replace** when a foreign `helm` holds the path, the install directory as a read-only status when it is ours; outside a bundle, the dev-mode note | Symlinks `/usr/local/bin/helm` to the binary **inside** the bundle, so an in-place update ([`update.md`](update.md) §5) keeps it working. Intent pattern — the page writes no file; the app links and toasts the outcome. A non-writable directory returns the exact `sudo ln -sf …` to run; a real file at that path is never replaced. Nothing persisted (the link on disk is the state). |
 
 ### Pull Requests
 

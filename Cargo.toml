@@ -94,7 +94,17 @@ image = { version = "0.25", default-features = false, features = [
 # Same versions as winit's own objc2 stack, to share a single copy.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSArray", "NSGeometry", "NSThread"] }
+# NSAppleEvent*: the `helm://` URL arrives as a kAEGetURL Apple Event
+# (specs/cli.md §4) — winit owns the app delegate, so the event manager is the
+# only handler slot we can claim.
+objc2-foundation = { version = "0.2", features = [
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSArray",
+    "NSGeometry",
+    "NSString",
+    "NSThread",
+] }
 objc2-app-kit = { version = "0.2", features = [
     "NSAnimation",
     "NSLayoutConstraint",

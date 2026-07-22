@@ -3014,3 +3014,59 @@ fn without_an_upstream_tip_there_is_no_force_push_to_arm() {
 
     assert!(crate::app::render::armed_force_push(app.git.as_ref()).is_none());
 }
+
+#[test]
+fn a_cli_target_leaves_preferences_and_lands_on_the_terminal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let other = tmp.path().join("other");
+    let target = tmp.path().join("target");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    init_repo_with_commit(&other);
+    init_repo_with_commit(&target);
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(other.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.page = Page::Preferences;
+    app.central_mode = CentralMode::Agents;
+    let ctx = egui::Context::default();
+
+    app.open_cli_target(&target, &ctx);
+
+    assert_eq!(app.page, Page::Main, "the Preferences page is left");
+    assert_eq!(app.central_mode, CentralMode::Terminal);
+    assert_eq!(
+        app.workspace.active_repo().map(|r| r.path.clone()),
+        Some(std::fs::canonicalize(&target).unwrap()),
+        "the target is the active row, the previously open repo is not"
+    );
+    assert_eq!(app.workspace.len(), 2, "the unknown project was imported");
+    assert!(
+        !app.caches.keys.is_empty(),
+        "the per-repo caches follow the new membership"
+    );
+}
+
+#[test]
+fn a_refused_cli_target_changes_nothing_but_the_toasts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    let plain = tmp.path().join("documents");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&plain).unwrap();
+    init_repo_with_commit(&repo);
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.page = Page::Preferences;
+    let ctx = egui::Context::default();
+
+    app.open_cli_target(&plain, &ctx);
+
+    assert_eq!(app.page, Page::Preferences, "a refusal moves nothing");
+    assert_eq!(app.workspace.len(), 1);
+    assert_eq!(
+        app.workspace.active_repo().map(|r| r.path.clone()),
+        Some(repo)
+    );
+}

@@ -6,6 +6,37 @@
 
 ---
 
+## ☑ Milestone — M-CLI · `helm <path>` from a terminal or another app
+
+Spec: [`specs/cli.md`](../cli.md). One binary, argv-dispatched; the CLI resolves the
+path and hands it to the running instance through the `helm://` scheme. Counter: **4/4**.
+
+- ☑ **T1 — CLI mode.** `src/cli.rs`: `parse` (argv ⇒ `Args`), `execute`,
+  `resolve_target` (canonicalize → `discover` → refuse bare/non-UTF-8),
+  `open_url`/`target_from_url` (+ percent codec), `main.rs` dispatch.
+  *Files*: `src/cli.rs`, `src/main.rs`, `src/lib.rs`. *Tests*: 12 unit (parse,
+  URL round-trip), 5 business e2e (root / subdir / worktree / bare / non-git).
+- ☑ **T2 — URL delivery.** `CFBundleURLTypes` in `scripts/bundle.sh`;
+  `app::url_scheme` (kAEGetURL handler on `NSAppleEventManager`, pending buffer +
+  repaint); `--open-url` GUI flag; drained at the top of `ui()`.
+  *Files*: `scripts/bundle.sh`, `src/app/url_scheme.rs`, `src/app/mod.rs`, `Cargo.toml`.
+- ☑ **T3 — Target application.** `app::activate_target`: group import when unknown,
+  `reveal_row` (unhide + unfold), `set_active`; app side sets `Page::Main` +
+  `CentralMode::Terminal`, persists, toasts on refusal.
+  *Files*: `src/app/mod.rs`. *Tests*: 4 business e2e (import / reveal / late worktree /
+  refusal leaves the workspace untouched) + 2 in-crate (leaves Preferences for the
+  terminal; a refusal moves nothing).
+- ☑ **T4 — Single instance + install.** `flock` on `instance.lock` in `app::run`
+  (busy ⇒ raise + exit 0); `shell_command_state`/`install_shell_command` and the
+  *Preferences › Terminal › Shell command* row.
+  *Files*: `src/cli.rs`, `src/app/{mod,render}.rs`, `src/ui/preferences.rs`.
+
+### Next actions (M-CLI)
+- **M-CLI complete** (4/4). Remaining manual check: the Apple Event bridge on a
+  bundled build (`scripts/bundle.sh`, then `helm .` with the app running and stopped).
+
+---
+
 ## ☑ Milestone — M-GitHard · Git actions hardening
 
 Spec: [`specs/git.md`](../git.md) + [`specs/conflicts.md`](../conflicts.md) +

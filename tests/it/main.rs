@@ -5,6 +5,7 @@ mod agent_watch_e2e;
 mod ai_commit_e2e;
 mod app_import_e2e;
 mod app_sync_e2e;
+mod cli_e2e;
 mod feedback_e2e;
 mod git_ai_rebase_e2e;
 mod git_branch_e2e;

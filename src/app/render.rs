@@ -148,6 +148,9 @@ impl HelmApp {
                 .unwrap_or_default(),
             bundled: update::bundle_path().is_some(),
         };
+        // Read from disk on the page's frames only, like `bundled` above: the link
+        // can be removed from a terminal while the app runs.
+        let shell_command = crate::cli::shell_command_state();
         // Project section (worktrees.md §6): a picker over the workspace's projects,
         // seeded to the active project on open (`toggle_preferences_page`). The edit
         // buffers are (re)synced from prefs when the picked project changes.
@@ -208,6 +211,7 @@ impl HelmApp {
             &mut self.keymap,
             &mut self.keyboard_prefs,
             &updates,
+            &shell_command,
             &mut self.commonmark_cache,
             project_view,
         );
@@ -274,6 +278,15 @@ impl HelmApp {
         }
         if action.save_bitbucket_token {
             self.save_bitbucket_token(ctx);
+        }
+        if action.install_shell_command {
+            let now = ctx.input(|i| i.time);
+            match crate::cli::install_shell_command() {
+                Ok(link) => self
+                    .toasts
+                    .success(format!("Installed {}", link.display()), now),
+                Err(message) => self.toasts.error(message, now),
+            }
         }
         // Per-project settings (worktrees.md §6): the edit buffers are written
         // back to prefs (an emptied entry is dropped by `set_project_settings`).

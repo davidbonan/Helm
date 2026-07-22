@@ -148,6 +148,9 @@ pub struct PreferencesAction {
     pub editor_changed: bool,
     pub check_updates: bool,
     pub install_update: bool,
+    /// The Terminal section asked for the `helm` shell command to be symlinked
+    /// into the PATH (specs/cli.md §7) — the page writes no file itself.
+    pub install_shell_command: bool,
     /// A per-project field (worktree base / post-create script) was edited — the
     /// app writes the edit buffers back to `prefs` (worktrees.md §6).
     pub project_changed: bool,
@@ -214,6 +217,7 @@ pub fn preferences_page(
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
     updates: &UpdatesView,
+    shell_command: &crate::cli::ShellCommand,
     release_notes_cache: &mut egui_commonmark::CommonMarkCache,
     mut project: Option<ProjectView<'_>>,
 ) -> PreferencesAction {
@@ -409,6 +413,8 @@ pub fn preferences_page(
                             }
                         },
                     );
+                    setting_divider(ui, palette);
+                    shell_command_row(ui, palette, shell_command, &mut action);
                 });
             }
             PreferencesSection::Agents => {
@@ -1396,6 +1402,46 @@ const SPINNER_SIZE: f32 = 14.0;
 /// slot renders the inline updater state. Busy (check or install in progress)
 /// disables the check button; Install & Relaunch only exists in the Available
 /// state. Outside a bundle the row carries the dev-mode note, without controls.
+/// Shell-command row of the Terminal section (specs/cli.md §7): installs the
+/// `helm` symlink into the PATH. Raises an intent — the app writes the link and
+/// reports the outcome by toast.
+fn shell_command_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &crate::cli::ShellCommand,
+    action: &mut PreferencesAction,
+) {
+    setting_row(
+        ui,
+        palette,
+        "Shell command",
+        Some("Run helm <path> in a terminal to open a repository or worktree"),
+        |ui| match state {
+            crate::cli::ShellCommand::Unbundled => {
+                inline_status(ui, DEV_MODE_NOTE, palette.text_secondary);
+            }
+            crate::cli::ShellCommand::Installed => {
+                inline_status(
+                    ui,
+                    &format!("Installed in {}", crate::cli::SHELL_COMMAND_DIR),
+                    palette.text_secondary,
+                );
+            }
+            crate::cli::ShellCommand::Missing => {
+                if pill_button(ui, palette, "Install", true, true) {
+                    action.install_shell_command = true;
+                }
+            }
+            crate::cli::ShellCommand::Foreign(_) => {
+                if pill_button(ui, palette, "Replace", true, true) {
+                    action.install_shell_command = true;
+                }
+                inline_status(ui, "Another helm is on the PATH", palette.text_secondary);
+            }
+        },
+    );
+}
+
 fn updates_card(
     ui: &mut egui::Ui,
     palette: &Palette,

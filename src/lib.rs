@@ -1,6 +1,7 @@
 pub mod agent_watch;
 pub mod ai;
 pub mod app;
+pub mod cli;
 pub mod feedback;
 pub mod frame_log;
 pub mod git;

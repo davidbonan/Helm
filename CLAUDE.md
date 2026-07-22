@@ -21,6 +21,7 @@ UI locked on `eframe`/`egui` (overview §4). Dependencies in place (`eframe`,
 - `specs/pull-requests.md` — workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud, list/detail/checkout.
 - `specs/preferences.md` — full-window Preferences page: left nav + settings cards.
 - `specs/update.md` — distribution (.app bundle, GitHub releases) + integrated app update.
+- `specs/cli.md` — `helm <path>` + the `helm://` scheme: opening a project/worktree from outside, single instance.
 - `specs/keybindings.md` — complete keybinding reference.
 - `specs/design-system.md` — tokens (colors / typography / spacing) + components.
 

@@ -45,6 +45,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>${BUNDLE_ID}.open</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>helm</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST
