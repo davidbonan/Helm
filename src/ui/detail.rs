@@ -93,7 +93,7 @@ pub fn code_snippet(
     let highlights = cached_snippet_highlights(ui.ctx(), palette, path, lines);
     egui::Frame::new()
         .fill(palette.bg_canvas)
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(8, 5))
         .show(ui, |ui| {
@@ -235,7 +235,7 @@ pub fn count_chip(ui: &mut egui::Ui, palette: &Palette, count: usize) {
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     painter.galley(

@@ -156,7 +156,7 @@ pub fn tab_bar(
             ui.painter().hline(
                 ui.max_rect().x_range(),
                 bottom - 0.5,
-                egui::Stroke::new(1.0, palette.border_subtle),
+                egui::Stroke::new(1.0_f32, palette.border_subtle),
             );
             for (index, rect) in &placed {
                 let color = if *index == active {
@@ -181,7 +181,7 @@ fn divider(ui: &mut egui::Ui, palette: &Palette) {
     ui.painter().vline(
         rect.center().x,
         (rect.center().y - half)..=(rect.center().y + half),
-        egui::Stroke::new(1.0, palette.border_input),
+        egui::Stroke::new(1.0_f32, palette.border_input),
     );
 }
 
@@ -216,7 +216,7 @@ fn draw_tab_drop_line(
     ui.painter().vline(
         x,
         first.top()..=first.bottom(),
-        egui::Stroke::new(2.0, palette.accent),
+        egui::Stroke::new(2.0_f32, palette.accent),
     );
 }
 

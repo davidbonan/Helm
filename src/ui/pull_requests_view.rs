@@ -613,7 +613,7 @@ fn conversation_section(
 fn comment_frame(palette: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.bg_surface)
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
         .inner_margin(egui::Margin::same(12))
 }
@@ -713,7 +713,7 @@ fn thread_members(
     ui.painter().vline(
         rect.left() + INLINE_REPLY_INDENT * 0.5,
         egui::Rangef::new(rect.top() + GAP_SM, rect.bottom() - GAP_XS),
-        egui::Stroke::new(2.0, palette.border_input),
+        egui::Stroke::new(2.0_f32, palette.border_input),
     );
 }
 
@@ -857,10 +857,10 @@ fn conversation_add_block(
             for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
                 s.corner_radius = radius;
             }
-            w.inactive.bg_stroke = egui::Stroke::new(1.0, palette.border_subtle);
-            w.hovered.bg_stroke = egui::Stroke::new(1.0, palette.border_input);
-            w.active.bg_stroke = egui::Stroke::new(1.5, palette.accent);
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, palette.accent);
+            w.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border_subtle);
+            w.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.border_input);
+            w.active.bg_stroke = egui::Stroke::new(1.5_f32, palette.accent);
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
             ui.add(
                 egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
                     .desired_rows(1)
@@ -1030,7 +1030,7 @@ fn resolved_header_row(ui: &mut egui::Ui, palette: &Palette, count: usize, expan
         rect,
         egui::CornerRadius::same(CARD_RADIUS),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     let cy = rect.center().y;
@@ -1434,7 +1434,7 @@ fn review_detail_header(
             egui::pos2(rect.left(), rect.bottom()),
             egui::pos2(rect.right(), rect.bottom()),
         ],
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 }
 
@@ -1479,7 +1479,7 @@ fn detail_action_button(
         rect,
         egui::CornerRadius::same(RADIUS_BUTTON),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     let icon_center = egui::pos2(rect.left() + 13.0, rect.center().y);
@@ -1525,7 +1525,7 @@ fn detail_number_chip(
         rect,
         egui::CornerRadius::same(crate::theme::RADIUS_PILL),
         palette.bg_canvas,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     ui.painter().galley(
@@ -1921,12 +1921,12 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
                 MD_LINE_HEIGHT
             }),
             underline: if s.link {
-                egui::Stroke::new(1.0, palette.accent)
+                egui::Stroke::new(1.0_f32, palette.accent)
             } else {
                 egui::Stroke::NONE
             },
             strikethrough: if s.strike {
-                egui::Stroke::new(1.0, color)
+                egui::Stroke::new(1.0_f32, color)
             } else {
                 egui::Stroke::NONE
             },
@@ -2109,7 +2109,7 @@ fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) 
         ui.add_space(10.0);
         egui::Frame::new()
             .fill(palette.bg_surface)
-            .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+            .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
             .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
             .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
@@ -2166,7 +2166,7 @@ fn neutral_pill(ui: &mut egui::Ui, palette: &Palette, text: &str) {
         rect,
         egui::CornerRadius::same(crate::theme::RADIUS_PILL),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     ui.painter().galley(
@@ -2346,9 +2346,9 @@ fn unread_filter_chip(
         palette.bg_surface
     };
     let stroke = if selected {
-        egui::Stroke::new(1.0, with_alpha(palette.accent, 150))
+        egui::Stroke::new(1.0_f32, with_alpha(palette.accent, 150))
     } else {
-        egui::Stroke::new(1.0, palette.border_subtle)
+        egui::Stroke::new(1.0_f32, palette.border_subtle)
     };
     ui.painter().rect(
         rect,
@@ -2421,7 +2421,7 @@ fn review_composer(
     ui.painter().hline(
         rect.x_range(),
         rect.top(),
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     let inner = egui::Rect::from_x_y_ranges(
         egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() - PANEL_PAD_X),
@@ -2535,7 +2535,7 @@ fn segmented_verdict(
         rect,
         egui::CornerRadius::same(RADIUS_BUTTON),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     let segment_w = rect.width() / 3.0;
@@ -2567,7 +2567,7 @@ fn segmented_verdict(
             ui.painter().vline(
                 left,
                 egui::Rangef::new(rect.top() + 5.0, rect.bottom() - 5.0),
-                egui::Stroke::new(1.0, palette.border_subtle),
+                egui::Stroke::new(1.0_f32, palette.border_subtle),
             );
         }
     }
@@ -2693,7 +2693,7 @@ fn rail_resize_handle(
             rect.y_range()
         },
         egui::Stroke::new(
-            if active { 2.0 } else { 1.0 },
+            if active { 2.0_f32 } else { 1.0_f32 },
             if active {
                 palette.accent
             } else {
@@ -2966,7 +2966,7 @@ fn group(
     ui.painter().rect_stroke(
         card,
         egui::CornerRadius::same(CARD_RADIUS),
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     ui.add_space(16.0);
@@ -3009,7 +3009,7 @@ fn column_header(ui: &mut egui::Ui, palette: &Palette, role: PrRole) {
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 }
 
@@ -3132,7 +3132,7 @@ fn pr_row(
         ui.painter().hline(
             rect.x_range(),
             rect.top() - 0.5,
-            egui::Stroke::new(1.0, palette.border_subtle),
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
         );
     }
     let cols = columns(rect, role);
@@ -3273,7 +3273,7 @@ fn stack_connectors(
     stack: &StackRow,
 ) -> f32 {
     let base = rect.left() + PAD_X;
-    let stroke = egui::Stroke::new(1.0, palette.border_input);
+    let stroke = egui::Stroke::new(1.0_f32, palette.border_input);
     let col_x = |c: usize| base + c as f32 * STACK_INDENT + STACK_INDENT / 2.0;
     for (c, &on) in stack.verticals.iter().enumerate() {
         if on {
@@ -3346,7 +3346,7 @@ fn paint_avatar(
         );
     }
     if let Some(color) = ring {
-        painter.circle_stroke(center, r, egui::Stroke::new(1.5, color));
+        painter.circle_stroke(center, r, egui::Stroke::new(1.5_f32, color));
     }
 }
 

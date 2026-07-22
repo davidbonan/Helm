@@ -445,7 +445,7 @@ fn draw_project_guides(
     const GUIDE_ICON_GAP: f32 = 15.0;
     // Breathing room below the header icon box before the spine starts.
     const GUIDE_SPINE_GAP: f32 = 9.0;
-    let stroke = egui::Stroke::new(1.0, palette.border_subtle);
+    let stroke = egui::Stroke::new(1.0_f32, palette.border_subtle);
     let painter = ui.painter();
     let mut i = 0;
     while i < items.len() {
@@ -549,7 +549,7 @@ fn project_header(
     ui.painter().rect_stroke(
         icon_box,
         egui::CornerRadius::same(HEADER_ICON_BOX_RADIUS),
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     crate::ui::paint_icon(
@@ -894,7 +894,7 @@ fn draw_drop_line(
     ui.painter().hline(
         first.left()..=first.right(),
         y,
-        egui::Stroke::new(2.0, palette.accent),
+        egui::Stroke::new(2.0_f32, palette.accent),
     );
 }
 

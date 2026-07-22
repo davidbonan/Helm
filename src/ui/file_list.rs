@@ -378,7 +378,10 @@ pub(crate) fn row_separator(ui: &mut egui::Ui, palette: &Palette) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        egui::Stroke::new(1.0, with_alpha(palette.border_subtle, ROW_SEPARATOR_ALPHA)),
+        egui::Stroke::new(
+            1.0_f32,
+            with_alpha(palette.border_subtle, ROW_SEPARATOR_ALPHA),
+        ),
     );
 }
 

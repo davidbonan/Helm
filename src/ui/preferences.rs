@@ -227,7 +227,7 @@ pub fn preferences_page(
     ui.painter().vline(
         split_x,
         rect.y_range(),
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 
     // The nav occupies the top-left corner: its content sits under the macOS traffic lights.
@@ -628,14 +628,14 @@ fn theme_segments(ui: &mut egui::Ui, palette: &Palette, mode: &mut ThemeMode) ->
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     for index in 1..MODES.len() {
         ui.painter().vline(
             rect.left() + SEGMENT_SIZE.x * index as f32,
             egui::Rangef::new(rect.top() + 1.0, rect.bottom() - 1.0),
-            egui::Stroke::new(1.0, palette.border_subtle),
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
         );
     }
     let mut segments = ui.new_child(
@@ -688,7 +688,7 @@ fn dropdown_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> egui::R
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -1357,7 +1357,7 @@ fn keycap(
         rect,
         egui::CornerRadius::same(KEYCAP_RADIUS),
         fill,
-        egui::Stroke::new(1.0, border),
+        egui::Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
     ui.painter()
@@ -1522,7 +1522,7 @@ fn pill_button(
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         fill,
-        egui::Stroke::new(1.0, border),
+        egui::Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
     ui.painter()
@@ -1568,7 +1568,7 @@ fn preset_dropdown(
 pub fn settings_card(ui: &mut egui::Ui, palette: &Palette, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(palette.bg_canvas)
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -1642,7 +1642,7 @@ pub fn setting_divider(ui: &mut egui::Ui, palette: &Palette) {
     ui.painter().hline(
         egui::Rangef::new(rect.left() + CARD_PAD_X, rect.right() - CARD_PAD_X),
         rect.center().y,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 }
 
@@ -1671,7 +1671,7 @@ pub fn toggle_switch(ui: &mut egui::Ui, palette: &Palette, on: &mut bool) -> boo
         rect,
         egui::CornerRadius::same(radius as u8),
         track,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     let knob_r = radius - SWITCH_KNOB_INSET;
@@ -1745,7 +1745,7 @@ fn theme_segment(
             rect,
             egui::CornerRadius::same(RADIUS_PILL),
             palette.accent_subtle,
-            egui::Stroke::new(1.0, palette.accent),
+            egui::Stroke::new(1.0_f32, palette.accent),
             egui::StrokeKind::Inside,
         );
     } else if hovered {

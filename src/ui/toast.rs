@@ -174,7 +174,7 @@ fn toast_card(ui: &mut egui::Ui, palette: &Palette, toast: &Toast, index: usize)
     let mut action_clicked = false;
     let close = egui::Frame::new()
         .fill(palette.bg_surface)
-        .stroke(egui::Stroke::new(1.0, with_alpha(accent, BORDER_ALPHA)))
+        .stroke(egui::Stroke::new(1.0_f32, with_alpha(accent, BORDER_ALPHA)))
         .corner_radius(RADIUS_PILL)
         .inner_margin(egui::Margin::symmetric(PAD_X, PAD_Y))
         .show(ui, |ui| {
@@ -246,7 +246,7 @@ fn action_button(ui: &mut egui::Ui, accent: egui::Color32, label: &str) -> bool 
         rect,
         RADIUS_PILL,
         fill,
-        egui::Stroke::new(1.0, with_alpha(accent, BORDER_ALPHA)),
+        egui::Stroke::new(1.0_f32, with_alpha(accent, BORDER_ALPHA)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

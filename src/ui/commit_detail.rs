@@ -369,7 +369,7 @@ fn amend_editor(
 fn editor_frame(palette: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.bg_canvas)
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON))
         .inner_margin(egui::Margin::symmetric(8, 6))
 }
@@ -409,7 +409,7 @@ fn amend_button(
         };
         (
             fill,
-            egui::Stroke::new(1.0, palette.border_subtle),
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
             palette.text_primary,
         )
     };
@@ -438,7 +438,7 @@ fn hash_chip(ui: &mut egui::Ui, palette: &Palette, hash: &str) {
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     painter.galley(

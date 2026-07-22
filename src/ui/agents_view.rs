@@ -326,7 +326,7 @@ fn render_panel(
     ui.painter().vline(
         rect.left(),
         rect.y_range(),
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     let header_bottom = rect.top() + PANEL_HEADER_HEIGHT;
     if let Some(row) = selected.and_then(|i| rows.get(i)) {
@@ -335,7 +335,7 @@ fn render_panel(
     ui.painter().hline(
         rect.x_range(),
         header_bottom,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     let term_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), header_bottom), rect.max);
     let mut panel_ui = ui.new_child(
@@ -454,7 +454,7 @@ fn render_columns(
                     let lane = rows[start].lane;
                     let col = egui::Frame::new()
                         .fill(project_tint(palette, lane))
-                        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
                         .corner_radius(egui::CornerRadius::same(COLUMN_RADIUS))
                         .inner_margin(COLUMN_PAD)
                         .show(ui, |ui| {
@@ -519,7 +519,7 @@ fn column_resize_handle(
         ui.painter().vline(
             gap.center().x,
             egui::Rangef::new(gap.top() + 10.0, gap.bottom() - 10.0),
-            egui::Stroke::new(2.0, palette.accent),
+            egui::Stroke::new(2.0_f32, palette.accent),
         );
     }
     if handle.dragged() {
@@ -551,7 +551,7 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
     ui.painter().hline(
         rule.x_range(),
         rule.center().y,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     ui.add_space(8.0);
     // The focused card's terminal swallows the column's leftover height instead of
@@ -613,7 +613,7 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
         // column's tinted lane so neighbours read clearly apart.
         egui::Frame::new()
             .fill(palette.bg_surface)
-            .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+            .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
             .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -988,7 +988,7 @@ fn terminal_resize_handle(
         ui.painter().hline(
             egui::Rangef::new(bar.left() + 24.0, bar.right() - 24.0),
             bar.center().y,
-            egui::Stroke::new(2.0, palette.accent),
+            egui::Stroke::new(2.0_f32, palette.accent),
         );
     }
     if handle.dragged() {
@@ -1123,7 +1123,7 @@ fn branch_chip(
         chip,
         egui::CornerRadius::same(5),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     ui.painter().galley(
@@ -1285,7 +1285,7 @@ fn paint_indicator(
             ui.painter().circle_stroke(
                 rect.center(),
                 4.0,
-                egui::Stroke::new(1.5, ink(palette.text_muted)),
+                egui::Stroke::new(1.5_f32, ink(palette.text_muted)),
             );
         }
     }

@@ -213,7 +213,7 @@ pub fn central_empty_state(ui: &mut egui::Ui, palette: &Palette, keymap: &Keymap
             ui.max_rect().shrink(16.0),
             egui::CornerRadius::same(12),
             with_alpha(palette.accent, 18),
-            egui::Stroke::new(1.5, palette.accent),
+            egui::Stroke::new(1.5_f32, palette.accent),
             egui::StrokeKind::Inside,
         );
     }
@@ -397,7 +397,7 @@ pub fn central_switch(
                 container,
                 egui::CornerRadius::same(RADIUS_PILL),
                 palette.bg_surface,
-                egui::Stroke::new(1.0, palette.border_subtle),
+                egui::Stroke::new(1.0_f32, palette.border_subtle),
                 egui::StrokeKind::Inside,
             );
             ui.add_space(gutter);
@@ -459,7 +459,7 @@ pub fn agents_view_switch(
                 container,
                 egui::CornerRadius::same(RADIUS_PILL),
                 palette.bg_surface,
-                egui::Stroke::new(1.0, palette.border_subtle),
+                egui::Stroke::new(1.0_f32, palette.border_subtle),
                 egui::StrokeKind::Inside,
             );
             ui.add_space(gutter);
@@ -1217,7 +1217,7 @@ fn launcher_segment(
         rect,
         segment_radius(segment),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     let color = if enabled {
@@ -1405,7 +1405,7 @@ fn sidebar_toggle(
     } else {
         palette.text_muted
     };
-    let stroke = egui::Stroke::new(1.5, color);
+    let stroke = egui::Stroke::new(1.5_f32, color);
     let divider_x = match side {
         SidebarToggleSide::Left => glyph.left() + glyph.width() * 0.38,
         SidebarToggleSide::Right => glyph.right() - glyph.width() * 0.38,

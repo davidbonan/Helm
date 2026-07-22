@@ -67,7 +67,7 @@ impl Spinner {
                 })
                 .collect();
             ui.painter()
-                .add(Shape::line(points, Stroke::new(3.0, color)));
+                .add(Shape::line(points, Stroke::new(3.0_f32, color)));
         }
     }
 }

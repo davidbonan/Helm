@@ -268,7 +268,7 @@ pub fn graph_toolbar(
             egui::pos2(strip.left(), strip.bottom() - 1.0),
             egui::pos2(strip.right(), strip.bottom() - 1.0),
         ],
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     action
 }
@@ -410,7 +410,7 @@ fn pull_split_button(
             egui::pos2(main.rect.right(), main.rect.top() + SPLIT_RULE_INSET),
             egui::pos2(main.rect.right(), main.rect.bottom() - SPLIT_RULE_INSET),
         ],
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     match blocker {
         Some(reason) => {
@@ -483,7 +483,7 @@ fn push_split_button(
             egui::pos2(main.rect.right(), main.rect.top() + SPLIT_RULE_INSET),
             egui::pos2(main.rect.right(), main.rect.bottom() - SPLIT_RULE_INSET),
         ],
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     match blocker {
         Some(reason) => {

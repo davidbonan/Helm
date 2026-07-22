@@ -783,12 +783,12 @@ fn visuals(theme: Theme, p: &Palette) -> Visuals {
     v.hyperlink_color = p.accent;
     v.panel_fill = p.bg_canvas;
     v.window_fill = p.bg_canvas;
-    v.window_stroke = Stroke::new(1.0, p.border_subtle);
+    v.window_stroke = Stroke::new(1.0_f32, p.border_subtle);
     v.extreme_bg_color = p.bg_surface;
     v.faint_bg_color = p.bg_surface_hover;
     v.code_bg_color = p.bg_surface;
     v.selection.bg_fill = p.accent_subtle;
-    v.selection.stroke = Stroke::new(1.0, p.accent);
+    v.selection.stroke = Stroke::new(1.0_f32, p.accent);
     v.window_corner_radius = CornerRadius::same(RADIUS_CARD);
     v.menu_corner_radius = CornerRadius::same(RADIUS_MENU);
     // Menus/dropdowns: diffuse centered shadow (egui's default is an offset
@@ -810,20 +810,20 @@ fn visuals(theme: Theme, p: &Palette) -> Visuals {
     ] {
         ws.corner_radius = CornerRadius::same(RADIUS_PILL);
     }
-    w.noninteractive.bg_stroke = Stroke::new(1.0, p.border_subtle);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, p.text_secondary);
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border_subtle);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_secondary);
     w.inactive.bg_fill = p.bg_surface;
     w.inactive.weak_bg_fill = p.bg_surface;
-    w.inactive.bg_stroke = Stroke::new(1.0, p.border_subtle);
-    w.inactive.fg_stroke = Stroke::new(1.0, p.text_secondary);
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, p.border_subtle);
+    w.inactive.fg_stroke = Stroke::new(1.0_f32, p.text_secondary);
     w.hovered.bg_fill = p.bg_surface_hover;
     w.hovered.weak_bg_fill = p.bg_surface_hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, p.border_input);
-    w.hovered.fg_stroke = Stroke::new(1.0, p.text_primary);
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, p.border_input);
+    w.hovered.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
     w.active.bg_fill = p.accent;
     w.active.weak_bg_fill = p.accent;
-    w.active.bg_stroke = Stroke::new(1.0, p.accent_hover);
-    w.active.fg_stroke = Stroke::new(1.0, p.text_primary);
+    w.active.bg_stroke = Stroke::new(1.0_f32, p.accent_hover);
+    w.active.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
     v
 }
 

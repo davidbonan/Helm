@@ -1202,7 +1202,7 @@ fn note_editor(
             w.inactive.corner_radius = radius;
             w.hovered.corner_radius = radius;
             w.active.corner_radius = radius;
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, style.color);
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, style.color);
             ui.add(
                 egui::TextEdit::multiline(buffer)
                     .desired_rows(2)
@@ -1329,7 +1329,7 @@ pub(crate) fn reply_editor(
             w.inactive.corner_radius = radius;
             w.hovered.corner_radius = radius;
             w.active.corner_radius = radius;
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, palette.accent);
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
             ui.add(
                 egui::TextEdit::multiline(buffer)
                     .desired_rows(2)
@@ -1647,7 +1647,7 @@ fn thread_card(
         .fill(palette.bg_surface)
         .inner_margin(egui::Margin::same(10))
         .corner_radius(egui::CornerRadius::same(10))
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 crate::ui::detail::author_avatar(ui, palette, &comment.author);
@@ -1710,7 +1710,7 @@ fn note_card(
         .fill(with_alpha(style.color, 20))
         .inner_margin(egui::Margin::symmetric(9, 6))
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL))
-        .stroke(egui::Stroke::new(1.0, with_alpha(style.color, 70)))
+        .stroke(egui::Stroke::new(1.0_f32, with_alpha(style.color, 70)))
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 let (r, _) =
@@ -1799,7 +1799,7 @@ fn review_chip(ui: &mut egui::Ui, palette: &Palette, n: usize) -> egui::Response
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     crate::ui::paint_icon(
@@ -1988,7 +1988,7 @@ fn pill_button(
         rect,
         egui::CornerRadius::same(radius),
         fill,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     crate::ui::paint_icon(
@@ -2458,7 +2458,7 @@ fn diff_line(
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(2),
-            egui::Stroke::new(1.5, ctx.palette.accent),
+            egui::Stroke::new(1.5_f32, ctx.palette.accent),
             egui::StrokeKind::Inside,
         );
     }
@@ -2798,7 +2798,7 @@ fn line_action_button(
             rect,
             egui::CornerRadius::same(RADIUS_PILL),
             fill,
-            egui::Stroke::new(1.0, intent),
+            egui::Stroke::new(1.0_f32, intent),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(

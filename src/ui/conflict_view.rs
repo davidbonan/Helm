@@ -535,7 +535,7 @@ fn panes_splitter(ui: &mut egui::Ui, palette: &Palette) {
     ui.painter().line_segment(
         [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             if active {
                 palette.accent
             } else {
@@ -953,7 +953,7 @@ fn code_row(ui: &mut egui::Ui, palette: &Palette, salt: usize, row: Row) -> RowO
                 egui::pos2(content_left + CHECK_W + 6.0, y),
                 egui::pos2(rect.right() - 8.0, y),
             ],
-            egui::Stroke::new(1.0, crate::ui::with_alpha(palette.text_muted, 70)),
+            egui::Stroke::new(1.0_f32, crate::ui::with_alpha(palette.text_muted, 70)),
         );
         return RowOut {
             rect,

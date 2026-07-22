@@ -311,7 +311,7 @@ fn line_job(cells: &[CellView], font_size: f32, line_height: f32) -> egui::text:
     let font = egui::FontId::monospace(font_size);
     for cell in cells {
         let underline = if cell.underline {
-            egui::Stroke::new(1.0, cell.fg)
+            egui::Stroke::new(1.0_f32, cell.fg)
         } else {
             egui::Stroke::NONE
         };
@@ -457,7 +457,7 @@ enum PaintOp {
 
 fn cell_format(cell: &CellView, font: egui::FontId, row_h: f32) -> egui::TextFormat {
     let underline = if cell.underline {
-        egui::Stroke::new(1.0, cell.fg)
+        egui::Stroke::new(1.0_f32, cell.fg)
     } else {
         egui::Stroke::NONE
     };
@@ -694,7 +694,7 @@ fn paint_cell_shape(
                     egui::pos2(apex, rect.center().y),
                     egui::pos2(flat, rect.bottom()),
                 ],
-                egui::Stroke::new(1.0, color),
+                egui::Stroke::new(1.0_f32, color),
             ));
         }
     }
@@ -1465,7 +1465,7 @@ fn paint_link_underline(
         let x0 = region.left() + col as f32 * char_w;
         painter.line_segment(
             [egui::pos2(x0, y), egui::pos2(x0 + char_w, y)],
-            egui::Stroke::new(1.0, color),
+            egui::Stroke::new(1.0_f32, color),
         );
     }
 }
@@ -1981,7 +1981,7 @@ fn paint_drop_overlay(painter: &egui::Painter, rect: egui::Rect, zone: DropZone,
     painter.rect_stroke(
         target,
         egui::CornerRadius::same(4),
-        egui::Stroke::new(1.5, chrome.accent),
+        egui::Stroke::new(1.5_f32, chrome.accent),
         egui::StrokeKind::Inside,
     );
 }
@@ -2091,7 +2091,7 @@ fn paint_cursor(
             painter.rect_stroke(
                 rect,
                 0.0,
-                egui::Stroke::new(1.0, color),
+                egui::Stroke::new(1.0_f32, color),
                 egui::StrokeKind::Inside,
             );
         }

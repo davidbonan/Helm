@@ -1214,7 +1214,7 @@ fn resize_handle_ui(
                 egui::pos2(boundary_x, view_rect.top()),
                 egui::pos2(boundary_x, view_rect.bottom()),
             ],
-            egui::Stroke::new(1.0, palette.border_subtle),
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
         );
     }
 }
@@ -2175,7 +2175,7 @@ fn column_headers(ui: &mut egui::Ui, palette: &Palette, graph_zone: f32) {
             egui::pos2(rect.left(), rect.bottom() - 1.0),
             egui::pos2(rect.right(), rect.bottom() - 1.0),
         ],
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 }
 

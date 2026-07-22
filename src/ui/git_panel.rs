@@ -757,7 +757,7 @@ fn card_divider(ui: &mut egui::Ui, palette: &Palette) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
 }
 
@@ -1457,7 +1457,7 @@ fn ai_button(ui: &mut egui::Ui, palette: &Palette, enabled: bool, busy: bool) ->
 fn input_frame(palette: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.bg_canvas)
-        .stroke(egui::Stroke::new(1.0, palette.border_subtle))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .corner_radius(egui::CornerRadius::same(INPUT_RADIUS))
         .inner_margin(egui::Margin::symmetric(INPUT_PAD_X, INPUT_PAD_Y))
 }
@@ -1492,7 +1492,7 @@ fn branch_chip(ui: &mut egui::Ui, palette: &Palette, branch: &str, max_width: f3
         rect,
         egui::CornerRadius::same(RADIUS_PILL),
         palette.bg_surface,
-        egui::Stroke::new(1.0, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
         egui::StrokeKind::Inside,
     );
     painter.galley(
@@ -2163,7 +2163,7 @@ pub(crate) fn intent_pill(
         rect,
         egui::CornerRadius::same(PILL_RADIUS),
         fill,
-        egui::Stroke::new(1.0, stroke),
+        egui::Stroke::new(1.0_f32, stroke),
         egui::StrokeKind::Inside,
     );
     painter.galley(rect.center() - galley.size() / 2.0, galley, text);
