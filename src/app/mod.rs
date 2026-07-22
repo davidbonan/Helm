@@ -3038,20 +3038,17 @@ pub fn add_picked_folders(workspace: &mut Workspace, paths: Vec<PathBuf>) -> Imp
 /// `sync_git_session` parks the leaving session and drops the modals armed on it
 /// exactly as on any repo switch.
 pub fn activate_target(workspace: &mut Workspace, target: &Path) -> Result<(), String> {
-    // The URL may come from anywhere, and the repo may have vanished between the
-    // CLI's own check and this frame.
-    if crate::git::worktree::resolve_root(target).is_err() {
-        return Err(non_git_toast(&[target.to_path_buf()]));
-    }
-    let target = canonical_path(target);
+    // Re-resolved here, with the CLI's own rules: a URL may come from anywhere —
+    // a hand-written one never went through the CLI — and the repo may have
+    // vanished since. Walking up also makes `helm://open?path=<subdir>` behave
+    // like `helm <subdir>`, and a bare root is refused before any import.
+    let target = crate::cli::resolve_target(target).map_err(|err| err.message(target))?;
     if index_of(workspace, &target).is_none() {
         let rejected = add_picked_folders(workspace, vec![target.clone()]).rejected;
         if !rejected.is_empty() {
             return Err(non_git_toast(&rejected));
         }
     }
-    // A bare root owns no selectable row (worktrees.md §8): refused by the CLI, but
-    // a hand-written URL lands here with the group imported and nothing to activate.
     let Some(index) = index_of(workspace, &target) else {
         return Err(format!(
             "“{}” has no working tree to open",

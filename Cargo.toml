@@ -95,8 +95,8 @@ image = { version = "0.25", default-features = false, features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 # NSAppleEvent*: the `helm://` URL arrives as a kAEGetURL Apple Event
-# (specs/cli.md §4) — winit owns the app delegate, so the event manager is the
-# only handler slot we can claim.
+# (specs/cli.md §4), claimed on the event manager before any NSApplication
+# exists — a cold launch must not miss the URL that caused it.
 objc2-foundation = { version = "0.2", features = [
     "NSAppleEventDescriptor",
     "NSAppleEventManager",

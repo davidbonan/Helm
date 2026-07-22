@@ -166,6 +166,30 @@ fn a_worktree_created_outside_the_app_joins_the_known_group() {
 }
 
 #[test]
+fn an_inbound_subdirectory_walks_up_like_the_command_line_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, wt) = group(tmp.path());
+    let nested = wt.join("src/ui");
+    fs::create_dir_all(&nested).unwrap();
+    let mut ws = Workspace::new();
+
+    assert_eq!(activate_target(&mut ws, &nested), Ok(()));
+
+    assert_eq!(ws.active_repo().map(|r| r.path.clone()), Some(wt));
+}
+
+#[test]
+fn an_inbound_bare_root_is_refused_without_importing_anything() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bare = tmp.path().join("project.git");
+    git2::Repository::init_bare(&bare).unwrap();
+    let mut ws = Workspace::new();
+
+    assert!(activate_target(&mut ws, &bare).is_err());
+    assert_eq!(ws.len(), 0, "a bare root owns no row to activate");
+}
+
+#[test]
 fn a_non_git_target_is_refused_without_touching_the_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     let (_, wt) = group(tmp.path());

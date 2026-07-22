@@ -208,6 +208,10 @@ fn percent_decode(value: &str) -> Option<String> {
     while i < bytes.len() {
         if bytes[i] == b'%' {
             let hex = value.get(i + 1..i + 3)?;
+            // from_str_radix alone would accept a sign: `%+f` is not an escape.
+            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
             out.push(u8::from_str_radix(hex, 16).ok()?);
             i += 3;
         } else {
@@ -266,9 +270,9 @@ pub enum ShellCommand {
     Unbundled,
     Installed,
     Missing,
-    /// A link (or file) is there but points elsewhere — an older install, or
-    /// another program's `helm`.
-    Foreign(PathBuf),
+    /// A link (or file) is there but is not ours — an older install, or another
+    /// program's `helm`.
+    Foreign,
 }
 
 fn shell_command_path() -> PathBuf {
@@ -288,8 +292,8 @@ pub fn shell_command_state() -> ShellCommand {
     let link = shell_command_path();
     match std::fs::read_link(&link) {
         Ok(current) if current == target => ShellCommand::Installed,
-        Ok(current) => ShellCommand::Foreign(current),
-        Err(_) if link.exists() => ShellCommand::Foreign(link),
+        Ok(_) => ShellCommand::Foreign,
+        Err(_) if link.exists() => ShellCommand::Foreign,
         Err(_) => ShellCommand::Missing,
     }
 }
@@ -421,5 +425,10 @@ mod tests {
     fn a_truncated_escape_is_rejected_rather_than_guessed() {
         assert_eq!(target_from_url("helm://open?path=/tmp/%2"), None);
         assert_eq!(target_from_url("helm://open?path=/tmp/%zz"), None);
+        assert_eq!(
+            target_from_url("helm://open?path=/tmp/%+f"),
+            None,
+            "a signed hex pair is not an escape"
+        );
     }
 }

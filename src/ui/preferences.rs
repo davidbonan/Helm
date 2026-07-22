@@ -1398,10 +1398,6 @@ fn affordance(ui: &mut egui::Ui, palette: &Palette, icon: lucide_icons::Icon, la
 const DEV_MODE_NOTE: &str = "Running outside an app bundle — updates disabled";
 const SPINNER_SIZE: f32 = 14.0;
 
-/// Updates card (update.md §6): Version row + Check for updates row whose right
-/// slot renders the inline updater state. Busy (check or install in progress)
-/// disables the check button; Install & Relaunch only exists in the Available
-/// state. Outside a bundle the row carries the dev-mode note, without controls.
 /// Shell-command row of the Terminal section (specs/cli.md §7): installs the
 /// `helm` symlink into the PATH. Raises an intent — the app writes the link and
 /// reports the outcome by toast.
@@ -1432,7 +1428,7 @@ fn shell_command_row(
                     action.install_shell_command = true;
                 }
             }
-            crate::cli::ShellCommand::Foreign(_) => {
+            crate::cli::ShellCommand::Foreign => {
                 if pill_button(ui, palette, "Replace", true, true) {
                     action.install_shell_command = true;
                 }
@@ -1442,6 +1438,10 @@ fn shell_command_row(
     );
 }
 
+/// Updates card (update.md §6): Version row + Check for updates row whose right
+/// slot renders the inline updater state. Busy (check or install in progress)
+/// disables the check button; Install & Relaunch only exists in the Available
+/// state. Outside a bundle the row carries the dev-mode note, without controls.
 fn updates_card(
     ui: &mut egui::Ui,
     palette: &Palette,

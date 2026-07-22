@@ -32,8 +32,11 @@ path and hands it to the running instance through the `helm://` scheme. Counter:
   *Files*: `src/cli.rs`, `src/app/{mod,render}.rs`, `src/ui/preferences.rs`.
 
 ### Next actions (M-CLI)
-- **M-CLI complete** (4/4). Remaining manual check: the Apple Event bridge on a
-  bundled build (`scripts/bundle.sh`, then `helm .` with the app running and stopped).
+- **M-CLI complete** (4/4). The `kAEGetURL` delivery path is verified on a
+  bundled winit app (throwaway probe, own scheme): the handler installed before
+  the event loop survives AppKit's launch and fires cold *and* warm. Remaining
+  manual check: the same on **helm's own** bundle (`scripts/bundle.sh`, then
+  `helm .` with the app running and stopped) — end to end, toast included.
 
 ---
 

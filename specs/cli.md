@@ -82,12 +82,18 @@ CLI returns immediately; it does not wait for the app.
   `open` is the only verb, `path` the only parameter, and it is re-validated as
   an existing git working tree on arrival. Nothing in the scheme can carry a
   command to execute.
-- **Delivery**: winit owns the application delegate, so the handler is claimed on
-  the `NSAppleEventManager` (`kInternetEventClass` / `kAEGetURL`) — installed
-  **before** the event loop starts, so a cold launch does not miss the very URL
-  that caused it. The handler only parks the target and wakes the loop
+- **Delivery**: the handler is claimed on the `NSAppleEventManager`
+  (`kInternetEventClass` / `kAEGetURL`), installed **before** `run_native`, i.e.
+  before an `NSApplication` even exists — a cold launch must not miss the very
+  URL that caused it, and `eframe` only hands us a hook once the event loop is
+  already running. The handler parks the target and wakes the loop
   (`app::url_scheme`); the app drains it at the top of its next frame, ahead of
-  the Preferences gate.
+  the Preferences gate. Verified on a bundled winit app: the handler survives
+  AppKit's launch — it fires on the cold-launch URL *before* the loop resumes,
+  and again on every later URL. The documented alternative, a custom
+  `NSApplicationDelegate` implementing `application:openURLs:` (winit guarantees
+  it registers no delegate of its own, `winit::platform::macos`), is therefore
+  not needed.
 
 **Applying a target** (`app::activate_target`):
 
@@ -149,8 +155,11 @@ path is never replaced: it belongs to something else.
 
 ## 8. Edge cases
 
-- **Bare root** — refused by the CLI (§3). A hand-written URL imports the group
-  and toasts *"has no working tree to open"*.
+- **Bare root** — refused, by the CLI (§3) and on arrival alike: the inbound
+  target goes back through the very same resolution, so a hand-written URL
+  raises the same error toast without importing anything. Which also means
+  `helm://open?path=<subdir>` walks up to its working tree, exactly like
+  `helm <subdir>`.
 - **Worktree created outside the app** — an unknown path whose root is already
   in the workspace joins its group (`sync_group`), then activates.
 - **Removed project** — `helm <path>` re-imports it; the CLI is also the way
