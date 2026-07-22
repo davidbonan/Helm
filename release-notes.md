@@ -1,5 +1,28 @@
 # Release notes
 
+## 1.2.1
+
+- A hardening pass over every Git write path: staging, discard, commit, and
+  their confirmations now always act on the repository you pointed at, never the
+  one you just switched away from.
+- Partial staging writes each file's exact bytes — non-UTF-8 files, files with no
+  trailing newline, symlinks, and executables now stage without corruption, and
+  renames stage and count as renames.
+- Pull (fast-forward if possible) always merges and never silently rebases;
+  force-push is pinned to the commit you were shown and refuses if the remote has
+  moved; rewording refuses to land on the wrong commit.
+- The conflict editor preserves each file's line endings, warns when the file
+  changed on disk, reads sides straight from the index, and won't write conflict
+  markers into a resolved file.
+- Fetch, pull, and push no longer hang on a hidden credential prompt or get
+  killed at two minutes — they fail fast with a clear authentication error and
+  allow more time for large transfers.
+- Checkout reports where it landed, stops stashing for a no-op, and refuses a
+  branch already checked out in another worktree; deleting a clean worktree now
+  warns about the ignored files it would wipe.
+- Smoother diff view (per-file scroll kept, faster redraw) and a workspace
+  sidebar that no longer stalls while counting branches and changes.
+
 ## 1.2.0
 
 - Amend the last commit's message right from the commit panel.
@@ -59,8 +82,4 @@
 ## 1.0.0
 
 - First stable release of helm.
-
-## 0.9.1
-
-- The terminal now renders in JetBrains Mono, Ghostty's default monospace font.
 
