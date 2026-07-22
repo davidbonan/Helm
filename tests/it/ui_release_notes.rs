@@ -29,7 +29,7 @@ fn whats_new_modal_renders_heading_close_and_bundled_notes() {
     harness.get_by_label("What's new");
     harness.get_by_label("Close");
     // Oldest section still bundled: proves the notes render down to the last one.
-    harness.get_by_label_contains("First stable release of helm");
+    harness.get_by_label_contains("Polished the first-launch empty state");
 }
 
 #[test]
