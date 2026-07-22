@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.4.0
+
+- A `helm://open?path=…` URL now opens exactly what `helm <path>` would: a
+  subdirectory lands on its working tree instead of being imported as its own
+  project.
+- A path with no working tree to open is refused on the spot, without leaving a
+  half-imported project behind.
+
 ## 1.3.0
 
 - Open a repository straight from your terminal: install the shell command once
@@ -84,10 +92,4 @@
 - Jump to the Agents pane with ⌃⌘0; hold Cmd to reveal its shortcut badge.
 - Confirm dialogs with the Enter key.
 - Polished the workspace sidebar headers, now color-coded per project.
-
-## 1.0.1
-
-- Hold Cmd to reveal a ⌘R badge next to the Run/Relaunch button.
-- Agent cards in the Columns view are now collapsible, with a progress preview.
-- Polished the first-launch empty state.
 
