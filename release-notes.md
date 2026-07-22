@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.3.0
+
+- Open a repository straight from your terminal: install the shell command once
+  (*Preferences › Terminal › Shell command*) and `helm .` brings up the project
+  you are standing in, from any subdirectory.
+- A worktree path lands on that worktree. An unknown project is imported with
+  its whole worktree group; a known one is simply raised and focused.
+- helm is now a single instance: a second launch hands its target to the window
+  already open instead of starting a second app.
+- Other applications reach the same door through the `helm://open?path=…` URL
+  scheme — a Raycast script, an Alfred workflow, a link in your notes.
+
 ## 1.2.1
 
 - A hardening pass over every Git write path: staging, discard, commit, and
@@ -78,8 +90,4 @@
 - Hold Cmd to reveal a ⌘R badge next to the Run/Relaunch button.
 - Agent cards in the Columns view are now collapsible, with a progress preview.
 - Polished the first-launch empty state.
-
-## 1.0.0
-
-- First stable release of helm.
 
