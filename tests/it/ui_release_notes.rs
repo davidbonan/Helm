@@ -28,7 +28,8 @@ fn whats_new_modal_renders_heading_close_and_bundled_notes() {
 
     harness.get_by_label("What's new");
     harness.get_by_label("Close");
-    harness.get_by_label_contains("JetBrains Mono");
+    // Oldest section still bundled: proves the notes render down to the last one.
+    harness.get_by_label_contains("First stable release of helm");
 }
 
 #[test]
