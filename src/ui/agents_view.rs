@@ -94,6 +94,14 @@ const WORKTREE_HEADER_HEIGHT: f32 = 36.0;
 /// island rather than a slab of one shared surface.
 const AGENT_CARD_GAP: f32 = 8.0;
 
+/// Distinguishing the single **active** (keyboard) card from the other columns'
+/// expanded-but-inactive terminals: the active card is ringed and washed in accent,
+/// the inactive live terminals get a scrim laid over their own unfocused dim so they
+/// clearly recede behind the one the keyboard drives.
+const AGENTS_ACTIVE_RING: f32 = 1.5;
+const AGENTS_ACTIVE_BAND_ALPHA: u8 = 40;
+const AGENTS_INACTIVE_SCRIM: u8 = 104;
+
 /// Compact uncommitted-changes ratio bar on a dirty worktree header — same
 /// green/red proportion device as the workspace sidebar (`repo_sidebar`).
 const STAT_BAR_W: f32 = 26.0;
@@ -174,10 +182,10 @@ pub struct AgentsPageAction {
 /// sharing the Terminal/Git switch's design and titlebar placement — tops both
 /// views; below it, **List** is the master-detail cockpit (a left list + a right
 /// panel mirroring the selected agent's terminal) and **Columns** is a grid of
-/// status cards, one fixed-width column per project, where the selected card
-/// expands to its live terminal. `render_terminal(idx, ui)` draws the live pane
-/// for the agent at row `idx` — called once in either view, for the selected row
-/// (List) or the one expanded card (Columns). Returns the targeted action
+/// status cards, one fixed-width column per project, where **each** column expands
+/// one card to its live terminal. `render_terminal(idx, ui)` draws the live pane
+/// for the agent at row `idx` — called for the selected row (List) or once per
+/// column's expanded card (Columns). Returns the targeted action
 /// (select / jump / view).
 #[allow(clippy::too_many_arguments)]
 pub fn agents_page(
@@ -384,9 +392,11 @@ fn panel_header(
 
 /// Columns view: a wall of fixed-width project columns on a single 2D scroll
 /// plane — horizontal between columns, vertical down the wall. Each column carries
-/// the project title, then its worktree sub-cards, each with a collapsed status
-/// card per agent (the selected one expands to its live terminal).
-/// `render_terminal(idx, ui)` draws the pane for the agent at row `idx`.
+/// the project title, then its worktree sub-cards, a status card per agent. Every
+/// column expands **one** card to its live terminal (the selected agent when it
+/// lives here, else the column's most urgent one — `column_expanded`), the rest a
+/// collapsed preview. `render_terminal(idx, ui)` draws the pane for the agent at
+/// row `idx`.
 #[allow(clippy::too_many_arguments)]
 fn render_columns(
     ui: &mut egui::Ui,
@@ -554,18 +564,20 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
         egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     ui.add_space(8.0);
-    // The focused card's terminal swallows the column's leftover height instead of
-    // sitting at a fixed strip above an empty lane. The collapsed siblings' height
+    // Every column expands one card (agents.md §5): the selected agent when it lives
+    // here, else the column's most urgent one. That card's terminal swallows the
+    // column's leftover height instead of sitting at a fixed strip above an empty
+    // lane, so the wall reads as equal-height columns. The collapsed siblings' height
     // isn't statically known (each preview hugs a variable row count), so size the
     // strip from the column *overhead* — every laid-out pixel but the strip — measured
     // the previous frame; `terminal_height` is its floor (the drag handle still sets
     // that floor). Live panes repaint each frame, so the one-frame settle is unseen.
-    let owns_focus = selected.is_some_and(|s| (start..end).contains(&s));
+    let expanded = column_expanded(rows, start, end, selected);
     let col_id = ui.id().with(("agents_col_fill", start));
-    let fill_height = owns_focus.then(|| match ui.data(|d| d.get_temp::<f32>(col_id)) {
+    let fill_height = match ui.data(|d| d.get_temp::<f32>(col_id)) {
         Some(overhead) => (col_min_height - overhead).max(terminal_height),
         None => terminal_height,
-    });
+    };
     for (i, (ws, we)) in worktree_runs(rows, start, end).into_iter().enumerate() {
         if i > 0 {
             ui.add_space(GROUP_GAP);
@@ -576,6 +588,7 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
             rows,
             ws,
             we,
+            expanded,
             selected,
             terminal_height,
             fill_height,
@@ -583,10 +596,8 @@ fn project_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
             render_terminal,
         );
     }
-    if owns_focus {
-        let overhead = ui.next_widget_position().y - col_top - fill_height.unwrap_or(0.0);
-        ui.data_mut(|d| d.insert_temp(col_id, overhead));
-    }
+    let overhead = ui.next_widget_position().y - col_top - fill_height;
+    ui.data_mut(|d| d.insert_temp(col_id, overhead));
 }
 
 /// One worktree sub-card: a standalone branch band labelling the group, then one
@@ -599,21 +610,30 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     rows: &[AgentRow],
     ws: usize,
     we: usize,
+    expanded: usize,
     selected: Option<usize>,
     terminal_height: f32,
-    fill_height: Option<f32>,
+    fill_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
     worktree_header(ui, palette, &rows[ws], we - ws);
     for (offset, row) in rows[ws..we].iter().enumerate() {
         let idx = ws + offset;
+        let active = selected == Some(idx);
         ui.add_space(AGENT_CARD_GAP);
         // Each agent is its own raised `bg.surface` card; the gaps above expose the
-        // column's tinted lane so neighbours read clearly apart.
+        // column's tinted lane so neighbours read clearly apart. The active
+        // (keyboard) card is ringed in accent so it stands out from the other
+        // columns' expanded-but-inactive terminals.
+        let stroke = if active {
+            egui::Stroke::new(AGENTS_ACTIVE_RING, palette.accent)
+        } else {
+            egui::Stroke::new(1.0_f32, palette.border_subtle)
+        };
         egui::Frame::new()
             .fill(palette.bg_surface)
-            .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+            .stroke(stroke)
             .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -623,7 +643,8 @@ fn worktree_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
                     palette,
                     row,
                     idx,
-                    selected == Some(idx),
+                    idx == expanded,
+                    active,
                     terminal_height,
                     fill_height,
                     action,
@@ -786,25 +807,27 @@ fn paint_stat_bar(
     }
 }
 
-/// One agent's sub-sub-card. Collapsed by default to a status header — a state
-/// indicator + name + tab + state-caption + jump icon — over a **read-only
-/// progress preview** (the pane's last lines, scaled to fit, drawn via
-/// `TermView::Preview`). Clicking the header or the preview **selects** it: the
-/// **selected** card expands to a mirrored live terminal (read / scroll / type)
-/// with a bottom drag handle for the shared height — the same widget as the
-/// workspace — while every other card stays collapsed, so glancing at the wall
-/// reflows at most one agent. The jump icon (same right-edge affordance as the
-/// list row) focuses that pane in its workspace. The expanded card's terminal gets
-/// a unique `id_salt` so it owns its own focus.
+/// One agent's sub-sub-card. Collapsed to a status header — a state indicator +
+/// name + tab + state-caption + jump icon — over a **read-only progress preview**
+/// (the pane's last lines, scaled to fit, drawn via `TermView::Preview`) when
+/// `expanded` is false. Each column expands **one** card to a mirrored live
+/// terminal (read / scroll / type) with a bottom drag handle for the shared
+/// height — the same widget as the workspace; the **active** one (the single
+/// keyboard target, `selected_agent`) carries the accent wash, the other columns'
+/// expanded terminals stay dimmed until clicked. Clicking the header or the preview
+/// **selects** the card. The jump icon (same right-edge affordance as the list row)
+/// focuses that pane in its workspace. Each expanded card's terminal gets a unique
+/// `id_salt` so it owns its own focus.
 #[allow(clippy::too_many_arguments)]
 fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &AgentRow,
     idx: usize,
-    focused: bool,
+    expanded: bool,
+    active: bool,
     terminal_height: f32,
-    fill_height: Option<f32>,
+    fill_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
 ) {
@@ -815,9 +838,9 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
     );
     // Header band atop the agent's card (top-rounded to it): sets the status row
     // apart from the preview below, brightens on hover to signal it expands on
-    // click, and carries the accent wash when the card is selected/expanded.
-    let band = if focused {
-        with_alpha(palette.accent, 28)
+    // click, and carries the accent wash on the active card (keyboard target).
+    let band = if active {
+        with_alpha(palette.accent, AGENTS_ACTIVE_BAND_ALPHA)
     } else if hovered {
         mix(palette.bg_surface_hover, palette.accent, 0.14)
     } else {
@@ -911,7 +934,7 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
         }
     }
 
-    if !focused {
+    if !expanded {
         // Collapsed: a read-only progress preview (the pane's last lines, scaled to
         // fit). Clicking it — like the header — selects the card so it expands.
         ui.add_space(6.0);
@@ -933,10 +956,10 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
         return;
     }
     ui.add_space(6.0);
-    // Fill the column's leftover height when this focused card owns the slack
-    // (`fill_height`, sized by the caller from the column overhead); `terminal_height`
-    // stays the floor.
-    let strip_height = fill_height.unwrap_or(terminal_height).max(TERM_MIN_HEIGHT);
+    // Fill the column's leftover height (`fill_height`, sized by the caller from the
+    // column overhead, floored at `terminal_height`); `TERM_MIN_HEIGHT` is the hard
+    // floor.
+    let strip_height = fill_height.max(TERM_MIN_HEIGHT);
     let (strip, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), strip_height),
         egui::Sense::hover(),
@@ -948,6 +971,16 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     render_terminal(idx, &mut term_ui, TermView::Full);
+    // Only the active card's terminal is keyboard-driven; the other columns' live
+    // terminals recede behind a scrim (over their own unfocused dim) so the wall
+    // reads one focused pane against secondary glances.
+    if !active {
+        ui.painter().rect_filled(
+            strip,
+            egui::CornerRadius::ZERO,
+            with_alpha(palette.bg_canvas, AGENTS_INACTIVE_SCRIM),
+        );
+    }
     // The hovered terminal owns one wheel axis (vertical scrollback, or horizontal
     // under Shift — terminal.md §8); it reads the delta without consuming it, so
     // swallow just that axis to stop the wall's 2D scroll plane from scrolling in
@@ -1012,6 +1045,21 @@ fn worktree_runs(rows: &[AgentRow], start: usize, end: usize) -> Vec<(usize, usi
         out.push((s, end));
     }
     out
+}
+
+/// The row a column expands to its live terminal: the globally-selected agent
+/// when it lives in this column, otherwise the column's most urgent agent
+/// (Working > Done > Idle, ties by workspace order — the global default rule).
+/// So every column shows one live terminal — the selected one active (keyboard +
+/// accent wash), the rest a live glance (agents.md §5). `start < end` always
+/// (a column is a non-empty group), so the fallback never yields `start` spuriously.
+fn column_expanded(rows: &[AgentRow], start: usize, end: usize, selected: Option<usize>) -> usize {
+    if let Some(s) = selected.filter(|s| (start..end).contains(s)) {
+        return s;
+    }
+    (start..end)
+        .max_by_key(|&i| (rows[i].badge, std::cmp::Reverse(i)))
+        .unwrap_or(start)
 }
 
 /// Consecutive `[start, end)` ranges sharing the same project — a root and its
@@ -1368,5 +1416,23 @@ mod tests {
         // A single worktree ⇒ one run spanning the whole project slice.
         assert_eq!(worktree_runs(&rows, 0, 2), vec![(0, 2)]);
         assert_eq!(worktree_runs(&rows, 0, 0), Vec::<(usize, usize)>::new());
+    }
+
+    #[test]
+    fn column_expanded_prefers_selection_then_urgency() {
+        let rows = [
+            row("a", "claude", AgentBadge::Idle),   // 0
+            row("a", "codex", AgentBadge::Working), // 1
+            row("a", "aider", AgentBadge::Working), // 2
+            row("b", "amp", AgentBadge::Done),      // 3
+        ];
+        // A selection inside the column wins outright, even over a more urgent sibling.
+        assert_eq!(column_expanded(&rows, 0, 3, Some(0)), 0);
+        // No selection here ⇒ most urgent, ties broken to the earliest row (idx 1 over
+        // the equally-Working idx 2), regardless of a selection in another column.
+        assert_eq!(column_expanded(&rows, 0, 3, None), 1);
+        assert_eq!(column_expanded(&rows, 0, 3, Some(3)), 1);
+        // A lone-agent column always expands that agent.
+        assert_eq!(column_expanded(&rows, 3, 4, None), 3);
     }
 }

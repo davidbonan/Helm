@@ -199,24 +199,28 @@ banner at the top, the composer's border — so a Codex session still showing it
 shows what the agent is **doing** (the transcript), not its input UI nor its
 banners; the **header badge** already carries the live state, so nothing is lost.
 Even unfocused agents read a real état d'avancement.
-**Clicking a card's body selects it** (the preview clicks through to the same),
-and the **selected** card **expands in place** to the full interactive terminal —
-the same widget mirrored live as the List panel (read / scroll the scrollback,
-type a reply, `Esc`-as-interrupt) — while every other card stays a collapsed
-header. So at most **one agent is expanded at a time** (the most urgent picked by
-default, per the selection rule above), and glancing at the wall reflows **at most
-that one pane**, never the whole grid. The expanded terminal owns the mouse wheel
-while hovered (scrollback / TUI) so the column no longer scrolls in tandem; its
-**height is shared and resizable** — dragging the handle along its bottom edge sets
-the height for the next expansion too (clamped, persisted in
-`Prefs.agents_terminal_height`, restored on launch). The nesting is **always full**
-(project → worktree → agent, even with one of each), so every agent is watchable at
-a glance and one click away from a full terminal. Both modes mirror panes from the
-same `(repo, tab, pane)` keys; selecting a card makes it the single
-`selected_agent` (drives the focus lock and `Esc`-as-interrupt), while the card's
-**jump icon focuses** that pane in its workspace (same handshake as the list
-row's). The selected card reads with the list's accent wash; an unselected card
-lights on hover to signal it expands on click.
+**Clicking a card's body selects it** (the preview clicks through to the same).
+**Every column expands one card in place** to the full interactive terminal — the
+same widget mirrored live as the List panel (read / scroll the scrollback, type a
+reply, `Esc`-as-interrupt): the column holding the **selected** agent expands
+there, every other column expands its **most urgent** agent (Working > Done > Idle,
+ties by workspace order — the same default rule as the List panel's auto-pick). So
+a glance across the wall shows one live terminal per project at once; a column's
+other agents stay collapsed headers over their previews, and reflowing a column
+never touches its neighbours. Only the **selected** agent is *active* — the single
+`selected_agent` that owns the keyboard focus lock and `Esc`-as-interrupt and reads
+**ringed and washed in accent**; the other columns' expanded terminals mirror live
+but **scrimmed back** (over the split-unfocused dim) until clicked, which selects
+them — so the wall reads one focused pane against secondary glances. The
+expanded terminal owns the mouse wheel while hovered (scrollback / TUI) so the
+column no longer scrolls in tandem; its **height is shared and resizable** —
+dragging the handle along its bottom edge sets the height for the next expansion too
+(clamped, persisted in `Prefs.agents_terminal_height`, restored on launch). The
+nesting is **always full** (project → worktree → agent, even with one of each), so
+every agent is watchable at a glance and one click away from a full terminal. Both
+modes mirror panes from the same `(repo, tab, pane)` keys; the card's **jump icon
+focuses** that pane in its workspace (same handshake as the list row's). An
+unselected card lights on hover to signal it expands / activates on click.
 
 Leaving the dashboard: picking any project, or `Esc` — **except** when the panel
 terminal holds keyboard focus, where `Esc` reaches the agent as an interrupt

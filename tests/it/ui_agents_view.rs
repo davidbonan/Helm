@@ -294,10 +294,12 @@ fn header_toggle_switches_back_to_list() {
 }
 
 #[test]
-fn columns_expand_only_the_selected_card() {
-    // Two projects (→ two columns), the first split across two worktrees. Cards
-    // collapse to a status header by default; only the selected agent's card
-    // expands to a mirrored live terminal — the others stay collapsed.
+fn each_column_expands_one_card() {
+    // Two projects (→ two columns), the first split across two worktrees. Every
+    // column expands one card to a mirrored live terminal: the helm column holds
+    // the selection (idx 1) so it expands there; the api column has no selection,
+    // so it expands its most urgent (here lone) agent. The un-expanded sibling in
+    // the helm column stays a collapsed status header over its preview.
     let (harness, cap) = harness(
         vec![
             row("helm", "claude", "Tab 1", AgentBadge::Working),
@@ -315,16 +317,16 @@ fn columns_expand_only_the_selected_card() {
     drawn.dedup();
     assert_eq!(
         drawn,
-        vec![1],
-        "only the selected card mirrors a full terminal"
+        vec![1, 2],
+        "one full terminal per column — the selected card, and the other column's lone agent"
     );
     harness.get_by_label("TERM-1");
-    // Every other agent stays reachable as a collapsed status header over a
+    harness.get_by_label("TERM-2");
+    // The helm column's un-selected agent stays a collapsed status header over a
     // read-only progress preview of its last lines.
     harness.get_by_label("Claude in helm — Tab 1");
     harness.get_by_label("Aider in api — Tab 1");
     harness.get_by_label("PREV-0");
-    harness.get_by_label("PREV-2");
 }
 
 #[test]
