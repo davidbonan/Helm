@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.4.1
+
+- Rename a linked worktree from its context menu: *Rename worktree…*
+  previews the destination as you type, and the sidebar entry follows the move
+  with its terminals and running agent untouched.
+- The Agents *Columns* view now expands one terminal per column instead of a
+  single card over the whole wall; the active card keeps its accent ring.
+
 ## 1.4.0
 
 - A `helm://open?path=…` URL now opens exactly what `helm <path>` would: a
@@ -86,10 +94,4 @@
 
 - Select individual files in the WIP sidebar and stash them one at a time.
 - Newly created worktrees now show up in the sidebar on their own while the app is focused.
-
-## 1.0.2
-
-- Jump to the Agents pane with ⌃⌘0; hold Cmd to reveal its shortcut badge.
-- Confirm dialogs with the Enter key.
-- Polished the workspace sidebar headers, now color-coded per project.
 
