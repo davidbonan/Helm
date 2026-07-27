@@ -71,6 +71,10 @@ const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// (pull-requests.md §6): network-bound (`gh`/`curl`), so far coarser than the
 /// git/worktree ticks.
 const PR_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Same tick while the cockpit is *not* on screen (pull-requests.md §6): the sidebar
+/// review badge must stay live from any zone, but nobody is reading the list, so the
+/// cadence is slower still.
+const PR_BACKGROUND_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(180);
 /// Bound on the per-PR review cache (pull-requests.md §11): the most recently opened
 /// surfaces are kept warm (drafts + loaded diff) so navigating back is instant; older
 /// ones are evicted by `LruOrder`.
@@ -3750,35 +3754,39 @@ impl eframe::App for HelmApp {
             self.last_group_poll = now;
         }
 
-        // PR cockpit refresh (pull-requests.md §6): a cold fetch on entry, then a
-        // focused tick — same focus rationale as the group sync. Reuses
-        // `focus_regained` so coming back to the app refreshes the open cockpit.
-        // The Preferences "Pull Requests" section warms the same cache to show
-        // each source's live status (pull-requests.md §3).
+        // PR refresh (pull-requests.md §6): a cold fetch on launch, then a focused
+        // tick — same focus rationale as the group sync. Reuses `focus_regained` so
+        // coming back to the app refreshes the list. The tick runs from any zone, at
+        // the slower background cadence when the cockpit (or the Preferences "Pull
+        // Requests" section, which warms the same cache for its source status,
+        // pull-requests.md §3) isn't on screen: the sidebar review badge is read from
+        // the terminal, so a cache that only refreshes on the cockpit is stale by
+        // construction.
         let pr_surface_open = self.central_mode == CentralMode::PullRequests
             || (self.page == Page::Preferences
                 && self.preferences_section == PreferencesSection::PullRequests);
-        if pr_surface_open {
-            let roots = self.workspace_project_roots();
-            let cold = !self.pr_cache.loaded;
-            let repos_changed = roots != self.last_pr_roots;
-            let age = now - self.last_pr_poll;
-            let pr_due = focused && age >= PR_POLL_INTERVAL.as_secs_f64();
-            if should_refresh_pr(
-                cold,
-                repos_changed,
-                focus_regained,
-                age,
-                PR_FOCUS_REFRESH_SECS,
-            ) || pr_due
-            {
-                self.last_pr_roots = roots;
-                self.refresh_pull_requests(&ctx);
-                self.last_pr_poll = now;
-            }
-            if focused {
-                ctx.request_repaint_after(PR_POLL_INTERVAL);
-            }
+        let pr_interval = if pr_surface_open {
+            PR_POLL_INTERVAL
+        } else {
+            PR_BACKGROUND_POLL_INTERVAL
+        };
+        let pr_roots = self.workspace_project_roots();
+        let pr_age = now - self.last_pr_poll;
+        let pr_due = focused && pr_age >= pr_interval.as_secs_f64();
+        if should_refresh_pr(
+            !self.pr_cache.loaded,
+            pr_roots != self.last_pr_roots,
+            focus_regained,
+            pr_age,
+            PR_FOCUS_REFRESH_SECS,
+        ) || pr_due
+        {
+            self.last_pr_roots = pr_roots;
+            self.refresh_pull_requests(&ctx);
+            self.last_pr_poll = now;
+        }
+        if focused {
+            ctx.request_repaint_after(pr_interval);
         }
 
         // While the Keyboard recorder is armed, the toggle is captured as a combo

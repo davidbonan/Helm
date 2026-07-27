@@ -38,7 +38,8 @@ shortcut** (unlike Agents' `⌃⌘0`).
 **Badge** = the count of **To review** PRs (the actionable ones) as a small count
 pill; **0 ⇒ nothing**. Authored PRs do **not** raise the badge (informational,
 not a call to action). The badge reads the cached aggregate, so showing it costs
-no extra fetch.
+no extra fetch — the cache is kept current by the background tick (§6), which
+runs whether or not the cockpit is open.
 
 ## 3. Sources & authentication
 
@@ -136,12 +137,15 @@ roles against the cached identity, and returns a `Vec<PullRequest>` + per-source
 status. **Detail** (on selection) and **checkout** (§7) are separate gated
 requests.
 
-Refresh happens on **first entry** to the page (cold / stale cache), on a
-**manual Refresh** button, and on a **slow background tick** (~60 s) while the
-page is open **and the window is focused** — network is heavier than the
-worktree / git ticks, so the cadence is deliberately conservative (rate limits).
-A change to the workspace repo set re-queries. Network error / offline ⇒ keep the
-last good cache, flag it **stale**; **never wipe rows** on a failed refresh.
+Refresh happens on a **cold cache** (first frame after launch), on a **manual
+Refresh** button, and on a **slow background tick** while the window is
+**focused** — network is heavier than the worktree / git ticks, so the cadence is
+deliberately conservative (rate limits): **~60 s** while the cockpit is on
+screen, **~180 s** from any other zone. The tick is **not** gated on the page
+being open: the sidebar badge (§2) is read from the terminal, so a cache
+refreshed only by the cockpit would be stale by construction. A change to the
+workspace repo set re-queries. Network error / offline ⇒ keep the last good
+cache, flag it **stale**; **never wipe rows** on a failed refresh.
 
 Opened PRs are held in a small **bounded per-PR review cache** (LRU, ~8 entries),
 each carrying its own **per-file diff cache** keyed by `(base, head, path)`, so
