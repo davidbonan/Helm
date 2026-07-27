@@ -141,6 +141,34 @@ impl RepoCaches {
         self.mutation_locks.retain(|key, _| self.keys.contains(key));
     }
 
+    /// Carries every entry of a renamed worktree over to its new key (worktrees.md
+    /// §6). The keys are the repo's canonical path, so a rename would otherwise read
+    /// as a repo leaving the workspace: `sync` would drop the pane sets and kill
+    /// their process trees — an agent running in the renamed worktree included.
+    pub(crate) fn rekey(&mut self, from: &RepoKey, to: &RepoKey) {
+        fn carry<V>(map: &mut HashMap<RepoKey, V>, from: &RepoKey, to: &RepoKey) {
+            if let Some(value) = map.remove(from) {
+                map.insert(to.clone(), value);
+            }
+        }
+        let swap = |key: RepoKey| if &key == from { to.clone() } else { key };
+        self.panes = std::mem::take(&mut self.panes)
+            .into_iter()
+            .map(|((repo, tab), panes)| ((swap(repo), tab), panes))
+            .collect();
+        self.agent_watch = std::mem::take(&mut self.agent_watch)
+            .into_iter()
+            .map(|(((repo, tab), pane), state)| (((swap(repo), tab), pane), state))
+            .collect();
+        carry(&mut self.run_panes, from, to);
+        carry(&mut self.agent_badges, from, to);
+        carry(&mut self.branch_labels, from, to);
+        carry(&mut self.dirty, from, to);
+        carry(&mut self.graph_cache, from, to);
+        carry(&mut self.commit_drafts, from, to);
+        carry(&mut self.mutation_locks, from, to);
+    }
+
     /// The repo's mutation lock, minted on first use. Shared by every runner of
     /// every session opened on that repo — the guarantee the per-session lock
     /// could not give: a run abandoned by a repo switch keeps refusing the

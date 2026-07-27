@@ -10,9 +10,10 @@ use helm::git::worktree::{WorktreeSource, WorktreeSourceKind};
 use helm::keybindings::Keymap;
 use helm::theme::palette;
 use helm::ui::repo_sidebar::{
-    create_worktree_modal, delete_worktree_modal, repo_sidebar, CreateSelection,
-    CreateWorktreeModalAction, CreateWorktreePrompt, CreateWorktreeState, DeleteModalAction,
-    DeletePrompt, DoneAgentRow, ProjectHeader, ProjectVisibility, RepoRow, SidebarAction,
+    create_worktree_modal, delete_worktree_modal, rename_worktree_modal, repo_sidebar,
+    CreateSelection, CreateWorktreeModalAction, CreateWorktreePrompt, CreateWorktreeState,
+    DeleteModalAction, DeletePrompt, DoneAgentRow, ProjectHeader, ProjectVisibility,
+    RenameModalAction, RenameWorktreePrompt, RenameWorktreeState, RepoRow, SidebarAction,
     SidebarItem,
 };
 
@@ -194,6 +195,31 @@ fn create_modal_harness(
             );
         },
         (state, CreateWorktreeModalAction::default()),
+    )
+}
+
+/// Rename modal on the linked worktree `/tmp/main.worktrees/feature-x`, its name
+/// field pre-filled by the app with the current folder name.
+fn rename_modal_harness(name: &str) -> Harness<'static, (RenameWorktreeState, RenameModalAction)> {
+    let state = RenameWorktreeState {
+        name: name.to_owned(),
+        ..Default::default()
+    };
+    Harness::new_ui_state(
+        move |ui, (state, action)| {
+            let palette = palette(Theme::Light);
+            rename_worktree_modal(
+                ui,
+                &palette,
+                &RenameWorktreePrompt {
+                    path: std::path::Path::new("/tmp/main.worktrees/feature-x"),
+                    error: None,
+                },
+                state,
+                action,
+            );
+        },
+        (state, RenameModalAction::default()),
     )
 }
 
@@ -976,6 +1002,21 @@ fn header_context_menu_offers_reveal_copy_and_remove() {
 }
 
 #[test]
+fn child_row_menu_offers_rename_worktree() {
+    let mut harness = grouped_harness();
+    harness.run();
+
+    harness.get_by_label("feature-x").click_secondary();
+    harness.run();
+
+    harness.get_by_label("Rename worktree…").click();
+    harness.run();
+
+    assert_eq!(harness.state().rename_worktree, Some(1));
+    assert_eq!(harness.state().delete_worktree, None);
+}
+
+#[test]
 fn child_row_menu_offers_delete_worktree_never_remove() {
     let mut harness = grouped_harness();
     harness.run();
@@ -1098,6 +1139,10 @@ fn main_row_menu_offers_reveal_copy_only() {
         0,
         "the main row menu offers no Remove; that lives on the project header menu"
     );
+    assert!(
+        harness.query_by_label("Rename worktree…").is_none(),
+        "the main worktree is the repository itself: `git worktree move` refuses it"
+    );
 }
 
 #[test]
@@ -1147,6 +1192,66 @@ fn ignored_modal_warns_before_wiping_the_ignored_files() {
 
     assert!(harness.state().confirm);
     assert!(!harness.state().dismiss);
+}
+
+#[test]
+fn rename_modal_previews_the_destination_and_waits_for_a_new_name() {
+    let mut harness = rename_modal_harness("feature-x");
+    harness.run();
+
+    harness.get_by_label("Rename worktree “feature-x”");
+    harness.get_by_label_contains("/tmp/main.worktrees/feature-x");
+    harness.get_by_label("Rename").click();
+    harness.run();
+    assert!(
+        !harness.state().1.rename,
+        "the current name is not a rename: the button stays disabled"
+    );
+
+    harness.state_mut().0.name = "feature-y".to_owned();
+    harness.run();
+    harness.get_by_label_contains("/tmp/main.worktrees/feature-y");
+    harness.get_by_label("Rename").click();
+    harness.run();
+
+    assert!(harness.state().1.rename);
+    assert!(!harness.state().1.dismiss);
+}
+
+#[test]
+fn rename_modal_invalid_name_disables_rename() {
+    let mut harness = rename_modal_harness("../escape");
+    harness.run();
+
+    harness.get_by_label_contains("cannot be used as a worktree folder");
+    harness.get_by_label("Rename").click();
+    harness.run();
+    assert!(!harness.state().1.rename);
+
+    harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run();
+    assert!(
+        !harness.state().1.rename,
+        "Enter must not confirm an invalid name either"
+    );
+}
+
+#[test]
+fn rename_modal_cancel_dismisses_without_renaming() {
+    let mut harness = rename_modal_harness("feature-y");
+    harness.run();
+
+    harness.get_by_label("Cancel").click();
+    harness.run();
+
+    assert!(harness.state().1.dismiss);
+    assert!(!harness.state().1.rename);
 }
 
 #[test]

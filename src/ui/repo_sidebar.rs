@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::agent_watch::AgentBadge;
-use crate::git::worktree::{path_for_branch, WorktreeSource};
+use crate::git::worktree::{path_for_branch, rename_destination, WorktreeSource};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, SHORTCUT_BADGE_SIZE};
 use crate::ui::spinner::{paint_done_dot, paint_pinwheel, Spinner};
@@ -88,6 +88,9 @@ pub struct SidebarAction {
     pub remove: Option<usize>,
     pub reveal: Option<usize>,
     pub delete_worktree: Option<usize>,
+    /// Rename worktree picked on a linked row's context menu (worktrees.md §6):
+    /// opens the modal that moves its folder.
+    pub rename_worktree: Option<usize>,
     pub create_worktree: Option<usize>,
     /// Disclosure chevron clicked on a group root: fold/unfold its worktrees.
     pub toggle_collapse: Option<usize>,
@@ -135,6 +138,30 @@ pub enum DeletePrompt {
 #[derive(Default)]
 pub struct DeleteModalAction {
     pub confirm: bool,
+    pub dismiss: bool,
+}
+
+/// Rename worktree modal (worktrees.md §6): the folder is moved by
+/// `git worktree move`, the branch is left alone.
+pub struct RenameWorktreePrompt<'a> {
+    /// Current worktree path: the name to beat and the parent the new one lands in.
+    pub path: &'a Path,
+    /// Failure of the last attempt, shown inline (the modal stays open).
+    pub error: Option<&'a str>,
+}
+
+/// Mutable view state of the rename modal, owned by `HelmApp` for its lifetime.
+#[derive(Default)]
+pub struct RenameWorktreeState {
+    /// New folder name, pre-filled with the current one on opening.
+    pub name: String,
+    /// One-shot focus placed on the name input at opening.
+    pub focused: bool,
+}
+
+#[derive(Default)]
+pub struct RenameModalAction {
+    pub rename: bool,
     pub dismiss: bool,
 }
 
@@ -1488,6 +1515,10 @@ fn repo_row(
                 // would bring back a mere hide, worktrees.md §6).
                 if !row.main {
                     ui.separator();
+                    if ui.button("Rename worktree…").clicked() {
+                        out.rename_worktree = Some(row.index);
+                        ui.close();
+                    }
                     if ui.button("Delete worktree from disk").clicked() {
                         out.delete_worktree = Some(row.index);
                         ui.close();
@@ -1878,6 +1909,92 @@ pub fn delete_worktree_modal(
                     }
                 }
             }
+        });
+    if modal.should_close() {
+        out.dismiss = true;
+    }
+}
+
+/// Rename worktree (worktrees.md §6): a single name field over the worktree's own
+/// parent folder, with the resolved destination previewed live. Rename stays
+/// disabled while the name is invalid or unchanged.
+pub fn rename_worktree_modal(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    prompt: &RenameWorktreePrompt<'_>,
+    state: &mut RenameWorktreeState,
+    out: &mut RenameModalAction,
+) {
+    let current = prompt
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let modal = egui::Modal::new(egui::Id::new("rename_worktree_modal"))
+        .frame(crate::ui::modal_frame(ui.style()))
+        .show(ui.ctx(), |ui| {
+            crate::ui::modal_controls_style(ui);
+            ui.set_width(CREATE_MODAL_WIDTH);
+            ui.label(egui::RichText::new(format!("Rename worktree “{current}”")).strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Moves the folder on disk; the branch is left untouched.")
+                    .color(palette.text_secondary),
+            );
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Worktree name").color(palette.text_muted));
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut state.name).desired_width(f32::INFINITY));
+            if !state.focused {
+                state.focused = true;
+                response.request_focus();
+            }
+
+            let destination = rename_destination(prompt.path, &state.name);
+            ui.add_space(6.0);
+            match &destination {
+                Some(path) => {
+                    ui.label(egui::RichText::new("Location").color(palette.text_muted));
+                    ui.label(
+                        egui::RichText::new(path.display().to_string())
+                            .monospace()
+                            .color(palette.text_secondary),
+                    );
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "“{}” cannot be used as a worktree folder.",
+                            state.name.trim()
+                        ))
+                        .color(palette.git_deleted),
+                    );
+                }
+            }
+            if let Some(error) = prompt.error {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(error).color(palette.git_deleted));
+            }
+
+            ui.add_space(16.0);
+            let enabled = destination.is_some_and(|path| path != prompt.path);
+            if enabled && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                out.rename = true;
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    out.dismiss = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = egui::Button::new(
+                        egui::RichText::new("Rename").color(egui::Color32::WHITE),
+                    )
+                    .fill(palette.primary_button_fill());
+                    if ui.add_enabled(enabled, button).clicked() {
+                        out.rename = true;
+                    }
+                });
+            });
         });
     if modal.should_close() {
         out.dismiss = true;

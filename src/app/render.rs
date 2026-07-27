@@ -2433,6 +2433,9 @@ impl HelmApp {
         if let Some(index) = sidebar.delete_worktree {
             self.request_delete_worktree(index, ctx);
         }
+        if let Some(index) = sidebar.rename_worktree {
+            self.open_rename_worktree_modal(index);
+        }
         if let Some(index) = sidebar.create_worktree {
             self.open_create_worktree_modal(index, ctx);
         }
@@ -2518,6 +2521,49 @@ impl HelmApp {
             };
             if let Some((root, source, name, base)) = request {
                 self.request_create_worktree(root, source, name, base, ctx);
+                ctx.request_repaint();
+            } else if action.dismiss {
+                self.modal = None;
+            }
+            return;
+        }
+
+        // Rename worktree (worktrees.md §6): the move is a directory rename, fast
+        // enough to run on the frame — no runner. A refusal (locked worktree,
+        // destination taken) keeps the modal open with the reason inline.
+        if let Some(Modal::RenameWorktree(pending)) = self.modal.as_mut() {
+            let mut action = crate::ui::repo_sidebar::RenameModalAction::default();
+            crate::ui::repo_sidebar::rename_worktree_modal(
+                ui,
+                &palette,
+                &crate::ui::repo_sidebar::RenameWorktreePrompt {
+                    path: &pending.path,
+                    error: pending.error.as_deref(),
+                },
+                &mut pending.view,
+                &mut action,
+            );
+            if action.rename {
+                let root = pending.root.clone();
+                let path = pending.path.clone();
+                let name = pending.view.name.clone();
+                let now = ctx.input(|i| i.time);
+                match self.rename_worktree(&root, &path, &name, ctx) {
+                    Ok(moved) => {
+                        self.modal = None;
+                        let label = moved
+                            .file_name()
+                            .unwrap_or(moved.as_os_str())
+                            .to_string_lossy();
+                        self.toasts
+                            .success(format!("Renamed worktree — {label}"), now);
+                    }
+                    Err(message) => {
+                        if let Some(Modal::RenameWorktree(pending)) = self.modal.as_mut() {
+                            pending.error = Some(message);
+                        }
+                    }
+                }
                 ctx.request_repaint();
             } else if action.dismiss {
                 self.modal = None;
@@ -2664,6 +2710,7 @@ impl HelmApp {
                 }
                 Modal::DiscardHunk { .. } => discard_hunk_modal(ui, &palette, &mut modal_action),
                 Modal::CreateWorktree(_)
+                | Modal::RenameWorktree(_)
                 | Modal::DeleteTag { .. }
                 | Modal::AiRebase(_)
                 | Modal::AiRebaseReport(_)
@@ -2790,6 +2837,7 @@ impl HelmApp {
                     }
                     Some(
                         Modal::CreateWorktree(_)
+                        | Modal::RenameWorktree(_)
                         | Modal::DeleteTag { .. }
                         | Modal::AiRebase(_)
                         | Modal::AiRebaseReport(_)

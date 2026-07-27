@@ -132,7 +132,7 @@ worktrees = ["/Users/dev/helm-studio.worktrees/feature-x"]
 |-------|------|
 | **Project header** | **+** button ⇒ **Create worktree** modal; **right-click** context menu: Reveal in Finder · Copy path · Hide project · **Remove from sidebar** ⇒ removes the **whole group** from the app (prefs included), does not touch the disk (= current Remove, [`overview.md`](overview.md) §3.1). |
 | **Main row** | Context menu: Reveal in Finder · Copy path. No Delete — the main worktree is the repository itself. |
-| **Linked worktree row** | Context menu: Reveal in Finder · Copy path · **Delete worktree from disk** — **actually** deletes the worktree from the disk. |
+| **Linked worktree row** | Context menu: Reveal in Finder · Copy path · **Rename worktree…** (§6) · **Delete worktree from disk** — **actually** deletes the worktree from the disk. |
 
 **Create worktree**:
 
@@ -203,6 +203,25 @@ worktrees = ["/Users/dev/helm-studio.worktrees/feature-x"]
   **not** checked into the repo: a repo-sourced post-create script would be an
   arbitrary-code-execution vector on pull. Team-sharing is out of v1 scope.
 
+**Rename worktree** (linked worktrees only — the main worktree is the repository
+itself):
+
+- The row's *Rename worktree…* opens a modal with a single **Worktree name**
+  field, pre-filled with the current folder name and validated like the create
+  modal's (relative, no `..`/`.`/empty segment); the resolved destination is
+  previewed live. **Rename** stays disabled while the name is invalid or
+  unchanged, and `Enter` confirms.
+- The new name is resolved against the worktree's **own parent folder**: renaming
+  moves the folder in place, it never relocates the worktree under another base.
+  Slashes nest, as in the create modal.
+- Implementation: `git worktree move` (libgit2 exposes no equivalent — the move
+  also repoints the worktree's `gitdir`/`commondir`). The **branch is untouched**.
+  A refusal (locked worktree, destination taken, git error) keeps the modal open
+  with the reason inline.
+- The sidebar entry **follows the move in place**: it keeps its slot, its
+  tabs/splits, its running terminals (an agent at work included) and the
+  selection — the rename is not a delete plus a discovery (§4).
+
 **Delete worktree**:
 
 - **clean and holding no ignored file** ⇒ immediate deletion, no confirmation
@@ -258,7 +277,8 @@ The sidebar order is user-controlled and **persisted** (§5):
 
 ## 10. Out of scope (v1)
 
-- Worktree lock / move from the app.
+- Worktree lock from the app (rename = `git worktree move` within the worktree's
+  own parent folder, §6; relocating one under another base stays out).
 - FS watcher for discovery (the §4 triggers — including the focused 5 s tick —
   are sufficient).
 - Choosing the base of a branch created on the fly (always the root HEAD; a

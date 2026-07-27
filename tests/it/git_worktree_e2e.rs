@@ -730,3 +730,69 @@ fn submodule_stays_standalone() {
     );
     assert!(worktree::list(&sub_path).unwrap().worktrees.is_empty());
 }
+
+#[test]
+fn rename_moves_the_folder_next_to_it_and_keeps_the_branch_checked_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    let head = commit_file(&repo, "a.txt");
+    create_branch(&repo, "feat/toto", head);
+    let created = worktree::create(&root_dir, "feat/toto", None, None).unwrap();
+    fs::write(created.path.join("scratch.txt"), "keep me\n").unwrap();
+
+    let moved = worktree::rename(&root_dir, &created.path, "titi").unwrap();
+
+    assert_eq!(moved, created.path.parent().unwrap().join("titi"));
+    assert!(!created.path.exists(), "the old folder is gone");
+    assert_eq!(
+        fs::read_to_string(moved.join("scratch.txt")).unwrap(),
+        "keep me\n"
+    );
+    let listed: Vec<_> = worktree::list(&root_dir)
+        .unwrap()
+        .worktrees
+        .into_iter()
+        .map(|w| w.path)
+        .collect();
+    assert_eq!(listed, vec![moved.clone()], "git metadata follows the move");
+    assert_eq!(
+        worktree::resolve_root(&moved).unwrap(),
+        fs::canonicalize(&root_dir).unwrap()
+    );
+    let wt_repo = git2::Repository::open(&moved).unwrap();
+    assert_eq!(
+        wt_repo.head().unwrap().shorthand().unwrap(),
+        "feat/toto",
+        "the branch is untouched by the rename"
+    );
+}
+
+#[test]
+fn rename_refuses_an_invalid_name_and_an_occupied_destination() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    let head = commit_file(&repo, "a.txt");
+    create_branch(&repo, "feat/toto", head);
+    create_branch(&repo, "fix/bug", head);
+    let created = worktree::create(&root_dir, "feat/toto", Some("toto"), None).unwrap();
+    let sibling = worktree::create(&root_dir, "fix/bug", Some("taken"), None).unwrap();
+
+    for name in ["", "  ", "..", "../escape", "/abs"] {
+        assert!(
+            matches!(
+                worktree::rename(&root_dir, &created.path, name),
+                Err(worktree::RenameError::InvalidName)
+            ),
+            "“{name}” is not a valid worktree folder name"
+        );
+    }
+    let err = worktree::rename(&root_dir, &created.path, "taken").unwrap_err();
+    assert!(
+        matches!(&err, worktree::RenameError::Exists(path) if path == &sibling.path),
+        "expected Exists({}), got {err:?}",
+        sibling.path.display()
+    );
+    assert!(created.path.exists(), "a refused rename moves nothing");
+}

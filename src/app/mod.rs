@@ -225,6 +225,16 @@ struct PendingDelete {
     prompt: DeletePrompt,
 }
 
+/// Target of a Rename worktree (worktrees.md §6): the folder to move and the group
+/// root the `git worktree move` runs from. The entry is re-found by `path` when the
+/// rename is confirmed — a sync tick may have reordered the sidebar meanwhile.
+struct PendingRename {
+    root: PathBuf,
+    path: PathBuf,
+    view: crate::ui::repo_sidebar::RenameWorktreeState,
+    error: Option<String>,
+}
+
 /// Worktree creation modal state: sources are pre-filtered by the domain and the
 /// selected source is revalidated by the async runner before writing.
 struct PendingCreate {
@@ -320,6 +330,8 @@ enum Modal {
     DeleteWorktree(PendingDelete),
     /// Create worktree from a source branch selected in the sidebar modal.
     CreateWorktree(PendingCreate),
+    /// Rename worktree from a linked row's context menu (worktrees.md §6).
+    RenameWorktree(PendingRename),
     /// Branch deletion (local or remote) from the graph context menu (git.md §9).
     DeleteBranch(DeleteBranchTarget),
     /// Stash deletion from a stash row's context menu (git.md §9).
@@ -384,6 +396,7 @@ impl Modal {
             | Modal::AiRebase(_)
             | Modal::AiRebaseReport(_) => true,
             Modal::DeleteWorktree(_)
+            | Modal::RenameWorktree(_)
             | Modal::CreateWorktree(_)
             | Modal::Feedback(_)
             | Modal::WhatsNew => false,
@@ -2724,6 +2737,74 @@ impl HelmApp {
             force: false,
         };
         self.delete_runner(ctx).request(request);
+    }
+
+    /// Opens the Rename worktree modal (worktrees.md §6). Linked worktrees only —
+    /// the main row has no Rename entry, `git worktree move` refuses it anyway.
+    fn open_rename_worktree_modal(&mut self, index: usize) {
+        let Some(root) = self.workspace.parent_root(index).map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(repo) = self.workspace.repo(index) else {
+            return;
+        };
+        self.modal = Some(Modal::RenameWorktree(PendingRename {
+            root,
+            path: repo.path.clone(),
+            view: crate::ui::repo_sidebar::RenameWorktreeState {
+                name: repo.name.clone(),
+                focused: false,
+            },
+            error: None,
+        }));
+    }
+
+    /// Moves the worktree's folder, then follows it **in place**: the entry keeps
+    /// its slot, its terminals and the selection (`set_repo_path` + `rekey_repo`),
+    /// where a plain sync would read the rename as a delete plus a discovery and
+    /// kill the panes. Returns the new path, or the failure to show in the modal.
+    fn rename_worktree(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        name: &str,
+        ctx: &egui::Context,
+    ) -> Result<PathBuf, String> {
+        let moved = crate::git::worktree::rename(root, path, name).map_err(|err| err.message())?;
+        let index = (0..self.workspace.len())
+            .find(|&i| self.workspace.repo(i).is_some_and(|repo| repo.path == path));
+        match index {
+            Some(index) => {
+                let (from, to) = (RepoKey::of(path), RepoKey::of(&moved));
+                self.workspace.set_repo_path(index, moved.clone());
+                self.rekey_repo(&from, &to);
+                self.caches.sync(&self.workspace);
+                let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+                self.persist(move |_| next);
+                self.request_group_refresh(ctx);
+            }
+            // The row left the sidebar while the modal was open (external delete):
+            // the sync adopts the moved folder as a discovery.
+            None => self.run_group_sync(ctx),
+        }
+        Ok(moved)
+    }
+
+    /// Carries the per-repo state keyed by path over to a renamed worktree's new
+    /// key: the caches (panes, git, agent state) plus the app-side maps.
+    fn rekey_repo(&mut self, from: &RepoKey, to: &RepoKey) {
+        self.caches.rekey(from, to);
+        if let Some(collapsed) = self.run_collapsed.remove(from) {
+            self.run_collapsed.insert(to.clone(), collapsed);
+        }
+        if let Some(review) = self.review.remove(from) {
+            self.review.insert(to.clone(), review);
+        }
+        if let Some((key, ..)) = self.selected_agent.as_mut() {
+            if key == from {
+                *key = to.clone();
+            }
+        }
     }
 
     fn delete_runner(&mut self, ctx: &egui::Context) -> &mut DeleteRunner {

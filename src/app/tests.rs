@@ -692,6 +692,41 @@ fn sync_drops_the_caches_of_a_removed_repo_and_leaves_survivors_untouched() {
 }
 
 #[test]
+fn rekey_carries_a_renamed_worktree_caches_over_instead_of_dropping_them() {
+    let mut ws = workspace_with(&["a", "b"]);
+    let mut caches = RepoCaches::default();
+    caches.sync(&ws);
+    let (a, b) = (key_of(&ws, 0, 0), key_of(&ws, 1, 0));
+    caches.panes.insert(a.clone(), tagged_panes("a-t0"));
+    caches.panes.insert(b.clone(), tagged_panes("b-t0"));
+    caches.branch_labels.insert(b.0.clone(), "dev".to_owned());
+
+    assert!(ws.set_repo_path(1, PathBuf::from("/tmp/renamed")));
+    let renamed = key_of(&ws, 1, 0);
+    caches.rekey(&b.0, &renamed.0);
+    caches.sync(&ws);
+
+    assert_eq!(
+        tag_of(&caches.panes, &renamed),
+        Some("b-t0"),
+        "the renamed worktree keeps its live panes under the new key"
+    );
+    assert!(
+        !caches.panes.contains_key(&b),
+        "nothing left on the old key"
+    );
+    assert_eq!(
+        caches.branch_labels.get(&renamed.0).map(String::as_str),
+        Some("dev")
+    );
+    assert_eq!(
+        tag_of(&caches.panes, &a),
+        Some("a-t0"),
+        "the other repos are untouched"
+    );
+}
+
+#[test]
 fn apply_group_refresh_merges_by_key_clears_on_none_and_ignores_unknown() {
     let mut app = HelmApp::with_workspace(workspace_with(&["a", "b", "c"]));
     let key = |i: usize| RepoKey::of(&app.workspace.repo(i).unwrap().path);

@@ -207,3 +207,42 @@ fn sync_leaves_an_unreadable_root_alone() {
         vec![fs::canonicalize(tmp.path()).unwrap().join("main")]
     );
 }
+
+#[test]
+fn a_renamed_worktree_followed_in_place_survives_the_next_sync() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_file(&repo, "a.txt");
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+
+    let mut ws = Workspace::new();
+    add_picked_folders(&mut ws, vec![wt_path]);
+    assert_eq!(ws.active(), Some(1), "the imported worktree is active");
+
+    let before = ws.repo(1).unwrap().path.clone();
+    let moved = helm::git::worktree::rename(&root_dir, &before, "feature-y").unwrap();
+    assert!(ws.set_repo_path(1, moved.clone()));
+    let outcome = sync_workspace_groups(&mut ws);
+
+    assert!(
+        !outcome.changed,
+        "the entry already followed the move: nothing to purge nor discover"
+    );
+    assert_eq!(
+        paths_of(&ws),
+        vec![fs::canonicalize(&root_dir).unwrap(), moved.clone()]
+    );
+    assert_eq!(
+        outcome.syncs.last().unwrap().mapping,
+        vec![Some(0), Some(1)],
+        "the renamed worktree keeps its slot — its PTYs are not killed"
+    );
+    assert_eq!(
+        ws.active_repo().map(|r| r.path.clone()),
+        Some(moved),
+        "the selection stays on the renamed worktree"
+    );
+    assert_eq!(ws.repo(1).unwrap().name, "feature-y");
+}

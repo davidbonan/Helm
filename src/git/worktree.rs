@@ -743,6 +743,83 @@ pub fn delete_by_path(root: &Path, target: &Path, force: bool) -> Result<(), Del
     delete(root, &wt.name, force)
 }
 
+#[derive(Debug)]
+pub enum RenameError {
+    /// Name rejected before anything moves: empty, absolute, or holding a
+    /// `.`/`..`/empty segment (same rule as the create modal's folder name).
+    InvalidName,
+    Exists(PathBuf),
+    /// `git worktree move` refused: locked worktree, submodules, git absent…
+    Git(String),
+}
+
+impl RenameError {
+    pub fn message(&self) -> String {
+        match self {
+            RenameError::InvalidName => "Not a valid worktree folder name".to_owned(),
+            RenameError::Exists(path) => format!("{} already exists", path.display()),
+            RenameError::Git(message) => message.clone(),
+        }
+    }
+}
+
+/// Destination of a rename: the new name is resolved against the worktree's **own
+/// parent directory** — renaming moves the folder in place, it never relocates the
+/// worktree under another base (worktrees.md §6). Slashes nest, like the create
+/// modal's folder name. `None` = invalid name.
+pub fn rename_destination(path: &Path, new_name: &str) -> Option<PathBuf> {
+    let relative = branch_relative_path(new_name.trim())?;
+    Some(path.parent()?.join(relative))
+}
+
+/// Renames a linked worktree's folder. Shells out to `git worktree move`: libgit2
+/// exposes no equivalent — the move must also repoint the worktree's `gitdir` /
+/// `commondir` files, and git2 wraps neither.
+pub fn rename(root: &Path, path: &Path, new_name: &str) -> Result<PathBuf, RenameError> {
+    let dest = rename_destination(path, new_name).ok_or(RenameError::InvalidName)?;
+    if dest.exists() {
+        return Err(RenameError::Exists(dest));
+    }
+    // Only a nested name has a parent to create; the plain case is a no-op.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|err| RenameError::Git(err.to_string()))?;
+    }
+    let out = crate::git::cli::run(
+        root,
+        &[
+            "worktree",
+            "move",
+            &path.to_string_lossy(),
+            &dest.to_string_lossy(),
+        ],
+    )
+    .map_err(|err| {
+        RenameError::Git(match err {
+            crate::git::cli::CliError::NotFound => "git binary not found".to_owned(),
+            crate::git::cli::CliError::TimedOut(timeout) => {
+                format!("git timed out after {}s", timeout.as_secs())
+            }
+            crate::git::cli::CliError::Io(err) => err.to_string(),
+        })
+    })?;
+    if !out.success() {
+        let line = out
+            .stderr
+            .lines()
+            .chain(out.stdout.lines())
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("git worktree move failed");
+        return Err(RenameError::Git(
+            line.strip_prefix("fatal: ")
+                .or_else(|| line.strip_prefix("error: "))
+                .unwrap_or(line)
+                .to_owned(),
+        ));
+    }
+    Ok(canonical(dest))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteRequest {
     pub root: PathBuf,
@@ -1089,6 +1166,29 @@ mod tests {
             short,
             "a detached HEAD is labelled by its short commit id"
         );
+    }
+
+    #[test]
+    fn rename_destination_stays_in_the_worktree_own_parent() {
+        let path = Path::new("/Users/dev/helm-studio.worktrees/feat/toto");
+
+        assert_eq!(
+            rename_destination(path, "  titi  ").unwrap(),
+            Path::new("/Users/dev/helm-studio.worktrees/feat/titi"),
+            "the name is trimmed and lands next to the current folder"
+        );
+        assert_eq!(
+            rename_destination(path, "titi/deep").unwrap(),
+            Path::new("/Users/dev/helm-studio.worktrees/feat/titi/deep"),
+            "slashes nest, like the create modal's folder name"
+        );
+        for invalid in ["", "   ", ".", "..", "../escape", "a/../b", "/abs"] {
+            assert_eq!(
+                rename_destination(path, invalid),
+                None,
+                "“{invalid}” is not a valid worktree folder name"
+            );
+        }
     }
 
     #[test]

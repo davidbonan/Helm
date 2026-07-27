@@ -372,6 +372,21 @@ impl Workspace {
         index
     }
 
+    /// Follows a worktree renamed on disk (`git worktree move`, worktrees.md §6):
+    /// the entry keeps its slot, its tabs and the selection — only its path and
+    /// name move, so the next disk sync sees a survivor instead of a
+    /// vanished-plus-discovered pair.
+    pub fn set_repo_path(&mut self, index: usize, path: PathBuf) -> bool {
+        let Some(entry) = self.entries.get_mut(index) else {
+            return false;
+        };
+        entry.repo = Repo {
+            bare: entry.repo.bare,
+            ..Repo::new(path)
+        };
+        true
+    }
+
     /// Reconciles a root's bare flag (sync, worktrees.md §8).
     pub fn set_bare(&mut self, index: usize, bare: bool) {
         if let Some(e) = self.entries.get_mut(index) {
