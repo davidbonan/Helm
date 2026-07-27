@@ -101,10 +101,25 @@ objc2-foundation = { version = "0.2", features = [
     "NSAppleEventDescriptor",
     "NSAppleEventManager",
     "NSArray",
+    "NSBundle",
     "NSGeometry",
     "NSString",
     "NSThread",
 ] }
+# Completion banners posted under helm's own bundle identity (specs/agents.md
+# §5): osascript posts them as Script Editor, an app the user cannot allowlist
+# as helm in a Focus mode — the banner is then silently suppressed.
+objc2-user-notifications = { version = "0.2", features = [
+    "block2",
+    "UNNotification",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+    "UNUserNotificationCenter",
+] }
+# Completion handlers of the UserNotifications API (authorization, presentation).
+block2 = "0.5"
 objc2-app-kit = { version = "0.2", features = [
     "NSAnimation",
     "NSLayoutConstraint",

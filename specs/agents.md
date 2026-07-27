@@ -121,12 +121,31 @@ across the rest. Both read the same per-pane `AgentBadge`, so no new detection.
 
 **Native notification on `Working → Done`.** On the rising edge
 (`newly_completed`: `now == Done && prev != Done`, one-shot per episode), helm
-posts a macOS banner — title *"Claude finished"*, body `repo · branch`. Sent
-via `osascript -e 'display notification …'` (`notify` module) on a detached
-thread (the ~100 ms subprocess never blocks the UI). No bundle, entitlement, or
-`UserNotifications` linkage. Gated by a Preferences toggle
-(*Agents → Completion notifications*, on by default); clicking the banner is a
-no-op (osascript limitation) — focus is the dashboard's job.
+posts a macOS banner — title *"Claude finished"*, body `repo · branch`
+(`notify` module). Gated by a Preferences toggle (*Agents → Completion
+notifications*, on by default); clicking the banner is a no-op — focus is the
+dashboard's job.
+
+Two backends behind `notify::post`. From the `.app`, **`UserNotifications`**:
+the banner carries helm's own bundle identity, the only form the system
+attributes to *helm* — listed under its name in System Settings › Notifications
+and, decisively, allowlistable in a **Focus mode**, which otherwise suppresses
+it outright. `notify::install` runs once at startup (main thread, after
+`NSApplication` exists): it requests authorization — system prompt on first
+launch, a refusal being the user's answer, not an error — and registers the
+presentation delegate, without which macOS drops the banner whenever helm is
+frontmost, i.e. the common case, since the agent that just finished runs in one
+of helm's own background tabs.
+
+Outside a bundle (`cargo run`, tests) the process has no bundle identifier and
+`UNUserNotificationCenter` raises an uncatchable exception, so `install` probes
+it once and the fallback stays `osascript -e 'display notification …'` on a
+detached thread (the ~100 ms subprocess never blocks the UI). That path needs no
+entitlement, but the banner is attributed to **Script Editor** — wrong app, and
+no Focus mode can allowlist it as helm. macOS also refuses authorization to a
+bundle sitting outside a standard location (*"Notifications are not allowed for
+this application"*), so the backend can only be verified from an installed
+`.app`, not from a scratch build directory.
 
 **Cross-repo agents dashboard** (`CentralMode::Agents`, in-layout — *not* a
 full-window page). Reached from an **Agents entry** under a **Helm** section

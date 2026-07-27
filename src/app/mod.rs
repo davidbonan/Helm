@@ -1119,9 +1119,7 @@ impl HelmApp {
         self.caches.agent_badges = badges;
         self.caches.agents = entries;
         for (title, body) in notifications {
-            std::thread::spawn(move || {
-                let _ = crate::notify::notify(&title, &body);
-            });
+            crate::notify::post(&title, &body);
         }
 
         // Tab auto-naming (terminal.md §4): name each tab after the current
@@ -4132,6 +4130,9 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
         Box::new(|cc| {
             #[cfg(target_os = "macos")]
             titlebar::extend_native_titlebar(cc);
+            // After NSApplication exists: the authorization prompt needs a
+            // running app to attach to.
+            crate::notify::install();
             url_scheme::arm(&cc.egui_ctx);
             theme::install_fonts(&cc.egui_ctx);
             let mut prefs = Prefs::load();
