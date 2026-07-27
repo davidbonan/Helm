@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.4.3
+
+- Agent completion banners now come from helm itself: they show up under *helm*
+  in System Settings › Notifications and can be allowed through a Focus mode,
+  which until now swallowed them silently.
+
 ## 1.4.2
 
 - The sidebar count of pull requests awaiting your review now stays fresh from
@@ -81,18 +87,4 @@
 - The pull-request detail view is now full-width, with Markdown-rendered
   comments and clearer nested reply threads.
 - Polished comment cards for readability.
-
-## 1.1.0
-
-- Review pull requests inside helm — a new Pull Requests cockpit lists open
-  PRs from GitHub and Bitbucket, with detail, diff, and per-commit changes.
-- Comment inline on PR diff lines, reply in threads, leave conversation
-  comments, and submit a verdict, all without leaving the app.
-- Check out a pull request directly into its own worktree.
-- PR navigation is instant now — reviews and diffs are cached per pull request.
-- Mark up your working diff with inline review notes and send them to a Claude
-  terminal agent.
-- Reorganize terminal splits by drag-and-drop.
-- Agent cards in the Columns view size themselves to the viewport.
-- Done agents appear as clickable rows under the Agents sidebar entry.
 
