@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.4.2
+
+- The sidebar count of pull requests awaiting your review now stays fresh from
+  anywhere in the app, and is already right on launch instead of only after a
+  first visit to the cockpit.
+
 ## 1.4.1
 
 - Rename a linked worktree from its context menu: *Rename worktree…*
@@ -89,9 +95,4 @@
 - Reorganize terminal splits by drag-and-drop.
 - Agent cards in the Columns view size themselves to the viewport.
 - Done agents appear as clickable rows under the Agents sidebar entry.
-
-## 1.0.3
-
-- Select individual files in the WIP sidebar and stash them one at a time.
-- Newly created worktrees now show up in the sidebar on their own while the app is focused.
 

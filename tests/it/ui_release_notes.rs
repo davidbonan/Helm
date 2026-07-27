@@ -29,7 +29,7 @@ fn whats_new_modal_renders_heading_close_and_bundled_notes() {
     harness.get_by_label("What's new");
     harness.get_by_label("Close");
     // Oldest section still bundled: proves the notes render down to the last one.
-    harness.get_by_label_contains("Select individual files in the WIP sidebar");
+    harness.get_by_label_contains("Done agents appear as clickable rows");
 }
 
 #[test]
