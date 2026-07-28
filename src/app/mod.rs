@@ -2912,48 +2912,49 @@ impl HelmApp {
     /// git error ⇒ refusal modal (worktrees.md §6).
     fn drain_worktree_delete(&mut self, ctx: &egui::Context) {
         use crate::git::worktree::DeleteError;
-        let Some(reply) = self
+        // Every reply pending this frame: parallel deletions can land together, and a
+        // left-over one would wait on an unrelated repaint.
+        while let Some(reply) = self
             .worktree_delete
             .as_mut()
             .and_then(DeleteRunner::try_recv)
-        else {
-            return;
-        };
-        let DeleteReply { request, result } = reply;
-        let refused = |label: &str, reason: String| DeletePrompt::Refused {
-            label: label.to_owned(),
-            reason,
-        };
-        let prompt = match result {
-            Ok(()) => {
-                // Only the worktree modal may be dismissed by a background
-                // success — never an unrelated one opened in the meantime.
-                if matches!(self.modal, Some(Modal::DeleteWorktree(_))) {
-                    self.modal = None;
+        {
+            let DeleteReply { request, result } = reply;
+            let refused = |label: &str, reason: String| DeletePrompt::Refused {
+                label: label.to_owned(),
+                reason,
+            };
+            let prompt = match result {
+                Ok(()) => {
+                    // Only the worktree modal may be dismissed by a background
+                    // success — never an unrelated one opened in the meantime.
+                    if matches!(self.modal, Some(Modal::DeleteWorktree(_))) {
+                        self.modal = None;
+                    }
+                    self.run_group_sync(ctx);
+                    continue;
                 }
-                self.run_group_sync(ctx);
-                return;
-            }
-            Err(DeleteError::Dirty(files)) => DeletePrompt::Dirty {
-                label: request.label.clone(),
-                files,
-            },
-            Err(DeleteError::Ignored(entries)) => DeletePrompt::Ignored {
-                label: request.label.clone(),
-                entries,
-            },
-            Err(DeleteError::Locked(reason)) => refused(
-                &request.label,
-                reason.unwrap_or_else(|| "Worktree is locked".to_owned()),
-            ),
-            Err(DeleteError::Git(err)) => refused(&request.label, err.message().to_owned()),
-        };
-        self.modal = Some(Modal::DeleteWorktree(PendingDelete {
-            root: request.root,
-            path: request.path,
-            label: request.label,
-            prompt,
-        }));
+                Err(DeleteError::Dirty(files)) => DeletePrompt::Dirty {
+                    label: request.label.clone(),
+                    files,
+                },
+                Err(DeleteError::Ignored(entries)) => DeletePrompt::Ignored {
+                    label: request.label.clone(),
+                    entries,
+                },
+                Err(DeleteError::Locked(reason)) => refused(
+                    &request.label,
+                    reason.unwrap_or_else(|| "Worktree is locked".to_owned()),
+                ),
+                Err(DeleteError::Git(err)) => refused(&request.label, err.message().to_owned()),
+            };
+            self.modal = Some(Modal::DeleteWorktree(PendingDelete {
+                root: request.root,
+                path: request.path,
+                label: request.label,
+                prompt,
+            }));
+        }
     }
 }
 

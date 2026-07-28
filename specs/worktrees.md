@@ -238,8 +238,11 @@ itself):
 
 Implementation: status check → folder deletion →
 `Worktree::prune` of the metadata (libgit2 has no full `git worktree remove`).
-If the deleted worktree was active: PTYs killed, selection folded back to
-the root. **No Remove (hiding) on a child**: discovery (§4) would
+The deletion runs off the frame — a folder carrying `target/` or `node_modules/`
+takes a while — with its row greyed out and inert under a spinner meanwhile;
+**several worktrees delete at once**, so starting one never swallows the Delete
+of the next. If the deleted worktree was active: PTYs killed, selection folded
+back to the root. **No Remove (hiding) on a child**: discovery (§4) would
 make it reappear.
 
 ## 7. Shortcuts

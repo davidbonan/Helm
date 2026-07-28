@@ -1006,13 +1006,15 @@ impl CreateRunner {
 
 /// Runs `delete_by_path` on a **dedicated thread per op**: pruning the directory
 /// can take many seconds on a large worktree (target/, node_modules/…) and used to
-/// freeze the UI thread. Same contract as `SyncRunner` (worker.rs): one op at a
-/// time, `request` is ignored until the previous one has been drained.
+/// freeze the UI thread. Deletions of **distinct** worktrees run in parallel — they
+/// prune disjoint directories — so cleaning several worktrees in a row never has a
+/// click swallowed while a long removal is still running; only a repeat on a
+/// worktree already being deleted is refused.
 pub struct DeleteRunner {
     on_event: Arc<dyn Fn() + Send + Sync>,
     results_tx: Sender<DeleteReply>,
     results_rx: Receiver<DeleteReply>,
-    in_flight: Option<DeleteRequest>,
+    in_flight: Vec<DeleteRequest>,
 }
 
 impl DeleteRunner {
@@ -1022,26 +1024,23 @@ impl DeleteRunner {
             on_event: Arc::new(on_event),
             results_tx,
             results_rx,
-            in_flight: None,
+            in_flight: Vec::new(),
         }
     }
 
-    pub fn busy(&self) -> bool {
-        self.in_flight.is_some()
+    /// A worktree being deleted right now: its sidebar row is greyed out + spinner,
+    /// inert, until its reply is drained.
+    pub fn is_deleting(&self, path: &Path) -> bool {
+        self.in_flight.iter().any(|request| request.path == path)
     }
 
-    /// Worktree currently being deleted, if any: its sidebar row is greyed out +
-    /// spinner, inert, during the op.
-    pub fn in_flight(&self) -> Option<&DeleteRequest> {
-        self.in_flight.as_ref()
-    }
-
-    /// Starts the deletion; returns `false` (request ignored) if an op is running.
+    /// Starts the deletion; returns `false` (request ignored) when this worktree is
+    /// already being deleted.
     pub fn request(&mut self, request: DeleteRequest) -> bool {
-        if self.in_flight.is_some() {
+        if self.is_deleting(&request.path) {
             return false;
         }
-        self.in_flight = Some(request.clone());
+        self.in_flight.push(request.clone());
         let tx = self.results_tx.clone();
         let on_event = Arc::clone(&self.on_event);
         std::thread::spawn(move || {
@@ -1053,19 +1052,17 @@ impl DeleteRunner {
     }
 
     pub fn try_recv(&mut self) -> Option<DeleteReply> {
-        let reply = self.results_rx.try_recv().ok();
-        if reply.is_some() {
-            self.in_flight = None;
-        }
-        reply
+        let reply = self.results_rx.try_recv().ok()?;
+        self.in_flight
+            .retain(|request| request.path != reply.request.path);
+        Some(reply)
     }
 
     pub fn recv(&mut self) -> Option<DeleteReply> {
-        let reply = self.results_rx.recv().ok();
-        if reply.is_some() {
-            self.in_flight = None;
-        }
-        reply
+        let reply = self.results_rx.recv().ok()?;
+        self.in_flight
+            .retain(|request| request.path != reply.request.path);
+        Some(reply)
     }
 }
 
@@ -1294,29 +1291,60 @@ mod tests {
     }
 
     #[test]
-    fn runner_ignores_requests_while_busy_and_busy_clears_on_drain() {
+    fn runner_refuses_only_a_repeat_of_the_same_worktree() {
         let tmp = tempfile::tempdir().unwrap();
         let mut runner = DeleteRunner::new(|| {});
-        assert!(!runner.busy());
-
-        let request = DeleteRequest {
+        let request = |name: &str| DeleteRequest {
             root: tmp.path().to_path_buf(),
-            path: tmp.path().join("wt"),
-            label: "wt".to_owned(),
+            path: tmp.path().join(name),
+            label: name.to_owned(),
             force: false,
         };
-        assert!(runner.request(request.clone()));
-        assert!(runner.busy());
-        assert_eq!(runner.in_flight(), Some(&request));
-        assert!(!runner.request(request.clone()));
+        assert!(!runner.is_deleting(&tmp.path().join("wt")));
+
+        assert!(runner.request(request("wt")));
+        assert!(runner.is_deleting(&tmp.path().join("wt")));
+        assert!(
+            !runner.request(request("wt")),
+            "the same worktree is not deleted twice at once"
+        );
 
         let reply = runner.recv().unwrap();
         assert!(
             reply.result.is_err(),
             "a non-git root cannot delete anything"
         );
-        assert!(!runner.busy());
+        assert!(!runner.is_deleting(&tmp.path().join("wt")));
 
-        assert!(runner.request(request));
+        assert!(runner.request(request("wt")));
+    }
+
+    #[test]
+    fn runner_deletes_distinct_worktrees_in_parallel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runner = DeleteRunner::new(|| {});
+        let request = |name: &str| DeleteRequest {
+            root: tmp.path().to_path_buf(),
+            path: tmp.path().join(name),
+            label: name.to_owned(),
+            force: false,
+        };
+
+        assert!(runner.request(request("a")));
+        assert!(
+            runner.request(request("b")),
+            "a second worktree does not wait on the first"
+        );
+        assert!(runner.is_deleting(&tmp.path().join("a")));
+        assert!(runner.is_deleting(&tmp.path().join("b")));
+
+        let mut done = vec![
+            runner.recv().unwrap().request.label,
+            runner.recv().unwrap().request.label,
+        ];
+        done.sort();
+        assert_eq!(done, vec!["a".to_owned(), "b".to_owned()]);
+        assert!(!runner.is_deleting(&tmp.path().join("a")));
+        assert!(!runner.is_deleting(&tmp.path().join("b")));
     }
 }

@@ -667,7 +667,7 @@ fn delete_runner_reports_dirty_off_thread_then_force_deletes() {
         reply.result
     );
     assert!(wt_path.exists(), "a dirty worktree is not deleted unforced");
-    assert!(!runner.busy());
+    assert!(!runner.is_deleting(&wt_path));
 
     assert!(runner.request(worktree::DeleteRequest {
         force: true,

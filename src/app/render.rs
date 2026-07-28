@@ -516,11 +516,17 @@ impl HelmApp {
             .repos()
             .map(|r| r.path.to_string_lossy().into_owned())
             .collect();
-        let deleting_path = self
-            .worktree_delete
-            .as_ref()
-            .and_then(DeleteRunner::in_flight)
-            .map(|req| req.path.clone());
+        // Several worktrees delete at once (worktrees.md §6): the spinner state is per
+        // row, in entry order like `badges` and `stats`.
+        let deleting: Vec<bool> = self
+            .workspace
+            .repos()
+            .map(|r| {
+                self.worktree_delete
+                    .as_ref()
+                    .is_some_and(|runner| runner.is_deleting(&r.path))
+            })
+            .collect();
         // Field-path access (not a RepoCaches method): the badges are read by both
         // the rows and the per-project aggregate below, borrowing `agent_badges` only.
         let badges: Vec<AgentBadge> = (0..repo_paths.len())
@@ -637,7 +643,7 @@ impl HelmApp {
                             missing,
                             main: is_root,
                             branch,
-                            deleting: deleting_path.as_deref() == Some(r.path.as_path()),
+                            deleting: deleting[i],
                             agent: badges[i],
                             stats: stats[i],
                         })
