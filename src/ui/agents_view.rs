@@ -38,7 +38,7 @@ pub enum TermView {
 
 /// Meaningful lines a collapsed card's progress preview shows (its recent
 /// conversation, at readable native size, chrome stripped).
-pub const AGENT_PREVIEW_LINES: usize = 9;
+pub const AGENT_PREVIEW_LINES: usize = 12;
 
 const CONTENT_PAD_X: f32 = 32.0;
 const CONTENT_PAD_Y: f32 = 32.0;
