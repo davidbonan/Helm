@@ -1,5 +1,14 @@
 # Release notes
 
+## 1.5.0
+
+- Clean up several worktrees in a row: a *Delete worktree from disk* clicked
+  while another removal is still running no longer vanishes without a trace.
+  Each row now carries its own spinner, and two removals finishing together
+  both land.
+- A collapsed card in the Agents *Columns* view previews a few more lines of
+  its conversation.
+
 ## 1.4.3
 
 - Agent completion banners now come from helm itself: they show up under *helm*
@@ -81,10 +90,4 @@
 - The Pull Requests list now shows each PR's source → target branch, and
   stacked PRs nest as a tree under their base.
 - Deleting a PR comment no longer leaves a "deleted" placeholder behind.
-
-## 1.1.1
-
-- The pull-request detail view is now full-width, with Markdown-rendered
-  comments and clearer nested reply threads.
-- Polished comment cards for readability.
 
