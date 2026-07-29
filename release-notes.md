@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.5.2
+
+- Maintenance release: no user-facing changes since 1.5.1.
+
 ## 1.5.1
 
 - Walking the Git file list with the arrow keys no longer stutters on large
@@ -91,10 +95,5 @@
   onto the target, with no commits to replay.
 - Click anywhere on the Run panel header to collapse or expand it; its collapsed
   state is now remembered per worktree.
-
-## 1.1.3
-
-- Fixed approving, requesting changes on, and resolving comments in Bitbucket
-  pull requests — these actions no longer fail with a server error.
 
 
