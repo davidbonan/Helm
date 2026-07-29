@@ -287,15 +287,24 @@ impl DiffViewState {
         self.text_selection = Some(selection);
     }
 
-    fn ensure_syntax_cache(&mut self, diff: &FileDiff, syntax_theme: &'static str) {
-        if self
+    /// Opens the cache on the current diff, then fills one frame's worth of it —
+    /// the rest lands on the following frames, repaint after repaint, so opening
+    /// a big file never costs a visible hitch.
+    fn ensure_syntax_cache(&mut self, ui: &egui::Ui, diff: &FileDiff, syntax_theme: &'static str) {
+        if !self
             .syntax_cache
             .as_ref()
             .is_some_and(|cache| cache.is_current(diff, syntax_theme))
         {
-            return;
+            self.syntax_cache = HighlightedDiffCache::new(diff, syntax_theme);
         }
-        self.syntax_cache = HighlightedDiffCache::for_diff(diff, syntax_theme);
+        let incomplete = self
+            .syntax_cache
+            .as_mut()
+            .is_some_and(|cache| cache.extend(diff, HIGHLIGHT_BUDGET));
+        if incomplete {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn syntax_line(&self, hunk: usize, line: usize) -> Option<&[HighlightedSpan]> {
@@ -327,6 +336,10 @@ impl DiffViewState {
     }
 }
 
+/// Time the syntax cache may fill per frame. ~300 lines at syntect's throughput:
+/// a viewport's worth on the frame the file opens, and short enough to leave the
+/// 16 ms frame intact.
+const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 const LINE_SIZE: f32 = 12.0;
 const HUNK_HEADER_SIZE: f32 = 11.0;
 const LINE_PAD_X: f32 = 8.0;
@@ -917,7 +930,7 @@ pub fn diff_view(
             return;
         }
 
-        state.ensure_syntax_cache(diff, palette.syntax);
+        state.ensure_syntax_cache(ui, diff, palette.syntax);
         let char_w = ui.ctx().fonts_mut(|fonts| {
             fonts
                 .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')

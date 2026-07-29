@@ -15,10 +15,26 @@ pub struct HighlightedSpan {
     pub color: egui::Color32,
 }
 
+/// Per-line spans of the open diff, filled **incrementally**: syntect costs
+/// ~13 µs/line, so highlighting a 3 000-line file in one pass froze the frame
+/// ~40 ms — one hitch per file when navigating with the arrow keys. `extend`
+/// fills what a frame's budget allows and resumes on the next one; a line not
+/// reached yet renders plain (`line` ⇒ `None`), like a file with no syntax.
 #[derive(Debug, Clone)]
 pub struct HighlightedDiffCache {
     key: HighlightKey,
     lines: Vec<Vec<Vec<HighlightedSpan>>>,
+    /// Where the fill stopped; `None` once every hunk is complete.
+    pending: Option<Pending>,
+}
+
+/// Resumption point: syntect's after-line state and the hunk it applies to —
+/// the next line to fill is the one after those already in `lines[hunk]`.
+#[derive(Debug, Clone)]
+struct Pending {
+    syntax: &'static syntect::parsing::SyntaxReference,
+    state: LineState,
+    hunk: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +45,9 @@ struct HighlightKey {
 }
 
 impl HighlightedDiffCache {
-    pub fn for_diff(diff: &FileDiff, syntax_theme: &'static str) -> Option<Self> {
+    /// Empty cache for `diff`, everything left to `extend`. `None` when the
+    /// file has no syntax to apply (binary, oversize, unknown extension).
+    pub fn new(diff: &FileDiff, syntax_theme: &'static str) -> Option<Self> {
         if diff.binary || diff.oversize {
             return None;
         }
@@ -37,23 +55,70 @@ impl HighlightedDiffCache {
             .find_syntax_for_file(Path::new(&diff.path))
             .ok()
             .flatten()?;
-        let theme = theme(syntax_theme);
-        let mut lines = Vec::with_capacity(diff.hunks.len());
-        for hunk in &diff.hunks {
-            let mut highlighter = syntect::easy::HighlightLines::new(syntax, theme);
-            let mut highlighted_hunk = Vec::with_capacity(hunk.lines.len());
-            for line in &hunk.lines {
-                highlighted_hunk.push(highlight_line(
-                    &mut highlighter,
-                    display_text(&line.content),
-                )?);
-            }
-            lines.push(highlighted_hunk);
-        }
+        let highlighter = Highlighter::new(theme(syntax_theme));
         Some(Self {
             key: HighlightKey::new(diff, syntax_theme),
-            lines,
+            lines: vec![Vec::new(); diff.hunks.len()],
+            pending: Some(Pending {
+                syntax,
+                state: LineState::new(syntax, &highlighter),
+                hunk: 0,
+            }),
         })
+    }
+
+    /// Fills lines for at most `budget`, resuming where the previous call
+    /// stopped. `true` while lines remain — the caller repaints to continue.
+    /// `diff` must be the one the cache was opened on (`is_current`).
+    pub fn extend(&mut self, diff: &FileDiff, budget: std::time::Duration) -> bool {
+        let Self {
+            lines,
+            pending,
+            key,
+        } = self;
+        let Some(current) = pending.as_mut() else {
+            return false;
+        };
+        let highlighter = Highlighter::new(theme(key.syntax_theme));
+        let start = std::time::Instant::now();
+        while let Some(hunk) = diff.hunks.get(current.hunk) {
+            let Some(line) = hunk.lines.get(lines[current.hunk].len()) else {
+                current.hunk += 1;
+                // A hunk shows a disjoint slice of the file: it restarts from a
+                // clean state instead of continuing the previous hunk's context.
+                current.state = LineState::new(current.syntax, &highlighter);
+                continue;
+            };
+            let text = display_text(&line.content);
+            let Ok(ops) = current.state.parse.parse_line(text, syntaxes()) else {
+                *pending = None;
+                return false;
+            };
+            lines[current.hunk].push(
+                HighlightIterator::new(&mut current.state.highlight, &ops, text, &highlighter)
+                    .filter(|(_, t)| !t.is_empty())
+                    .map(|(style, t)| HighlightedSpan {
+                        text: t.to_owned(),
+                        color: syntect_color(style.foreground),
+                    })
+                    .collect(),
+            );
+            // Checked per line: a line costs microseconds and `Instant::now()`
+            // nanoseconds, and batching the check overran the budget by 10× on
+            // an unoptimised build, where a line is ~20 times slower.
+            if start.elapsed() >= budget {
+                return true;
+            }
+        }
+        *pending = None;
+        false
+    }
+
+    /// Cache filled in one pass — the shape the tests and the small diffs use.
+    pub fn for_diff(diff: &FileDiff, syntax_theme: &'static str) -> Option<Self> {
+        let mut cache = Self::new(diff, syntax_theme)?;
+        cache.extend(diff, std::time::Duration::MAX);
+        Some(cache)
     }
 
     pub fn is_current(&self, diff: &FileDiff, syntax_theme: &'static str) -> bool {
@@ -173,10 +238,19 @@ pub fn highlight_buffer(
 
 /// syntect's after-line state, cached per buffer line so an edit re-parses only what it
 /// touched. Comparing it tells the incremental pass when a recolour has reconverged.
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct LineState {
     parse: ParseState,
     highlight: HighlightState,
+}
+
+impl LineState {
+    fn new(syntax: &syntect::parsing::SyntaxReference, highlighter: &Highlighter) -> Self {
+        Self {
+            parse: ParseState::new(syntax),
+            highlight: HighlightState::new(highlighter, ScopeStack::new()),
+        }
+    }
 }
 
 /// Incremental syntax highlighter for the editable Output (conflicts.md §5). syntect is
@@ -416,6 +490,58 @@ mod tests {
             source_lines: Vec::new(),
             image: None,
         }
+    }
+
+    /// Two hunks of 100 lines: more than one fill batch, and a second hunk to
+    /// restart the syntect state on.
+    fn long_diff(path: &str) -> FileDiff {
+        let hunk = |start: u32, body: &str| Hunk {
+            header: format!("@@ -{start} +{start} @@"),
+            old_start: start,
+            old_lines: 100,
+            new_start: start,
+            new_lines: 100,
+            lines: (0..100)
+                .map(|i| DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: format!("{body} // {i}\n"),
+                    old_lineno: None,
+                    new_lineno: Some(start + i),
+                })
+                .collect(),
+        };
+        FileDiff {
+            path: path.to_owned(),
+            binary: false,
+            oversize: false,
+            hunks: vec![hunk(1, "let a = \"x\";"), hunk(500, "fn f() {}")],
+            source_lines: Vec::new(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn a_budgeted_fill_converges_to_the_one_pass_result() {
+        let diff = long_diff("src/main.rs");
+        let full = HighlightedDiffCache::for_diff(&diff, "InspiredGitHub").unwrap();
+
+        let mut cache = HighlightedDiffCache::new(&diff, "InspiredGitHub").unwrap();
+        assert!(
+            cache.line(0, 0).is_none(),
+            "before the first fill every line renders plain"
+        );
+
+        let mut passes = 0;
+        // A zero budget still fills one line per call: the fill always progresses.
+        while cache.extend(&diff, std::time::Duration::ZERO) {
+            passes += 1;
+            assert!(passes < 1000, "the fill never completes");
+        }
+        assert!(passes > 1, "200 lines span several passes, got {passes}");
+        assert_eq!(
+            cache.lines, full.lines,
+            "resuming between batches colours exactly like one pass"
+        );
     }
 
     #[test]
