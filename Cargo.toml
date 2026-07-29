@@ -135,6 +135,13 @@ raw-window-handle = "0.6"
 lto = "thin"
 codegen-units = 1
 
+# `cargo run` renders through egui and syntect, both unusable unoptimised: a
+# frame with a 3 000-line diff open cost 18 ms and a file switch 40 ms, purely
+# from the debug profile. Only the dependencies are optimised — helm's own code
+# stays debuggable and its incremental rebuilds stay fast.
+[profile.dev.package."*"]
+opt-level = 3
+
 [features]
 # Enabled only by the .claude/skills/headless-verify skill: opens the real app
 # (egui_kittest::Harness::new_eframe) and captures a PNG via the wgpu renderer.
