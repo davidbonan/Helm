@@ -939,6 +939,15 @@ pub fn terminal_view_preview(
         &mut child, &snap, area, char_w, row_h, font_size, palette, false, false,
     );
     paint_right_fade(ui.painter(), rect, rgb(palette.background));
+    // A collapsed card is never the keyboard target, so its preview carries the same
+    // dim an unfocused split does: the wall then recedes uniformly, collapsed previews
+    // and mirrored terminals alike, behind the one active terminal.
+    let bg = palette.background;
+    ui.painter().rect_filled(
+        rect,
+        0.0,
+        egui::Color32::from_rgba_unmultiplied(bg.r, bg.g, bg.b, UNFOCUSED_DIM_ALPHA),
+    );
 }
 
 /// Reduces a snapshot's rows to the condensed preview a collapsed card shows: drop

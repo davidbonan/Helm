@@ -94,13 +94,12 @@ const WORKTREE_HEADER_HEIGHT: f32 = 36.0;
 /// island rather than a slab of one shared surface.
 const AGENT_CARD_GAP: f32 = 8.0;
 
-/// Distinguishing the single **active** (keyboard) card from the other columns'
-/// expanded-but-inactive terminals: the active card is ringed and washed in accent,
-/// the inactive live terminals get a scrim laid over their own unfocused dim so they
-/// clearly recede behind the one the keyboard drives.
+/// Distinguishing the single **active** (keyboard) card from the other cards: the
+/// active one is ringed and washed in accent, every other card recedes behind the
+/// terminal's own unfocused dim — one single dim level, so a collapsed preview and a
+/// mirrored terminal read equally recessed.
 const AGENTS_ACTIVE_RING: f32 = 1.5;
 const AGENTS_ACTIVE_BAND_ALPHA: u8 = 40;
-const AGENTS_INACTIVE_SCRIM: u8 = 104;
 
 /// Compact uncommitted-changes ratio bar on a dirty worktree header — same
 /// green/red proportion device as the workspace sidebar (`repo_sidebar`).
@@ -971,16 +970,6 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     render_terminal(idx, &mut term_ui, TermView::Full);
-    // Only the active card's terminal is keyboard-driven; the other columns' live
-    // terminals recede behind a scrim (over their own unfocused dim) so the wall
-    // reads one focused pane against secondary glances.
-    if !active {
-        ui.painter().rect_filled(
-            strip,
-            egui::CornerRadius::ZERO,
-            with_alpha(palette.bg_canvas, AGENTS_INACTIVE_SCRIM),
-        );
-    }
     // The hovered terminal owns one wheel axis (vertical scrollback, or horizontal
     // under Shift — terminal.md §8); it reads the delta without consuming it, so
     // swallow just that axis to stop the wall's 2D scroll plane from scrolling in

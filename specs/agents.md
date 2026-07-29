@@ -228,9 +228,10 @@ a glance across the wall shows one live terminal per project at once; a column's
 other agents stay collapsed headers over their previews, and reflowing a column
 never touches its neighbours. Only the **selected** agent is *active* — the single
 `selected_agent` that owns the keyboard focus lock and `Esc`-as-interrupt and reads
-**ringed and washed in accent**; the other columns' expanded terminals mirror live
-but **scrimmed back** (over the split-unfocused dim) until clicked, which selects
-them — so the wall reads one focused pane against secondary glances. The
+**ringed and washed in accent**; every other card — the other columns' live
+terminals as well as the collapsed previews — recedes behind the **split-unfocused
+dim**, one single dim level so the whole wall reads uniformly secondary against the
+active pane; clicking one selects it. The
 expanded terminal owns the mouse wheel while hovered (scrollback / TUI) so the
 column no longer scrolls in tandem; its **height is shared and resizable** —
 dragging the handle along its bottom edge sets the height for the next expansion too
