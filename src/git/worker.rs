@@ -195,6 +195,14 @@ impl GitCommand {
         )
     }
 
+    /// `true` for the two refresh reads (poll cadence, reload behind a
+    /// mutation, manual Refresh): they only update views already on screen, so
+    /// a click's working-tree diff may overtake them (`next_index`) — they
+    /// change nothing it reads.
+    pub fn refresh_read(&self) -> bool {
+        matches!(self, GitCommand::Status | GitCommand::Graph { .. })
+    }
+
     /// Reply variant this command resolves to — the slot its generation stamps
     /// (M17-13).
     pub fn result_kind(&self) -> ResultKind {
@@ -554,13 +562,29 @@ fn run(
 
 /// Position of the next command to serve: the first commit-addressed read if
 /// any (`jumps_queue` — it answers a click and must not wait for the poll
-/// backlog), the queue's front otherwise. Commands of the **same kind** never
-/// overtake each other: per-kind FIFO holds, the staleness gate (M17-13) and
-/// the per-kind `in_flight` settlement stay exact.
+/// backlog), else a working-tree `Diff` that only refresh reads separate from
+/// the front (see below), else the queue's front. Commands of the **same kind**
+/// never overtake each other: per-kind FIFO holds, the staleness gate (M17-13)
+/// and the per-kind `in_flight` settlement stay exact.
+///
+/// The `Diff` case answers a click too, but its result depends on the index and
+/// the worktree: it may only overtake `refresh_read` commands (status/graph),
+/// never a queued mutation. Without it a file opened from the sidebar waits for
+/// the poll backlog it landed behind — a status snapshot plus a graph reload,
+/// 150–450 ms on a large repo.
 fn next_index(queue: &VecDeque<(u64, GitCommand)>) -> usize {
+    if let Some(index) = queue.iter().position(|(_, command)| command.jumps_queue()) {
+        return index;
+    }
     queue
         .iter()
-        .position(|(_, command)| command.jumps_queue())
+        .position(|(_, command)| matches!(command, GitCommand::Diff { .. }))
+        .filter(|index| {
+            queue
+                .iter()
+                .take(*index)
+                .all(|(_, command)| command.refresh_read())
+        })
         .unwrap_or(0)
 }
 
@@ -1168,24 +1192,58 @@ mod tests {
             1,
             "a commit is immutable: its detail may overtake a queued mutation"
         );
+    }
+
+    #[test]
+    fn a_working_tree_diff_overtakes_the_refresh_reads_but_never_a_mutation() {
+        let diff = GitCommand::Diff {
+            path: "a".into(),
+            staged: false,
+        };
 
         let queue: VecDeque<(u64, GitCommand)> = [
             (1, GitCommand::Status),
-            (
-                2,
-                GitCommand::Diff {
-                    path: "a".into(),
-                    staged: false,
-                },
-            ),
-            (3, GitCommand::Graph { limit: 50 }),
+            (2, GitCommand::Graph { limit: 50 }),
+            (3, diff.clone()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            next_index(&queue),
+            2,
+            "status and graph change nothing the diff reads: the click is served first"
+        );
+
+        let queue: VecDeque<(u64, GitCommand)> = [
+            (1, GitCommand::Stage("a".into())),
+            (2, GitCommand::Status),
+            (3, diff.clone()),
         ]
         .into_iter()
         .collect();
         assert_eq!(
             next_index(&queue),
             0,
-            "working-tree reads depend on queued mutations: strict FIFO"
+            "the diff reads the index the queued staging is about to change: strict FIFO"
+        );
+
+        let queue: VecDeque<(u64, GitCommand)> = [
+            (1, GitCommand::Status),
+            (
+                2,
+                GitCommand::Diff {
+                    path: "first".into(),
+                    staged: false,
+                },
+            ),
+            (3, diff),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            next_index(&queue),
+            1,
+            "two diffs stay in order: per-kind FIFO holds for the staleness gate"
         );
     }
 

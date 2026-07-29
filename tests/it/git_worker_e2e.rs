@@ -676,19 +676,16 @@ fn sync_refresh_skips_graph_outside_graph_mode() {
     let replies = drain_until_reply(&mut runner, &worker, false);
     assert_eq!(replies[0].result, Err(SyncError::NoRemote));
 
-    // Sentinel: if a Graph had been requested, it would arrive before it (the
-    // worker is FIFO for poll/worktree reads — only commit-addressed reads
-    // jump the queue, so the sentinel must not be one).
-    worker.send(GitCommand::Diff {
-        path: "a.txt".to_string(),
-        staged: false,
-    });
+    // Sentinel: if a Graph had been requested, it would arrive before it. The
+    // sentinel must be a strict-FIFO command — neither a commit-addressed read
+    // nor a `Diff`, both of which overtake the queued refresh reads.
+    worker.send(GitCommand::ReadConflicts);
     match worker.recv() {
         Some((_, GitResult::Status { result: Ok(_), .. })) => {}
         other => panic!("expected status refresh, got {other:?}"),
     }
     match worker.recv() {
-        Some((_, GitResult::Diff(_))) => {}
+        Some((_, GitResult::Conflicts { .. })) => {}
         other => panic!("expected the sentinel, got {other:?}"),
     }
 }
