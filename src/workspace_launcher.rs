@@ -181,22 +181,28 @@ pub fn command_for(opener: WorkspaceOpener, path: &Path) -> OpenWorkspaceCommand
     }
 }
 
-/// Command opening `workspace` in a **new** IDE window through the bundled CLI,
-/// with `file` (when present) as a tab of that window. The new-window flag keeps
-/// each project in its own window instead of taking over whatever the IDE last
-/// focused. Cursor (VS Code CLI) wants the file behind `--goto`; Zed takes plain
-/// paths and merges them into the new workspace.
+/// Command opening `workspace` in an IDE window through the bundled CLI, with
+/// `file` (when present) as a tab of that window. The window flag keeps each
+/// project in its own window instead of taking over whatever the IDE last
+/// focused — but only when the project isn't open yet: Zed's `--classic` matches
+/// the workspace against the open windows and re-focuses the one that already
+/// holds it, where `--new` skips that lookup and forces a second window with a
+/// full project reload. Cursor (VS Code CLI) wants the file behind `--goto`; Zed
+/// takes plain paths and merges them into the workspace.
 fn ide_command(
     opener: WorkspaceOpener,
     cli: PathBuf,
     workspace: &Path,
     file: Option<&Path>,
 ) -> OpenWorkspaceCommand {
-    let new_window = match opener {
+    let window_flag = match opener {
         WorkspaceOpener::Cursor => "--new-window",
-        _ => "--new",
+        _ => "--classic",
     };
-    let mut args = vec![OsString::from(new_window), workspace.as_os_str().to_owned()];
+    let mut args = vec![
+        OsString::from(window_flag),
+        workspace.as_os_str().to_owned(),
+    ];
     if let Some(file) = file {
         if opener == WorkspaceOpener::Cursor {
             args.push(OsString::from("--goto"));
@@ -363,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn zed_opens_the_workspace_and_file_as_plain_paths_in_a_new_window() {
+    fn zed_opens_the_workspace_and_file_as_plain_paths_in_a_matched_window() {
         let command = ide_command(
             WorkspaceOpener::Zed,
             PathBuf::from("/Applications/Zed.app/Contents/MacOS/cli"),
@@ -375,15 +381,30 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
-                OsString::from("--new"),
+                OsString::from("--classic"),
                 OsString::from("/tmp/project"),
                 OsString::from("/tmp/project/src/main.rs")
             ]
         );
     }
 
+    // `--new` forces a second window (and a full project reload) for a project Zed
+    // already has open: the flag must never come back.
     #[test]
-    fn ide_opens_the_workspace_in_a_new_window_without_a_file() {
+    fn zed_never_forces_an_unconditionally_new_window() {
+        for file in [None, Some(Path::new("/tmp/project/src/main.rs"))] {
+            let command = ide_command(
+                WorkspaceOpener::Zed,
+                PathBuf::from("/Applications/Zed.app/Contents/MacOS/cli"),
+                Path::new("/tmp/project"),
+                file,
+            );
+            assert!(!command.args.contains(&OsString::from("--new")));
+        }
+    }
+
+    #[test]
+    fn ide_opens_the_workspace_without_a_file() {
         let cursor = ide_command(
             WorkspaceOpener::Cursor,
             PathBuf::from("/Applications/Cursor.app/Contents/Resources/app/bin/cursor"),
@@ -406,7 +427,7 @@ mod tests {
         );
         assert_eq!(
             zed.args,
-            vec![OsString::from("--new"), OsString::from("/tmp/project")]
+            vec![OsString::from("--classic"), OsString::from("/tmp/project")]
         );
     }
 
