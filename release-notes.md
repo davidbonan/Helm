@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.5.1
+
+- Walking the Git file list with the arrow keys no longer stutters on large
+  files: a diff now colours what the viewport shows straight away and finishes
+  the rest over the following frames.
+- Clicking a file in the Git sidebar brings up its diff at once instead of
+  waiting behind the background refresh — up to half a second saved on a large
+  repository.
+- *Open in editor* now re-focuses the Zed window that already holds the project
+  and adds the file as a tab, instead of opening a second window and reloading
+  the whole workspace.
+
 ## 1.5.0
 
 - Clean up several worktrees in a row: a *Delete worktree from disk* clicked
@@ -85,9 +97,4 @@
 - Fixed approving, requesting changes on, and resolving comments in Bitbucket
   pull requests — these actions no longer fail with a server error.
 
-## 1.1.2
-
-- The Pull Requests list now shows each PR's source → target branch, and
-  stacked PRs nest as a tree under their base.
-- Deleting a PR comment no longer leaves a "deleted" placeholder behind.
 
