@@ -255,12 +255,15 @@ fn lock_path() -> Option<PathBuf> {
     Some(prefs.parent()?.join("instance.lock"))
 }
 
-/// Raises the instance already running. No-op outside a bundle (`cargo run`),
-/// where LaunchServices has nothing to activate.
-pub fn activate_running_instance() {
-    if let Some(bundle) = crate::update::bundle_path() {
-        let _ = Command::new("open").arg(bundle).status();
-    }
+/// Raises the instance already running; `false` outside a bundle (`cargo run`),
+/// where LaunchServices has nothing to activate and the caller must say so
+/// itself rather than exit silently.
+pub fn activate_running_instance() -> bool {
+    let Some(bundle) = crate::update::bundle_path() else {
+        return false;
+    };
+    let _ = Command::new("open").arg(bundle).status();
+    true
 }
 
 /// State of the `helm` shell command, for the Preferences card.

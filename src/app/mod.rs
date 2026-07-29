@@ -4112,7 +4112,9 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
     // Before anything touches the prefs: a second instance would rewrite the
     // whole TOML and erase the running one's workspace (specs/cli.md §6).
     let Some(_instance) = crate::cli::acquire_instance_lock() else {
-        crate::cli::activate_running_instance();
+        if !crate::cli::activate_running_instance() {
+            eprintln!("helm: another instance already holds the lock — nothing started");
+        }
         return Ok(());
     };
     #[cfg(target_os = "macos")]
@@ -4126,7 +4128,9 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
         url_scheme::push_url(url);
     }
     eframe::run_native(
-        "helm",
+        // Also names eframe's storage dir, so the dev build keeps its window
+        // state out of the installed app's (same split as the prefs).
+        crate::persistence::support_dir_name(),
         native_options(),
         Box::new(|cc| {
             #[cfg(target_os = "macos")]

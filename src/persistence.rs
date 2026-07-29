@@ -456,8 +456,25 @@ impl Prefs {
     }
 }
 
+/// Application Support folder, named apart for an unbundled build so `cargo run`
+/// and the installed `.app` never share state (cli.md §6): the prefs are rewritten
+/// whole, and one support dir means one `instance.lock` — the dev build could not
+/// even start while the `.app` was open.
+pub fn support_dir_name() -> &'static str {
+    support_dir_name_for(crate::update::bundle_path().is_some())
+}
+
+fn support_dir_name_for(bundled: bool) -> &'static str {
+    if bundled {
+        "helm"
+    } else {
+        "helm-dev"
+    }
+}
+
 pub fn prefs_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "helm").map(|dirs| dirs.config_dir().join(PREFS_FILE))
+    directories::ProjectDirs::from("", "", support_dir_name())
+        .map(|dirs| dirs.config_dir().join(PREFS_FILE))
 }
 
 #[cfg(test)]
@@ -1304,6 +1321,27 @@ mod tests {
         assert!(!prefs.purge_missing_repos());
         assert_eq!(prefs.projects.len(), 1);
         assert_eq!(prefs.active, Some(tmp.path().to_path_buf()));
+    }
+
+    #[test]
+    fn an_unbundled_build_gets_its_own_support_dir() {
+        assert_eq!(support_dir_name_for(true), "helm");
+        assert_eq!(support_dir_name_for(false), "helm-dev");
+        assert_ne!(support_dir_name_for(true), support_dir_name_for(false));
+    }
+
+    // The test binary is never a `.app`, so the live resolution must land on the
+    // dev dir — the whole point being that `cargo run` leaves the installed app's
+    // prefs and instance lock alone.
+    #[test]
+    fn the_test_binary_resolves_to_the_dev_support_dir() {
+        assert_eq!(support_dir_name(), "helm-dev");
+        let path = prefs_path().expect("project dirs resolved");
+        assert!(
+            path.parent().unwrap().ends_with("helm-dev"),
+            "unexpected prefs dir: {}",
+            path.display()
+        );
     }
 
     #[test]

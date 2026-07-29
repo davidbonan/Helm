@@ -135,10 +135,17 @@ anything:
 
 - lock free ⇒ held for the life of the process, normal start;
 - lock taken ⇒ the running instance is raised (`open <bundle>`) and this process
-  exits 0, having read or written nothing.
+  exits 0, having read or written nothing. Outside a bundle there is nothing for
+  LaunchServices to raise, so the process says so on stderr instead of vanishing.
 
 `flock` is released by the kernel even on a crash — no stale lock to collect,
 unlike a pid file.
+
+The rule is per **support dir**, and an unbundled build has its own:
+`helm-dev` rather than `helm` (`persistence::support_dir_name`, which also names
+eframe's storage dir). A `cargo run` build therefore starts while the installed
+`.app` is open — the two never share prefs, window state or lock. The dev
+instance starts on an empty workspace, its own.
 
 ## 7. Installing the command
 
