@@ -6,6 +6,7 @@ pub mod commit_detail;
 pub mod conflict;
 pub mod diff;
 pub mod discard;
+pub mod edit;
 pub mod file_tree;
 pub mod forge;
 pub mod graph;

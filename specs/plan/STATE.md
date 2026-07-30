@@ -11,14 +11,14 @@
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **1/6**.
+with no save control. Counter: **2/6**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
   (buffer never clobbered by a reload); `keybindings.md` §3/§4/§6;
   `design-system.md` §4 (*Inline code editor*) + cursor rule.
   *Files*: `specs/{git,keybindings,design-system}.md`.
-- ☐ **T2 — Domain `src/git/edit.rs`.** `EditError`, `read_range`, `write_range`:
+- ☑ **T2 — Domain `src/git/edit.rs`.** `EditError`, `editable`, `write_range`:
   workdir containment, symlink / non-regular / NUL / non-UTF-8 / oversize refusal,
   byte-exact `file[range] == original` precondition, line terminator + final
   newline preserved (`conflict::LineEnding`), atomic temp + `rename` keeping the
@@ -51,8 +51,8 @@ with no save control. Counter: **1/6**.
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- **T2** — domain first: `write_range` and its preconditions carry the whole
-  resilience story; everything above it is UI.
+- **T3** — worker command over `edit::write_range`, plus `editable` surfaced on
+  `FileDiff` so the click stays free of disk access.
 
 ---
 

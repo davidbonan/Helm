@@ -15,6 +15,7 @@ mod git_commit_e2e;
 mod git_conflict_e2e;
 mod git_diff_e2e;
 mod git_discard_e2e;
+mod git_edit_e2e;
 mod git_graph_e2e;
 mod git_stage_e2e;
 mod git_stash_e2e;
