@@ -86,9 +86,12 @@ take the intent color (added for Stage, deleted for Unstage/Discard).
 - **Cursor** — any **enabled** clickable element (buttons, tabs, rows,
   chips, menu items…) shows the **pointer** cursor (`PointingHand`) on
   hover; disabled ⇒ default cursor. Exceptions: resize handles
-  (cursor ↔/↕), text selection zones (diff lines, terminal), and
-  the **git graph rows** — only their ref **chips** show the
-  pointer (a tag, without checkout or menu, keeps the default cursor).
+  (cursor ↔/↕), text selection zones (the diff's **content** column — where the
+  text cursor also announces inline editing, [`git.md`](git.md) §4 — and the
+  terminal), and the **git graph rows** — only their ref **chips** show the
+  pointer (a tag, without checkout or menu, keeps the default cursor). Inside the
+  diff, the **line-number strip** is the pointer exception: clicking it picks the
+  line for staging.
 - **Sidebar nav item** — icon (16pt) + label `text.secondary`, row ~26pt,
   hover = `bg.surface.hover` + radius ~7pt. Active = `accent.subtle` + `accent` text.
 - **Section header** — uppercase `text.muted`, top margin ~16pt. The
@@ -210,6 +213,15 @@ take the intent color (added for Stage, deleted for Unstage/Discard).
   left. **No scrolling on click** (a clicked row is already visible);
   only keyboard navigation ↑/↓ brings the row into the viewport by the shortest
   path, without centering.
+- **Inline code editor** (diff view, [`git.md`](git.md) §4) — **no frame, no
+  toolbar, no button**: the hunk's rows become an editable buffer at **identical**
+  metrics (mono 12pt, 17pt line height, same content x offset, same syntax
+  colors), so entering it only adds a **caret**. The hunk carries a 3pt `accent`
+  bar on the left (same language as a selected file row) and its `+`/`−` sign
+  column **dims** on the edited lines; the number gutter is renumbered from the
+  laid-out galley. One `text.muted` hint closes the block. The rare
+  disk-divergence notice is a single `text.muted` line with two inline links
+  (**Reload** / **Overwrite**) — the only controls this editor ever shows.
 - **Framed input with integrated counter** (commit card) — `bg.canvas` background,
   1px `border.subtle` border, radius **~6pt** (discreet rounding, mockup); the counter
   "n / limit" (`text.muted`, `git.conflict` beyond the indicative limit)

@@ -6,6 +6,56 @@
 
 ---
 
+## ◐ Milestone — M-Edit · Edit the file from the diff
+
+Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
+[`design-system.md`](../design-system.md) §4). A click in the diff content puts a
+caret on the line; the buffer reaches the working tree on exit and on idle typing,
+with no save control. Counter: **1/6**.
+
+- ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
+  non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
+  (buffer never clobbered by a reload); `keybindings.md` §3/§4/§6;
+  `design-system.md` §4 (*Inline code editor*) + cursor rule.
+  *Files*: `specs/{git,keybindings,design-system}.md`.
+- ☐ **T2 — Domain `src/git/edit.rs`.** `EditError`, `read_range`, `write_range`:
+  workdir containment, symlink / non-regular / NUL / non-UTF-8 / oversize refusal,
+  byte-exact `file[range] == original` precondition, line terminator + final
+  newline preserved (`conflict::LineEnding`), atomic temp + `rename` keeping the
+  original permissions.
+  *Files*: `src/git/edit.rs`, `src/git/mod.rs`. *Tests*: unit (splice, EOL, final
+  newline, divergence) + `tests/it/git_edit_e2e.rs` (real repo: CRLF, no final
+  newline, divergence refused, symlink, binary, perms kept, oversize).
+- ☐ **T3 — Worker command.** `GitCommand::EditFile { path, range, original,
+  replacement, stage_after }`, `mutates() == true`; `stage_after` re-checked under
+  the mutation lock (file absent from unstaged), reply reports whether the stage
+  happened; failure message arm.
+  *Files*: `src/git/worker.rs`, `src/app/git_session.rs`. *Tests*:
+  `tests/it/git_edit_e2e.rs` (unstaged edit, staged edit + stage, precondition
+  lost ⇒ written unstaged).
+- ☐ **T4 — Inline editor rendering.** Hunk rows swapped for a `TextEdit` at
+  identical metrics, caret placed from `text_position_at`, accent bar + dimmed
+  sign column + galley-renumbered gutter; entry on content click and `Cmd+E`;
+  line pick moved to the number strip.
+  *Files*: `src/ui/diff_view.rs`. *Tests*: `tests/it/ui_diff_view.rs` (caret from
+  a click, number-strip pick, no x / scroll shift, non-editable no-op).
+- ☐ **T5 — Autosave + guards.** Flush on exit / blur / file nav / close and after
+  800 ms idle; diff frozen while open, diff poll suspended, `↑`/`↓` and
+  `Cmd+Enter` disarmed, `Esc` cascade, divergence notice (*Reload* /
+  *Overwrite*), non-editable toast carrying **Open in editor**.
+  *Files*: `src/app/{render,git_session,keys}.rs`, `src/ui/diff_view.rs`.
+  *Tests*: `tests/it/ui_app_keys.rs`, `tests/it/ui_diff_view.rs`.
+- ☐ **T6 — Verification.** `headless-verify`: click → type → `Esc` → recomposed
+  diff, plus a before/after capture proving no metric shift.
+- ⏭ **T7 — Deferred.** Whole-file editing (same `write_range`, full range),
+  auto-indent on `Enter`, several editors at once, *Save & next hunk*.
+
+### Next actions (M-Edit)
+- **T2** — domain first: `write_range` and its preconditions carry the whole
+  resilience story; everything above it is UI.
+
+---
+
 ## ☑ Milestone — M-CLI · `helm <path>` from a terminal or another app
 
 Spec: [`specs/cli.md`](../cli.md). One binary, argv-dispatched; the CLI resolves the

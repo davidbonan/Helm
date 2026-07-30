@@ -215,13 +215,17 @@ placeholder launches verbatim.
   or the commit/stash blob; a deleted image or one above ~32 MB stays on the
   placeholder. Staging granularity is unchanged (file level, as any binary).
 - **Granularity**: **Stage hunk** / **Unstage hunk** buttons per hunk, and
-  **line** selection for partial stage/unstage. On the **Unstaged** side each
+  **line** selection for partial stage/unstage — a line is picked by clicking its
+  **number strip** (the two number columns plus the sign, left of the content);
+  the content column belongs to the inline editor (below). On the **Unstaged** side each
   hunk also offers a **Discard hunk** button (destructive — reverts that hunk's
   working-tree change to the index, **behind a confirmation**); never on the
   Staged side nor on the read-only commit diff (§9).
 - **Text selection**: dragging over the diff content selects the file's
   text; double-click selects the word, triple-click the line; `Cmd+C` copies the
-  selection (without the `+`/`-` signs or the gutter).
+  selection (without the `+`/`-` signs or the gutter). A plain **click** (press
+  and release without a drag) in the content column opens the inline editor
+  instead (below); on a read-only surface it does nothing.
 - **Gutter & line numbers**: two number columns before each line
   (**old** no. | **new** no.) — context = both, deletion = old
   only, addition = new only; colored `+`/`−` sign between the gutter and the
@@ -234,6 +238,34 @@ placeholder launches verbatim.
   (worktree / index / commit blob — `FileDiff::source_lines`); **display
   only**: hunk/line staging stays based on the original diff. Also available
   on the read-only commit diff (§9).
+- **Inline editing**: a **click in the content column** of an editable diff puts
+  a **caret** on that line — the hunk's rows are swapped in place for a code
+  editor holding exactly the hunk's **new-side** lines, at **identical metrics**
+  (same mono font, same line height, same content x offset, same scroll offset):
+  the only perceptible change is the caret appearing. Context lines are editable
+  too, so **Extend context** widens the editable window. One editor at a time; a
+  click in another hunk's content moves it there in a single gesture. `Esc`
+  leaves the editor, a click outside leaves it too, and the diff then recomposes.
+  - **No save control**: the buffer is written to the working tree on **exit**
+    and after **800 ms** of idle typing. `Cmd+Z` undoes inside the buffer (git's
+    **Discard hunk** stays the coarser net), `Cmd+S` only flushes early. While
+    the editor is open the diff underneath is **frozen** — nothing reflows under
+    the caret (§7 suspends its poll) — and it recomposes on exit.
+  - **The edit lands in the section it was made from**: from **Unstaged** it
+    stays unstaged; from **Staged** the write is followed by a **file-level
+    stage**, so the file stays staged with no extra click. Editing from the
+    Staged side is only offered when the file has **no unstaged change** (index
+    == working tree, so the staged blob's line numbers *are* the working tree's);
+    that precondition is re-checked in the worker under the mutation lock — if it
+    no longer holds, the write happens **unstaged** and a toast says so. A file
+    present in **both** sections is not editable from the Staged side (its new
+    side is the index blob, whose numbering may be shifted): the click does
+    nothing, `Cmd+E` toasts the reason.
+  - **Not editable**, checked **before** the caret appears: non-UTF-8 content, a
+    NUL byte, a symlink, a non-regular file, a binary or oversize diff (§8), a
+    read-only surface (commit / PR review / frozen diff), a hunk above ~2,000
+    lines, or a file the process cannot write. The click does nothing; `Cmd+E`
+    raises a toast carrying the **Open in editor** action (external editor, §3).
 
 **Mechanism (libgit2)**: we compute the file's diff, build a **filtered
 diff** containing only the selected hunks/lines, then apply it to
@@ -243,6 +275,21 @@ line. **Discard hunk** is the working-tree twin of unstage: the hunk's reversed
 Unstaged patch is applied with `ApplyLocation::WorkDir`, reverting the worktree to
 the index for that hunk alone (a whole-file addition/deletion falls back to the
 file-level Discard). After application, we recompute the `status` (§7).
+
+**Mechanism (inline editing)**: an edit is addressed by a **working-tree line
+range** (`Hunk::new_start` / `new_lines` — the new side of an Unstaged diff *is*
+the working tree) plus the **original lines** read when the caret appeared, never
+by hunk index (the 1 s poll renumbers those, §7). The write runs on the git worker
+as a **mutating** command, so it serializes with staging: it re-reads the file and
+refuses unless `file[range]` still equals those original lines
+(`EditError::Diverged` — the typed buffer is never dropped, an inline notice
+offers **Reload** / **Overwrite**), splices the buffer in, re-applies the file's
+own **line terminator** and final-newline policy (a CRLF file stays CRLF, no
+trailing newline is added), then lands through a **temporary file in the same
+directory + `rename`** carrying the original permissions — a failed write never
+leaves a truncated file. The bytes written are the bytes typed; git's clean
+filters still apply when the range is staged, and the file **mode is never a side
+effect** (§2).
 
 ## 5. Commit
 
@@ -310,6 +357,10 @@ file-level Discard). After application, we recompute the `status` (§7).
 - **Immediate refresh after each action** (stage/unstage/commit/discard):
   the worker computes the new status then **wakes the UI** (callback
   `request_repaint`), without waiting for the next poll. Manual refresh via **Refresh**.
+- **Suspended while editing**: the working-tree **diff** tick is skipped while an
+  inline editor is open (§4) — nothing reflows under the caret. The **status**
+  tick keeps running, so the sidebar's counters follow each flush; the diff is
+  re-requested when the editor closes.
 - Git operations run on a **worker thread** (blocking libgit2) so as not to
   freeze the UI; see [`architecture.md`](architecture.md) §3.
 
@@ -324,7 +375,10 @@ file-level Discard). After application, we recompute the `status` (§7).
   invalidate the selection; we reload the diff and report if a selection no
   longer applies. A picked line survives the reload only if **both its side and
   its text** are unchanged at that position — same text flipped from added to
-  deleted would stage the opposite of what was picked.
+  deleted would stage the opposite of what was picked. An **inline editor** open
+  on the file (§4) is never clobbered by a reload: the typed buffer is kept, and
+  the write's byte-exact precondition is what arbitrates — a real divergence
+  surfaces as the **Reload** / **Overwrite** notice.
 
 ## 9. Commit graph / history (post-MVP)
 

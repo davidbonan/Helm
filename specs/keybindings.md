@@ -66,6 +66,12 @@ Behavior details: [`terminal.md`](terminal.md).
 | `Click` on a file (right sidebar) | Opens the file's **diff** in the center zone (overlay) |
 | `Drag` in the diff view | Selects text in the diff content (without the `+`/`-` signs) |
 | `Double-click` / `Triple-click` in the diff view | Selects the word / the whole line in the diff content |
+| `Click` in the diff **content** (editable diff) | Places the **caret** on that line and opens the **inline editor** ([`git.md`](git.md) §4); read-only surface ⇒ no-op |
+| `Click` on a line's **number strip** (numbers + sign) | Toggles that line's pick for partial stage/unstage |
+| `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; on a non-editable file, toasts the reason with an **Open in editor** action |
+| `Cmd+S` (inline editor open) | Flushes the buffer now — leaving the editor writes it anyway (no save control) |
+| `Cmd+Z` (inline editor open) | Undo inside the buffer (`Esc` never reverts a change) |
+| `Esc` (inline editor open) | Leaves the editor **keeping** the change; a second `Esc` closes the diff |
 | `Cmd+C` (diff view) | Copies the diff's text selection; without a selection: no-op |
 | `↑` / `↓` (file selected in the sidebar) | Opens the diff of the previous / next file, traversing only the files (**Unstaged** then **Staged**) with start/end wrap. Disarmed as soon as a **terminal** regains keyboard focus (the arrows go back to the PTY); rearmed on the next click on a file |
 | `↑` / `↓` (**Graph** mode) | Moves the **commit selection** row by row (**WIP** row included), scrolling the targeted row in the viewport — **no wrap** (paginated history). Inactive if a widget has keyboard focus or if the arrows already navigate elsewhere (rows below) |
@@ -76,7 +82,8 @@ Behavior details: [`terminal.md`](terminal.md).
 | `Cmd+Enter` | **Commit** (if the message is non-empty and at least one file is staged) |
 
 Per-hunk/line staging is done from the diff view via mouse
-controls (no dedicated shortcut in the MVP). The **Git graph** (post-MVP) is toggled via
+controls (no dedicated shortcut in the MVP); the `Esc` cascade in the diff runs
+**inline editor → note editor → close the diff**. The **Git graph** (post-MVP) is toggled via
 the **header switch** "Terminal ⇄ Git" or `Cmd+Shift+G` (§1,
 [`git.md`](git.md) §9). Details: [`git.md`](git.md).
 
@@ -94,6 +101,10 @@ of shortcuts depends on this zone.
 - **Commit field**: captures text input and `Cmd+Enter` (commit); the
   terminal shortcuts are inactive there.
 - **Diff view** open: only the §3 shortcuts (`Cmd+C` included) and `Esc` apply.
+- **Inline editor** open ([`git.md`](git.md) §4): it takes the text input, so the
+  sidebar's `↑`/`↓` file navigation is **disarmed** and `Cmd+Enter` (commit) is
+  inactive until it closes; the global shortcuts of §1 keep applying (an action
+  that would tear the diff down flushes the buffer first).
 - **Preferences page** open ([`preferences.md`](preferences.md)): **exclusive**
   active zone — the global app shortcuts are inactive; only the
   **preferences toggle** (`Cmd+,` by default, §6) and `Esc` (close) apply.
@@ -161,6 +172,8 @@ fixed. The §1–§3 tables are the defaults.
   `Cmd+Backspace`, `Cmd+←/→`, `Alt+…`, `Tab`, `Shift+Enter`, `Option+Enter`,
   `Ctrl+*` signals — their semantics belong to the terminal, not to helm.
 - The **diff / graph navigation** keys (§3): `↑/↓`, `Cmd+F`, `Esc`.
+- The **inline editor** keys (§3): `Cmd+E`, `Cmd+S`, `Cmd+Z` — fixed, they only
+  exist while a diff (resp. the editor) is open.
 
 ### Binding rules
 
