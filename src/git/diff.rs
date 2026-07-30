@@ -185,16 +185,19 @@ pub fn file_diff(
         return untracked_file_diff(repo, path);
     }
     let mut file = patch_to_file_diff(&diff, idx, path)?;
+    let mut new_side = None;
     if file.binary {
         if is_image_path(path) {
             file.image = new_side_bytes(repo, path, source).and_then(|b| image_blob(path, b));
         }
     } else if !file.hunks.is_empty() {
-        file.source_lines = new_side_bytes(repo, path, source)
-            .map(|bytes| source_lines_from(&bytes))
+        new_side = new_side_bytes(repo, path, source);
+        file.source_lines = new_side
+            .as_deref()
+            .map(source_lines_from)
             .unwrap_or_default();
     }
-    file.editable = editable_here(repo, path, &file, source);
+    file.editable = editable_here(repo, path, &file, source, new_side.as_deref());
     Ok(file)
 }
 
@@ -203,15 +206,23 @@ pub fn file_diff(
 /// **Staged** side the new side is the index blob, whose line numbers are the working
 /// tree's only while the file has no unstaged change (git.md §4): a file present in
 /// both sections offers no caret, judged on the same rule the worker re-checks before
-/// staging an edit.
-fn editable_here(repo: &git2::Repository, path: &str, file: &FileDiff, source: DiffSource) -> bool {
+/// staging an edit. That rule also makes the blob's bytes *be* the working tree's, so
+/// `new_side` answers the content checks for either source — and a diff with no new side
+/// read has no row to click anyway.
+fn editable_here(
+    repo: &git2::Repository,
+    path: &str,
+    file: &FileDiff,
+    source: DiffSource,
+    new_side: Option<&[u8]>,
+) -> bool {
     if file.binary || file.oversize {
         return false;
     }
     if source == DiffSource::Staged && crate::git::edit::stage_refusal(repo, path).is_some() {
         return false;
     }
-    crate::git::edit::editable(repo, path).is_ok()
+    new_side.is_some_and(|bytes| crate::git::edit::editable(repo, path, bytes).is_ok())
 }
 
 /// Bytes of the file's new side per source: working tree (Unstaged) or the index

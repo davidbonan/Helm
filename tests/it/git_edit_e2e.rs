@@ -120,7 +120,7 @@ fn editable_refuses_a_file_holding_a_nul_byte() {
     let (_tmp, repo, _full) = repo_with("bin.dat", b"one\ntw\0o\n");
 
     assert_eq!(
-        edit::editable(&repo, "bin.dat").unwrap_err(),
+        edit::editable(&repo, "bin.dat", b"one\ntw\0o\n").unwrap_err(),
         EditError::Binary
     );
 }
@@ -135,7 +135,7 @@ fn editable_refuses_a_file_past_the_size_cap() {
         .unwrap();
 
     assert_eq!(
-        edit::editable(&repo, "big.txt").unwrap_err(),
+        edit::editable(&repo, "big.txt", b"").unwrap_err(),
         EditError::TooLarge
     );
 }
@@ -146,7 +146,7 @@ fn editable_refuses_a_file_without_a_write_bit() {
     fs::set_permissions(&full, fs::Permissions::from_mode(0o444)).unwrap();
 
     assert_eq!(
-        edit::editable(&repo, "ro.txt").unwrap_err(),
+        edit::editable(&repo, "ro.txt", b"one\n").unwrap_err(),
         EditError::ReadOnly
     );
 }
@@ -159,11 +159,11 @@ fn editable_refuses_a_path_escaping_the_working_tree() {
     let outside = tmp.path().parent().unwrap().join("outside.txt");
 
     assert_eq!(
-        edit::editable(&repo, "../outside.txt").unwrap_err(),
+        edit::editable(&repo, "../outside.txt", b"").unwrap_err(),
         EditError::OutsideWorkdir
     );
     assert_eq!(
-        edit::editable(&repo, outside.to_str().unwrap()).unwrap_err(),
+        edit::editable(&repo, outside.to_str().unwrap(), b"").unwrap_err(),
         EditError::OutsideWorkdir
     );
 }
@@ -181,10 +181,43 @@ fn write_range_keeps_the_executable_bit() {
 }
 
 #[test]
+fn write_range_leaves_the_rest_of_a_mixed_ending_file_alone() {
+    // `LineEnding::detect` reads the first newline only: re-applying it to the whole
+    // file would rewrite every line that ends differently, landing a one-line edit as a
+    // whole-file diff.
+    let (_tmp, repo, full) = repo_with("mixed.txt", b"a\r\nb\nc\r\n");
+
+    edit::write_range(&repo, &request("mixed.txt", 0..1, &["a"], "A")).unwrap();
+
+    assert_eq!(fs::read_to_string(&full).unwrap(), "A\r\nb\nc\r\n");
+}
+
+#[test]
+fn an_emptied_buffer_deletes_the_lines_it_replaced() {
+    let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\nthree\n");
+
+    edit::write_range(&repo, &request("a.txt", 1..2, &["two"], "")).unwrap();
+
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nthree\n");
+}
+
+#[test]
+fn editable_judges_the_content_it_is_handed() {
+    // The diff hands over the new side it has just read, so the check costs no second
+    // read of the file — the same question is asked again on every poll.
+    let (_tmp, repo, _full) = repo_with("a.txt", b"one\n");
+
+    assert_eq!(
+        edit::editable(&repo, "a.txt", b"tw\0o").unwrap_err(),
+        EditError::Binary
+    );
+}
+
+#[test]
 fn editable_accepts_a_plain_text_file() {
     let (_tmp, repo, _full) = repo_with("a.txt", b"one\ntwo\n");
 
-    assert!(edit::editable(&repo, "a.txt").is_ok());
+    assert!(edit::editable(&repo, "a.txt", b"one\ntwo\n").is_ok());
 }
 
 #[test]
