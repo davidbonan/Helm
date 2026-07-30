@@ -247,7 +247,10 @@ placeholder launches verbatim.
   click in another hunk's content moves it there in a single gesture. `Esc`
   leaves the editor, a click outside leaves it too, and the diff then recomposes.
   - **No save control**: the buffer is written to the working tree on **exit**
-    and after **800 ms** of idle typing. `Cmd+Z` undoes inside the buffer (git's
+    and after **800 ms** of idle typing — *exit* covers the ways the diff is torn
+    down from elsewhere too (a **repo switch**, another file taking the view), and
+    the write then rides the leaving repo's worker: none of them is a discard.
+    `Cmd+Z` undoes inside the buffer (git's
     **Discard hunk** stays the coarser net, and each editor starts its own undo
     history — an undo never reaches back into the hunk edited before), `Cmd+S`
     is simply the keyboard's way of stepping out: it writes and **leaves** the
@@ -257,6 +260,8 @@ placeholder launches verbatim.
     (a reload from another path than the poll), the editor is **left** rather than
     re-anchored: it is addressed by hunk index, and that index would otherwise
     come to name a hunk the user never pointed at (§8).
+  - **An untracked file is editable too**: git tracks it or not, its diff's new
+    side is the working tree, so its additions take a caret like any other.
   - **The edit lands in the section it was made from**: from **Unstaged** it
     stays unstaged; from **Staged** the write is followed by a **file-level
     stage**, so the file stays staged with no extra click. Editing from the

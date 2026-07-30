@@ -861,6 +861,12 @@ impl HelmApp {
                     // The chip menu lives in egui memory, outside any session: left
                     // open, its entries name the previous repo's refs.
                     close_chip_menu(ctx);
+                    // A buffer open in the diff never gets another frame to blur on: its
+                    // write goes out on the leaving repo's worker, before the session that
+                    // owns it is parked (git.md §4).
+                    if let Some(git) = self.git.as_ref() {
+                        git.flush_open_edit(&self.diff);
+                    }
                     // Park the left-behind repo's state (graph for an instant redraw,
                     // commit draft + AI runner so a draft never shows under another repo
                     // and an in-flight generation is not cancelled).
@@ -903,8 +909,9 @@ impl HelmApp {
                 }
             }
             None => {
-                if self.git.is_some() {
+                if let Some(git) = self.git.as_ref() {
                     close_chip_menu(ctx);
+                    git.flush_open_edit(&self.diff);
                 }
                 self.park_active_session();
                 self.diff = None;
@@ -1554,6 +1561,9 @@ impl HelmApp {
             .insert(pane_id, pane);
         self.review.remove(&key);
         self.central_mode = CentralMode::Terminal;
+        if let Some(git) = self.git.as_ref() {
+            git.flush_open_edit(&self.diff);
+        }
         self.diff = None;
     }
 

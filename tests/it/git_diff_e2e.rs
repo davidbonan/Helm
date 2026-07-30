@@ -204,6 +204,23 @@ fn editable_is_carried_by_the_diff_so_a_click_needs_no_disk_access() {
 }
 
 #[test]
+fn an_untracked_file_takes_a_caret_like_any_other_working_tree_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "tracked.txt", "one\n", "init");
+    // Never staged, never committed: its whole content is the diff's new side.
+    fs::write(tmp.path().join("new.txt"), "alpha\nbravo\n").unwrap();
+
+    let file = diff::file_diff(&repo, "new.txt", DiffSource::Unstaged).unwrap();
+
+    assert_eq!(file.source_lines, vec!["alpha", "bravo"]);
+    assert!(
+        file.editable,
+        "a file git does not track yet is still a working-tree file"
+    );
+}
+
+#[test]
 fn the_staged_side_is_editable_only_while_the_index_matches_the_working_tree() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

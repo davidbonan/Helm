@@ -2199,6 +2199,12 @@ impl HelmApp {
                         }
                     }
                     GitIntent::OpenDiff { path, staged } => {
+                        // Another file takes the view: a buffer still open in it is
+                        // written on the way out (git.md §4). A click in the sidebar has
+                        // already blurred it — this covers the paths that never do, the
+                        // notice's *Reload* excepted (it drops the buffer deliberately,
+                        // and has cleared the editor before emitting).
+                        git.flush_open_edit(&self.diff);
                         git.worker.send(GitCommand::Diff {
                             path: path.clone(),
                             staged,

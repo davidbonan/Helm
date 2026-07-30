@@ -1574,6 +1574,43 @@ fn an_open_inline_editor_freezes_the_diff_under_it() {
 }
 
 #[test]
+fn a_repo_switch_writes_the_open_buffer_before_it_parks_the_session() {
+    // The switch drops the whole overlay: the editor never gets another frame to blur
+    // on, and the write has to reach the **leaving** repo's worker (git.md §4).
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let file = a.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(Repo::new(a.path().to_path_buf()));
+    workspace.add(Repo::new(b.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(workspace);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+
+    let mut diff = open_diff("a.txt", false);
+    diff.adopt(loaded_file("a.txt"));
+    diff.view
+        .open_editor_for_test("a.txt", 0, 0..2, &["one", "two"]);
+    diff.view.type_for_test("one\nTWO");
+    app.diff = Some(diff);
+
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+
+    // `GitWorker::drop` joins on a queued mutation, so the write has landed by now.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "one\nTWO\n",
+        "the buffer must reach the repo it was typed in, not the one being opened"
+    );
+    assert!(app.diff.is_none(), "the switch drops the overlay");
+}
+
+#[test]
 fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
     let tmp = tempfile::tempdir().unwrap();
     init_repo_with_commit(tmp.path());

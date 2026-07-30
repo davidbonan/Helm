@@ -678,6 +678,14 @@ fn mutate_with_lock(
     mutation_lock: &MutationLock,
 ) -> Result<(), git2::Error> {
     let _guard = mutation_guard(command, mutation_lock)?;
+    // The inline save mutates like the rest, but it answers with its own reply variant
+    // and therefore has its own executor: `mutate` refuses it outright. Reached on the
+    // abandoned-session path, where the buffer flushed by a repo switch must still land.
+    if let GitCommand::EditFile(request) = command {
+        return edit::flush(repo, request)
+            .map(|_| ())
+            .map_err(|err| git2::Error::from_str(&err.to_string()));
+    }
     mutate(repo, command)
 }
 

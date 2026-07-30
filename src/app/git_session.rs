@@ -257,6 +257,15 @@ impl DiffState {
     pub(crate) fn granular_writes_allowed(&self) -> bool {
         matches!(self.source, DiffSource::WorkingTree { .. }) && !self.inherited
     }
+
+    /// The write an open inline editor still owes (git.md §4), against the section it was
+    /// typed in. `None` on a read-only source — no caret ever opened there.
+    pub(crate) fn pending_edit(&self) -> Option<EditRequest> {
+        let DiffSource::WorkingTree { staged } = self.source else {
+            return None;
+        };
+        self.view.pending_write(staged)
+    }
 }
 
 /// Git session of the active repo: libgit2 worker (off the UI thread, architecture §3)
@@ -439,6 +448,17 @@ impl GitSession {
                 self.reload_graph();
             }
             self.last_poll = now;
+        }
+    }
+
+    /// Writes an open inline editor's buffer before the diff that holds it is dropped —
+    /// keybindings.md §4: an action that tears the diff down flushes first, and a repo
+    /// switch or another file taking its place is not a discard. The buffer belongs to
+    /// **this** session's repo, so this runs before the session is parked: the worker
+    /// still applies a queued mutation once cancelled, and its `Drop` joins on one.
+    pub(crate) fn flush_open_edit(&self, diff: &Option<DiffState>) {
+        if let Some(request) = diff.as_ref().and_then(DiffState::pending_edit) {
+            self.worker.send(GitCommand::EditFile(request));
         }
     }
 

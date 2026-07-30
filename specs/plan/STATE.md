@@ -107,13 +107,7 @@ with no save control. Counter: **7/7**.
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- Milestone closed. What is left is follow-up work, none of it blocking the feature:
-- Left open by T5, bounded by the autosave: a teardown that drops the whole overlay
-  without rendering it again never flushes — a **keyboard** repo switch (`Cmd+1..9`,
-  `self.diff = None` in `sync_git_session`), a worktree open, a failed diff reload. A
-  mouse switch is safe (the click blurs the buffer, which flushes in that same frame),
-  so the exposure is ≤ 800 ms of typing on the keyboard path; fixing it means flushing
-  **before** the old session is parked, since the write must reach that repo's worker.
+- Milestone closed, and every follow-up it left open is fixed.
 - ☑ The five follow-ups the T4b review left open are fixed (see the two commits after
   T6): **(5)** a hunk that cannot back a buffer (only deletions, or past
   `MAX_EDIT_LINES`) now answers `Cmd+E` with its reason — `CaretOffer` per hunk,
@@ -126,9 +120,24 @@ with no save control. Counter: **7/7**.
   newline adds on the frame it is typed (verified before/after:
   `verify-artifacts/20260730_221725_36018/`), and `keybindings.md` no longer promises
   word/line selection where the first click opens the buffer.
-- Observed while fixing (5), not spec'd either way: an **untracked** file's diff is never
-  editable — `diff::file_diff` returns early through `untracked_file_diff`, which never
-  computes `editable`. A brand-new file takes no caret.
+- ☑ The teardown flush T5 left open: a diff dropped without another render — a
+  **keyboard** repo switch (`Cmd+1..9`, `self.diff = None` in `sync_git_session`), a
+  worktree open, a failed reload — used to lose up to 800 ms of typing.
+  `DiffState::pending_edit` → `GitSession::flush_open_edit` sends `EditFile` **before**
+  the old session is parked, so the write still reaches that repo's own worker: the run
+  loop applies queued **mutations** even once cancelled, and `Drop` joins the thread
+  while one is pending. The fix uncovered a real bug on exactly that path — the
+  abandoned-session branch routed `EditFile` through `mutate`, hitting its
+  `unreachable!` and killing the worker thread, buffer included; `mutate_with_lock` now
+  runs the save itself. *Tests*: `src/app/tests.rs` (two real repos, a switch through
+  `sync_git_session`), `tests/it/git_worker_e2e.rs` (`drop_applies_a_queued_inline_save`).
+- ☑ An **untracked** file's diff is editable too (it never was: `file_diff` returns early
+  through `untracked_file_diff`, which never computed `editable`). Its additions *are*
+  the working tree, so it takes a caret like any other working-tree file — `git.md` §4
+  now says so. Verified end to end on the real app: caret on a never-staged file,
+  `Cmd+S`, `alpha\nbravo!\n` read back off disk, and the recomposed diff returning
+  `+ bravo!` still at `+2 −0` —
+  `verify-artifacts/20260730_224023_58342/{1-untracked-diff,2-caret-and-save,3-after}.png`.
 - Resolved (was noted while verifying T4 as "no click inside the git panel registers"
   in the headless app harness): the panel is **hidden** in a fresh profile — clicking
   *Toggle git sidebar* first makes the file row, the diff and the caret all drivable

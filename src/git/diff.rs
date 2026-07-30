@@ -182,7 +182,7 @@ pub fn file_diff(
     // libgit2 does not compute the line-by-line content of an untracked file in an
     // index→workdir diff: diff it against an empty buffer to get the additions.
     if diff.get_delta(idx).map(|d| d.status()) == Some(git2::Delta::Untracked) {
-        return untracked_file_diff(repo, path);
+        return untracked_file_diff(repo, path, source);
     }
     let mut file = patch_to_file_diff(&diff, idx, path)?;
     let mut new_side = None;
@@ -452,7 +452,11 @@ fn odb_bytes(repo: &git2::Repository, path: &str) -> Result<Vec<u8>, git2::Error
     Ok(repo.find_blob(oid)?.content().to_vec())
 }
 
-fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, git2::Error> {
+fn untracked_file_diff(
+    repo: &git2::Repository,
+    path: &str,
+    source: DiffSource,
+) -> Result<FileDiff, git2::Error> {
     let content = workdir_bytes(repo, path)?;
     if content.contains(&0) {
         return Ok(FileDiff {
@@ -470,6 +474,9 @@ fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, 
     let mut file = file_diff_from_patch(patch, path)?;
     if !file.hunks.is_empty() {
         file.source_lines = source_lines_from(&content);
+        // A file git does not track yet is still a working-tree file: its additions *are*
+        // the working tree, so it takes a caret like any other (git.md §4).
+        file.editable = editable_here(repo, path, &file, source, Some(&content));
     }
     Ok(file)
 }

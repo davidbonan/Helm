@@ -182,9 +182,27 @@ impl DiffViewState {
         self.inline_edit.as_ref()
     }
 
+    /// The write the open editor still owes: its buffer, when it differs from what has
+    /// already reached the worker. Read when the diff that holds it is being torn down
+    /// without another frame to blur on — a repo switch is not a discard
+    /// (keybindings.md §4).
+    pub fn pending_write(&self, staged: bool) -> Option<EditRequest> {
+        let edit = self.inline_edit.as_ref()?;
+        (edit.buffer != edit.flushed).then(|| edit.request(staged, false))
+    }
+
     /// The write a divergence notice is currently offering to retry, if any.
     pub fn edit_divergence(&self) -> Option<&EditRequest> {
         self.diverged.as_ref()
+    }
+
+    /// Types `text` into the open editor, as the field would: the app-side tests need a
+    /// buffer that differs from what is on disk.
+    #[cfg(test)]
+    pub fn type_for_test(&mut self, text: &str) {
+        if let Some(edit) = self.inline_edit.as_mut() {
+            edit.buffer = text.to_owned();
+        }
     }
 
     /// Opens an editor on `hunk` anchored on `lines` at `range`, as a click would: the

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use helm::git::cli;
+use helm::git::edit::EditRequest;
 use helm::git::sync::{PullMode, SyncError, SyncOutcome};
 use helm::git::worker::{
     drain_sync_refresh, GitCommand, GitResult, GitWorker, MutationLock, ResultKind, SyncCommand,
@@ -155,6 +156,35 @@ fn drop_applies_queued_mutations_and_skips_queued_reads() {
     assert!(
         status.contains(git2::Status::INDEX_NEW),
         "the queued mutation is applied despite the session being abandoned"
+    );
+}
+
+#[test]
+fn drop_applies_a_queued_inline_save() {
+    // The save a repo switch flushes rides the leaving repo's worker and is queued right
+    // before it dies — and it is a mutation with its own executor, which the
+    // abandoned-session path once handed to `mutate` (an `unreachable!`).
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a.txt");
+    git2::Repository::init(tmp.path()).unwrap();
+    fs::write(&file, "one\ntwo\n").unwrap();
+
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    worker.send(GitCommand::Status);
+    worker.send(GitCommand::EditFile(EditRequest {
+        path: "a.txt".to_owned(),
+        range: 1..2,
+        original: vec!["two".to_owned()],
+        replacement: "TWO".to_owned(),
+        stage_after: false,
+        force: false,
+    }));
+    drop(worker);
+
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "one\nTWO\n",
+        "the buffer must land even though the session is gone"
     );
 }
 
