@@ -914,6 +914,7 @@ fn staging_diff() -> FileDiff {
         path: "src/git/graph.rs".to_owned(),
         binary: false,
         oversize: false,
+        editable: true,
         hunks: vec![
             Hunk {
                 header: "@@ -18,7 +18,9 @@ impl LaneCache {".to_owned(),

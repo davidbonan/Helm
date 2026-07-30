@@ -11,7 +11,7 @@
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **3/6**.
+with no save control. Counter: **4/6**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -38,12 +38,18 @@ with no save control. Counter: **3/6**.
   unstaged / anchor lost stages nothing / 2 worker round-trips),
   `tests/it/git_diff_e2e.rs` (`editable` carried), `src/app/tests.rs` (toast +
   refresh).
-- ☐ **T4 — Inline editor rendering.** Hunk rows swapped for a `TextEdit` at
-  identical metrics, caret placed from `text_position_at`, accent bar + dimmed
-  sign column + galley-renumbered gutter; entry on content click and `Cmd+E`;
-  line pick moved to the number strip.
-  *Files*: `src/ui/diff_view.rs`. *Tests*: `tests/it/ui_diff_view.rs` (caret from
-  a click, number-strip pick, no x / scroll shift, non-editable no-op).
+- ☑ **T4 — Inline editor rendering.** `DiffViewState::inline_edit` +
+  `InlineEdit { hunk, range, original, buffer }`; the hunk's rows swapped for a
+  `TextEdit` (`Frame::NONE`, `line_height` + `valign: Center` ⇒ same 17 px band,
+  `IncrementalHighlighter` for the buffer's colours), accent bar, dimmed `~` sign
+  column, gutter renumbered off the laid-out galley. Entry: `row_zone` splits each
+  row into **number strip** (the line pick, moved there) and **content** (a plain
+  click ⇒ caret at that column, `Cmd+E` on the hovered row); `edit_anchor` widens
+  the window with the displayed extended context; `Esc` leaves the editor first.
+  *Files*: `src/ui/diff_view.rs`, `tests/shots_gen.rs`. *Tests*:
+  `tests/it/ui_diff_view.rs` (caret from a click proven by the typed character,
+  non-editable no-op, content x + row band unchanged, `Cmd+E`, `Esc`, number-strip
+  pick) + the 4 row-click tests retargeted to the strip (`numbers_x_offset`).
 - ☐ **T5 — Autosave + guards.** Flush on exit / blur / file nav / close and after
   800 ms idle; diff frozen while open, diff poll suspended, `↑`/`↓` and
   `Cmd+Enter` disarmed, `Esc` cascade, divergence notice (*Reload* /
@@ -56,9 +62,15 @@ with no save control. Counter: **3/6**.
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- **T4** — inline editor rendering in `diff_view`: the hunk's rows swapped for a
-  `TextEdit` at identical metrics, entry on a content click (`FileDiff::editable`
-  gates it), line pick moved to the number strip.
+- **T5** — autosave + guards: flush the open buffer on exit / blur / file nav /
+  close and after 800 ms idle, freeze the diff and suspend its poll while the
+  editor is open, disarm `↑`/`↓` and `Cmd+Enter`, surface the divergence notice.
+- Noted while verifying T4: in the **headless app** harness
+  (`Harness::new_eframe` + `HelmApp::with_workspace`), no click inside the git
+  panel registers (file row, *Tree view*) although the right-rail toggles do — so
+  T4 was verified on `diff_view` driven with a real `file_diff` instead. The same
+  clicks pass in the isolated `git_panel` harness (`tests/it/ui_git_panel.rs`);
+  cause unexplained, to look at when T6 needs the end-to-end path.
 
 ---
 

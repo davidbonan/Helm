@@ -7,7 +7,9 @@ use egui_kittest::Harness;
 use helm::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use helm::theme::Palette;
-use helm::ui::diff_view::{content_x_offset, diff_view, DiffReview, DiffSurface, DiffViewState};
+use helm::ui::diff_view::{
+    content_x_offset, diff_view, numbers_x_offset, DiffReview, DiffSurface, DiffViewState,
+};
 use helm::ui::git_panel::GitIntent;
 
 fn line(origin: LineOrigin, content: &str) -> DiffLine {
@@ -107,6 +109,19 @@ fn extendable_diff() -> FileDiff {
         image: None,
         editable: false,
     }
+}
+
+/// Clicks the line-number strip of the row containing `label` — the partial-staging
+/// pick zone (git.md §4). A click in the content column would place the caret instead.
+fn pick_line(harness: &mut Harness<'_, ()>, diff: &FileDiff, label: &str) {
+    let row = harness.get_by_label_contains(label).rect();
+    let char_w = harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(12.0), ' ')
+            .max(1.0)
+    });
+    let pos = egui::pos2(row.left() + numbers_x_offset(diff, char_w), row.center().y);
+    click_text_at(harness, pos, 1);
 }
 
 /// Drives `diff_view` with shared state, returns (emitted intents, close request).
@@ -464,7 +479,7 @@ fn selecting_a_line_then_staging_emits_stage_lines_for_that_line() {
     // Line index 2 of the hunk is the `new();` addition. Once selected, the
     // button switches from "Stage hunk" to "Stage lines" and emits StageLines.
     let (intents, _) = drive(sample_diff(), false, |h| {
-        h.get_by_label_contains("new()").click();
+        pick_line(h, &sample_diff(), "new()");
         h.run();
         h.get_by_label("Stage lines").click();
     });
@@ -480,7 +495,7 @@ fn selecting_a_line_then_staging_emits_stage_lines_for_that_line() {
 #[test]
 fn selecting_a_line_then_unstaging_emits_unstage_lines_for_that_line() {
     let (intents, _) = drive(sample_diff(), true, |h| {
-        h.get_by_label_contains("new()").click();
+        pick_line(h, &sample_diff(), "new()");
         h.run();
         h.get_by_label("Unstage lines").click();
     });
@@ -985,7 +1000,7 @@ fn reloading_a_shrunk_diff_drops_a_stale_selection_and_signals_it() {
         );
     });
     harness.run();
-    harness.get_by_label_contains("new()").click();
+    pick_line(&mut harness, &sample_diff(), "new()");
     harness.run();
 
     // Disk edit: the diff reloads empty ⇒ reconciliation on the app side.
@@ -1030,7 +1045,7 @@ fn reloading_a_rewritten_line_drops_the_selection_and_refuses_granular_staging()
         );
     });
     harness.run();
-    harness.get_by_label_contains("new()").click();
+    pick_line(&mut harness, &sample_diff(), "new()");
     harness.run();
     harness.get_by_label("Stage lines");
 
@@ -1706,5 +1721,215 @@ fn freezing_the_diff_keeps_the_scroll_of_the_file_still_on_screen() {
         frozen.abs_diff(scrolled) <= 5,
         "freezing the diff moved the view from row {scrolled} to row {frozen} \
          (row 0 = scrolled back to the top)"
+    );
+}
+
+/// Editable working-tree diff (git.md §4): a 3-line file whose single hunk covers all of
+/// it, carrying the `source_lines` the inline editor seeds its buffer from.
+fn editable_diff() -> FileDiff {
+    let row = |origin, content: &str, old, new| DiffLine {
+        origin,
+        content: content.to_owned(),
+        old_lineno: old,
+        new_lineno: new,
+    };
+    FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,3 +1,3 @@".into(),
+            old_start: 1,
+            old_lines: 3,
+            new_start: 1,
+            new_lines: 3,
+            lines: vec![
+                row(LineOrigin::Context, "fn main() {\n", Some(1), Some(1)),
+                row(LineOrigin::Deletion, "    old();\n", Some(2), None),
+                row(LineOrigin::Addition, "    new();\n", None, Some(2)),
+                row(LineOrigin::Context, "}\n", Some(3), Some(3)),
+            ],
+        }],
+        source_lines: vec!["fn main() {".into(), "    new();".into(), "}".into()],
+        image: None,
+        editable: true,
+    }
+}
+
+fn char_width(harness: &mut Harness<'_, ()>) -> f32 {
+    harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(12.0), ' ')
+            .max(1.0)
+    })
+}
+
+/// Pointer position at column `col` of the content column of the row containing `label`.
+fn content_cell(
+    harness: &mut Harness<'_, ()>,
+    diff: &FileDiff,
+    label: &str,
+    col: usize,
+) -> egui::Pos2 {
+    let row = harness.get_by_label_contains(label).rect();
+    let char_w = char_width(harness);
+    let content_left = row.left() + content_x_offset(diff, char_w);
+    egui::pos2(content_left + (col as f32 + 0.5) * char_w, row.center().y)
+}
+
+/// Drives `diff_view` on the working tree and hands the shared state back, so a test can
+/// read the inline editor the interaction opened.
+fn drive_edit(
+    diff: FileDiff,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> Rc<RefCell<DiffViewState>> {
+    let palette = Palette::light();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::WorkingTree { staged: false },
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+    actions(&mut harness);
+    harness.run();
+    state
+}
+
+#[test]
+fn a_content_click_opens_the_inline_editor_with_the_caret_where_it_landed() {
+    // Column 4 of the `    new();` addition — the caret must land there, not at the
+    // start of the buffer: the typed character proves where it went.
+    let state = drive_edit(editable_diff(), |h| {
+        let pos = content_cell(h, &editable_diff(), "new()", 4);
+        click_text_at(h, pos, 1);
+        h.run();
+        h.input_mut().events.push(egui::Event::Text("X".to_owned()));
+        h.run();
+    });
+
+    let edit = state
+        .borrow()
+        .inline_edit()
+        .cloned()
+        .expect("a click in the content column opens the editor");
+    assert_eq!(edit.hunk, 0);
+    assert_eq!(
+        edit.range,
+        0..3,
+        "the editor writes back the hunk's new side"
+    );
+    assert_eq!(edit.original, vec!["fn main() {", "    new();", "}"]);
+    assert_eq!(
+        edit.buffer, "fn main() {\n    Xnew();\n}",
+        "the character must land at the clicked column of the clicked line"
+    );
+}
+
+#[test]
+fn a_content_click_on_a_non_editable_diff_places_no_caret() {
+    let mut diff = editable_diff();
+    diff.editable = false;
+    let state = drive_edit(diff, |h| {
+        let pos = content_cell(h, &editable_diff(), "new()", 4);
+        click_text_at(h, pos, 1);
+        h.run();
+        h.get_by_label_contains("new()");
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "a diff the worker judged unwritable keeps its rows: the click does nothing"
+    );
+}
+
+#[test]
+fn the_open_editor_keeps_the_rows_horizontal_metrics() {
+    drive_edit(editable_diff(), |h| {
+        let row = h.get_by_label_contains("new()").rect();
+        let char_w = char_width(h);
+        let content_left = row.left() + content_x_offset(&editable_diff(), char_w);
+        click_text_at(
+            h,
+            egui::pos2(content_left + 0.5 * char_w, row.center().y),
+            1,
+        );
+        h.run();
+
+        let editor = h
+            .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .rect();
+        assert!(
+            (editor.left() - content_left).abs() <= 1.0,
+            "the buffer's text must start where the rows' content started \
+             ({content_left} px), got {} px",
+            editor.left(),
+        );
+        assert!(
+            (editor.height() - 3.0 * row.height()).abs() <= 1.0,
+            "3 buffer lines must occupy the band of 3 diff rows ({} px), got {} px",
+            3.0 * row.height(),
+            editor.height(),
+        );
+    });
+}
+
+#[test]
+fn cmd_e_opens_the_editor_on_the_hovered_row() {
+    let state = drive_edit(editable_diff(), |h| {
+        let pos = content_cell(h, &editable_diff(), "new()", 0);
+        h.input_mut().events.push(egui::Event::PointerMoved(pos));
+        h.step();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+        h.step();
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_some(),
+        "Cmd+E must open the editor on the hovered line, no pointer click needed"
+    );
+}
+
+#[test]
+fn escape_closes_the_inline_editor_before_the_diff() {
+    let state = drive_edit(editable_diff(), |h| {
+        let pos = content_cell(h, &editable_diff(), "new()", 0);
+        click_text_at(h, pos, 1);
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.get_by_label_contains("new()");
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "the first Esc leaves the editor and gives the rows back"
+    );
+}
+
+#[test]
+fn the_number_strip_still_picks_a_line_when_the_diff_is_editable() {
+    // Same gesture as on a read-only-ish diff: the pick moved to the strip, so an
+    // editable diff keeps partial staging alongside the caret.
+    let (intents, _) = drive(editable_diff(), false, |h| {
+        pick_line(h, &editable_diff(), "new()");
+        h.run();
+        h.get_by_label("Stage lines").click();
+    });
+
+    assert!(
+        intents.contains(&GitIntent::StageLines {
+            hunk: 0,
+            lines: vec![2],
+        }),
+        "a click on the number strip picks the line for partial staging, got {intents:?}"
     );
 }

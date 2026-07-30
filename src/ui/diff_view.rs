@@ -1,11 +1,15 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 
 use crate::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
-use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
+use crate::ui::syntax_highlight::{
+    display_text, HighlightedDiffCache, HighlightedSpan, IncrementalHighlighter,
+};
 use crate::ui::with_alpha;
 
 /// Per-hunk line selection, kept across frames. The key is the hunk index in
@@ -68,6 +72,34 @@ pub struct DiffViewState {
     /// accordion (pull-requests.md §11). Resolved threads collapse to a summary row by
     /// default; expanding one adds its root id here.
     expanded_resolved: HashSet<u64>,
+    /// The open inline editor (git.md §4), one at a time. `None` ⇒ the diff renders
+    /// its rows as usual.
+    inline_edit: Option<InlineEdit>,
+}
+
+/// The inline editor's live state: the hunk whose rows it replaced, the working-tree
+/// range it writes back, the lines it was seeded from — the write's precondition — and
+/// the buffer being typed (git.md §4). The range and the original lines are captured
+/// when the caret appears and never re-derived from a reloaded diff: that is what makes
+/// the write refuse rather than land on renumbered lines (§7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineEdit {
+    pub hunk: usize,
+    pub range: Range<usize>,
+    pub original: Vec<String>,
+    pub buffer: String,
+    /// Caret to place when the editor takes focus, in buffer coordinates.
+    caret: Option<TextPosition>,
+    /// One-shot: claim keyboard focus on the next frame, so the click that opened the
+    /// editor is the only gesture needed.
+    focus: bool,
+}
+
+impl InlineEdit {
+    /// `true` once the buffer differs from the lines it was seeded with.
+    pub fn is_dirty(&self) -> bool {
+        self.buffer != self.original.join("\n")
+    }
 }
 
 /// Character width of the widest displayed line, with what it was measured on:
@@ -108,6 +140,13 @@ impl DiffViewState {
         self.conversation_buffer.clear();
         self.conversation_add_buffer.clear();
         self.expanded_resolved.clear();
+        self.inline_edit = None;
+    }
+
+    /// The open inline editor, if any (git.md §4) — the app reads it to write the
+    /// buffer back to the working tree.
+    pub fn inline_edit(&self) -> Option<&InlineEdit> {
+        self.inline_edit.as_ref()
     }
 
     /// Whether the resolved thread rooted at `id` is expanded in the center accordion
@@ -368,6 +407,12 @@ const HUNK_BAND_PAD_X: i8 = 8;
 const HUNK_BAND_PAD_Y: i8 = 4;
 const TEXT_DRAG_THRESHOLD: f32 = 2.0;
 const TEXT_SELECTION_ALPHA: u8 = 70;
+/// Above this many working-tree lines a hunk does not open an inline editor
+/// (git.md §4): the buffer is re-highlighted as it is typed, and a whole-file-sized
+/// hunk belongs in the external editor.
+const MAX_EDIT_LINES: usize = 2_000;
+/// Width of the accent bar marking the hunk being edited (design-system §4).
+const EDIT_BAR_W: f32 = 3.0;
 /// Lines of the commented hunk previewed atop an overlay thread (pull-requests.md §5).
 const OVERLAY_SNIPPET_LINES: usize = 3;
 /// Extra indent a reply nests under its thread root in the overlay (§11).
@@ -417,6 +462,13 @@ impl RowLayout {
 /// tests can aim at a precise text column.
 pub fn content_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
     RowLayout::for_diff(diff, char_w).content_left(0.0)
+}
+
+/// X offset of the middle of the line-number strip, where a click picks the line for
+/// partial staging (git.md §4) — exposed so UI tests can aim at that zone rather than
+/// the content column, which carries the caret.
+pub fn numbers_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
+    (LINE_ACTION_W + RowLayout::for_diff(diff, char_w).content_left(0.0)) / 2.0
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -789,6 +841,9 @@ pub fn diff_view(
 ) -> bool {
     let staged = surface.staged();
     let read_only = surface.read_only();
+    // Only the working tree can be written back, and only when the worker judged
+    // the file writable while computing the diff (git.md §4).
+    let editable = diff.editable && !read_only;
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
     let review_available = review.is_some();
@@ -808,11 +863,13 @@ pub fn diff_view(
     let review_forge = surface.forge_review();
     let mut review_out: Vec<ReviewIntent> = Vec::new();
 
-    // First `Esc` cancels an open note editor (inline or popover); a second one
-    // closes the diff.
+    // `Esc` cascade (keybindings.md §3): the inline editor first, then an open note
+    // editor (inline or popover), then the diff itself.
     let mut close = false;
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if state.active_comment.is_some() || state.popover_edit.is_some() {
+        if state.inline_edit.is_some() {
+            state.inline_edit = None;
+        } else if state.active_comment.is_some() || state.popover_edit.is_some() {
             state.active_comment = None;
             state.comment_buffer.clear();
             state.popover_edit = None;
@@ -972,6 +1029,19 @@ pub fn diff_view(
                     ui.add_space(4.0);
                     let previous_spacing_y = ui.spacing().item_spacing.y;
                     ui.spacing_mut().item_spacing.y = 0.0;
+                    // The edited hunk shows its buffer in place of its rows: the buffer
+                    // holds the working tree's own lines, so the deletions — which have
+                    // no counterpart there — step aside with them (git.md §4).
+                    if let Some(edit) = state
+                        .inline_edit
+                        .as_mut()
+                        .filter(|edit| edit.hunk == hunk_idx)
+                    {
+                        inline_editor(ui, palette, &diff.path, edit, layout, row_w);
+                        ui.spacing_mut().item_spacing.y = previous_spacing_y;
+                        ui.add_space(12.0);
+                        continue;
+                    }
                     let ext = extensions[hunk_idx].clone();
                     for new_no in ext.above {
                         let action = extension_line(
@@ -982,6 +1052,7 @@ pub fn diff_view(
                                 new_no,
                                 staged,
                                 read_only,
+                                editable,
                                 text_row,
                                 char_w,
                                 layout,
@@ -992,8 +1063,22 @@ pub fn diff_view(
                             &mut text_rows,
                         );
                         text_row += 1;
-                        apply_line_action(state, diff, intents, action);
+                        match action {
+                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                state,
+                                diff,
+                                &extensions[hunk_idx],
+                                hunk_idx,
+                                Some(new_no),
+                                col,
+                            ),
+                            other => apply_line_action(state, diff, intents, other),
+                        }
                     }
+                    // New-side line the caret lands on for a click on a row that has
+                    // none of its own: a deletion is gone from the buffer, so the caret
+                    // goes to the working-tree line just above it.
+                    let mut last_new = None;
                     for (line_idx, line) in hunk.lines.iter().enumerate() {
                         let text = display_text(&line.content);
                         if state.reveal_line.is_some() && line.new_lineno == state.reveal_line {
@@ -1014,6 +1099,7 @@ pub fn diff_view(
                                 review: review_available,
                                 forge: review_forge,
                                 selected: state.selected(hunk_idx, line_idx),
+                                editable,
                                 highlighted: state.syntax_line(hunk_idx, line_idx),
                                 text_range: state.text_range_for_row(text_row, text),
                                 text_row,
@@ -1032,8 +1118,17 @@ pub fn diff_view(
                                 };
                                 open_inline_editor(state, pool, store, &diff.path, old, new);
                             }
+                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                state,
+                                diff,
+                                &extensions[hunk_idx],
+                                hunk_idx,
+                                line.new_lineno.or(last_new),
+                                col,
+                            ),
                             other => apply_line_action(state, diff, intents, other),
                         }
+                        last_new = line.new_lineno.or(last_new);
                         existing_block(
                             ui,
                             palette,
@@ -1084,6 +1179,7 @@ pub fn diff_view(
                                 new_no,
                                 staged,
                                 read_only,
+                                editable,
                                 text_row,
                                 char_w,
                                 layout,
@@ -1094,7 +1190,17 @@ pub fn diff_view(
                             &mut text_rows,
                         );
                         text_row += 1;
-                        apply_line_action(state, diff, intents, action);
+                        match action {
+                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                state,
+                                diff,
+                                &extensions[hunk_idx],
+                                hunk_idx,
+                                Some(new_no),
+                                col,
+                            ),
+                            other => apply_line_action(state, diff, intents, other),
+                        }
                     }
                     ui.spacing_mut().item_spacing.y = previous_spacing_y;
                     ui.add_space(12.0);
@@ -2080,8 +2186,9 @@ fn apply_line_action(
             state.text_selection = Some(selection);
         }
         Some(DiffLineAction::ClearTextSelection) => state.text_selection = None,
-        // Handled by the caller (needs the stored comments to prefill the editor).
-        Some(DiffLineAction::OpenComment { .. }) => {}
+        // Handled by the caller (needs the stored comments to prefill the editor,
+        // resp. the hunk the row belongs to).
+        Some(DiffLineAction::OpenComment { .. }) | Some(DiffLineAction::OpenEditor { .. }) => {}
         None => {}
     }
 }
@@ -2094,6 +2201,7 @@ struct ExtensionRow<'a> {
     new_no: u32,
     staged: bool,
     read_only: bool,
+    editable: bool,
     text_row: usize,
     char_w: f32,
     layout: RowLayout,
@@ -2123,6 +2231,7 @@ fn extension_line(
         review: false,
         forge: false,
         selected: false,
+        editable: ext.editable,
         highlighted: None,
         text_range: state.text_range_for_row(ext.text_row, text),
         text_row: ext.text_row,
@@ -2291,6 +2400,239 @@ fn fit_zoom(size: egui::Vec2, avail: egui::Vec2) -> f32 {
         .clamp(MIN_ZOOM, 1.0)
 }
 
+/// The working-tree lines an inline editor on this hunk replaces: its **new side**
+/// (the new side of an Unstaged diff *is* the working tree, git.md §4) widened by the
+/// extended context displayed with it — those rows are editable too. Returns the
+/// 0-based half-open range and the lines read for it, the write's precondition.
+/// `None` when no editor can open: nothing on the new side, a range the source lines
+/// don't cover, or a hunk past `MAX_EDIT_LINES`.
+fn edit_anchor(
+    diff: &FileDiff,
+    hunk: &Hunk,
+    ext: &ContextExtension,
+) -> Option<(Range<usize>, Vec<String>)> {
+    let first = if ext.above.is_empty() {
+        hunk.new_start
+    } else {
+        ext.above.start
+    };
+    let last = if ext.below.is_empty() {
+        hunk.new_start + hunk.new_lines
+    } else {
+        ext.below.end
+    };
+    let start = first.checked_sub(1)? as usize;
+    let end = last.checked_sub(1)? as usize;
+    if end <= start || end - start > MAX_EDIT_LINES {
+        return None;
+    }
+    let lines = diff.source_lines.get(start..end)?.to_vec();
+    Some((start..end, lines))
+}
+
+/// Opens the inline editor on `hunk_idx`, caret on the row carrying the new-side line
+/// `at` (the clicked row; `None` for a deletion row, which has no working-tree
+/// counterpart) at column `col`. A diff that can't back an editor leaves the state
+/// untouched — the click does nothing, as spec'd (git.md §4).
+fn open_hunk_editor(
+    state: &mut DiffViewState,
+    diff: &FileDiff,
+    ext: &ContextExtension,
+    hunk_idx: usize,
+    at: Option<u32>,
+    col: usize,
+) {
+    let Some(hunk) = diff.hunks.get(hunk_idx) else {
+        return;
+    };
+    let Some((range, original)) = edit_anchor(diff, hunk, ext) else {
+        return;
+    };
+    let row = at
+        .and_then(|n| (n as usize).checked_sub(1))
+        .and_then(|n| n.checked_sub(range.start))
+        .unwrap_or(0)
+        .min(original.len() - 1);
+    state.text_selection = None;
+    state.selection.clear();
+    state.inline_edit = Some(InlineEdit {
+        hunk: hunk_idx,
+        buffer: original.join("\n"),
+        range,
+        original,
+        caret: Some(TextPosition { row, col }),
+        focus: true,
+    });
+}
+
+/// The open inline editor, in place of the hunk's rows (git.md §4, design-system §4):
+/// same mono font, same line height, same content x offset, same syntax colours — the
+/// only perceptible change is the caret. No frame, no toolbar, no button: an accent
+/// bar marks the hunk, the gutter is renumbered off the laid-out galley, and one muted
+/// hint closes the block.
+fn inline_editor(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    path: &str,
+    edit: &mut InlineEdit,
+    layout: RowLayout,
+    row_w: f32,
+) {
+    let id = ui.id().with("inline_edit");
+    let rows = edit.buffer.split('\n').count();
+    let (block, _) = ui.allocate_exact_size(
+        egui::vec2(row_w, rows as f32 * LINE_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let syntax = palette.syntax;
+    let fallback = palette.text_secondary;
+    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+        editor_galley(ui, path, syntax, egui::TextBuffer::as_str(buf))
+    };
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(layout.content_left(block.left()), block.top()),
+        block.max,
+    );
+    let output = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+            egui::TextEdit::multiline(&mut edit.buffer)
+                .id(id)
+                // No frame at all (design-system §4): the diff's own background shows
+                // through, so the rows keep the colours they had before the caret.
+                .frame(egui::Frame::NONE)
+                .desired_width(f32::INFINITY)
+                .desired_rows(rows)
+                .text_color(fallback)
+                .layouter(&mut layouter)
+                .show(ui)
+        })
+        .inner;
+
+    if let Some(caret) = edit.caret.take() {
+        let index = caret_char_index(&edit.buffer, caret);
+        let mut text_state = output.state.clone();
+        text_state
+            .cursor
+            .set_char_range(Some(egui::text_selection::CCursorRange::one(
+                egui::text::CCursor::new(index),
+            )));
+        text_state.store(ui.ctx(), id);
+    }
+    if std::mem::take(&mut edit.focus) {
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(block.min, egui::vec2(EDIT_BAR_W, block.height())),
+        egui::CornerRadius::ZERO,
+        palette.accent,
+    );
+    paint_editor_gutter(ui, palette, &output, block.left(), layout, edit.range.start);
+    ui.label(
+        egui::RichText::new("Saved when you leave the editor")
+            .size(NUM_SIZE)
+            .color(palette.text_muted),
+    );
+}
+
+/// Line numbers of the editor's rows, read off the laid-out galley so they follow the
+/// text the user is typing (a row added in the buffer numbers itself), plus the dimmed
+/// sign column: the signs belong to the diff the editor replaced, so they are shown
+/// muted — informational, no longer a `+`/`−` you can act on.
+fn paint_editor_gutter(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    output: &egui::text_edit::TextEditOutput,
+    left: f32,
+    layout: RowLayout,
+    first_line: usize,
+) {
+    let rows = &output.galley.rows;
+    let clip = ui.clip_rect();
+    let num_font = egui::FontId::monospace(NUM_SIZE);
+    let sign_color = with_alpha(palette.text_muted, 90);
+    let painter = ui.painter();
+    // A wrapped row would number twice; the editor never wraps (no wrap width).
+    for (line, row) in (first_line..).zip(rows.iter()) {
+        let center_y = output.galley_pos.y + (row.min_y() + row.max_y()) / 2.0;
+        if center_y < clip.top() || center_y > clip.bottom() {
+            continue;
+        }
+        painter.text(
+            egui::pos2(layout.new_right(left), center_y),
+            egui::Align2::RIGHT_CENTER,
+            (line + 1).to_string(),
+            num_font.clone(),
+            palette.text_muted,
+        );
+        painter.text(
+            egui::pos2(layout.sign_left(left), center_y),
+            egui::Align2::LEFT_CENTER,
+            "~",
+            egui::FontId::monospace(LINE_SIZE),
+            sign_color,
+        );
+    }
+}
+
+/// Char offset of a buffer position, for the caret the opening click asks for.
+fn caret_char_index(buffer: &str, at: TextPosition) -> usize {
+    let mut index = 0;
+    for (row, text) in buffer.split('\n').enumerate() {
+        let len = text.chars().count();
+        if row == at.row {
+            return index + at.col.min(len);
+        }
+        index += len + 1;
+    }
+    index.saturating_sub(1)
+}
+
+// Incremental highlighter of the inline editor's buffer: syntect is not incremental and
+// the layouter runs every frame, so the spans are kept across frames and only the lines
+// a keystroke touched are re-parsed (same reasoning — and same `!Send` parse state — as
+// the conflict editor's Output).
+thread_local! {
+    static EDITOR_HL: RefCell<IncrementalHighlighter> =
+        RefCell::new(IncrementalHighlighter::default());
+}
+
+/// The editor's galley at the diff rows' exact metrics: mono `LINE_SIZE` glyphs
+/// centred in `LINE_HEIGHT` rows, no wrapping — a buffer row and a diff row occupy the
+/// same band, so entering the editor shifts nothing.
+fn editor_galley(
+    ui: &egui::Ui,
+    path: &str,
+    syntax_theme: &'static str,
+    text: &str,
+) -> std::sync::Arc<egui::Galley> {
+    let font = egui::FontId::monospace(LINE_SIZE);
+    let mut job = egui::text::LayoutJob::default();
+    EDITOR_HL.with_borrow_mut(|hl| {
+        let format = |color| egui::text::TextFormat {
+            font_id: font.clone(),
+            color,
+            line_height: Some(LINE_HEIGHT),
+            valign: egui::Align::Center,
+            ..Default::default()
+        };
+        match hl.highlight(path, syntax_theme, text) {
+            Some(lines) => {
+                for (i, spans) in lines.iter().enumerate() {
+                    if i > 0 {
+                        job.append("\n", 0.0, format(egui::Color32::PLACEHOLDER));
+                    }
+                    for span in spans {
+                        job.append(&span.text, 0.0, format(span.color));
+                    }
+                }
+            }
+            None => job.append(text, 0.0, format(egui::Color32::PLACEHOLDER)),
+        }
+    });
+    ui.painter().layout_job(job)
+}
+
 /// Hunk header band: `@@ … @@` on a surface background, controls on the right —
 /// Stage/Unstage (outside read-only) and **Extend context** (+5, git.md §4;
 /// returns `true` on click, also available read-only: a view action).
@@ -2386,6 +2728,9 @@ struct DiffLineCtx<'a> {
     /// for a forge review comment, alongside the agent Sparkles (slot 1).
     forge: bool,
     selected: bool,
+    /// An inline editor may open from this row's content column (git.md §4): a
+    /// writable working-tree file on a live working-tree surface.
+    editable: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     text_range: Option<(usize, usize)>,
     text_row: usize,
@@ -2420,6 +2765,39 @@ enum DiffLineAction {
         old: Option<u32>,
         new: Option<u32>,
     },
+    /// Plain click in the content column of an editable row (git.md §4): open the
+    /// inline editor on the hunk this row belongs to, caret at column `col`. The
+    /// caller owns the hunk identity, so it resolves which row the caret lands on.
+    OpenEditor {
+        col: usize,
+    },
+}
+
+/// Where a pointer x lands on a row: the **number strip** (both number columns and the
+/// sign) picks the line for partial staging, the **content** column carries the caret
+/// (git.md §4). The action column left of the strip belongs to its hover buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowZone {
+    Numbers,
+    Content { col: usize },
+}
+
+fn row_zone(x: f32, left: f32, content_left: f32, char_w: f32) -> Option<RowZone> {
+    if x >= left + LINE_ACTION_W && x < content_left {
+        Some(RowZone::Numbers)
+    } else if x >= content_left {
+        Some(RowZone::Content {
+            col: ((x - content_left) / char_w).floor().max(0.0) as usize,
+        })
+    } else {
+        None
+    }
+}
+
+/// `Cmd+E` (keybindings.md §3): opens the editor on the hovered line, for a hand that
+/// never left the keyboard.
+fn editor_requested(ui: &egui::Ui) -> bool {
+    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
 }
 
 fn diff_line(
@@ -2548,16 +2926,38 @@ fn diff_line(
             }
         };
         Some(DiffLineAction::Intent(intent))
-    } else if selectable && response.clicked() {
-        Some(DiffLineAction::ToggleSelection {
-            hunk: hunk_idx,
-            line: line_idx,
-        })
     } else if response.clicked() {
-        Some(DiffLineAction::ClearTextSelection)
+        // The line pick lives on the number strip: a plain click in the content
+        // column is the caret's gesture now (git.md §4).
+        match response
+            .interact_pointer_pos()
+            .and_then(|pos| row_zone(pos.x, rect.left(), content_left, ctx.char_w))
+        {
+            Some(RowZone::Numbers) if selectable => Some(DiffLineAction::ToggleSelection {
+                hunk: hunk_idx,
+                line: line_idx,
+            }),
+            Some(RowZone::Content { col }) if ctx.editable => Some(DiffLineAction::OpenEditor {
+                col: col.min(text_len),
+            }),
+            _ => Some(DiffLineAction::ClearTextSelection),
+        }
+    } else if ctx.editable && response.hovered() && editor_requested(ui) {
+        Some(DiffLineAction::OpenEditor { col: 0 })
     } else {
         None
     };
+    // Cursor rule (design-system §4): the pick is a click target, the content column
+    // is a text zone — and the text cursor is what announces the inline editor.
+    if let Some(pos) = response.hover_pos() {
+        match row_zone(pos.x, rect.left(), content_left, ctx.char_w) {
+            Some(RowZone::Numbers) if selectable => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            Some(RowZone::Content { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
+            _ => {}
+        }
+    }
 
     let sign = match row.origin {
         LineOrigin::Addition => "+",
