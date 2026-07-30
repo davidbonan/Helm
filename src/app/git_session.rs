@@ -420,10 +420,15 @@ impl GitSession {
             if let Some(DiffState {
                 source: DiffSource::WorkingTree { staged },
                 path,
+                view,
                 ..
             }) = diff
             {
-                if !self.worker.has_pending(ResultKind::Diff) {
+                // An open inline editor freezes the diff under it (git.md §4/§7):
+                // nothing reflows under the caret, and the buffer's anchor keeps
+                // meaning what it meant when the caret appeared. The status keeps
+                // polling; the diff is re-requested when the editor closes.
+                if view.inline_edit().is_none() && !self.worker.has_pending(ResultKind::Diff) {
                     self.worker.send(GitCommand::Diff {
                         path: path.clone(),
                         staged: *staged,
@@ -513,7 +518,9 @@ impl GitSession {
                 GitResult::Conflicts { result } => {
                     Self::on_conflicts(result, conflict_editor, toasts, now)
                 }
-                GitResult::Edit { path, result } => self.on_edit(&path, result, diff, toasts, now),
+                GitResult::Edit { request, result } => {
+                    self.on_edit(request, result, diff, toasts, now)
+                }
             }
         }
     }
@@ -680,27 +687,50 @@ impl GitSession {
     /// the ones where the displayed diff is known to be out of date.
     fn on_edit(
         &mut self,
-        path: &str,
+        request: EditRequest,
         result: Result<Landing, EditError>,
-        diff: &Option<DiffState>,
+        diff: &mut Option<DiffState>,
         toasts: &mut Toasts,
         now: f64,
     ) {
+        // The editor the reply answers, if it is still open on the file it wrote: it
+        // owns both outcomes — the anchor to advance and the divergence to arbitrate.
+        let editor = diff
+            .as_mut()
+            .filter(|open| open.path == request.path)
+            .map(|open| &mut open.view)
+            .filter(|view| view.inline_edit().is_some());
         match result {
-            Ok(Landing::NotStaged(reason)) => toasts.success(format!("Saved — {reason}"), now),
-            Ok(_) => {}
+            Ok(landing) => {
+                if let Landing::NotStaged(reason) = landing {
+                    toasts.success(format!("Saved — {reason}"), now);
+                }
+                if let Some(view) = editor {
+                    view.edit_written(&request);
+                }
+            }
+            // The buffer is never dropped on a divergence (git.md §4): the notice puts
+            // the choice — take the disk's version, or overwrite it — to the user. It
+            // outlives the editor, since the write on the way out can be the refused one.
+            Err(EditError::Diverged) => match diff.as_mut().filter(|d| d.path == request.path) {
+                Some(open) => open.view.edit_diverged(request.clone()),
+                None => toasts.error(format!("Save failed — {}", EditError::Diverged), now),
+            },
             Err(err) => toasts.error(format!("Save failed — {err}"), now),
         }
         self.worker.send(GitCommand::Status);
         if let Some(DiffState {
             source: DiffSource::WorkingTree { staged },
             path: open,
+            view,
             ..
         }) = diff
         {
-            if open == path {
+            // The diff recomposes once the editor is gone — while it is open the rows it
+            // replaced must not move under it (git.md §4).
+            if *open == request.path && view.inline_edit().is_none() {
                 self.worker.send(GitCommand::Diff {
-                    path: path.to_owned(),
+                    path: request.path.clone(),
                     staged: *staged,
                 });
             }

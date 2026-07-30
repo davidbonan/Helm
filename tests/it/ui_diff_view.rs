@@ -5,6 +5,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
+use helm::git::edit::EditRequest;
 use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use helm::theme::Palette;
 use helm::ui::diff_view::{
@@ -2173,5 +2174,345 @@ fn a_frozen_surface_leaves_the_editor() {
     assert!(
         state.borrow().inline_edit().is_none(),
         "a read-only surface keeps no caret: the rows on screen are no longer writable"
+    );
+}
+
+/// Drives `diff_view` on a working-tree surface with a caller-owned state, and hands
+/// back the intents it emitted — an inline editor's writes leave that way (git.md §4).
+/// `step_dt` is the clock each frame advances by: the autosave is a deadline, so a test
+/// about it steps in tenths of a second rather than sixtieths.
+fn drive_editor(
+    state: Rc<RefCell<DiffViewState>>,
+    diff: FileDiff,
+    staged: bool,
+    step_dt: f32,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> Vec<GitIntent> {
+    let palette = Palette::light();
+    let intents = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let mut harness = Harness::builder()
+        .with_step_dt(step_dt)
+        .build_ui(move |ui| {
+            diff_view(
+                ui,
+                &palette,
+                &diff,
+                DiffSurface::WorkingTree { staged },
+                &mut state.borrow_mut(),
+                &mut sink.borrow_mut(),
+                None,
+            );
+        });
+    harness.run();
+    actions(&mut harness);
+    harness.run();
+    let out = intents.borrow().clone();
+    out
+}
+
+/// The writes a run asked for, in order.
+fn writes(intents: &[GitIntent]) -> Vec<EditRequest> {
+    intents
+        .iter()
+        .filter_map(|intent| match intent {
+            GitIntent::FlushEdit(request) => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn cmd_s_writes_the_buffer_it_leaves() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.input_mut().events.push(egui::Event::Text("X".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        h.run();
+    });
+
+    assert!(state.borrow().inline_edit().is_none(), "the editor is left");
+    let written = writes(&intents);
+    assert_eq!(written.len(), 1, "one write, got {written:?}");
+    assert_eq!(written[0].path, "src/main.rs");
+    assert_eq!(written[0].range, 0..3);
+    assert_eq!(written[0].original, vec!["fn main() {", "    new();", "}"]);
+    assert_eq!(written[0].replacement, "fn main() {\nX    new();\n}");
+    assert!(!written[0].stage_after, "the Unstaged side stays unstaged");
+    assert!(!written[0].force, "a first write never overrides anything");
+}
+
+#[test]
+fn esc_writes_the_buffer_on_the_way_out() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.input_mut().events.push(egui::Event::Text("Y".to_owned()));
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+    });
+
+    assert!(state.borrow().inline_edit().is_none());
+    assert_eq!(
+        writes(&intents).first().map(|r| r.replacement.clone()),
+        Some("fn main() {\nY    new();\n}".to_owned()),
+        "leaving is the save, `Esc` included, got {intents:?}"
+    );
+}
+
+#[test]
+fn an_untouched_buffer_leaves_without_a_write() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state, editable_diff(), false, 1.0 / 60.0, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.key_press(egui::Key::Escape);
+        h.run();
+    });
+
+    assert!(
+        writes(&intents).is_empty(),
+        "a caret that typed nothing writes nothing, got {intents:?}"
+    );
+}
+
+#[test]
+fn a_click_outside_writes_the_buffer_it_leaves() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(
+        state.clone(),
+        two_hunk_editable_diff(),
+        false,
+        1.0 / 60.0,
+        |h| {
+            open_editor(h, &two_hunk_editable_diff(), "AAA");
+            h.input_mut().events.push(egui::Event::Text("Z".to_owned()));
+            h.run();
+            // The other hunk's number strip: outside the buffer, not a content column.
+            pick_line(h, &two_hunk_editable_diff(), "BBB");
+            h.run();
+        },
+    );
+
+    assert!(state.borrow().inline_edit().is_none());
+    assert_eq!(
+        writes(&intents).first().map(|r| r.replacement.clone()),
+        Some("ZAAA\ntwo".to_owned()),
+        "got {intents:?}"
+    );
+}
+
+#[test]
+fn the_buffer_lands_by_itself_when_the_typing_pauses() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state.clone(), editable_diff(), false, 0.5, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.input_mut().events.push(egui::Event::Text("W".to_owned()));
+        // Two half-second frames: past the 800 ms idle, without leaving the editor.
+        h.run_steps(3);
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_some(),
+        "the autosave is not an exit"
+    );
+    let written = writes(&intents);
+    assert_eq!(
+        written
+            .iter()
+            .map(|r| r.replacement.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fn main() {\nW    new();\n}"],
+        "the pause writes exactly once, got {intents:?}"
+    );
+}
+
+#[test]
+fn an_edit_made_from_the_staged_side_asks_for_its_stage() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state, editable_diff(), true, 1.0 / 60.0, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.input_mut().events.push(egui::Event::Text("S".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        h.run();
+    });
+
+    assert!(
+        writes(&intents).first().is_some_and(|r| r.stage_after),
+        "an edit lands in the section it was made from, got {intents:?}"
+    );
+}
+
+#[test]
+fn moving_the_caret_to_another_hunk_writes_the_buffer_it_leaves() {
+    // The caret moves in a single gesture (git.md §4) — including *up*, where the new
+    // editor is opened before the old one's rows are reached again.
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(
+        state.clone(),
+        two_hunk_editable_diff(),
+        false,
+        1.0 / 60.0,
+        |h| {
+            open_editor(h, &two_hunk_editable_diff(), "BBB");
+            h.input_mut().events.push(egui::Event::Text("Q".to_owned()));
+            h.run();
+            let pos = content_cell(h, &two_hunk_editable_diff(), "AAA", 0);
+            click_text_at(h, pos, 1);
+            h.run();
+        },
+    );
+
+    let written = writes(&intents);
+    assert_eq!(written.len(), 1, "got {intents:?}");
+    assert_eq!(written[0].range, 4..6, "the range the caret is leaving");
+    assert_eq!(written[0].replacement, "QBBB\nsix");
+    assert_eq!(
+        state.borrow().inline_edit().map(|edit| edit.hunk),
+        Some(0),
+        "the caret has moved to the clicked hunk"
+    );
+}
+
+/// A write the worker refused, as `on_edit` hands it to the view.
+fn refused_write() -> EditRequest {
+    EditRequest {
+        path: "src/main.rs".to_owned(),
+        range: 0..3,
+        original: vec!["fn main() {".into(), "    new();".into(), "}".into()],
+        replacement: "fn main() {\n    typed();\n}".to_owned(),
+        stage_after: false,
+        force: false,
+    }
+}
+
+#[test]
+fn overwrite_re_sends_the_refused_write_without_its_precondition() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    state.borrow_mut().edit_diverged(refused_write());
+    let intents = drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
+        h.get_by_label("Overwrite").click();
+        h.run();
+    });
+
+    let written = writes(&intents);
+    assert_eq!(written.len(), 1, "got {intents:?}");
+    assert!(written[0].force, "Overwrite drops the precondition");
+    assert_eq!(
+        written[0].replacement, "fn main() {\n    typed();\n}",
+        "the typed buffer is what gets written — it was never dropped"
+    );
+}
+
+#[test]
+fn reload_drops_the_buffer_and_re_reads_the_file() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    state.borrow_mut().edit_diverged(refused_write());
+    let intents = drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
+        open_editor(h, &editable_diff(), "new()");
+        h.input_mut().events.push(egui::Event::Text("T".to_owned()));
+        h.run();
+        h.get_by_label("Reload").click();
+        h.run();
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "Reload takes the disk's version: the editor goes with the buffer"
+    );
+    assert!(
+        intents.contains(&GitIntent::OpenDiff {
+            path: "src/main.rs".to_owned(),
+            staged: false,
+        }),
+        "got {intents:?}"
+    );
+    assert!(
+        writes(&intents).is_empty(),
+        "the dropped buffer is not written on the way out, got {intents:?}"
+    );
+}
+
+#[test]
+fn a_notice_answered_leaves_the_screen() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    state.borrow_mut().edit_diverged(refused_write());
+    drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
+        h.get_by_label("Overwrite").click();
+        h.run();
+        assert!(
+            h.query_by_label("Overwrite").is_none(),
+            "an answered notice is gone"
+        );
+    });
+}
+
+#[test]
+fn cmd_e_on_a_file_that_takes_no_caret_asks_for_the_external_editor() {
+    let mut diff = editable_diff();
+    diff.editable = false;
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state, diff, false, 1.0 / 60.0, |h| {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+        h.run();
+    });
+
+    assert_eq!(
+        intents,
+        vec![GitIntent::EditRefused {
+            path: "src/main.rs".to_owned()
+        }],
+        "the keyboard ask gets an answer even where the click stays silent"
+    );
+}
+
+#[test]
+fn a_file_switch_writes_the_buffer_of_the_section_it_was_typed_in() {
+    // The freeze that comes with a switch is the flush point: the buffer must reach the
+    // file — and the section — it came from, not the diff about to replace it.
+    let palette = Palette::light();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let intents = Rc::new(RefCell::new(Vec::new()));
+    let sink = intents.clone();
+    let frozen = Rc::new(std::cell::Cell::new(false));
+    let frozen_in_ui = frozen.clone();
+    let diff = editable_diff();
+    let mut harness = Harness::new_ui(move |ui| {
+        let surface = if frozen_in_ui.get() {
+            DiffSurface::WorkingTreeFrozen { staged: true }
+        } else {
+            DiffSurface::WorkingTree { staged: true }
+        };
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            surface,
+            &mut state_in_ui.borrow_mut(),
+            &mut sink.borrow_mut(),
+            None,
+        );
+    });
+    harness.run();
+    open_editor(&mut harness, &editable_diff(), "new()");
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("F".to_owned()));
+    harness.run();
+
+    frozen.set(true);
+    harness.run();
+
+    let written = writes(&intents.borrow());
+    assert_eq!(written.len(), 1, "got {:?}", intents.borrow());
+    assert_eq!(written[0].replacement, "fn main() {\nF    new();\n}");
+    assert!(
+        written[0].stage_after,
+        "a Staged edit stays staged even when the freeze is what flushed it"
     );
 }

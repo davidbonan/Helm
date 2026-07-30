@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use crate::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
+use crate::git::edit::EditRequest;
 use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, GitIntent};
@@ -75,6 +76,10 @@ pub struct DiffViewState {
     /// The open inline editor (git.md §4), one at a time. `None` ⇒ the diff renders
     /// its rows as usual.
     inline_edit: Option<InlineEdit>,
+    /// A write the worker refused because the file had moved under the editor
+    /// (`EditError::Diverged`): the request is kept so **Overwrite** can re-send it.
+    /// The typed buffer is never dropped on our own initiative (git.md §4).
+    diverged: Option<EditRequest>,
 }
 
 /// The inline editor's live state: the hunk whose rows it replaced, the working-tree
@@ -82,7 +87,7 @@ pub struct DiffViewState {
 /// the buffer being typed (git.md §4). The range and the original lines are captured
 /// when the caret appears and never re-derived from a reloaded diff: that is what makes
 /// the write refuse rather than land on renumbered lines (§7).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InlineEdit {
     /// File the anchor was read from, captured with it: the diff on screen can move on
     /// to another file (a switch keeps the view until the new content lands), and the
@@ -92,6 +97,11 @@ pub struct InlineEdit {
     pub range: Range<usize>,
     pub original: Vec<String>,
     pub buffer: String,
+    /// Buffer as of the last write handed to the worker: what the anchor above is
+    /// expected to hold on disk. Nothing to write while it equals `buffer`.
+    flushed: String,
+    /// Time of the last keystroke (egui clock), driving the 800 ms idle autosave.
+    changed_at: Option<f64>,
     /// Caret to place when the editor takes focus, in buffer coordinates.
     caret: Option<TextPosition>,
     /// One-shot: claim keyboard focus on the next frame, so the click that opened the
@@ -104,7 +114,25 @@ impl InlineEdit {
     pub fn is_dirty(&self) -> bool {
         self.buffer != self.original.join("\n")
     }
+
+    /// The write this buffer asks for, against the anchor it was opened on.
+    /// `stage_after` names the section the edit was made from (git.md §4).
+    fn request(&self, stage_after: bool, force: bool) -> EditRequest {
+        EditRequest {
+            path: self.path.clone(),
+            range: self.range.clone(),
+            original: self.original.clone(),
+            replacement: self.buffer.clone(),
+            stage_after,
+            force,
+        }
+    }
 }
+
+/// Idle after which the buffer is written without leaving the editor (git.md §4):
+/// long enough not to write on every keystroke, short enough that stepping away from
+/// the keyboard has already saved.
+const AUTOSAVE_IDLE: f64 = 0.8;
 
 /// Character width of the widest displayed line, with what it was measured on:
 /// the diff's shape and the extension amounts (extended context can bring in a
@@ -145,6 +173,7 @@ impl DiffViewState {
         self.conversation_add_buffer.clear();
         self.expanded_resolved.clear();
         self.inline_edit = None;
+        self.diverged = None;
     }
 
     /// The open inline editor, if any (git.md §4) — the app reads it to write the
@@ -153,11 +182,97 @@ impl DiffViewState {
         self.inline_edit.as_ref()
     }
 
+    /// The write a divergence notice is currently offering to retry, if any.
+    pub fn edit_divergence(&self) -> Option<&EditRequest> {
+        self.diverged.as_ref()
+    }
+
+    /// Opens an editor on `hunk` anchored on `lines` at `range`, as a click would: the
+    /// seam the app-side tests use to have one open without driving a render.
+    #[cfg(test)]
+    pub fn open_editor_for_test(
+        &mut self,
+        path: &str,
+        hunk: usize,
+        range: Range<usize>,
+        lines: &[&str],
+    ) {
+        let original: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+        let buffer = original.join("\n");
+        self.inline_edit = Some(InlineEdit {
+            path: path.to_owned(),
+            hunk,
+            range,
+            original,
+            flushed: buffer.clone(),
+            buffer,
+            changed_at: None,
+            caret: None,
+            focus: false,
+        });
+    }
+
     /// Every deliberate way out of the inline editor — `Esc`, `Cmd+S`, a click
     /// elsewhere, a surface that stops being writable — goes through here, so the write
-    /// on the way out has a single home (git.md §4).
-    fn leave_inline_edit(&mut self) {
-        self.inline_edit = None;
+    /// on the way out has a single home (git.md §4). `staged` names the section the
+    /// edit was made from; nothing is emitted when the buffer is already on disk.
+    fn leave_inline_edit(&mut self, staged: bool, intents: &mut Vec<GitIntent>) {
+        let Some(edit) = self.inline_edit.take() else {
+            return;
+        };
+        if edit.buffer != edit.flushed {
+            intents.push(GitIntent::FlushEdit(edit.request(staged, false)));
+        }
+    }
+
+    /// Autosave (git.md §4): the buffer is written 800 ms after the last keystroke,
+    /// without leaving the editor. `None` ⇒ nothing to write, or still being typed —
+    /// then `wake` says when to look again.
+    fn idle_edit_write(&mut self, staged: bool, now: f64) -> Option<EditRequest> {
+        let edit = self.inline_edit.as_mut()?;
+        if edit.buffer == edit.flushed {
+            return None;
+        }
+        // No recorded keystroke behind a buffer that already differs (the field
+        // reported no change): write it rather than wait for an exit that may not come.
+        let since = edit.changed_at.map_or(f64::INFINITY, |at| now - at);
+        if since < AUTOSAVE_IDLE {
+            return None;
+        }
+        edit.flushed = edit.buffer.clone();
+        Some(edit.request(staged, false))
+    }
+
+    /// Seconds until the pending buffer's autosave is due, `None` when nothing waits.
+    fn autosave_wake(&self, now: f64) -> Option<f64> {
+        let edit = self.inline_edit.as_ref()?;
+        if edit.buffer == edit.flushed {
+            return None;
+        }
+        let since = edit.changed_at.map_or(f64::INFINITY, |at| now - at);
+        Some((AUTOSAVE_IDLE - since).max(0.0))
+    }
+
+    /// The write landed: the anchor now names the lines just written, so the next
+    /// autosave compares against what is really on disk (the range grows or shrinks
+    /// with the buffer). Ignored when the editor has moved on — the reply is stale.
+    pub fn edit_written(&mut self, request: &EditRequest) {
+        let Some(edit) = self.inline_edit.as_mut() else {
+            return;
+        };
+        if edit.path != request.path || edit.range != request.range {
+            return;
+        }
+        let lines: Vec<String> = request.replacement.split('\n').map(str::to_owned).collect();
+        edit.range = request.range.start..request.range.start + lines.len();
+        edit.original = lines;
+    }
+
+    /// The worker refused the write: the file moved under the editor (git.md §4). The
+    /// buffer stays as typed and the notice hands the arbitration to the user —
+    /// **Reload** takes the disk's version, **Overwrite** re-sends this request.
+    pub fn edit_diverged(&mut self, request: EditRequest) {
+        self.diverged = Some(request);
     }
 
     /// Whether the resolved thread rooted at `id` is expanded in the center accordion
@@ -853,6 +968,17 @@ impl DiffSurface {
         matches!(self, DiffSurface::WorkingTree { staged: true })
     }
 
+    /// Section an inline edit made on this surface lands in (git.md §4). Unlike
+    /// `staged`, the frozen twin answers too: the freeze *is* the file switch that
+    /// flushes the buffer, and that buffer still belongs to the section it was typed in.
+    fn edit_section_staged(self) -> bool {
+        matches!(
+            self,
+            DiffSurface::WorkingTree { staged: true }
+                | DiffSurface::WorkingTreeFrozen { staged: true }
+        )
+    }
+
     /// The PR surface carries a forge pool alongside the agent pool: its gutter
     /// gets a second `MessageSquarePlus` button (slot 0) feeding the forge review
     /// comments posted to GitHub / Bitbucket on submit.
@@ -878,13 +1004,16 @@ pub fn diff_view(
 ) -> bool {
     let staged = surface.staged();
     let read_only = surface.read_only();
+    let now = ui.input(|i| i.time);
+    let edit_staged = surface.edit_section_staged();
     // Only the working tree can be written back, and only when the worker judged
     // the file writable while computing the diff (git.md §4).
     let editable = diff.editable && !read_only;
     // A surface that stopped being writable keeps no editor: switching files freezes
-    // the diff (read-only) while the previous file's rows are still on screen.
+    // the diff (read-only) while the previous file's rows are still on screen — and
+    // that switch is precisely a flush point.
     if !editable {
-        state.leave_inline_edit();
+        state.leave_inline_edit(edit_staged, intents);
     }
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
@@ -910,7 +1039,7 @@ pub fn diff_view(
     let mut close = false;
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         if state.inline_edit.is_some() {
-            state.leave_inline_edit();
+            state.leave_inline_edit(edit_staged, intents);
         } else if state.active_comment.is_some() || state.popover_edit.is_some() {
             state.active_comment = None;
             state.comment_buffer.clear();
@@ -923,7 +1052,15 @@ pub fn diff_view(
     // `Cmd+S` is not a save *control* (keybindings.md §3): the buffer is written on the
     // way out either way, so the shortcut is simply the keyboard's click-elsewhere.
     if state.inline_edit.is_some() && save_requested(ui) {
-        state.leave_inline_edit();
+        state.leave_inline_edit(edit_staged, intents);
+    }
+    // `Cmd+E` where no caret can open (git.md §4): the click stays silent, but the
+    // keyboard ask deserves an answer — the app names the reason and offers the
+    // external editor.
+    if !editable && editor_requested(ui) {
+        intents.push(GitIntent::EditRefused {
+            path: diff.path.clone(),
+        });
     }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(diff) {
@@ -1003,6 +1140,8 @@ pub fn diff_view(
             );
             ui.add_space(8.0);
         }
+
+        divergence_notice(ui, palette, state, intents);
 
         if diff.binary {
             match &diff.image {
@@ -1085,7 +1224,7 @@ pub fn diff_view(
                         .filter(|edit| edit.hunk == hunk_idx)
                     {
                         if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
-                            state.leave_inline_edit();
+                            state.leave_inline_edit(edit_staged, intents);
                         }
                         ui.spacing_mut().item_spacing.y = previous_spacing_y;
                         ui.add_space(12.0);
@@ -1120,6 +1259,8 @@ pub fn diff_view(
                                 hunk_idx,
                                 Some(new_no),
                                 col,
+                                edit_staged,
+                                intents,
                             ),
                             other => apply_line_action(state, diff, intents, other),
                         }
@@ -1174,6 +1315,8 @@ pub fn diff_view(
                                 hunk_idx,
                                 line.new_lineno.or(last_new),
                                 col,
+                                edit_staged,
+                                intents,
                             ),
                             other => apply_line_action(state, diff, intents, other),
                         }
@@ -1247,6 +1390,8 @@ pub fn diff_view(
                                 hunk_idx,
                                 Some(new_no),
                                 col,
+                                edit_staged,
+                                intents,
                             ),
                             other => apply_line_action(state, diff, intents, other),
                         }
@@ -1264,6 +1409,15 @@ pub fn diff_view(
 
     if let Some(r) = review {
         r.intents.append(&mut review_out);
+    }
+    // Autosave (git.md §4): typing pauses, the buffer lands — no save control, and no
+    // write per keystroke either. The repaint is what makes the deadline arrive when
+    // the user simply stops touching the keyboard.
+    if let Some(request) = state.idle_edit_write(edit_staged, now) {
+        intents.push(GitIntent::FlushEdit(request));
+    } else if let Some(delay) = state.autosave_wake(now) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(delay));
     }
     close
 }
@@ -2482,7 +2636,10 @@ fn edit_anchor(
 /// Opens the inline editor on `hunk_idx`, caret on the row carrying the new-side line
 /// `at` (the clicked row; `None` for a deletion row, which has no working-tree
 /// counterpart) at column `col`. A diff that can't back an editor leaves the state
-/// untouched — the click does nothing, as spec'd (git.md §4).
+/// untouched — the click does nothing, as spec'd (git.md §4). Moving the caret to
+/// another hunk is an exit like any other: the outgoing buffer is written first, in the
+/// same gesture.
+#[allow(clippy::too_many_arguments)]
 fn open_hunk_editor(
     state: &mut DiffViewState,
     diff: &FileDiff,
@@ -2490,6 +2647,8 @@ fn open_hunk_editor(
     hunk_idx: usize,
     at: Option<u32>,
     col: usize,
+    staged: bool,
+    intents: &mut Vec<GitIntent>,
 ) {
     let Some(hunk) = diff.hunks.get(hunk_idx) else {
         return;
@@ -2497,6 +2656,7 @@ fn open_hunk_editor(
     let Some((range, original)) = edit_anchor(diff, hunk, ext) else {
         return;
     };
+    state.leave_inline_edit(staged, intents);
     let row = at
         .and_then(|n| (n as usize).checked_sub(1))
         .and_then(|n| n.checked_sub(range.start))
@@ -2504,15 +2664,73 @@ fn open_hunk_editor(
         .min(original.len() - 1);
     state.text_selection = None;
     state.selection.clear();
+    let buffer = original.join("\n");
     state.inline_edit = Some(InlineEdit {
         path: diff.path.clone(),
         hunk: hunk_idx,
-        buffer: original.join("\n"),
+        flushed: buffer.clone(),
+        buffer,
         range,
         original,
+        changed_at: None,
         caret: Some(TextPosition { row, col }),
         focus: true,
     });
+}
+
+/// The refused-write notice (git.md §4): the file moved under the editor, so the write
+/// did not happen and the typed buffer is still on screen. The arbitration is the
+/// user's — **Reload** takes the version on disk (the buffer goes with the editor),
+/// **Overwrite** re-sends the very same request, precondition dropped.
+fn divergence_notice(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &mut DiffViewState,
+    intents: &mut Vec<GitIntent>,
+) {
+    let Some(request) = state.diverged.clone() else {
+        return;
+    };
+    let mut answered = false;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("File changed on disk — the save was refused")
+                .size(LINE_SIZE)
+                .color(palette.git_modified),
+        );
+        if notice_button(ui, palette, "Reload") {
+            state.inline_edit = None;
+            intents.push(GitIntent::OpenDiff {
+                path: request.path.clone(),
+                staged: request.stage_after,
+            });
+            answered = true;
+        }
+        if notice_button(ui, palette, "Overwrite") {
+            intents.push(GitIntent::FlushEdit(EditRequest {
+                force: true,
+                ..request.clone()
+            }));
+            answered = true;
+        }
+    });
+    if answered {
+        state.diverged = None;
+    }
+    ui.add_space(8.0);
+}
+
+fn notice_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> bool {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(PILL_SIZE)
+                .color(palette.text_secondary),
+        )
+        .fill(palette.bg_surface)
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL)),
+    )
+    .clicked()
 }
 
 /// The open inline editor, in place of the hunk's rows (git.md §4, design-system §4):
@@ -2560,6 +2778,9 @@ fn inline_editor(
         })
         .inner;
 
+    if output.response.changed() {
+        edit.changed_at = Some(ui.input(|i| i.time));
+    }
     if let Some(caret) = edit.caret.take() {
         let index = caret_char_index(&edit.buffer, caret);
         let mut opened = output.state.clone();
@@ -3347,6 +3568,92 @@ fn gutter_icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// State holding an open editor on lines 1..3 of `f`, buffer as seeded.
+    fn state_editing() -> DiffViewState {
+        let original = vec!["one".to_owned(), "two".to_owned()];
+        let buffer = original.join("\n");
+        DiffViewState {
+            inline_edit: Some(InlineEdit {
+                path: "f".to_owned(),
+                hunk: 0,
+                range: 1..3,
+                original,
+                flushed: buffer.clone(),
+                buffer,
+                changed_at: None,
+                caret: None,
+                focus: false,
+            }),
+            ..DiffViewState::default()
+        }
+    }
+
+    #[test]
+    fn a_buffer_lands_once_the_typing_has_paused() {
+        let mut state = state_editing();
+        let edit = state.inline_edit.as_mut().unwrap();
+        edit.buffer = "one\nTWO".to_owned();
+        edit.changed_at = Some(10.0);
+
+        assert_eq!(state.idle_edit_write(false, 10.5), None, "still typing");
+        let wake = state.autosave_wake(10.5).expect("a write is pending");
+        assert!((wake - 0.3).abs() < 1e-6, "got {wake}");
+        let request = state
+            .idle_edit_write(false, 10.9)
+            .expect("the pause writes the buffer");
+        assert_eq!(request.range, 1..3);
+        assert_eq!(request.replacement, "one\nTWO");
+        assert!(!request.force);
+        assert_eq!(
+            state.idle_edit_write(false, 20.0),
+            None,
+            "what is already on disk is not written again"
+        );
+        assert_eq!(state.autosave_wake(20.0), None);
+    }
+
+    #[test]
+    fn the_landed_write_re_anchors_the_editor_on_what_it_wrote() {
+        let mut state = state_editing();
+        let edit = state.inline_edit.as_mut().unwrap();
+        edit.buffer = "one\nTWO\nextra".to_owned();
+        let request = state.idle_edit_write(false, 100.0).expect("write");
+
+        state.edit_written(&request);
+
+        let edit = state.inline_edit.as_ref().unwrap();
+        assert_eq!(
+            edit.range,
+            1..4,
+            "a line added by the buffer widens the range it owns"
+        );
+        assert_eq!(edit.original, vec!["one", "TWO", "extra"]);
+        assert_eq!(
+            state.idle_edit_write(false, 200.0),
+            None,
+            "the anchor now agrees with the buffer"
+        );
+    }
+
+    #[test]
+    fn a_reply_for_another_anchor_leaves_the_editor_alone() {
+        let mut state = state_editing();
+        let stale = EditRequest {
+            path: "f".to_owned(),
+            range: 7..9,
+            original: vec!["x".to_owned()],
+            replacement: "y".to_owned(),
+            stage_after: false,
+            force: false,
+        };
+
+        state.edit_written(&stale);
+
+        let edit = state.inline_edit.as_ref().unwrap();
+        assert_eq!(edit.range, 1..3);
+        assert_eq!(edit.original, vec!["one", "two"]);
+    }
 
     #[test]
     fn toggling_a_line_adds_then_removes_it_from_the_selection() {

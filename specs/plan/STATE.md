@@ -11,7 +11,7 @@
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **5/7**.
+with no save control. Counter: **6/7**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -70,26 +70,42 @@ with no save control. Counter: **5/7**.
   click outside, reload renumbered / rewritten / other file / untouched, frozen
   surface), `tests/it/git_diff_e2e.rs` (staged side editable only while index ==
   working tree).
-- ☐ **T5 — Autosave + guards.** Flush on exit / blur / file nav / close and after
-  800 ms idle; diff frozen while open, diff poll suspended, `↑`/`↓` and
-  `Cmd+Enter` disarmed, `Esc` cascade, divergence notice (*Reload* /
-  *Overwrite*), non-editable toast carrying **Open in editor**.
-  *Files*: `src/app/{render,git_session,keys}.rs`, `src/ui/diff_view.rs`.
-  *Tests*: `tests/it/ui_app_keys.rs`, `tests/it/ui_diff_view.rs`.
+- ☑ **T5 — Autosave + guards.** `edit::EditRequest` (path + range + original +
+  buffer + `stage_after` + `force`) travels `GitIntent::FlushEdit` → `EditFile` and
+  **rides back** on `GitResult::Edit`, so a reply needs no app-side bookkeeping to be
+  actionable. `leave_inline_edit` emits the write on every exit (`Esc`, `Cmd+S`, blur,
+  another hunk's content, a surface that stops being writable ⇒ file switch) and
+  `idle_edit_write` after **800 ms** without a keystroke (`request_repaint_after` makes
+  the deadline arrive), each write recorded in `InlineEdit::flushed` so nothing is
+  written twice; `edit_written` re-anchors the open editor on what landed. Diff poll
+  suspended and `on_edit`'s reload skipped while an editor is open (git.md §7).
+  `EditError::Diverged` ⇒ `DiffViewState::diverged` band: *Reload* (drops the buffer,
+  re-reads the file) / *Overwrite* (same request, `force`). `GitPanelState.inline_editing`
+  disarms `↑`/`↓` and `Cmd+Enter`. `Cmd+E` where no caret can open ⇒
+  `GitIntent::EditRefused` ⇒ toast with the reason the app can name (Staged side of a
+  file that also has unstaged changes) carrying **Open in editor** — hence
+  `ToastAction::{InstallUpdate, OpenInEditor}`, `toast_overlay` returning the deed.
+  *Files*: `src/git/{edit,worker}.rs`, `src/ui/{diff_view,git_panel,toast}.rs`,
+  `src/app/{render,git_session,keys,mod}.rs`. *Tests*: `src/ui/diff_view.rs` (idle
+  deadline, re-anchor, stale reply), `tests/it/ui_diff_view.rs` (12: `Cmd+S` / `Esc` /
+  blur / hunk switch write the buffer, an untouched one writes nothing, idle write with
+  the editor still open, staged side asks for its stage, *Overwrite* / *Reload*,
+  refusal), `tests/it/ui_git_panel.rs` (arrows + `Cmd+Enter` disarmed, each with its
+  armed control), `src/app/tests.rs` (poll frozen then resumed, divergence notice).
 - ☐ **T6 — Verification.** `headless-verify`: click → type → `Esc` → recomposed
   diff, plus a before/after capture proving no metric shift.
 - ⏭ **T7 — Deferred.** Whole-file editing (same `write_range`, full range),
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- **T5** — autosave + guards: flush the open buffer on exit / blur / file nav /
-  close and after 800 ms idle, freeze the diff and suspend its poll while the
-  editor is open, disarm `↑`/`↓` and `Cmd+Enter`, surface the divergence notice.
-  Exits all funnel through `DiffViewState::leave_inline_edit` (T4b); the write must
-  use `InlineEdit::path`, not the open `DiffState::path`. Two exits still drop the
-  buffer without going through it: a click in **another hunk's** content
-  (`open_hunk_editor` overwrites the state) and `reconcile_inline_edit` — the second
-  is the divergence case, which owes the user the *Reload* / *Overwrite* notice.
+- **T6** — end-to-end verification: the app path now works headless (see the note
+  below), so drive click → type → `Esc` → recomposed diff with a before/after capture.
+- Left open by T5, bounded by the autosave: a teardown that drops the whole overlay
+  without rendering it again never flushes — a **keyboard** repo switch (`Cmd+1..9`,
+  `self.diff = None` in `sync_git_session`), a worktree open, a failed diff reload. A
+  mouse switch is safe (the click blurs the buffer, which flushes in that same frame),
+  so the exposure is ≤ 800 ms of typing on the keyboard path; fixing it means flushing
+  **before** the old session is parked, since the write must reach that repo's worker.
 - Left open by the T4b review, none of them a write hazard:
   **(5)** `edit_anchor` returns `None` silently for a deletion-only hunk
   (`new_lines == 0`, verified) and past `MAX_EDIT_LINES`, yet the content column still
@@ -104,12 +120,11 @@ with no save control. Counter: **5/7**.
   row short for the frame a newline is typed. Also `keybindings.md` still lists
   double/triple-click word/line selection in the diff content — unreachable on an
   editable diff, since the first click of the pair swaps the row for the editor.
-- Noted while verifying T4: in the **headless app** harness
-  (`Harness::new_eframe` + `HelmApp::with_workspace`), no click inside the git
-  panel registers (file row, *Tree view*) although the right-rail toggles do — so
-  T4 was verified on `diff_view` driven with a real `file_diff` instead. The same
-  clicks pass in the isolated `git_panel` harness (`tests/it/ui_git_panel.rs`);
-  cause unexplained, to look at when T6 needs the end-to-end path.
+- Resolved (was noted while verifying T4 as "no click inside the git panel registers"
+  in the headless app harness): the panel is **hidden** in a fresh profile — clicking
+  *Toggle git sidebar* first makes the file row, the diff and the caret all drivable
+  through `Harness::new_eframe` + `HelmApp::with_workspace`. T5 was verified that way
+  end to end (autosave landing on disk with no exit gesture).
 
 ---
 

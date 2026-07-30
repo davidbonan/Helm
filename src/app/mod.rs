@@ -8,7 +8,7 @@ use crate::git::ai_rebase::{AiRebaseReport, AiRebaseRequest, AiRebaseRunner};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
-use crate::git::edit::{EditError, Landing};
+use crate::git::edit::{EditError, EditRequest, Landing};
 use crate::git::graph::{self, Graph, LaneCache};
 use crate::git::rebase::RebaseCommit;
 use crate::git::status::RepoStatus;
@@ -51,7 +51,7 @@ use crate::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 use crate::ui::terminal_view::{
     cell_metrics, terminal_tree, terminal_view, terminal_view_preview, terminal_view_readonly,
 };
-use crate::ui::toast::{toast_overlay, Toasts};
+use crate::ui::toast::{toast_overlay, ToastAction, Toasts};
 use crate::ui::{central_empty_state, central_switch, root_layout, TITLEBAR_HEIGHT};
 use crate::update::{self, UpdateOutcome, UpdateRunner};
 use crate::workspace::{GroupSync, Repo, TabId, Workspace};
@@ -3866,12 +3866,10 @@ impl eframe::App for HelmApp {
         }
         self.flush_persistence(&ctx, sidebars_were);
         // Toasts (git.md §10): above everything, in all modes — a git action error
-        // stays visible even outside the Graph view. The single toast action is
-        // the updater Install (update.md §6).
-        if toast_overlay(&ctx, &palette, &mut self.toasts) {
-            if let Some(runner) = self.update_runner.as_mut() {
-                runner.request_install();
-            }
+        // stays visible even outside the Graph view; a toast's action button is
+        // carried out here (update.md §6, git.md §4).
+        if let Some(action) = toast_overlay(&ctx, &palette, &mut self.toasts) {
+            self.run_toast_action(action, &ctx);
         }
         if let Some(log) = self.frame_log.as_mut() {
             log.end_frame(match self.central_mode {

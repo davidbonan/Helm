@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +11,7 @@ use crate::git::branch::{self, Branch};
 use crate::git::commit_detail::{self, CommitDetail};
 use crate::git::conflict::{self, ConflictFile};
 use crate::git::diff::{self, DiffSource, FileDiff};
-use crate::git::edit::{self, EditError, Landing};
+use crate::git::edit::{self, EditError, EditRequest, Landing};
 use crate::git::graph::{self, Graph};
 use crate::git::rebase::{self, RebaseCommit, RebaseStep};
 use crate::git::status::{load_repo, op_in_progress, op_summary, OpSummary, RepoStatus};
@@ -154,19 +153,11 @@ pub enum GitCommand {
     /// Deletes the **local** tag (graph tag menu, confirmed by a modal). The
     /// remote-side deletion, if asked, runs first on the sync runner.
     DeleteTag(String),
-    /// Writes one inline-editor buffer back to the working tree (git.md §4).
-    /// `range` + `original` anchor the edit in the file's own line numbering: the
-    /// write only happens while those lines still read exactly as they were opened,
-    /// so a file that moved on disk under the editor is refused, not overwritten.
-    /// `stage_after` carries the section the edit was made from — `true` from
-    /// **Staged**, where the write is followed by a file-level stage.
-    EditFile {
-        path: String,
-        range: Range<usize>,
-        original: Vec<String>,
-        replacement: String,
-        stage_after: bool,
-    },
+    /// Writes one inline-editor buffer back to the working tree (git.md §4). The
+    /// request anchors the edit in the file's own line numbering: the write only
+    /// happens while those lines still read exactly as they were opened, so a file
+    /// that moved on disk under the editor is refused, not overwritten.
+    EditFile(EditRequest),
     /// Moves the current branch to `target` (graph row menu, git.md §9): Soft /
     /// Mixed run directly, Hard is confirmed by a modal on the app side. Local
     /// `git2` reset, no network; detached HEAD is gated out in the UI.
@@ -222,7 +213,7 @@ impl GitCommand {
     /// (M17-13).
     pub fn result_kind(&self) -> ResultKind {
         match self {
-            GitCommand::EditFile { .. } => ResultKind::Edit,
+            GitCommand::EditFile(_) => ResultKind::Edit,
             GitCommand::Diff { .. } => ResultKind::Diff,
             GitCommand::Graph { .. } => ResultKind::Graph,
             GitCommand::RebaseTodo { .. } => ResultKind::RebaseTodo,
@@ -291,7 +282,7 @@ pub enum GitResult {
     /// divergence notice, a `NotStaged` landing is a toast over a *successful* save.
     /// Carries no snapshot; the app re-reads status and diff behind it.
     Edit {
-        path: String,
+        request: EditRequest,
         result: Result<Landing, EditError>,
     },
 }
@@ -657,27 +648,12 @@ fn dispatch(
         // outcome, not a snapshot (`GitResult::Edit`). It still takes the mutation
         // lock — hence a git failure mapped into `EditError`, whose `Io` prints the
         // message verbatim.
-        GitCommand::EditFile {
-            path,
-            range,
-            original,
-            replacement,
-            stage_after,
-        } => GitResult::Edit {
-            path: path.clone(),
+        GitCommand::EditFile(request) => GitResult::Edit {
+            request: request.clone(),
             result: repo
                 .and_then(|repo| mutation_guard(command, mutation_lock).map(|guard| (repo, guard)))
                 .map_err(|err| EditError::Io(err.message().to_owned()))
-                .and_then(|(repo, _guard)| {
-                    edit::flush(
-                        repo,
-                        path,
-                        range.clone(),
-                        original,
-                        replacement,
-                        *stage_after,
-                    )
-                }),
+                .and_then(|(repo, _guard)| edit::flush(repo, request)),
         },
         _ => GitResult::Status {
             source: command.clone(),
@@ -770,7 +746,7 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         | GitCommand::CommitDetail(_)
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
-        | GitCommand::EditFile { .. } => {
+        | GitCommand::EditFile(_) => {
             unreachable!("commands with their own reply variant never reach apply")
         }
     }

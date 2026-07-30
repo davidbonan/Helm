@@ -9,7 +9,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::theme::Palette;
-use helm::ui::toast::{toast_overlay, Toasts};
+use helm::ui::toast::{toast_overlay, ToastAction, Toasts};
 
 /// Drives `toast_overlay` over an empty CentralPanel from a seeded state;
 /// returns the shared stack for state assertions.
@@ -115,7 +115,7 @@ fn action_harness(
         .with_size(egui::vec2(900.0, 400.0))
         .build(move |ctx| {
             egui::CentralPanel::default().show(ctx, |_ui| {});
-            if toast_overlay(ctx, &palette, &mut shared_ui.borrow_mut()) {
+            if toast_overlay(ctx, &palette, &mut shared_ui.borrow_mut()).is_some() {
                 *clicks_ui.borrow_mut() += 1;
             }
         });
@@ -125,7 +125,7 @@ fn action_harness(
 #[test]
 fn the_action_button_signals_and_dismisses_its_toast() {
     let mut toasts = Toasts::default();
-    toasts.info_with_action("Update available v0.2.0", "Install", 0.0);
+    toasts.info_with_action("Update available v0.2.0", ToastAction::InstallUpdate, 0.0);
     let (mut harness, shared, clicks) = action_harness(toasts);
     harness.run_steps(2);
 
@@ -144,7 +144,11 @@ fn the_action_button_signals_and_dismisses_its_toast() {
 fn an_action_toast_persists_past_the_success_ttl() {
     let mut toasts = Toasts::default();
     // Born well before the harness clock: a success would already be expired.
-    toasts.info_with_action("Update available v0.2.0", "Install", -3600.0);
+    toasts.info_with_action(
+        "Update available v0.2.0",
+        ToastAction::InstallUpdate,
+        -3600.0,
+    );
     let (mut harness, shared, _clicks) = action_harness(toasts);
     harness.run_steps(2);
 
@@ -156,7 +160,7 @@ fn an_action_toast_persists_past_the_success_ttl() {
 #[test]
 fn the_cross_dismisses_an_action_toast_without_signaling() {
     let mut toasts = Toasts::default();
-    toasts.info_with_action("Update available v0.2.0", "Install", 0.0);
+    toasts.info_with_action("Update available v0.2.0", ToastAction::InstallUpdate, 0.0);
     let (mut harness, shared, clicks) = action_harness(toasts);
     harness.run_steps(2);
 

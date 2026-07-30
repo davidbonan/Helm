@@ -1490,13 +1490,14 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
         MutationLock::new(),
     );
     let mut toasts = Toasts::default();
-    session.worker.send(GitCommand::EditFile {
+    session.worker.send(GitCommand::EditFile(EditRequest {
         path: "a.txt".to_owned(),
         range: 1..2,
         original: vec!["two".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: true,
-    });
+        force: false,
+    }));
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while session.worker.has_pending(ResultKind::Edit) {
@@ -1533,6 +1534,114 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
     // The reply carries no snapshot: the panel is refreshed behind it, without
     // waiting for the 1 s poll.
     assert!(session.worker.has_pending(ResultKind::Status));
+}
+
+#[test]
+fn an_open_inline_editor_freezes_the_diff_under_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    std::fs::write(tmp.path().join("a.txt"), "one\ntwo\n").unwrap();
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
+    );
+    let mut diff = open_diff("a.txt", false);
+    diff.view
+        .open_editor_for_test("a.txt", 0, 0..2, &["one", "two"]);
+
+    session.poll(10.0, Some(&diff), false);
+
+    assert!(
+        session.worker.has_pending(ResultKind::Status),
+        "the status keeps polling — only the diff is frozen (git.md §7)"
+    );
+    assert!(
+        !session.worker.has_pending(ResultKind::Diff),
+        "nothing may reflow under the caret while the editor is open"
+    );
+
+    diff.view.clear();
+    session.poll(20.0, Some(&diff), false);
+
+    assert!(
+        session.worker.has_pending(ResultKind::Diff),
+        "the diff recomposes once the editor is gone"
+    );
+}
+
+#[test]
+fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
+    );
+    let mut diff = Some(open_diff("a.txt", false));
+    let open = diff.as_mut().unwrap();
+    open.adopt(loaded_file("a.txt"));
+    open.view.open_editor_for_test("a.txt", 0, 1..2, &["two"]);
+    let mut toasts = Toasts::default();
+    // The anchor the caret was opened on is not what the file holds any more.
+    session.worker.send(GitCommand::EditFile(EditRequest {
+        path: "a.txt".to_owned(),
+        range: 1..2,
+        original: vec!["gone".to_owned()],
+        replacement: "TWO".to_owned(),
+        stage_after: false,
+        force: false,
+    }));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.worker.has_pending(ResultKind::Edit) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit reply never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.drain(
+            &mut diff,
+            &mut BranchEditor::default(),
+            &mut GitPanelState::default(),
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut toasts,
+            0.0,
+        );
+    }
+
+    let open = diff.as_ref().unwrap();
+    assert_eq!(
+        open.view.edit_divergence().map(|r| r.replacement.clone()),
+        Some("TWO".to_owned()),
+        "the notice carries the very buffer that was refused"
+    );
+    assert!(
+        open.view.inline_edit().is_some(),
+        "the editor stays open on its buffer — the user arbitrates"
+    );
+    assert!(
+        toasts.items().is_empty(),
+        "the notice replaces the toast, got {:?}",
+        toasts.items()
+    );
+    assert!(
+        !session.worker.has_pending(ResultKind::Diff),
+        "the diff stays frozen: the editor is still open"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\n");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use helm::git::edit::{self, EditError, Landing, MAX_EDIT_BYTES};
+use helm::git::edit::{self, EditError, EditRequest, Landing, MAX_EDIT_BYTES};
 use helm::git::worker::{GitCommand, GitResult, GitWorker};
 
 fn repo_with(name: &str, content: &[u8]) -> (tempfile::TempDir, git2::Repository, PathBuf) {
@@ -15,6 +15,24 @@ fn repo_with(name: &str, content: &[u8]) -> (tempfile::TempDir, git2::Repository
 
 fn owned(lines: &[&str]) -> Vec<String> {
     lines.iter().map(|l| (*l).to_owned()).collect()
+}
+
+/// One editor write, as the UI hands it over: the anchor read when the caret appeared
+/// plus the buffer typed into it.
+fn request(
+    path: &str,
+    range: std::ops::Range<usize>,
+    original: &[&str],
+    buffer: &str,
+) -> EditRequest {
+    EditRequest {
+        path: path.to_owned(),
+        range,
+        original: owned(original),
+        replacement: buffer.to_owned(),
+        stage_after: false,
+        force: false,
+    }
 }
 
 fn stage_path(repo: &git2::Repository, path: &str) {
@@ -41,7 +59,7 @@ fn index_is_empty(repo: &git2::Repository) -> bool {
 fn write_range_replaces_the_anchored_lines_and_leaves_no_temporary_behind() {
     let (tmp, repo, full) = repo_with("a.txt", b"one\ntwo\nthree\n");
 
-    edit::write_range(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO\nextra").unwrap();
+    edit::write_range(&repo, &request("a.txt", 1..2, &["two"], "TWO\nextra")).unwrap();
 
     assert_eq!(
         fs::read_to_string(&full).unwrap(),
@@ -59,7 +77,7 @@ fn write_range_replaces_the_anchored_lines_and_leaves_no_temporary_behind() {
 fn write_range_keeps_crlf_and_a_missing_final_newline() {
     let (_tmp, repo, full) = repo_with("crlf.txt", b"one\r\ntwo\r\nthree");
 
-    edit::write_range(&repo, "crlf.txt", 1..2, &owned(&["two"]), "TWO").unwrap();
+    edit::write_range(&repo, &request("crlf.txt", 1..2, &["two"], "TWO")).unwrap();
 
     assert_eq!(fs::read(&full).unwrap(), b"one\r\nTWO\r\nthree");
 }
@@ -69,7 +87,7 @@ fn write_range_refuses_when_the_lines_moved_on_disk() {
     let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\nthree\n");
     fs::write(&full, "one\nCHANGED\nthree\n").unwrap();
 
-    let err = edit::write_range(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO").unwrap_err();
+    let err = edit::write_range(&repo, &request("a.txt", 1..2, &["two"], "TWO")).unwrap_err();
 
     assert_eq!(err, EditError::Diverged);
     assert_eq!(fs::read_to_string(&full).unwrap(), "one\nCHANGED\nthree\n");
@@ -79,7 +97,7 @@ fn write_range_refuses_when_the_lines_moved_on_disk() {
 fn write_range_refuses_a_range_past_the_end_of_the_file() {
     let (_tmp, repo, _full) = repo_with("a.txt", b"one\ntwo\n");
 
-    let err = edit::write_range(&repo, "a.txt", 5..7, &owned(&["x", "y"]), "z").unwrap_err();
+    let err = edit::write_range(&repo, &request("a.txt", 5..7, &["x", "y"], "z")).unwrap_err();
 
     assert_eq!(err, EditError::Diverged);
 }
@@ -91,7 +109,7 @@ fn write_range_refuses_a_symlink_without_following_it() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
     let err =
-        edit::write_range(&repo, "link.txt", 0..1, &owned(&["secret"]), "SPILLED").unwrap_err();
+        edit::write_range(&repo, &request("link.txt", 0..1, &["secret"], "SPILLED")).unwrap_err();
 
     assert_eq!(err, EditError::NotRegular);
     assert_eq!(fs::read_to_string(&target).unwrap(), "secret\n");
@@ -155,7 +173,7 @@ fn write_range_keeps_the_executable_bit() {
     let (_tmp, repo, full) = repo_with("run.sh", b"#!/bin/sh\necho hi\n");
     fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
 
-    edit::write_range(&repo, "run.sh", 1..2, &owned(&["echo hi"]), "echo bye").unwrap();
+    edit::write_range(&repo, &request("run.sh", 1..2, &["echo hi"], "echo bye")).unwrap();
 
     assert_eq!(fs::read_to_string(&full).unwrap(), "#!/bin/sh\necho bye\n");
     let mode = fs::metadata(&full).unwrap().permissions().mode() & 0o777;
@@ -173,7 +191,14 @@ fn editable_accepts_a_plain_text_file() {
 fn flush_from_the_unstaged_section_touches_only_the_working_tree() {
     let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
 
-    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", false).unwrap();
+    let landing = edit::flush(
+        &repo,
+        &EditRequest {
+            stage_after: false,
+            ..request("a.txt", 1..2, &["two"], "TWO")
+        },
+    )
+    .unwrap();
 
     assert_eq!(landing, Landing::Unstaged);
     assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\n");
@@ -185,7 +210,14 @@ fn flush_from_the_staged_section_stages_the_file_it_wrote() {
     let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
     stage_path(&repo, "a.txt");
 
-    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap();
+    let landing = edit::flush(
+        &repo,
+        &EditRequest {
+            stage_after: true,
+            ..request("a.txt", 1..2, &["two"], "TWO")
+        },
+    )
+    .unwrap();
 
     assert_eq!(landing, Landing::Staged);
     assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\n");
@@ -200,7 +232,14 @@ fn flush_writes_unstaged_when_the_file_grew_an_unstaged_change() {
     // file-level stage would swallow the third line the user never saw.
     fs::write(&full, "one\ntwo\nthree\n").unwrap();
 
-    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap();
+    let landing = edit::flush(
+        &repo,
+        &EditRequest {
+            stage_after: true,
+            ..request("a.txt", 1..2, &["two"], "TWO")
+        },
+    )
+    .unwrap();
 
     assert_eq!(
         landing,
@@ -216,7 +255,14 @@ fn flush_stages_nothing_when_the_anchor_is_lost() {
     stage_path(&repo, "a.txt");
     fs::write(&full, "one\nCHANGED\n").unwrap();
 
-    let err = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap_err();
+    let err = edit::flush(
+        &repo,
+        &EditRequest {
+            stage_after: true,
+            ..request("a.txt", 1..2, &["two"], "TWO")
+        },
+    )
+    .unwrap_err();
 
     assert_eq!(err, EditError::Diverged);
     assert_eq!(fs::read_to_string(&full).unwrap(), "one\nCHANGED\n");
@@ -229,17 +275,14 @@ fn worker_edit_file_replies_with_its_own_landing() {
     stage_path(&repo, "a.txt");
 
     let worker = GitWorker::spawn(tmp.path(), || {});
-    worker.send(GitCommand::EditFile {
-        path: "a.txt".to_owned(),
-        range: 1..2,
-        original: owned(&["two"]),
-        replacement: "TWO".to_owned(),
+    worker.send(GitCommand::EditFile(EditRequest {
         stage_after: true,
-    });
+        ..request("a.txt", 1..2, &["two"], "TWO")
+    }));
 
     match worker.recv() {
-        Some((_, GitResult::Edit { path, result })) => {
-            assert_eq!(path, "a.txt");
+        Some((_, GitResult::Edit { request, result })) => {
+            assert_eq!(request.path, "a.txt");
             assert_eq!(result.unwrap(), Landing::Staged);
         }
         other => panic!("expected an Edit reply, got {other:?}"),
@@ -253,13 +296,12 @@ fn worker_edit_file_reports_a_lost_anchor_without_writing() {
     let (tmp, _repo, full) = repo_with("a.txt", b"one\ntwo\n");
 
     let worker = GitWorker::spawn(tmp.path(), || {});
-    worker.send(GitCommand::EditFile {
-        path: "a.txt".to_owned(),
-        range: 1..2,
-        original: owned(&["gone"]),
-        replacement: "TWO".to_owned(),
-        stage_after: false,
-    });
+    worker.send(GitCommand::EditFile(request(
+        "a.txt",
+        1..2,
+        &["gone"],
+        "TWO",
+    )));
 
     match worker.recv() {
         Some((_, GitResult::Edit { result, .. })) => {

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::git::edit::EditRequest;
 use crate::git::file_tree::{self, TreeRow};
 use crate::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use crate::keybindings::{Action, Keymap};
@@ -70,6 +71,16 @@ pub enum GitIntent {
     /// Flat ⇄ Tree toggle of the file lists (M40): the app stores it in
     /// `Prefs.git_file_view` (shared, persisted) and re-renders both panels.
     SetFileView(FileViewMode),
+    /// One inline-editor buffer to write back to the working tree (git.md §4):
+    /// emitted 800 ms after the last keystroke, on the way out of the editor, and
+    /// again with `force` when the user answers **Overwrite** to a divergence
+    /// notice. Self-contained — the intent outlives the editor that produced it.
+    FlushEdit(EditRequest),
+    /// `Cmd+E` on a diff that cannot take a caret (git.md §4): the app names the
+    /// reason in a toast carrying **Open in editor**, the external fallback.
+    EditRefused {
+        path: String,
+    },
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).
@@ -137,6 +148,10 @@ pub struct GitPanelState {
     /// `GitWorker::pending_mutation()` written by the app: spinner in place of
     /// the Refresh icon (feedback for a slow stage-all / discard / checkout).
     pub mutation_busy: bool,
+    /// An inline editor is open in the diff overlay — per-frame projection written
+    /// by the app: it takes the text input, so the sidebar's ↑/↓ file navigation and
+    /// `Cmd+Enter` are disarmed until it closes (keybindings.md §4).
+    pub inline_editing: bool,
     /// A long op (sync, AI rebase — minutes) holds the repo's mutation lock —
     /// per-frame projection of `GitSession::lock_busy()` written by the app:
     /// the staging / discard / commit actions are greyed out, since the worker
@@ -1324,7 +1339,7 @@ fn commit_card(
         can_commit,
         state.commit_busy,
     );
-    let shortcut = can_commit && commit_shortcut_pressed(ui, keymap);
+    let shortcut = can_commit && !state.inline_editing && commit_shortcut_pressed(ui, keymap);
     if clicked || shortcut {
         let message = commit_message(&state.subject, &state.description);
         intents.push(GitIntent::Commit(message));
@@ -1737,7 +1752,7 @@ fn commit_shortcut_pressed(ui: &egui::Ui, keymap: &Keymap) -> bool {
 }
 
 fn file_nav_pressed(ui: &egui::Ui, state: &GitPanelState) -> Option<FileNav> {
-    if state.selected_file.is_none() || !state.file_nav_active {
+    if state.selected_file.is_none() || !state.file_nav_active || state.inline_editing {
         return None;
     }
     ui.input(|input| {

@@ -62,21 +62,37 @@ pub enum Landing {
     NotStaged(String),
 }
 
+/// One inline-editor write: the anchor read when the caret appeared plus the buffer to
+/// splice in. Travels UI → worker and rides back on the reply — a refusal has to be
+/// actionable, and only the request itself says what to retry (git.md §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditRequest {
+    pub path: String,
+    /// Working-tree lines the buffer replaces: the file's own numbering, 0-based and
+    /// end-exclusive.
+    pub range: Range<usize>,
+    /// Those lines as they read when the editor opened — the write's precondition.
+    pub original: Vec<String>,
+    /// The buffer, LF separated, one line per `\n`.
+    pub replacement: String,
+    /// The edit came from **Staged**: the write is followed by a file-level stage.
+    pub stage_after: bool,
+    /// Skips the precondition — the **Overwrite** answer to a divergence notice.
+    pub force: bool,
+}
+
 /// One inline-editor save: the write, then the file-level stage that keeps a **Staged**
 /// edit in its section (git.md §4). Called on the worker under the mutation lock.
-pub fn flush(
-    repo: &git2::Repository,
-    path: &str,
-    range: Range<usize>,
-    original: &[String],
-    replacement: &str,
-    stage_after: bool,
-) -> Result<Landing, EditError> {
+pub fn flush(repo: &git2::Repository, request: &EditRequest) -> Result<Landing, EditError> {
+    let path = request.path.as_str();
     // Judged **before** the write: the write is itself an unstaged change, so
     // afterwards every file looks like one that must not be staged wholesale.
-    let refusal = stage_after.then(|| stage_refusal(repo, path)).flatten();
-    write_range(repo, path, range, original, replacement)?;
-    if !stage_after {
+    let refusal = request
+        .stage_after
+        .then(|| stage_refusal(repo, path))
+        .flatten();
+    write_range(repo, request)?;
+    if !request.stage_after {
         return Ok(Landing::Unstaged);
     }
     if let Some(reason) = refusal {
@@ -120,26 +136,21 @@ pub fn editable(repo: &git2::Repository, path: &str) -> Result<(), EditError> {
     load(repo, path).map(|_| ())
 }
 
-/// Replaces the working-tree lines under `range` with `replacement`, provided they
-/// still read exactly as `original` (git.md §4). The range is the file's own line
-/// numbering, 0-based and end-exclusive; `replacement` is the editor's buffer, LF
-/// separated, one line per `\n` — the file's terminator and final-newline policy
-/// are re-applied on the way out.
-pub fn write_range(
-    repo: &git2::Repository,
-    path: &str,
-    range: Range<usize>,
-    original: &[String],
-    replacement: &str,
-) -> Result<(), EditError> {
-    let file = load(repo, path)?;
+/// Replaces the working-tree lines under the request's range with its buffer, provided
+/// they still read exactly as its original lines (git.md §4) — unless `force`, the
+/// **Overwrite** answer to a divergence notice, which keeps the range and drops the
+/// comparison. The file's terminator and final-newline policy are re-applied on the way
+/// out.
+pub fn write_range(repo: &git2::Repository, request: &EditRequest) -> Result<(), EditError> {
+    let file = load(repo, &request.path)?;
+    let range = request.range.clone();
     if range.start > range.end || range.end > file.lines.len() {
         return Err(EditError::Diverged);
     }
-    if file.lines[range.clone()] != *original {
+    if !request.force && file.lines[range.clone()] != *request.original {
         return Err(EditError::Diverged);
     }
-    let content = spliced(&file.lines, range, replacement, &file.eol);
+    let content = spliced(&file.lines, range, &request.replacement, &file.eol);
     write_atomic(&file.full, &content, file.perms).map_err(io)
 }
 

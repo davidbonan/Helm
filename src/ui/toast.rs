@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::theme::{Palette, RADIUS_PILL};
 use crate::ui::{paint_icon, with_alpha};
 
@@ -29,15 +31,36 @@ pub enum ToastKind {
     Info,
 }
 
+/// What a toast's action button does. Typed rather than a label the caller
+/// re-matches: the overlay hands the deed back, so a second kind of action cannot be
+/// mistaken for the updater's Install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToastAction {
+    /// Installs the downloaded update and relaunches (update.md §6).
+    InstallUpdate,
+    /// Opens the file in the configured external editor (git.md §4): the inline
+    /// editor refused it, so the toast hands it to the real one.
+    OpenInEditor(PathBuf),
+}
+
+impl ToastAction {
+    fn label(&self) -> &'static str {
+        match self {
+            ToastAction::InstallUpdate => "Install",
+            ToastAction::OpenInEditor(_) => "Open in editor",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
     pub kind: ToastKind,
     pub message: String,
     /// egui clock (`ctx.input.time`) at creation — drives expiration.
     pub born: f64,
-    /// Action button label; a toast carrying one persists until dismissed or
-    /// acted on (update.md §6 — the Install of the Available toast).
-    pub action: Option<String>,
+    /// Action offered under the message; a toast carrying one persists until
+    /// dismissed or acted on (update.md §6 — the Install of the Available toast).
+    pub action: Option<ToastAction>,
 }
 
 impl Toast {
@@ -66,16 +89,11 @@ impl Toasts {
 
     /// Informational toast with an action button (e.g. "Update available vX" +
     /// Install): persists until dismissed or acted on.
-    pub fn info_with_action(
-        &mut self,
-        message: impl Into<String>,
-        action: impl Into<String>,
-        now: f64,
-    ) {
-        self.push(ToastKind::Info, message.into(), Some(action.into()), now);
+    pub fn info_with_action(&mut self, message: impl Into<String>, action: ToastAction, now: f64) {
+        self.push(ToastKind::Info, message.into(), Some(action), now);
     }
 
-    fn push(&mut self, kind: ToastKind, message: String, action: Option<String>, now: f64) {
+    fn push(&mut self, kind: ToastKind, message: String, action: Option<ToastAction>, now: f64) {
         if let Some(existing) = self
             .items
             .iter_mut()
@@ -128,14 +146,17 @@ impl Toasts {
 
 /// Toast overlay, anchored bottom-left above everything (all views, not just the
 /// graph). Tick + render + repaint scheduled on the next expiration: a toast
-/// disappears without interaction. Returns `true` when a toast's action button was
-/// clicked — the toast is dismissed and the caller routes the action (single
-/// app-wide action: the updater Install, update.md §6).
-pub fn toast_overlay(ctx: &egui::Context, palette: &Palette, toasts: &mut Toasts) -> bool {
+/// disappears without interaction. Returns the action of the toast whose button was
+/// clicked (the toast is then dismissed) — the caller carries it out.
+pub fn toast_overlay(
+    ctx: &egui::Context,
+    palette: &Palette,
+    toasts: &mut Toasts,
+) -> Option<ToastAction> {
     let now = ctx.input(|i| i.time);
     toasts.tick(now);
     if toasts.is_empty() {
-        return false;
+        return None;
     }
     if let Some(delay) = toasts.next_expiry(now) {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay));
@@ -157,10 +178,13 @@ pub fn toast_overlay(ctx: &egui::Context, palette: &Palette, toasts: &mut Toasts
                 }
             }
         });
+    let action = actioned
+        .and_then(|index| toasts.items.get(index))
+        .and_then(|toast| toast.action.clone());
     if let Some(index) = actioned.or(dismissed) {
         toasts.dismiss(index);
     }
-    actioned.is_some()
+    action
 }
 
 /// A toast card: typed icon + message (wrapped, action button below it when
@@ -196,7 +220,7 @@ fn toast_card(ui: &mut egui::Ui, palette: &Palette, toast: &Toast, index: usize)
                     );
                     if let Some(action) = &toast.action {
                         ui.add_space(ACTION_GAP);
-                        action_clicked = action_button(ui, accent, action);
+                        action_clicked = action_button(ui, accent, action.label());
                     }
                 });
                 let (close_rect, close, hovered) =
@@ -289,10 +313,14 @@ mod tests {
     #[test]
     fn action_toasts_persist() {
         let mut toasts = Toasts::default();
-        toasts.info_with_action("Update available v0.2.0", "Install", 0.0);
+        toasts.info_with_action("Update available v0.2.0", ToastAction::InstallUpdate, 0.0);
         toasts.tick(TOAST_TTL + 1.0);
         assert_eq!(toasts.items().len(), 1);
-        assert_eq!(toasts.items()[0].action.as_deref(), Some("Install"));
+        assert_eq!(
+            toasts.items()[0].action,
+            Some(ToastAction::InstallUpdate),
+            "the deed travels with the toast, not a label to re-match"
+        );
         assert_eq!(toasts.next_expiry(0.0), None, "action toasts do not expire");
     }
 
@@ -329,7 +357,7 @@ mod tests {
     fn next_expiry_tracks_the_earliest_expiring_toast() {
         let mut toasts = Toasts::default();
         assert_eq!(toasts.next_expiry(0.0), None);
-        toasts.info_with_action("Update available", "Install", 0.0);
+        toasts.info_with_action("Update available", ToastAction::InstallUpdate, 0.0);
         assert_eq!(toasts.next_expiry(0.0), None, "action toasts do not expire");
         toasts.success("late", 2.0);
         toasts.error("early", 1.0);

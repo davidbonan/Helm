@@ -79,7 +79,7 @@ impl HelmApp {
                 let now = ctx.input(|i| i.time);
                 self.toasts.info_with_action(
                     format!("Update available v{version}"),
-                    "Install",
+                    ToastAction::InstallUpdate,
                     now,
                 );
             }
@@ -340,9 +340,30 @@ impl HelmApp {
             ctx.request_repaint();
         }
         // Toasts above everything, in all modes (git.md §10).
-        if toast_overlay(ctx, &palette, &mut self.toasts) {
-            if let Some(runner) = self.update_runner.as_mut() {
-                runner.request_install();
+        if let Some(action) = toast_overlay(ctx, &palette, &mut self.toasts) {
+            self.run_toast_action(action, ctx);
+        }
+    }
+
+    /// Carries out a toast's action button: the updater's Install (update.md §6), or
+    /// the external editor for a file the inline editor refused (git.md §4).
+    pub(super) fn run_toast_action(&mut self, action: ToastAction, ctx: &egui::Context) {
+        match action {
+            ToastAction::InstallUpdate => {
+                if let Some(runner) = self.update_runner.as_mut() {
+                    runner.request_install();
+                }
+            }
+            ToastAction::OpenInEditor(path) => {
+                let link = LinkAction::File {
+                    path,
+                    line: None,
+                    column: None,
+                };
+                if let Err(err) = crate::terminal::links::execute(&link, self.editor.template()) {
+                    let now = ctx.input(|i| i.time);
+                    self.toasts.error(err.message(), now);
+                }
             }
         }
     }
@@ -455,6 +476,13 @@ impl HelmApp {
             .as_ref()
             .is_some_and(|g| g.worker.pending_mutation().is_some());
         self.git_panel_state.lock_busy = self.git.as_ref().is_some_and(|g| g.lock_busy());
+        // An open inline editor takes the text input (keybindings.md §4): the sidebar's
+        // ↑/↓ file navigation and `Cmd+Enter` would land in the buffer, so they disarm
+        // until it closes.
+        self.git_panel_state.inline_editing = self
+            .diff
+            .as_ref()
+            .is_some_and(|d| d.view.inline_edit().is_some());
     }
 
     pub(super) fn render_page(
@@ -2181,6 +2209,32 @@ impl HelmApp {
                     // Shared flat/tree mode (M40): applied + persisted after the
                     // loop, once the `&self.git` borrow is released.
                     GitIntent::SetFileView(view) => set_file_view = Some(view),
+                    // `Cmd+E` where no caret can open (git.md §4). The worker judged
+                    // the file (encoding, symlink, permissions) and the surface may
+                    // simply be read-only; the one reason we can name here is the
+                    // Staged side of a file that also has unstaged changes — its
+                    // index blob's line numbers are not the working tree's.
+                    GitIntent::EditRefused { path } => {
+                        let staged_side = matches!(
+                            self.diff.as_ref().map(|d| d.source),
+                            Some(DiffSource::WorkingTree { staged: true })
+                        );
+                        let also_unstaged = git.status.unstaged.iter().any(|f| f.path == path);
+                        let message = if staged_side && also_unstaged {
+                            "This file also has unstaged changes — edit it from Unstaged"
+                        } else {
+                            "This file can't be edited inline"
+                        };
+                        let now = ctx.input(|i| i.time);
+                        match self.workspace.active_repo().map(|r| r.path.join(&path)) {
+                            Some(full) => self.toasts.info_with_action(
+                                message,
+                                ToastAction::OpenInEditor(full),
+                                now,
+                            ),
+                            None => self.toasts.error(message, now),
+                        }
+                    }
                     other => {
                         if let Some(command) = overlay_or_command(other, self.diff.as_ref()) {
                             if matches!(

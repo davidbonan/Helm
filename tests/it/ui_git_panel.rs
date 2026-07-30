@@ -1835,3 +1835,84 @@ fn the_row_context_menu_comes_back_once_the_lock_is_released() {
         "the menu entry must arm the stash outside a lock-holding op"
     );
 }
+
+#[test]
+fn an_open_inline_editor_disarms_the_arrow_file_navigation() {
+    let status = RepoStatus {
+        unstaged: vec![
+            file("a.rs", ChangeKind::Modified),
+            file("b.rs", ChangeKind::Modified),
+        ],
+        staged: vec![],
+    };
+    let selected = GitPanelState {
+        selected_file: Some(GitFileSelection {
+            path: "a.rs".into(),
+            staged: false,
+        }),
+        file_nav_active: true,
+        ..Default::default()
+    };
+    let armed = drive_with_state(status.clone(), selected, |h| {
+        h.key_press_modifiers(egui::Modifiers::default(), egui::Key::ArrowDown)
+    });
+    assert!(
+        armed
+            .iter()
+            .any(|i| matches!(i, GitIntent::OpenDiff { .. })),
+        "control: the same keystroke navigates when no editor is open, got {armed:?}"
+    );
+
+    let editing = GitPanelState {
+        selected_file: Some(GitFileSelection {
+            path: "a.rs".into(),
+            staged: false,
+        }),
+        file_nav_active: true,
+        inline_editing: true,
+        ..Default::default()
+    };
+    let intents = drive_with_state(status, editing, |h| {
+        h.key_press_modifiers(egui::Modifiers::default(), egui::Key::ArrowDown)
+    });
+    assert!(
+        !intents
+            .iter()
+            .any(|i| matches!(i, GitIntent::OpenDiff { .. })),
+        "the arrows belong to the buffer while the inline editor is open, got {intents:?}"
+    );
+}
+
+#[test]
+fn an_open_inline_editor_disarms_the_commit_shortcut() {
+    let status = RepoStatus {
+        unstaged: vec![],
+        staged: vec![file("a.txt", ChangeKind::Added)],
+    };
+    let armed = drive_with_state(
+        status.clone(),
+        GitPanelState {
+            subject: "land it".to_owned(),
+            ..Default::default()
+        },
+        |h| h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter),
+    );
+    assert!(
+        armed.contains(&GitIntent::Commit("land it".into())),
+        "control: `Cmd+Enter` commits when no editor is open, got {armed:?}"
+    );
+
+    let intents = drive_with_state(
+        status,
+        GitPanelState {
+            subject: "land it".to_owned(),
+            inline_editing: true,
+            ..Default::default()
+        },
+        |h| h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter),
+    );
+    assert!(
+        !intents.iter().any(|i| matches!(i, GitIntent::Commit(_))),
+        "`Cmd+Enter` is inactive until the editor closes, got {intents:?}"
+    );
+}
