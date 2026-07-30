@@ -181,24 +181,30 @@ design and **titlebar placement** (centered, shown in both modes, no separate
 header bar) — switches between **List** and **Columns**; the choice is
 **persisted** (`Prefs.agents_view`, default **List**) and restored next launch.
 *List* is the cockpit above. *Columns* is a **wall of status cards**: one column
-per project that has a running agent, laid out left→right on a **single 2D scroll
+**per worktree** that has a running agent, laid out left→right on a **single 2D scroll
 plane** — horizontal between columns when they overflow the width, vertical down
 the whole wall when the tallest column overflows the height (one gesture, no
 per-column scrollbars). The expanded terminal still owns the vertical wheel while
 hovered (scrollback), so the wall scrolls vertically from anywhere else — header,
-band, gap, or a collapsed preview. The column width is **shared** across columns
+gap, or a collapsed preview. The column width is **shared** across columns
 and **resizable** — dragging the handle in any column gap widens/narrows them all
 (clamped, persisted in `Prefs.agents_column_width`, restored on launch).
 Inter-column margins are kept tight so the cards get the most room. Each column
 **hugs its full content height** (a short column leaves no empty lane below it),
 so the tallest column drives the wall's vertical extent.
-Each column carries **its own hue** (cycled from the theme's graph-lane palette,
-washed against the theme base so it stays balanced in light and dark) so projects
-read apart at a glance.
-Each column is split into **worktree sub-cards** (branch chip + an **uncommitted
-ratio bar** when the worktree is dirty, mirroring the sidebar + agent count),
-each holding a **sub-sub-card per agent**. A card is **collapsed to a status
-header** by default — state indicator + agent name + tab + state caption + the
+Each column is a **borderless lane** tinted with **its project's hue** (cycled from
+the theme's graph-lane palette, washed against the theme base so it stays balanced
+in light and dark) so projects read apart at a glance and a project's worktrees read
+together — no frame, no padding: everything in it is a **flat full-bleed row** on
+that one surface (rounded at the top, square at the bottom where the filling
+terminal ends).
+A column is topped by **one light header** carrying every project/worktree
+indication on a single line — project name + branch, plus an **uncommitted ratio
+bar** when the worktree is dirty (mirroring the sidebar) and the agent count once
+it holds more than one. Its agents then stack **flush** under it, each pane straight
+under its own status band, with a **hairline** as the only separator — no card frame
+around any of them, so nothing but a 1px rule sits between two terminals. A card is **collapsed
+to a status header** by default — state indicator + agent name + tab + state caption + the
 list view's **jump icon** (external-link) — under which it shows a **read-only
 progress preview**: the agent's last few **conversation** lines (count
 `AGENT_PREVIEW_LINES`) at **readable native size**, left-aligned, with the cursor
@@ -224,20 +230,30 @@ same widget mirrored live as the List panel (read / scroll the scrollback, type 
 reply, `Esc`-as-interrupt): the column holding the **selected** agent expands
 there, every other column expands its **most urgent** agent (Working > Done > Idle,
 ties by workspace order — the same default rule as the List panel's auto-pick). So
-a glance across the wall shows one live terminal per project at once; a column's
+a glance across the wall shows one live terminal per worktree at once; a column's
 other agents stay collapsed headers over their previews, and reflowing a column
 never touches its neighbours. Only the **selected** agent is *active* — the single
 `selected_agent` that owns the keyboard focus lock and `Esc`-as-interrupt and reads
-**ringed and washed in accent**; every other card — the other columns' live
+**spined** — a filled rail flush on its left edge, in the **column header's own wash**: the
+mark introduces no color, it is the header's strip running down the side of the card it
+belongs to, so a column reads as one project color and nothing else. **Every** agent's
+status band carries that hue as well — focused or not — as a wash under the header's, so
+each pane reads as belonging to its column at a glance; it lifts under the pointer.
+The spine hugs **that card alone** — its status band down to its terminal's bottom edge,
+never the column around it — so the focus reads on the pane the keyboard drives without
+framing a terminal: the wall carries **no stroke at all**, only the hairlines between
+rows; every other card — the other columns' live
 terminals as well as the collapsed previews — recedes behind the **split-unfocused
 dim**, one single dim level so the whole wall reads uniformly secondary against the
 active pane; clicking one selects it. The
 expanded terminal owns the mouse wheel while hovered (scrollback / TUI) so the
-column no longer scrolls in tandem; its **height is shared and resizable** —
-dragging the handle along its bottom edge sets the height for the next expansion too
-(clamped, persisted in `Prefs.agents_terminal_height`, restored on launch). The
-nesting is **always full** (project → worktree → agent, even with one of each), so
-every agent is watchable at a glance and one click away from a full terminal. Both
+column no longer scrolls in tandem; its **height is derived, never set by hand** — it
+takes whatever the column has left under its collapsed siblings (down to a workable
+floor, past which the column grows and the wall scrolls), so no card carries a
+resize affordance it cannot honour. The
+nesting stops at **the lane** — the worktree is the column, its agents are rows on
+it, not cards inside a card — so the terminals get the room and every agent stays
+watchable at a glance, one click away from a full terminal. Both
 modes mirror panes from the same `(repo, tab, pane)` keys; the card's **jump icon
 focuses** that pane in its workspace (same handshake as the list row's). An
 unselected card lights on hover to signal it expands / activates on click.

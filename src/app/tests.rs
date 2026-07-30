@@ -2364,7 +2364,6 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         notify_on_agent_completion: true,
         agents_view: crate::ui::agents_view::AgentsViewMode::default(),
         agents_column_width: 672.0,
-        agents_terminal_height: 360.0,
         git_file_view: crate::ui::file_list::FileViewMode::default(),
         run_panel_height: 200.0,
         run_panel_collapsed: false,

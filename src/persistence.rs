@@ -19,9 +19,6 @@ const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 480.0;
 /// Default shared width of a project column in the agents dashboard's columns
 /// view; the user resizes it by dragging a column gap (specs/agents.md §5).
 const DEFAULT_AGENTS_COLUMN_WIDTH: f32 = 874.0;
-/// Default shared height of an agent's live-terminal card in the columns view;
-/// the user resizes it by dragging a card's bottom edge (specs/agents.md §5).
-const DEFAULT_AGENTS_TERMINAL_HEIGHT: f32 = 360.0;
 /// Default width of the PR cockpit's detail panel; the user resizes it by
 /// dragging the list/detail split (specs/pull-requests.md §5).
 const DEFAULT_PR_DETAIL_WIDTH: f32 = 460.0;
@@ -125,10 +122,6 @@ pub struct Prefs {
     /// dragging a column gap (specs/agents.md §5). Restored on launch; clamped by
     /// the view.
     pub agents_column_width: f32,
-    /// Shared height of an agent's live-terminal card in the columns view, set by
-    /// dragging a card's bottom edge (specs/agents.md §5). Restored on launch;
-    /// clamped by the view.
-    pub agents_terminal_height: f32,
     /// Flat vs IDE-style tree layout shared by the WIP and commit-detail file
     /// lists (M40). Restored on launch; absent in older prefs falls back to Flat.
     pub git_file_view: FileViewMode,
@@ -190,7 +183,6 @@ impl Default for Prefs {
             notify_on_agent_completion: true,
             agents_view: AgentsViewMode::default(),
             agents_column_width: DEFAULT_AGENTS_COLUMN_WIDTH,
-            agents_terminal_height: DEFAULT_AGENTS_TERMINAL_HEIGHT,
             git_file_view: FileViewMode::default(),
             run_panel_height: DEFAULT_RUN_PANEL_HEIGHT,
             run_panel_collapsed: false,
@@ -547,7 +539,6 @@ mod tests {
             notify_on_agent_completion: false,
             agents_view: AgentsViewMode::Columns,
             agents_column_width: 540.0,
-            agents_terminal_height: 420.0,
             git_file_view: FileViewMode::Tree,
             run_panel_height: 240.0,
             run_panel_collapsed: true,
@@ -774,28 +765,21 @@ mod tests {
     }
 
     #[test]
-    fn agents_column_metrics_default_and_round_trip() {
+    fn agents_column_width_default_and_round_trip() {
         assert_eq!(
             Prefs::default().agents_column_width,
             DEFAULT_AGENTS_COLUMN_WIDTH
         );
-        assert_eq!(
-            Prefs::default().agents_terminal_height,
-            DEFAULT_AGENTS_TERMINAL_HEIGHT
-        );
         // Absent from an older file ⇒ the defaults.
         let old = Prefs::from_toml("theme = \"Light\"\n").unwrap();
         assert_eq!(old.agents_column_width, DEFAULT_AGENTS_COLUMN_WIDTH);
-        assert_eq!(old.agents_terminal_height, DEFAULT_AGENTS_TERMINAL_HEIGHT);
         let prefs = Prefs {
             agents_column_width: 540.0,
-            agents_terminal_height: 420.0,
             ..Prefs::default()
         };
         let text = prefs.to_toml().unwrap();
         let back = Prefs::from_toml(&text).unwrap();
         assert_eq!(back.agents_column_width, 540.0);
-        assert_eq!(back.agents_terminal_height, 420.0);
     }
 
     #[test]

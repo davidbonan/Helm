@@ -459,9 +459,6 @@ pub struct HelmApp {
     /// Shared column width of the dashboard's columns view (specs/agents.md §5),
     /// live source for rendering; mirrored into `Prefs` on drag (persisted).
     agents_column_width: f32,
-    /// Shared terminal-card height of the dashboard's columns view; live source
-    /// for rendering, mirrored into `Prefs` on drag (persisted).
-    agents_terminal_height: f32,
     /// Height of the Run terminal strip in the git sidebar (git.md §3); live source
     /// for rendering, mirrored into `Prefs` on drag (persisted).
     run_panel_height: f32,
@@ -720,7 +717,6 @@ impl HelmApp {
             agents_view: prefs.agents_view,
             git_file_view: prefs.git_file_view,
             agents_column_width: prefs.agents_column_width,
-            agents_terminal_height: prefs.agents_terminal_height,
             run_panel_height: prefs.run_panel_height,
             run_collapsed: HashMap::new(),
             run_command_edit: None,

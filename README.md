@@ -200,9 +200,11 @@ switched from the titlebar and remembered across launches:
 - **List** — a two-pane cockpit: agents grouped by project on the left (branch
   chip, live state, *Finished 3m ago*), the selected agent's terminal mirrored
   **live and fully interactive** on the right.
-- **Columns** — a **wall of live terminals**, one column per project (each with
-  its own hue), every agent a card you can type into. Shared, resizable width and
-  height; horizontal scroll when they overflow.
+- **Columns** — a **wall of live terminals**, one column per worktree under a
+  single *project · branch* header (a project's columns share its hue), every agent
+  a card you can type into. The focused terminal takes whatever height its column
+  has left; the shared column width is resizable, with horizontal scroll when they
+  overflow.
 - **Click** a row to mirror it; the **jump icon** teleports you straight to that
   pane in its workspace. `Esc` in a focused terminal reaches the agent as an
   interrupt; otherwise it leaves the dashboard.
@@ -210,7 +212,7 @@ switched from the titlebar and remembered across launches:
 <p align="center">
   <img src="specs/screenshots/agents-list.png" alt="Helm — the agents dashboard, List view: agents grouped by project with the selected terminal mirrored live" width="960">
   <br>
-  <img src="specs/screenshots/agents-columns.png" alt="Helm — the agents dashboard, Columns view: a wall of live agent terminals, one column per project" width="960">
+  <img src="specs/screenshots/agents-columns.png" alt="Helm — the agents dashboard, Columns view: a wall of live agent terminals, one column per worktree" width="960">
 </p>
 
 ---

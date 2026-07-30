@@ -859,6 +859,23 @@ mod tests {
     }
 
     #[test]
+    fn every_preset_pairs_its_chrome_and_terminal_on_one_background() {
+        // A preset recolors chrome and terminal together, on the same base. The Agents
+        // columns view leans on it: it fills the gutter beside a mirrored pane with
+        // `bg_canvas`, which must be the pane's own background whichever preset is on.
+        for p in PRESETS {
+            let (c, t) = (p.palette.bg_canvas, p.term.background);
+            assert_eq!(
+                (c.r(), c.g(), c.b()),
+                (t.r, t.g, t.b),
+                "preset {} ({}) splits its background",
+                p.id,
+                if p.dark { "dark" } else { "light" }
+            );
+        }
+    }
+
+    #[test]
     fn lane_colors_are_distinct_within_each_palette() {
         for p in [Palette::light(), Palette::dark()] {
             for (i, a) in p.lane_colors.iter().enumerate() {

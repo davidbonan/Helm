@@ -795,13 +795,11 @@ impl HelmApp {
         let mut agents_focus = None;
         let mut agents_set_view = None;
         let mut agents_set_column_width = None;
-        let mut agents_set_terminal_height = None;
         // Column view: a clicked column terminal becomes the single focused agent
         // next frame (merged into `agents_select`).
         let mut terminal_click = None;
         let agents_view = self.agents_view;
         let agents_column_width = self.agents_column_width;
-        let agents_terminal_height = self.agents_terminal_height;
         // Set by the dashboard's mirrored terminal when it holds egui focus: gates
         // `Esc` (it must reach the agent as interrupt, not close the dashboard).
         let mut agents_terminal_focused = false;
@@ -1143,7 +1141,6 @@ impl HelmApp {
                                 selected_index,
                                 agents_view,
                                 agents_column_width,
-                                agents_terminal_height,
                                 |idx, term_ui, view| match view {
                                     crate::ui::agents_view::TermView::Full => {
                                         if mirror_agent_terminal(
@@ -1176,7 +1173,6 @@ impl HelmApp {
                             );
                             agents_set_view = action.set_view;
                             agents_set_column_width = action.set_column_width;
-                            agents_set_terminal_height = action.set_terminal_height;
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
                         }
@@ -2032,7 +2028,6 @@ impl HelmApp {
                                 selected_index,
                                 agents_view,
                                 agents_column_width,
-                                agents_terminal_height,
                                 |idx, term_ui, view| match view {
                                     crate::ui::agents_view::TermView::Full => {
                                         if mirror_agent_terminal(
@@ -2065,7 +2060,6 @@ impl HelmApp {
                             );
                             agents_set_view = action.set_view;
                             agents_set_column_width = action.set_column_width;
-                            agents_set_terminal_height = action.set_terminal_height;
                             agents_select = action.select.or(terminal_click);
                             agents_focus = action.jump;
                         } else if pr_active {
@@ -2326,13 +2320,6 @@ impl HelmApp {
             self.agents_column_width = width;
             self.persist(move |prefs| Prefs {
                 agents_column_width: width,
-                ..prefs
-            });
-        }
-        if let Some(height) = agents_set_terminal_height {
-            self.agents_terminal_height = height;
-            self.persist(move |prefs| Prefs {
-                agents_terminal_height: height,
                 ..prefs
             });
         }

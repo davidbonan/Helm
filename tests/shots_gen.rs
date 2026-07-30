@@ -56,6 +56,9 @@ struct Spec {
     badge: AgentBadge,
     detail: &'static str,
     worktree_id: usize,
+    /// Project color index — the worktrees of one project share it, so their columns
+    /// carry the same hue.
+    lane: usize,
     stats: Option<(usize, usize)>,
     body: &'static [&'static str],
     /// Grid row (0-based) the cursor is parked on after the body is fed — the
@@ -85,6 +88,7 @@ fn specs() -> Vec<Spec> {
             badge: AgentBadge::Working,
             detail: "Working…",
             worktree_id: 0,
+            lane: 0,
             stats: Some((128, 34)),
             body: &[
                 "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
@@ -102,6 +106,36 @@ fn specs() -> Vec<Spec> {
             ],
             cursor_row: None,
         },
+        // A second agent on the same worktree: its column holds two, so the header
+        // carries the count and this one stays a collapsed preview under the
+        // expanded Working card above it.
+        Spec {
+            repo: "helm",
+            branch: "main",
+            tab: "Tab 2",
+            agent: "aider",
+            badge: AgentBadge::Idle,
+            detail: "Idle",
+            worktree_id: 0,
+            lane: 0,
+            stats: Some((128, 34)),
+            body: &[
+                "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
+                "$ aider --model sonnet",
+                "\x1b[2maider v0.86.1 · git repo · 214 files\x1b[0m",
+                "",
+                "\x1b[1m>\x1b[0m separate two stacked agent cards with a hairline",
+                "",
+                "\x1b[36msrc/ui/agents_view.rs\x1b[0m",
+                "\x1b[31m-    ui.add_space(AGENT_CARD_GAP);\x1b[0m",
+                "\x1b[32m+    hairline(ui, palette);\x1b[0m",
+                "\x1b[2mApplied edit to src/ui/agents_view.rs\x1b[0m",
+                "\x1b[2mcargo test ui_agents_view … 21 passed\x1b[0m",
+                "",
+                "\x1b[1m>\x1b[0m ",
+            ],
+            cursor_row: Some(12),
+        },
         Spec {
             repo: "helm",
             branch: "agents-dashboard",
@@ -110,6 +144,7 @@ fn specs() -> Vec<Spec> {
             badge: AgentBadge::Done,
             detail: "Finished 3m ago",
             worktree_id: 1,
+            lane: 0,
             stats: Some((57, 9)),
             // Codex leaves its startup chrome on screen: a top "update available"
             // banner box and a boxed session-info banner, both box-framed. Its
@@ -148,7 +183,8 @@ fn specs() -> Vec<Spec> {
             agent: "claude",
             badge: AgentBadge::Working,
             detail: "Working…",
-            worktree_id: 0,
+            worktree_id: 2,
+            lane: 1,
             stats: None,
             // A full-screen TUI at the pane's real 110-col width, ending in Claude
             // Code's bottom chrome block — a multi-row boxed composer plus mode /
@@ -158,17 +194,17 @@ fn specs() -> Vec<Spec> {
                 "\x1b[2mapi  ~/dev/api  main\x1b[0m",
                 "\x1b[38;5;208mClaude Code\x1b[0m  \x1b[2mv2.1.162 · opus\x1b[0m",
                 "",
-                "\x1b[1m>\x1b[0m run the full test suite, fix failures, then update the changelog and open a PR",
+                "\x1b[1m>\x1b[0m run the full test suite, fix failures, update the changelog",
                 "",
                 "\x1b[32m⏺\x1b[0m Bash \x1b[2mcargo test --workspace\x1b[0m",
                 "  \x1b[2mtest tests::health::returns_200 … ok\x1b[0m",
-                "  \x1b[31mtest tests::billing::prorates_midcycle … FAILED — expected 4200, got 5000\x1b[0m",
-                "\x1b[32m⏺\x1b[0m Update \x1b[36msrc/billing/proration.rs\x1b[0m \x1b[2m(+18 −7) — clamp the partial-period ratio to [0,1]\x1b[0m",
+                "  \x1b[31mtest tests::billing::prorates_midcycle … FAILED (4200 ≠ 5000)\x1b[0m",
+                "\x1b[32m⏺\x1b[0m Update \x1b[36msrc/billing/proration.rs\x1b[0m \x1b[2m(+18 −7) — clamp the ratio\x1b[0m",
                 "",
-                "╭────────────────────────────────────────────────────────────────────────────────────────────────╮",
-                "│ > _                                                                                            │",
-                "│                                                                                                │",
-                "╰────────────────────────────────────────────────────────────────────────────────────────────────╯",
+                "╭──────────────────────────────────────────────────────────────╮",
+                "│ > _                                                          │",
+                "│                                                              │",
+                "╰──────────────────────────────────────────────────────────────╯",
                 "  \x1b[2m⏵⏵ accept edits on (shift+tab to cycle)\x1b[0m",
                 "  \x1b[2m? for shortcuts\x1b[0m",
                 "  \x1b[36m✻ Crunching…\x1b[0m \x1b[2m(esc to interrupt · 1m24s · ↓ 6.2k tokens)\x1b[0m",
@@ -209,7 +245,7 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
                     badge: s.badge,
                     detail: s.detail.to_owned(),
                     worktree_id: s.worktree_id,
-                    lane: 0,
+                    lane: s.lane,
                     stats: s.stats,
                 })
                 .collect();
@@ -220,7 +256,6 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
                 selected,
                 view,
                 620.0,
-                380.0,
                 |idx, tui, view| match view {
                     TermView::Full => {
                         terminal_view(
@@ -274,7 +309,7 @@ fn gen_agents_columns() {
     render(
         AgentsViewMode::Columns,
         Some(0),
-        egui::vec2(1680.0, 900.0),
+        egui::vec2(1920.0, 900.0),
         "agents_columns",
     );
 }

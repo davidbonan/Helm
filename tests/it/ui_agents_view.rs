@@ -20,11 +20,9 @@ struct Captured {
     jump: Cell<Option<usize>>,
     set_view: Cell<Option<AgentsViewMode>>,
     set_column_width: Cell<Option<f32>>,
-    set_terminal_height: Cell<Option<f32>>,
     drawn: RefCell<Vec<usize>>,
     /// Rect of the last full (expanded) terminal strip drawn — lets a test assert the
-    /// focused terminal fills the column (height) and locate its resize handle (the
-    /// strip's bottom edge), both of which move once the strip auto-fills.
+    /// focused terminal fills its column's leftover height.
     full_rect: Cell<Option<egui::Rect>>,
 }
 
@@ -84,7 +82,6 @@ fn harness(
                 selected,
                 view,
                 672.0,
-                360.0,
                 |idx, term_ui, view| match view {
                     TermView::Full => {
                         sink.drawn.borrow_mut().push(idx);
@@ -109,9 +106,6 @@ fn harness(
             }
             if action.set_column_width.is_some() {
                 sink.set_column_width.set(action.set_column_width);
-            }
-            if action.set_terminal_height.is_some() {
-                sink.set_terminal_height.set(action.set_terminal_height);
             }
         });
     // A Working row paints a spinner that repaints forever, so `run()` would
@@ -294,52 +288,85 @@ fn header_toggle_switches_back_to_list() {
 }
 
 #[test]
-fn each_column_expands_one_card() {
-    // Two projects (→ two columns), the first split across two worktrees. Every
-    // column expands one card to a mirrored live terminal: the helm column holds
-    // the selection (idx 1) so it expands there; the api column has no selection,
-    // so it expands its most urgent (here lone) agent. The un-expanded sibling in
-    // the helm column stays a collapsed status header over its preview.
+fn each_worktree_gets_its_own_column_expanding_one_card() {
+    // One column per worktree: helm's two worktrees split into two columns (each
+    // headed by its own project · branch line), api gets a third. Every column
+    // expands one card to a mirrored live terminal — the column holding the
+    // selection (idx 2) expands there, the others their most urgent agent. The two
+    // agents sharing helm's main worktree stack in one column, so its un-expanded
+    // one stays a collapsed status header over its preview.
     let (harness, cap) = harness(
         vec![
             row("helm", "claude", "Tab 1", AgentBadge::Working),
+            row("helm", "codex", "Tab 2", AgentBadge::Idle),
             Row {
+                branch: Some("feature"),
                 worktree_id: 1,
-                ..row("helm", "codex", "Tab 1", AgentBadge::Done)
+                ..row("helm", "aider", "Tab 1", AgentBadge::Done)
             },
-            row("api", "aider", "Tab 1", AgentBadge::Idle),
+            Row {
+                worktree_id: 2,
+                ..row("api", "amp", "Tab 1", AgentBadge::Idle)
+            },
         ],
-        Some(1),
+        Some(2),
         AgentsViewMode::Columns,
     );
+    harness.get_by_label("helm · main");
+    harness.get_by_label("helm · feature");
+    harness.get_by_label("api · main");
     let mut drawn = cap.drawn.borrow().clone();
     drawn.sort_unstable();
     drawn.dedup();
     assert_eq!(
         drawn,
-        vec![1, 2],
-        "one full terminal per column — the selected card, and the other column's lone agent"
+        vec![0, 2, 3],
+        "one full terminal per worktree column — the selected card, and each other \
+         column's most urgent agent"
     );
-    harness.get_by_label("TERM-1");
+    harness.get_by_label("TERM-0");
     harness.get_by_label("TERM-2");
-    // The helm column's un-selected agent stays a collapsed status header over a
+    harness.get_by_label("TERM-3");
+    // The shared column's un-expanded agent stays a collapsed status header over a
     // read-only progress preview of its last lines.
-    harness.get_by_label("Claude in helm — Tab 1");
-    harness.get_by_label("Aider in api — Tab 1");
-    harness.get_by_label("PREV-0");
+    harness.get_by_label("Codex in helm — Tab 2");
+    harness.get_by_label("PREV-1");
+}
+
+#[test]
+fn an_expanded_pane_sits_flush_under_its_status_band() {
+    // The card is a segment of the column, not a card on it: its terminal starts
+    // straight under its status band (no gap, no inset) and spans the same width, so
+    // nothing frames it.
+    let (harness, cap) = harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
+        Some(0),
+        AgentsViewMode::Columns,
+    );
+    let band = harness.get_by_label("Claude in helm — Tab 1").rect();
+    let term = cap.full_rect.get().expect("the terminal was drawn");
+    assert!(
+        (term.top() - band.bottom()).abs() < 1.0,
+        "the pane must sit flush under the band, got a {}px gap",
+        term.top() - band.bottom()
+    );
+    assert!(
+        (term.width() - band.width()).abs() < 1.0,
+        "the pane must be as wide as the band, got {} vs {}",
+        term.width(),
+        band.width()
+    );
 }
 
 #[test]
 fn clicking_a_collapsed_column_card_selects_it() {
     // Clicking another card's body (not its jump icon) selects it, so the app
-    // expands that card's terminal on the next frame.
+    // expands that card's terminal on the next frame. Both agents share a worktree,
+    // so they stack in one column and the un-selected one is collapsed.
     let (mut harness, cap) = harness(
         vec![
             row("helm", "claude", "Tab 1", AgentBadge::Working),
-            Row {
-                worktree_id: 1,
-                ..row("helm", "codex", "Tab 1", AgentBadge::Done)
-            },
+            row("helm", "codex", "Tab 1", AgentBadge::Done),
         ],
         Some(0),
         AgentsViewMode::Columns,
@@ -349,6 +376,30 @@ fn clicking_a_collapsed_column_card_selects_it() {
     harness.step();
     assert_eq!(cap.select.get(), Some(1));
     assert_eq!(cap.jump.get(), None);
+}
+
+#[test]
+fn a_collapsed_card_preview_reads_as_clickable() {
+    // Band and preview are one target: clicking the preview selects the card, so
+    // hovering it must show the same pointing hand as the band above it instead of
+    // leaving the taller half of the card looking inert.
+    let (mut harness, _) = harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Working),
+            row("helm", "codex", "Tab 1", AgentBadge::Done),
+        ],
+        Some(0),
+        AgentsViewMode::Columns,
+    );
+    // `PREV-1` labels the collapsed card's preview; aim inside its strip.
+    let preview = harness.get_by_label("PREV-1").rect();
+    harness.event(egui::Event::PointerMoved(preview.center()));
+    harness.step();
+    harness.step();
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
 }
 
 #[test]
@@ -415,9 +466,9 @@ fn vertical_gesture_scrolls_the_whole_wall() {
         })
         .collect();
     let (mut harness, _) = harness(data, None, AgentsViewMode::Columns);
-    // Pin the pointer over the worktree band (top of the column, not a terminal) and
+    // Pin the pointer over the column header (top of the column, not a terminal) and
     // measure a card mid-column that stays visible across the scroll.
-    let over = harness.get_by_label("main").rect().center();
+    let over = harness.get_by_label("helm · main").rect().center();
     let before = harness
         .get_by_label("Claude in helm — Tab 10")
         .rect()
@@ -585,50 +636,6 @@ fn clicking_a_column_card_jump_icon_focuses_the_workspace() {
 }
 
 #[test]
-fn dragging_a_card_bottom_resizes_the_terminal_height() {
-    // Two agents in the column ⇒ the selected card auto-fills around its collapsed
-    // sibling, and the height handle rides the strip's (now derived) bottom edge.
-    // Dragging it sets the floor, so a new shared height is emitted regardless of fill.
-    let (mut harness, cap) = harness(
-        vec![
-            row("helm", "claude", "Tab 1", AgentBadge::Working),
-            row("helm", "codex", "Tab 2", AgentBadge::Idle),
-        ],
-        Some(0),
-        AgentsViewMode::Columns,
-    );
-    let strip = cap.full_rect.get().expect("the terminal was drawn");
-    let start = egui::pos2(strip.center().x, strip.bottom() + 5.0);
-    let end = start + egui::vec2(0.0, 80.0);
-    harness.event(egui::Event::PointerMoved(start));
-    harness.step();
-    harness.event(egui::Event::PointerButton {
-        pos: start,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        modifiers: egui::Modifiers::default(),
-    });
-    harness.step();
-    harness.event(egui::Event::PointerMoved(end));
-    harness.step();
-    harness.event(egui::Event::PointerButton {
-        pos: end,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::default(),
-    });
-    harness.step();
-    let height = cap
-        .set_terminal_height
-        .get()
-        .expect("drag emits a new height");
-    assert!(
-        height > 360.0,
-        "dragging down grows the terminal, got {height}"
-    );
-}
-
-#[test]
 fn a_lone_agent_terminal_fills_the_column_height() {
     // A single agent (auto-expanded) ⇒ its terminal stretches down the full-height
     // column instead of sitting at the shared 360px, so the card reaches the bottom
@@ -675,9 +682,10 @@ fn a_focused_terminal_fills_around_its_collapsed_siblings() {
 }
 
 #[test]
-fn dirty_worktree_header_exposes_uncommitted_stats() {
-    // A dirty worktree's column header carries the uncommitted ratio bar; its a11y
-    // label spells the stats. A clean worktree stays a bare branch label.
+fn dirty_column_header_exposes_uncommitted_stats() {
+    // A dirty worktree column's header carries the uncommitted ratio bar; its a11y
+    // label spells the project, the branch and the stats. A clean worktree keeps the
+    // bare project · branch line.
     let (harness, _) = harness(
         vec![
             Row {
@@ -696,9 +704,9 @@ fn dirty_worktree_header_exposes_uncommitted_stats() {
     );
     assert!(
         harness
-            .query_by_label_contains("main · +46 −3 uncommitted")
+            .query_by_label_contains("helm · main · +46 −3 uncommitted")
             .is_some(),
         "dirty worktree header spells its stats"
     );
-    harness.get_by_label("clean");
+    harness.get_by_label("helm · clean");
 }
