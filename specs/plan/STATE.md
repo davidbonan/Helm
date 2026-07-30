@@ -6,12 +6,12 @@
 
 ---
 
-## ◐ Milestone — M-Edit · Edit the file from the diff
+## ☑ Milestone — M-Edit · Edit the file from the diff
 
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **6/7**.
+with no save control. Counter: **7/7**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -92,14 +92,22 @@ with no save control. Counter: **6/7**.
   the editor still open, staged side asks for its stage, *Overwrite* / *Reload*,
   refusal), `tests/it/ui_git_panel.rs` (arrows + `Cmd+Enter` disarmed, each with its
   armed control), `src/app/tests.rs` (poll frozen then resumed, divergence notice).
-- ☐ **T6 — Verification.** `headless-verify`: click → type → `Esc` → recomposed
-  diff, plus a before/after capture proving no metric shift.
+- ☑ **T6 — Verification.** `headless-verify` on the real app (`Harness::new_eframe`
+  + `HelmApp::with_workspace`, real git fixture): *Toggle git sidebar* → unstaged file
+  row → plain click in the content column (caret) → type `Z` → `Esc`. The working tree
+  reads `alpha\nBRAVOZ\ncharlie\ndelta\n` and the diff comes back with `+ BRAVOZ`
+  under its Stage/Discard hunk buttons. **No metric shift**, asserted not just
+  captured: the four row rects and the hunk-header rect after the recompose are
+  **equal** to the ones read before the caret appeared (the header is also re-checked
+  while the buffer is open). Evidence:
+  `verify-artifacts/20260730_215242_70904/{1-before,2-typed,3-after}.png`.
+  The T5 run additionally proved the idle autosave alone (no exit gesture) landing on
+  disk with the editor still open: `verify-artifacts/20260730_211630_99151/`.
 - ⏭ **T7 — Deferred.** Whole-file editing (same `write_range`, full range),
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- **T6** — end-to-end verification: the app path now works headless (see the note
-  below), so drive click → type → `Esc` → recomposed diff with a before/after capture.
+- Milestone closed. What is left is follow-up work, none of it blocking the feature:
 - Left open by T5, bounded by the autosave: a teardown that drops the whole overlay
   without rendering it again never flushes — a **keyboard** repo switch (`Cmd+1..9`,
   `self.diff = None` in `sync_git_session`), a worktree open, a failed diff reload. A
