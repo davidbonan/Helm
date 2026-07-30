@@ -65,10 +65,10 @@ Behavior details: [`terminal.md`](terminal.md).
 |-----------|--------|
 | `Click` on a file (right sidebar) | Opens the file's **diff** in the center zone (overlay) |
 | `Drag` in the diff view | Selects text in the diff content (without the `+`/`-` signs) |
-| `Double-click` / `Triple-click` in the diff view | Selects the word / the whole line in the diff content |
+| `Double-click` / `Triple-click` in the diff view | Selects the word / the whole line in the diff content — on a **read-only** surface, and on the rows of an editable diff that cannot take a caret. Where a caret can open, the first click of the pair already swapped the rows for the buffer, and the selection is then the editor's own |
 | `Click` in the diff **content** (editable diff) | Places the **caret** on that line and opens the **inline editor** ([`git.md`](git.md) §4); read-only surface ⇒ no-op |
 | `Click` on a line's **number strip** (numbers + sign) | Toggles that line's pick for partial stage/unstage |
-| `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; on a non-editable file, toasts the reason with an **Open in editor** action |
+| `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; where no caret can open (non-editable file, or a hunk with nothing on the new side / above the line cap), toasts the reason with an **Open in editor** action |
 | `Cmd+S` (inline editor open) | Writes the buffer and **leaves** the editor — the keyboard's version of clicking elsewhere (there is no save control) |
 | `Cmd+Z` (inline editor open) | Undo inside the buffer (`Esc` never reverts a change); each editor has its own history, never the previous hunk's |
 | `Esc` (inline editor open) | Leaves the editor **keeping** the change; a second `Esc` closes the diff |

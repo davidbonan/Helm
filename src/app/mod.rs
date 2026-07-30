@@ -31,7 +31,9 @@ use crate::ui::conflict_view::{
 };
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
-use crate::ui::git_panel::{abort_op_modal, discard_hunk_modal, GitIntent, GitPanelState};
+use crate::ui::git_panel::{
+    abort_op_modal, discard_hunk_modal, EditRefusal, GitIntent, GitPanelState,
+};
 use crate::ui::graph_toolbar::{
     force_push_modal, graph_toolbar, reset_hard_modal, sync_error_message, sync_success_message,
     BusyAction, PullDefault, ToolbarAction, ToolbarState,

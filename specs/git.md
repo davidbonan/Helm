@@ -270,8 +270,10 @@ placeholder launches verbatim.
   - **Not editable**, checked **before** the caret appears: non-UTF-8 content, a
     NUL byte, a symlink, a non-regular file, a binary or oversize diff (§8), a
     read-only surface (commit / PR review / frozen diff), a hunk above ~2,000
-    lines, or a file the process cannot write. The click does nothing; `Cmd+E`
-    raises a toast carrying the **Open in editor** action (external editor, §3).
+    lines, a hunk with **nothing on the new side** (it only deletes lines, so there
+    is no working-tree text to put a caret on), or a file the process cannot write.
+    The click does nothing; `Cmd+E` raises a toast **naming the reason** and carrying
+    the **Open in editor** action (external editor, §3).
 
 **Mechanism (libgit2)**: we compute the file's diff, build a **filtered
 diff** containing only the selected hunks/lines, then apply it to

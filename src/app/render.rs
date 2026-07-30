@@ -2209,21 +2209,27 @@ impl HelmApp {
                     // Shared flat/tree mode (M40): applied + persisted after the
                     // loop, once the `&self.git` borrow is released.
                     GitIntent::SetFileView(view) => set_file_view = Some(view),
-                    // `Cmd+E` where no caret can open (git.md §4). The worker judged
-                    // the file (encoding, symlink, permissions) and the surface may
-                    // simply be read-only; the one reason we can name here is the
-                    // Staged side of a file that also has unstaged changes — its
-                    // index blob's line numbers are not the working tree's.
-                    GitIntent::EditRefused { path } => {
+                    // `Cmd+E` where no caret can open (git.md §4). The view names the
+                    // refusals it can see; for the file's own the worker judged it
+                    // (encoding, symlink, permissions) and the surface may simply be
+                    // read-only, so the one reason left to name here is the Staged side
+                    // of a file that also has unstaged changes — its index blob's line
+                    // numbers are not the working tree's.
+                    GitIntent::EditRefused { path, reason } => {
                         let staged_side = matches!(
                             self.diff.as_ref().map(|d| d.source),
                             Some(DiffSource::WorkingTree { staged: true })
                         );
                         let also_unstaged = git.status.unstaged.iter().any(|f| f.path == path);
-                        let message = if staged_side && also_unstaged {
-                            "This file also has unstaged changes — edit it from Unstaged"
-                        } else {
-                            "This file can't be edited inline"
+                        let message = match reason {
+                            EditRefusal::DeletedLines => {
+                                "These lines are gone from the file — nothing to edit here"
+                            }
+                            EditRefusal::TooManyLines => "This hunk is too large to edit inline",
+                            EditRefusal::File if staged_side && also_unstaged => {
+                                "This file also has unstaged changes — edit it from Unstaged"
+                            }
+                            EditRefusal::File => "This file can't be edited inline",
                         };
                         let now = ctx.input(|i| i.time);
                         match self.workspace.active_repo().map(|r| r.path.join(&path)) {

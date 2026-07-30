@@ -76,11 +76,26 @@ pub enum GitIntent {
     /// again with `force` when the user answers **Overwrite** to a divergence
     /// notice. Self-contained — the intent outlives the editor that produced it.
     FlushEdit(EditRequest),
-    /// `Cmd+E` on a diff that cannot take a caret (git.md §4): the app names the
-    /// reason in a toast carrying **Open in editor**, the external fallback.
+    /// `Cmd+E` where no caret can open (git.md §4): the app names the reason in a toast
+    /// carrying **Open in editor**, the external fallback.
     EditRefused {
         path: String,
+        reason: EditRefusal,
     },
+}
+
+/// Why a caret was refused (git.md §4). The diff view names what it can see; the file's
+/// own refusals were judged on the worker, so those it can only point at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditRefusal {
+    /// The file, or the surface it is shown on: binary, oversize, read-only, non-UTF-8,
+    /// a symlink… — the app names the one reason it can still read off the status.
+    File,
+    /// The hunk has nothing on the new side: it only deletes lines, so there is no
+    /// working-tree text under the caret.
+    DeletedLines,
+    /// The hunk is above the inline editor's line cap.
+    TooManyLines,
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).

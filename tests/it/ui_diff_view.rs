@@ -11,7 +11,7 @@ use helm::theme::Palette;
 use helm::ui::diff_view::{
     content_x_offset, diff_view, numbers_x_offset, DiffReview, DiffSurface, DiffViewState,
 };
-use helm::ui::git_panel::GitIntent;
+use helm::ui::git_panel::{EditRefusal, GitIntent};
 
 fn line(origin: LineOrigin, content: &str) -> DiffLine {
     DiffLine {
@@ -2463,7 +2463,8 @@ fn cmd_e_on_a_file_that_takes_no_caret_asks_for_the_external_editor() {
     assert_eq!(
         intents,
         vec![GitIntent::EditRefused {
-            path: "src/main.rs".to_owned()
+            path: "src/main.rs".to_owned(),
+            reason: EditRefusal::File,
         }],
         "the keyboard ask gets an answer even where the click stays silent"
     );
@@ -2514,5 +2515,91 @@ fn a_file_switch_writes_the_buffer_of_the_section_it_was_typed_in() {
     assert!(
         written[0].stage_after,
         "a Staged edit stays staged even when the freeze is what flushed it"
+    );
+}
+
+/// Editable diff whose only hunk **deletes** lines: nothing on the new side, so no
+/// working-tree text a caret could land on (git.md §4).
+fn deletion_only_diff() -> FileDiff {
+    FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -2,1 +1,0 @@".into(),
+            old_start: 2,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 0,
+            lines: vec![DiffLine {
+                origin: LineOrigin::Deletion,
+                content: "    gone();\n".to_owned(),
+                old_lineno: Some(2),
+                new_lineno: None,
+            }],
+        }],
+        source_lines: vec!["fn main() {".into()],
+        image: None,
+        editable: true,
+    }
+}
+
+#[test]
+fn a_hunk_with_no_new_side_names_its_refusal_instead_of_staying_silent() {
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(
+        state.clone(),
+        deletion_only_diff(),
+        false,
+        1.0 / 60.0,
+        |h| {
+            let pos = content_cell(h, &deletion_only_diff(), "gone()", 0);
+            click_text_at(h, pos, 1);
+            h.run();
+            let hover = content_cell(h, &deletion_only_diff(), "gone()", 0);
+            h.input_mut().events.push(egui::Event::PointerMoved(hover));
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+            h.run();
+        },
+    );
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "a hunk that only deletes lines has no buffer to open"
+    );
+    assert_eq!(
+        intents
+            .iter()
+            .filter(|intent| matches!(intent, GitIntent::EditRefused { .. }))
+            .collect::<Vec<_>>(),
+        vec![&GitIntent::EditRefused {
+            path: "src/main.rs".to_owned(),
+            reason: EditRefusal::DeletedLines,
+        }],
+        "got {intents:?}"
+    );
+}
+
+#[test]
+fn a_hunk_past_the_line_cap_names_its_refusal() {
+    // `new_lines` past `MAX_EDIT_LINES` (2 000): the cap is judged on the hunk's claim,
+    // before its new side is even read.
+    let mut diff = editable_diff();
+    diff.hunks[0].new_lines = 2_001;
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let intents = drive_editor(state.clone(), diff, false, 1.0 / 60.0, |h| {
+        let pos = content_cell(h, &editable_diff(), "new()", 0);
+        h.input_mut().events.push(egui::Event::PointerMoved(pos));
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+        h.run();
+    });
+
+    assert!(state.borrow().inline_edit().is_none());
+    assert!(
+        intents.contains(&GitIntent::EditRefused {
+            path: "src/main.rs".to_owned(),
+            reason: EditRefusal::TooManyLines,
+        }),
+        "got {intents:?}"
     );
 }

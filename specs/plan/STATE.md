@@ -114,20 +114,21 @@ with no save control. Counter: **7/7**.
   mouse switch is safe (the click blurs the buffer, which flushes in that same frame),
   so the exposure is ≤ 800 ms of typing on the keyboard path; fixing it means flushing
   **before** the old session is parked, since the write must reach that repo's worker.
-- Left open by the T4b review, none of them a write hazard:
-  **(5)** `edit_anchor` returns `None` silently for a deletion-only hunk
-  (`new_lines == 0`, verified) and past `MAX_EDIT_LINES`, yet the content column still
-  shows the text cursor — T5's non-editable toast keys on `diff.editable`, so it must
-  cover these two too. **(6)** a one-hunk edit renormalises a **mixed** line-ending
-  file whole (`"a\r\nb\nc\r\n"` → `"A\r\nb\r\nc\r\n"`: `LineEnding::detect` samples
-  only the first newline), turning a small edit into a whole-file diff.
-  **(7)** emptying the buffer leaves a blank line instead of deleting the range
-  (`buffer_lines("")` == `[""]`). **(8)** `editable_here` re-reads the whole file on
-  every diff, i.e. every poll, on top of `new_side_bytes`' own read.
-  **(9)** cosmetic: the editor block is sized from the pre-event buffer, so it is one
-  row short for the frame a newline is typed. Also `keybindings.md` still lists
-  double/triple-click word/line selection in the diff content — unreachable on an
-  editable diff, since the first click of the pair swaps the row for the editor.
+- ☑ The five follow-ups the T4b review left open are fixed (see the two commits after
+  T6): **(5)** a hunk that cannot back a buffer (only deletions, or past
+  `MAX_EDIT_LINES`) now answers `Cmd+E` with its reason — `CaretOffer` per hunk,
+  `EditRefusal` on the intent — instead of a click and a shortcut that did nothing;
+  **(6)** the splice addresses the range by byte offset and copies the rest verbatim, so
+  a **mixed**-ending file is no longer renormalised whole; **(7)** an emptied buffer
+  deletes its range instead of leaving a blank line; **(8)** `editable` judges the bytes
+  `file_diff` already read, instead of a second full read of the file on every poll;
+  **(9)** the accent bar is painted off the laid-out galley, so it covers the row a
+  newline adds on the frame it is typed (verified before/after:
+  `verify-artifacts/20260730_221725_36018/`), and `keybindings.md` no longer promises
+  word/line selection where the first click opens the buffer.
+- Observed while fixing (5), not spec'd either way: an **untracked** file's diff is never
+  editable — `diff::file_diff` returns early through `untracked_file_diff`, which never
+  computes `editable`. A brand-new file takes no caret.
 - Resolved (was noted while verifying T4 as "no click inside the git panel registers"
   in the headless app harness): the panel is **hidden** in a fresh profile — clicking
   *Toggle git sidebar* first makes the file row, the diff and the caret all drivable
