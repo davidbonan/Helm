@@ -69,8 +69,8 @@ Behavior details: [`terminal.md`](terminal.md).
 | `Click` in the diff **content** (editable diff) | Places the **caret** on that line and opens the **inline editor** ([`git.md`](git.md) §4); read-only surface ⇒ no-op |
 | `Click` on a line's **number strip** (numbers + sign) | Toggles that line's pick for partial stage/unstage |
 | `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; on a non-editable file, toasts the reason with an **Open in editor** action |
-| `Cmd+S` (inline editor open) | Flushes the buffer now — leaving the editor writes it anyway (no save control) |
-| `Cmd+Z` (inline editor open) | Undo inside the buffer (`Esc` never reverts a change) |
+| `Cmd+S` (inline editor open) | Writes the buffer and **leaves** the editor — the keyboard's version of clicking elsewhere (there is no save control) |
+| `Cmd+Z` (inline editor open) | Undo inside the buffer (`Esc` never reverts a change); each editor has its own history, never the previous hunk's |
 | `Esc` (inline editor open) | Leaves the editor **keeping** the change; a second `Esc` closes the diff |
 | `Cmd+C` (diff view) | Copies the diff's text selection; without a selection: no-op |
 | `↑` / `↓` (file selected in the sidebar) | Opens the diff of the previous / next file, traversing only the files (**Unstaged** then **Staged**) with start/end wrap. Disarmed as soon as a **terminal** regains keyboard focus (the arrows go back to the PTY); rearmed on the next click on a file |

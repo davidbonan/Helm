@@ -1933,3 +1933,245 @@ fn the_number_strip_still_picks_a_line_when_the_diff_is_editable() {
         "a click on the number strip picks the line for partial staging, got {intents:?}"
     );
 }
+
+/// Two editable hunks far enough apart to anchor two distinct windows (git.md §4).
+fn two_hunk_editable_diff() -> FileDiff {
+    let row = |origin, content: &str, old, new| DiffLine {
+        origin,
+        content: content.to_owned(),
+        old_lineno: old,
+        new_lineno: new,
+    };
+    FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![
+            Hunk {
+                header: "@@ -1,2 +1,2 @@".into(),
+                old_start: 1,
+                old_lines: 2,
+                new_start: 1,
+                new_lines: 2,
+                lines: vec![
+                    row(LineOrigin::Deletion, "aaa\n", Some(1), None),
+                    row(LineOrigin::Addition, "AAA\n", None, Some(1)),
+                    row(LineOrigin::Context, "two\n", Some(2), Some(2)),
+                ],
+            },
+            Hunk {
+                header: "@@ -5,2 +5,2 @@".into(),
+                old_start: 5,
+                old_lines: 2,
+                new_start: 5,
+                new_lines: 2,
+                lines: vec![
+                    row(LineOrigin::Deletion, "bbb\n", Some(5), None),
+                    row(LineOrigin::Addition, "BBB\n", None, Some(5)),
+                    row(LineOrigin::Context, "six\n", Some(6), Some(6)),
+                ],
+            },
+        ],
+        source_lines: [
+            "AAA", "two", "three", "four", "BBB", "six", "seven", "eight",
+        ]
+        .iter()
+        .map(|l| (*l).to_owned())
+        .collect(),
+        image: None,
+        editable: true,
+    }
+}
+
+/// Opens the editor on the row carrying `label` and lets it take the focus.
+fn open_editor(harness: &mut Harness<'_, ()>, diff: &FileDiff, label: &str) {
+    let pos = content_cell(harness, diff, label, 0);
+    click_text_at(harness, pos, 1);
+    harness.run();
+    harness.run();
+}
+
+#[test]
+fn reopening_the_editor_starts_a_fresh_undo_history() {
+    // egui keys the undo history on the widget id, which every hunk shares: a `Cmd+Z`
+    // here must never resurrect the buffer of the hunk edited before — the save would
+    // write it to *this* hunk's range.
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "AAA");
+        h.input_mut().events.push(egui::Event::Text("X".to_owned()));
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        open_editor(h, &two_hunk_editable_diff(), "BBB");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+    });
+
+    let edit = state.borrow().inline_edit().cloned().expect("editor open");
+    assert_eq!(
+        edit.range,
+        4..6,
+        "the second editor anchors on its own hunk"
+    );
+    assert_eq!(
+        edit.buffer, "BBB\nsix",
+        "`Cmd+Z` must undo inside this buffer, not restore the previous hunk's"
+    );
+}
+
+#[test]
+fn cmd_z_undoes_inside_the_buffer() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "AAA");
+        h.input_mut().events.push(egui::Event::Text("X".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+    });
+
+    let edit = state.borrow().inline_edit().cloned().expect("editor open");
+    assert_eq!(
+        edit.buffer, "AAA\ntwo",
+        "resetting the undo history must not cost the undo of what was just typed"
+    );
+}
+
+#[test]
+fn cmd_s_leaves_the_editor() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "AAA");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        h.run();
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "`Cmd+S` steps out of the buffer, exactly as clicking elsewhere does"
+    );
+}
+
+#[test]
+fn a_click_outside_the_buffer_leaves_the_editor() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "AAA");
+        // The other hunk's number strip: outside the buffer, and not a content column.
+        pick_line(h, &two_hunk_editable_diff(), "BBB");
+        h.run();
+    });
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "a click anywhere but the buffer leaves the editor (git.md §4)"
+    );
+}
+
+#[test]
+fn a_reload_that_renumbers_the_hunks_drops_the_editor() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "BBB");
+    });
+    assert_eq!(
+        state.borrow().inline_edit().map(|e| e.hunk),
+        Some(1),
+        "the editor opened on the second hunk"
+    );
+
+    // The first hunk vanished (staged elsewhere, or reverted): index 1 now addresses a
+    // hunk the user never pointed at.
+    let mut reloaded = two_hunk_editable_diff();
+    reloaded.hunks.remove(0);
+    state.borrow_mut().reconcile(&reloaded);
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "a reload that renumbers the hunks must not leave the caret on another one"
+    );
+}
+
+#[test]
+fn a_reload_that_rewrites_the_anchored_lines_drops_the_editor() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "BBB");
+    });
+
+    let mut reloaded = two_hunk_editable_diff();
+    reloaded.source_lines[5] = "SIX".into();
+    state.borrow_mut().reconcile(&reloaded);
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "lines rewritten on disk under the buffer void its anchor"
+    );
+}
+
+#[test]
+fn a_reload_of_another_file_drops_the_editor() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "AAA");
+    });
+
+    let mut other = two_hunk_editable_diff();
+    other.path = "src/other.rs".into();
+    state.borrow_mut().reconcile(&other);
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "the buffer belongs to the file it was opened on, never to the next one"
+    );
+}
+
+#[test]
+fn a_reload_leaves_an_untouched_anchor_alone() {
+    let state = drive_edit(two_hunk_editable_diff(), |h| {
+        open_editor(h, &two_hunk_editable_diff(), "BBB");
+        h.input_mut().events.push(egui::Event::Text("X".to_owned()));
+        h.run();
+    });
+
+    state.borrow_mut().reconcile(&two_hunk_editable_diff());
+
+    let edit = state.borrow().inline_edit().cloned().expect("editor kept");
+    assert_eq!(
+        edit.buffer, "XBBB\nsix",
+        "the 1 s poll must not cost what is being typed"
+    );
+}
+
+#[test]
+fn a_frozen_surface_leaves_the_editor() {
+    let palette = Palette::light();
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let frozen = Rc::new(std::cell::Cell::new(false));
+    let frozen_in_ui = frozen.clone();
+    let diff = two_hunk_editable_diff();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut sink = Vec::new();
+        let surface = if frozen_in_ui.get() {
+            DiffSurface::WorkingTreeFrozen { staged: false }
+        } else {
+            DiffSurface::WorkingTree { staged: false }
+        };
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            surface,
+            &mut state_in_ui.borrow_mut(),
+            &mut sink,
+            None,
+        );
+    });
+    harness.run();
+    open_editor(&mut harness, &two_hunk_editable_diff(), "AAA");
+    assert!(state.borrow().inline_edit().is_some(), "editor opened");
+
+    // A file switch freezes the previous file's rows while the new diff is computed.
+    frozen.set(true);
+    harness.run();
+
+    assert!(
+        state.borrow().inline_edit().is_none(),
+        "a read-only surface keeps no caret: the rows on screen are no longer writable"
+    );
+}

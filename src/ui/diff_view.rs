@@ -84,6 +84,10 @@ pub struct DiffViewState {
 /// the write refuse rather than land on renumbered lines (§7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineEdit {
+    /// File the anchor was read from, captured with it: the diff on screen can move on
+    /// to another file (a switch keeps the view until the new content lands), and the
+    /// buffer must reach the file it came from — never the one now open.
+    pub path: String,
     pub hunk: usize,
     pub range: Range<usize>,
     pub original: Vec<String>,
@@ -147,6 +151,13 @@ impl DiffViewState {
     /// buffer back to the working tree.
     pub fn inline_edit(&self) -> Option<&InlineEdit> {
         self.inline_edit.as_ref()
+    }
+
+    /// Every deliberate way out of the inline editor — `Esc`, `Cmd+S`, a click
+    /// elsewhere, a surface that stops being writable — goes through here, so the write
+    /// on the way out has a single home (git.md §4).
+    fn leave_inline_edit(&mut self) {
+        self.inline_edit = None;
     }
 
     /// Whether the resolved thread rooted at `id` is expanded in the center accordion
@@ -261,7 +272,33 @@ impl DiffViewState {
         // Display only: an orphaned extension is dropped without flagging stale.
         self.extensions.retain(|&hunk, _| hunk < diff.hunks.len());
         self.reconcile_text_selection(diff);
+        self.reconcile_inline_edit(diff);
         dropped
+    }
+
+    /// An open editor is addressed by hunk **index** and anchored on lines read from the
+    /// previous snapshot: a reload that renumbers the hunks or rewrites those lines
+    /// would leave the caret over a hunk the user never pointed at. Dropped rather than
+    /// re-anchored — the same guard the selection above and the armed hunk confirmation
+    /// (`git_session::on_diff`) apply (git.md §8).
+    fn reconcile_inline_edit(&mut self, diff: &FileDiff) {
+        let Some(edit) = &self.inline_edit else {
+            return;
+        };
+        let anchored = diff.path == edit.path
+            && diff.source_lines.get(edit.range.clone()) == Some(edit.original.as_slice())
+            && diff.hunks.get(edit.hunk).is_some_and(|hunk| {
+                // The hunk still sits inside the window the editor took: another hunk at
+                // that index covers other lines, extended context only widens the window.
+                hunk.new_start.checked_sub(1).is_some_and(|start| {
+                    let start = start as usize;
+                    start >= edit.range.start && start + hunk.new_lines as usize <= edit.range.end
+                })
+            });
+        if !anchored {
+            self.inline_edit = None;
+            self.stale = true;
+        }
     }
 
     fn extend(&mut self, hunk: usize) {
@@ -844,6 +881,11 @@ pub fn diff_view(
     // Only the working tree can be written back, and only when the worker judged
     // the file writable while computing the diff (git.md §4).
     let editable = diff.editable && !read_only;
+    // A surface that stopped being writable keeps no editor: switching files freezes
+    // the diff (read-only) while the previous file's rows are still on screen.
+    if !editable {
+        state.leave_inline_edit();
+    }
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
     let review_available = review.is_some();
@@ -868,7 +910,7 @@ pub fn diff_view(
     let mut close = false;
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         if state.inline_edit.is_some() {
-            state.inline_edit = None;
+            state.leave_inline_edit();
         } else if state.active_comment.is_some() || state.popover_edit.is_some() {
             state.active_comment = None;
             state.comment_buffer.clear();
@@ -877,6 +919,11 @@ pub fn diff_view(
         } else {
             close = true;
         }
+    }
+    // `Cmd+S` is not a save *control* (keybindings.md §3): the buffer is written on the
+    // way out either way, so the shortcut is simply the keyboard's click-elsewhere.
+    if state.inline_edit.is_some() && save_requested(ui) {
+        state.leave_inline_edit();
     }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(diff) {
@@ -1037,7 +1084,9 @@ pub fn diff_view(
                         .as_mut()
                         .filter(|edit| edit.hunk == hunk_idx)
                     {
-                        inline_editor(ui, palette, &diff.path, edit, layout, row_w);
+                        if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
+                            state.leave_inline_edit();
+                        }
                         ui.spacing_mut().item_spacing.y = previous_spacing_y;
                         ui.add_space(12.0);
                         continue;
@@ -2456,6 +2505,7 @@ fn open_hunk_editor(
     state.text_selection = None;
     state.selection.clear();
     state.inline_edit = Some(InlineEdit {
+        path: diff.path.clone(),
         hunk: hunk_idx,
         buffer: original.join("\n"),
         range,
@@ -2469,7 +2519,9 @@ fn open_hunk_editor(
 /// same mono font, same line height, same content x offset, same syntax colours — the
 /// only perceptible change is the caret. No frame, no toolbar, no button: an accent
 /// bar marks the hunk, the gutter is renumbered off the laid-out galley, and one muted
-/// hint closes the block.
+/// hint closes the block. Returns `true` when the editor has been left: egui surrenders
+/// the buffer's focus as soon as the pointer presses anything else, and that *is* the
+/// exit gesture (git.md §4) — there is nothing to press.
 fn inline_editor(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -2477,7 +2529,7 @@ fn inline_editor(
     edit: &mut InlineEdit,
     layout: RowLayout,
     row_w: f32,
-) {
+) -> bool {
     let id = ui.id().with("inline_edit");
     let rows = edit.buffer.split('\n').count();
     let (block, _) = ui.allocate_exact_size(
@@ -2510,17 +2562,24 @@ fn inline_editor(
 
     if let Some(caret) = edit.caret.take() {
         let index = caret_char_index(&edit.buffer, caret);
-        let mut text_state = output.state.clone();
-        text_state
+        let mut opened = output.state.clone();
+        opened
             .cursor
             .set_char_range(Some(egui::text_selection::CCursorRange::one(
                 egui::text::CCursor::new(index),
             )));
-        text_state.store(ui.ctx(), id);
+        // The widget id is the same for every hunk, so egui's undo history outlives the
+        // editor: without this reset, one `Cmd+Z` in a freshly opened editor restores the
+        // *previous* hunk's buffer — which the save would then write to this range.
+        opened.clear_undoer();
+        opened.store(ui.ctx(), id);
     }
-    if std::mem::take(&mut edit.focus) {
+    let left = if std::mem::take(&mut edit.focus) {
         ui.memory_mut(|memory| memory.request_focus(id));
-    }
+        false
+    } else {
+        !ui.memory(|memory| memory.has_focus(id))
+    };
 
     ui.painter().rect_filled(
         egui::Rect::from_min_size(block.min, egui::vec2(EDIT_BAR_W, block.height())),
@@ -2533,6 +2592,7 @@ fn inline_editor(
             .size(NUM_SIZE)
             .color(palette.text_muted),
     );
+    left
 }
 
 /// Line numbers of the editor's rows, read off the laid-out galley so they follow the
@@ -2798,6 +2858,12 @@ fn row_zone(x: f32, left: f32, content_left: f32, char_w: f32) -> Option<RowZone
 /// never left the keyboard.
 fn editor_requested(ui: &egui::Ui) -> bool {
     ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
+}
+
+/// `Cmd+S` while the editor is open (keybindings.md §3): the keyboard's way of stepping
+/// out of the buffer.
+fn save_requested(ui: &egui::Ui) -> bool {
+    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
 }
 
 fn diff_line(

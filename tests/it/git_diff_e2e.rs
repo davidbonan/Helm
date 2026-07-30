@@ -204,6 +204,41 @@ fn editable_is_carried_by_the_diff_so_a_click_needs_no_disk_access() {
 }
 
 #[test]
+fn the_staged_side_is_editable_only_while_the_index_matches_the_working_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo\nthree\n", "init");
+    fs::write(tmp.path().join("a.txt"), "ONE\ntwo\nthree\n").unwrap();
+    helm::git::stage::stage(&repo, "a.txt").unwrap();
+
+    let staged = diff::file_diff(&repo, "a.txt", DiffSource::Staged).unwrap();
+    assert!(
+        staged.editable,
+        "index == working tree: the staged blob's line numbers are the working tree's"
+    );
+
+    // The same file now changed on both sides: the staged diff's new side is the index
+    // blob, whose numbering no longer describes the file on disk (git.md §4).
+    fs::write(tmp.path().join("a.txt"), "ONE\nTWO\nthree\n").unwrap();
+    let staged = diff::file_diff(&repo, "a.txt", DiffSource::Staged).unwrap();
+    assert_eq!(
+        staged.source_lines,
+        vec!["ONE", "two", "three"],
+        "the staged side still shows the index blob"
+    );
+    assert!(
+        !staged.editable,
+        "a file present in both sections offers no caret from the Staged side"
+    );
+    assert!(
+        diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+            .unwrap()
+            .editable,
+        "the Unstaged side is the working tree itself: still editable"
+    );
+}
+
+#[test]
 fn binary_file_is_flagged_with_no_hunks_for_file_level_staging() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

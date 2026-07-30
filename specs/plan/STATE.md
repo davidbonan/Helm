@@ -11,7 +11,7 @@
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **4/6**.
+with no save control. Counter: **5/7**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -50,6 +50,26 @@ with no save control. Counter: **4/6**.
   `tests/it/ui_diff_view.rs` (caret from a click proven by the typed character,
   non-editable no-op, content x + row band unchanged, `Cmd+E`, `Esc`, number-strip
   pick) + the 4 row-click tests retargeted to the strip (`numbers_x_offset`).
+- ☑ **T4b — Review fixes (blockers before T5).** Review of T2/T3/T4 found 9 items;
+  the 4 that would corrupt or misdirect a write once T5 wires it, fixed here.
+  (1) egui keys the undo history on the widget id, shared by every hunk, so one
+  `Cmd+Z` in a freshly opened editor restored the *previous* hunk's buffer (proven:
+  `hunk=1 range=4..6 buffer="AAA\ntwo"`) ⇒ `clear_undoer()` when the caret is placed.
+  (2) `editable_here` ignored the diff source, so the **Staged** side offered a caret
+  on a file present in both sections, seeded from the index blob ⇒ gated on
+  `edit::stage_refusal` (now `pub`), the rule the worker already re-checks.
+  (3) `reconcile` guarded the selection and the armed hunk modal but not the editor ⇒
+  `reconcile_inline_edit` drops it when the path, the anchored lines, or the hunk at
+  that index moved. (4) `InlineEdit` carried no path ⇒ added, and a surface that
+  stops being writable (file switch ⇒ frozen) leaves the editor.
+  Plus, per the user: `Cmd+S` **leaves** the editor like a click elsewhere, and
+  leaving on blur is now real (egui surrenders the buffer's focus on any outside
+  press) — every exit funnels through `leave_inline_edit`, where T5 hangs the write.
+  *Files*: `src/git/{edit,diff}.rs`, `src/ui/diff_view.rs`, `specs/{git,keybindings}.md`.
+  *Tests*: `tests/it/ui_diff_view.rs` (fresh undo history, undo still works, `Cmd+S`,
+  click outside, reload renumbered / rewritten / other file / untouched, frozen
+  surface), `tests/it/git_diff_e2e.rs` (staged side editable only while index ==
+  working tree).
 - ☐ **T5 — Autosave + guards.** Flush on exit / blur / file nav / close and after
   800 ms idle; diff frozen while open, diff poll suspended, `↑`/`↓` and
   `Cmd+Enter` disarmed, `Esc` cascade, divergence notice (*Reload* /
@@ -65,6 +85,25 @@ with no save control. Counter: **4/6**.
 - **T5** — autosave + guards: flush the open buffer on exit / blur / file nav /
   close and after 800 ms idle, freeze the diff and suspend its poll while the
   editor is open, disarm `↑`/`↓` and `Cmd+Enter`, surface the divergence notice.
+  Exits all funnel through `DiffViewState::leave_inline_edit` (T4b); the write must
+  use `InlineEdit::path`, not the open `DiffState::path`. Two exits still drop the
+  buffer without going through it: a click in **another hunk's** content
+  (`open_hunk_editor` overwrites the state) and `reconcile_inline_edit` — the second
+  is the divergence case, which owes the user the *Reload* / *Overwrite* notice.
+- Left open by the T4b review, none of them a write hazard:
+  **(5)** `edit_anchor` returns `None` silently for a deletion-only hunk
+  (`new_lines == 0`, verified) and past `MAX_EDIT_LINES`, yet the content column still
+  shows the text cursor — T5's non-editable toast keys on `diff.editable`, so it must
+  cover these two too. **(6)** a one-hunk edit renormalises a **mixed** line-ending
+  file whole (`"a\r\nb\nc\r\n"` → `"A\r\nb\r\nc\r\n"`: `LineEnding::detect` samples
+  only the first newline), turning a small edit into a whole-file diff.
+  **(7)** emptying the buffer leaves a blank line instead of deleting the range
+  (`buffer_lines("")` == `[""]`). **(8)** `editable_here` re-reads the whole file on
+  every diff, i.e. every poll, on top of `new_side_bytes`' own read.
+  **(9)** cosmetic: the editor block is sized from the pre-event buffer, so it is one
+  row short for the frame a newline is typed. Also `keybindings.md` still lists
+  double/triple-click word/line selection in the diff content — unreachable on an
+  editable diff, since the first click of the pair swaps the row for the editor.
 - Noted while verifying T4: in the **headless app** harness
   (`Harness::new_eframe` + `HelmApp::with_workspace`), no click inside the git
   panel registers (file row, *Tree view*) although the right-rail toggles do — so

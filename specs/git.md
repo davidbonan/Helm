@@ -248,9 +248,15 @@ placeholder launches verbatim.
   leaves the editor, a click outside leaves it too, and the diff then recomposes.
   - **No save control**: the buffer is written to the working tree on **exit**
     and after **800 ms** of idle typing. `Cmd+Z` undoes inside the buffer (git's
-    **Discard hunk** stays the coarser net), `Cmd+S` only flushes early. While
-    the editor is open the diff underneath is **frozen** — nothing reflows under
-    the caret (§7 suspends its poll) — and it recomposes on exit.
+    **Discard hunk** stays the coarser net, and each editor starts its own undo
+    history — an undo never reaches back into the hunk edited before), `Cmd+S`
+    is simply the keyboard's way of stepping out: it writes and **leaves** the
+    editor, exactly as clicking elsewhere does. While the editor is open the diff
+    underneath is **frozen** — nothing reflows under the caret (§7 suspends its
+    poll) — and it recomposes on exit. Should the anchored lines move anyway
+    (a reload from another path than the poll), the editor is **left** rather than
+    re-anchored: it is addressed by hunk index, and that index would otherwise
+    come to name a hunk the user never pointed at (§8).
   - **The edit lands in the section it was made from**: from **Unstaged** it
     stays unstaged; from **Staged** the write is followed by a **file-level
     stage**, so the file stays staged with no extra click. Editing from the

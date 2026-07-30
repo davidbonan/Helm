@@ -94,7 +94,9 @@ pub fn flush(
 /// Why the file-level stage must be skipped, `None` when it may run: staging from the
 /// Staged section is only safe while index == working tree (git.md §4), and that
 /// precondition is re-checked here — the editor opened on a snapshot that is now old.
-fn stage_refusal(repo: &git2::Repository, path: &str) -> Option<String> {
+/// The same rule decides whether the Staged side offers a caret at all, so
+/// `diff::file_diff` asks it too rather than restating it.
+pub fn stage_refusal(repo: &git2::Repository, path: &str) -> Option<String> {
     match repo.status_file(Path::new(path)) {
         Ok(status) => status
             .intersects(

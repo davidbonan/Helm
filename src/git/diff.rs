@@ -194,14 +194,24 @@ pub fn file_diff(
             .map(|bytes| source_lines_from(&bytes))
             .unwrap_or_default();
     }
-    file.editable = editable_here(repo, path, &file);
+    file.editable = editable_here(repo, path, &file, source);
     Ok(file)
 }
 
 /// A binary or oversize diff stages at file level and shows no lines to click, so
-/// it never opens an editor — the working-tree probe only runs past those.
-fn editable_here(repo: &git2::Repository, path: &str, file: &FileDiff) -> bool {
-    !file.binary && !file.oversize && crate::git::edit::editable(repo, path).is_ok()
+/// it never opens an editor — the working-tree probe only runs past those. From the
+/// **Staged** side the new side is the index blob, whose line numbers are the working
+/// tree's only while the file has no unstaged change (git.md §4): a file present in
+/// both sections offers no caret, judged on the same rule the worker re-checks before
+/// staging an edit.
+fn editable_here(repo: &git2::Repository, path: &str, file: &FileDiff, source: DiffSource) -> bool {
+    if file.binary || file.oversize {
+        return false;
+    }
+    if source == DiffSource::Staged && crate::git::edit::stage_refusal(repo, path).is_some() {
+        return false;
+    }
+    crate::git::edit::editable(repo, path).is_ok()
 }
 
 /// Bytes of the file's new side per source: working tree (Unstaged) or the index
