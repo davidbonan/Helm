@@ -1471,6 +1471,71 @@ fn a_reload_that_changes_the_diff_disarms_the_discard_hunk_confirmation() {
 }
 
 #[test]
+fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let repo = git2::Repository::open(tmp.path()).unwrap();
+    crate::git::stage::stage(&repo, "a.txt").unwrap();
+    // The Staged section's precondition is gone by the time the buffer flushes.
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+
+    let ctx = egui::Context::default();
+    let mut session = GitSession::spawn(
+        RepoKey::of(tmp.path()),
+        tmp.path(),
+        &ctx,
+        AiRunner::new(tmp.path(), || {}),
+        MutationLock::new(),
+    );
+    let mut toasts = Toasts::default();
+    session.worker.send(GitCommand::EditFile {
+        path: "a.txt".to_owned(),
+        range: 1..2,
+        original: vec!["two".to_owned()],
+        replacement: "TWO".to_owned(),
+        stage_after: true,
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.worker.has_pending(ResultKind::Edit) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit reply never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.drain(
+            &mut None,
+            &mut BranchEditor::default(),
+            &mut GitPanelState::default(),
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut toasts,
+            0.0,
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "one\nTWO\nthree\n",
+        "the write must land even when its stage is skipped"
+    );
+    assert!(
+        toasts
+            .items()
+            .iter()
+            .any(|toast| toast.message == "Saved — the file also has unstaged changes"),
+        "got {:?}",
+        toasts.items()
+    );
+    // The reply carries no snapshot: the panel is refreshed behind it, without
+    // waiting for the 1 s poll.
+    assert!(session.worker.has_pending(ResultKind::Status));
+}
+
+#[test]
 fn cached_graph_defers_the_head_autoscroll_to_the_fresh_one() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -2106,6 +2171,7 @@ fn loaded_file(path: &str) -> FileDiff {
         hunks: Vec::new(),
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 

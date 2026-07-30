@@ -489,6 +489,7 @@ mod tests {
             }],
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         }
     }
 
@@ -517,6 +518,7 @@ mod tests {
             hunks: vec![hunk(1, "let a = \"x\";"), hunk(500, "fn f() {}")],
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         }
     }
 

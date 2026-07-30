@@ -513,6 +513,7 @@ impl GitSession {
                 GitResult::Conflicts { result } => {
                     Self::on_conflicts(result, conflict_editor, toasts, now)
                 }
+                GitResult::Edit { path, result } => self.on_edit(&path, result, diff, toasts, now),
             }
         }
     }
@@ -667,6 +668,41 @@ impl GitSession {
                     *diff = None;
                     toasts.error(format!("Failed to load the diff — {}", err.message()), now);
                 }
+            }
+        }
+    }
+
+    /// Reply to an inline-editor save (git.md §4): the write already happened on the
+    /// worker, so this only reports and refreshes. A **NotStaged** landing is a
+    /// successful save whose file-level stage was skipped — the toast says where the
+    /// text went. The status and the open diff are re-requested behind every reply
+    /// rather than waiting for the poll: the failing cases (`Diverged`) are precisely
+    /// the ones where the displayed diff is known to be out of date.
+    fn on_edit(
+        &mut self,
+        path: &str,
+        result: Result<Landing, EditError>,
+        diff: &Option<DiffState>,
+        toasts: &mut Toasts,
+        now: f64,
+    ) {
+        match result {
+            Ok(Landing::NotStaged(reason)) => toasts.success(format!("Saved — {reason}"), now),
+            Ok(_) => {}
+            Err(err) => toasts.error(format!("Save failed — {err}"), now),
+        }
+        self.worker.send(GitCommand::Status);
+        if let Some(DiffState {
+            source: DiffSource::WorkingTree { staged },
+            path: open,
+            ..
+        }) = diff
+        {
+            if open == path {
+                self.worker.send(GitCommand::Diff {
+                    path: path.to_owned(),
+                    staged: *staged,
+                });
             }
         }
     }
@@ -981,13 +1017,15 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
         GitCommand::Reset { .. } => "Reset failed",
         GitCommand::ResolveFile { .. } => "Saving the resolution failed",
         GitCommand::ResolveFileSide { .. } => "Taking the side failed",
-        // Reads: answered by their own variant, never by `Status`.
+        // Answered by their own variant, never by `Status` (the reads, plus the
+        // inline edit — `GitResult::Edit` carries its own typed failure).
         GitCommand::Diff { .. }
         | GitCommand::Graph { .. }
         | GitCommand::RebaseTodo { .. }
         | GitCommand::CommitDetail(_)
         | GitCommand::CommitFileDiff { .. }
-        | GitCommand::ReadConflicts => "Git command failed",
+        | GitCommand::ReadConflicts
+        | GitCommand::EditFile { .. } => "Git command failed",
     };
     format!("{action} — {}", err.message())
 }

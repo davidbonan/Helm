@@ -182,6 +182,28 @@ fn unchanged_file_yields_no_hunks() {
 }
 
 #[test]
+fn editable_is_carried_by_the_diff_so_a_click_needs_no_disk_access() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    commit_file(&repo, "a.txt", "one\ntwo\n", "init");
+    fs::write(tmp.path().join("a.txt"), "one\nTWO\n").unwrap();
+    commit_bytes(&repo, "blob.bin", b"\x00one\x00", "bin");
+    fs::write(tmp.path().join("blob.bin"), b"\x00two\x00").unwrap();
+
+    assert!(
+        diff::file_diff(&repo, "a.txt", DiffSource::Unstaged)
+            .unwrap()
+            .editable
+    );
+    // A binary diff shows no lines to click, so it never opens an editor.
+    assert!(
+        !diff::file_diff(&repo, "blob.bin", DiffSource::Unstaged)
+            .unwrap()
+            .editable
+    );
+}
+
+#[test]
 fn binary_file_is_flagged_with_no_hunks_for_file_level_staging() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

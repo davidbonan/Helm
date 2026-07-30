@@ -2947,6 +2947,7 @@ mod tests {
                 .collect(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         }
     }
 
@@ -2971,6 +2972,7 @@ mod tests {
                 .collect(),
             source_lines: (1..=file_len).map(|n| format!("l{n}")).collect(),
             image: None,
+            editable: false,
         }
     }
 

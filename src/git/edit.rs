@@ -2,6 +2,7 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use crate::git::conflict::LineEnding;
+use crate::git::stage;
 
 /// A file past this size never opens for inline editing (git.md §4): the buffer is
 /// one hunk, but a splice re-reads and rewrites the whole file. Deliberately well
@@ -27,6 +28,9 @@ pub enum EditError {
     /// The anchored lines are no longer the ones that were read: the file moved on
     /// disk. Nothing is written — the typed buffer outlives the refusal.
     Diverged,
+    /// The write could not be carried out: an I/O failure, or a git call around it
+    /// (unreadable repository, another operation in progress). Carries the message
+    /// verbatim — it is already user-facing.
     Io(String),
 }
 
@@ -42,6 +46,68 @@ impl std::fmt::Display for EditError {
             EditError::Io(err) => return f.write_str(err),
         };
         f.write_str(text)
+    }
+}
+
+/// Where an inline edit landed (git.md §4). The section it was made from decides, so
+/// the reply is what the UI reports on — never a silent choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landing {
+    /// Written to the working tree and left unstaged: the edit came from **Unstaged**.
+    Unstaged,
+    /// Written then staged at file level: the edit came from **Staged**.
+    Staged,
+    /// Written but left unstaged although it came from **Staged**, with the reason to
+    /// show. The text is on disk either way — the save succeeded.
+    NotStaged(String),
+}
+
+/// One inline-editor save: the write, then the file-level stage that keeps a **Staged**
+/// edit in its section (git.md §4). Called on the worker under the mutation lock.
+pub fn flush(
+    repo: &git2::Repository,
+    path: &str,
+    range: Range<usize>,
+    original: &[String],
+    replacement: &str,
+    stage_after: bool,
+) -> Result<Landing, EditError> {
+    // Judged **before** the write: the write is itself an unstaged change, so
+    // afterwards every file looks like one that must not be staged wholesale.
+    let refusal = stage_after.then(|| stage_refusal(repo, path)).flatten();
+    write_range(repo, path, range, original, replacement)?;
+    if !stage_after {
+        return Ok(Landing::Unstaged);
+    }
+    if let Some(reason) = refusal {
+        return Ok(Landing::NotStaged(reason));
+    }
+    match stage::stage(repo, path) {
+        Ok(()) => Ok(Landing::Staged),
+        // The text is already on disk: a failed stage is reported, not raised —
+        // raising it would send the editor into a retry whose anchor no longer
+        // matches what it just wrote.
+        Err(err) => Ok(Landing::NotStaged(err.message().to_owned())),
+    }
+}
+
+/// Why the file-level stage must be skipped, `None` when it may run: staging from the
+/// Staged section is only safe while index == working tree (git.md §4), and that
+/// precondition is re-checked here — the editor opened on a snapshot that is now old.
+fn stage_refusal(repo: &git2::Repository, path: &str) -> Option<String> {
+    match repo.status_file(Path::new(path)) {
+        Ok(status) => status
+            .intersects(
+                git2::Status::WT_MODIFIED
+                    | git2::Status::WT_NEW
+                    | git2::Status::WT_DELETED
+                    | git2::Status::WT_TYPECHANGE
+                    | git2::Status::WT_RENAMED,
+            )
+            .then(|| "the file also has unstaged changes".to_owned()),
+        // The user's text is never held hostage to a status read: an unreadable
+        // status costs the automatic stage, not the save.
+        Err(err) => Some(err.message().to_owned()),
     }
 }
 

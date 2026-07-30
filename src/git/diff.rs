@@ -52,6 +52,12 @@ pub struct FileDiff {
     /// for the diff view's image preview (git.md §4). `None` for any other file, a
     /// deleted image (no new side) or one above `MAX_IMAGE_BYTES`.
     pub image: Option<ImageBlob>,
+    /// `true` when an inline editor may open on this diff (git.md §4): a
+    /// working-tree source whose file passes `edit::editable`. Decided here, where
+    /// the file is already being read off the UI thread, so a click opens the caret
+    /// without touching the disk. Always `false` for a read-only surface (commit,
+    /// PR review, stash) and for a binary or oversize diff.
+    pub editable: bool,
 }
 
 /// Decodable image content of a `FileDiff`, plus a fingerprint of the bytes so the
@@ -169,6 +175,7 @@ pub fn file_diff(
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         });
     };
 
@@ -187,7 +194,14 @@ pub fn file_diff(
             .map(|bytes| source_lines_from(&bytes))
             .unwrap_or_default();
     }
+    file.editable = editable_here(repo, path, &file);
     Ok(file)
+}
+
+/// A binary or oversize diff stages at file level and shows no lines to click, so
+/// it never opens an editor — the working-tree probe only runs past those.
+fn editable_here(repo: &git2::Repository, path: &str, file: &FileDiff) -> bool {
+    !file.binary && !file.oversize && crate::git::edit::editable(repo, path).is_ok()
 }
 
 /// Bytes of the file's new side per source: working tree (Unstaged) or the index
@@ -253,6 +267,7 @@ pub fn commit_file_diff(
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         });
     };
     let mut file = patch_to_file_diff(&diff, idx, path)?;
@@ -335,6 +350,7 @@ pub fn pr_file_diff(
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         });
     };
     let mut file = patch_to_file_diff(&diff, idx, path)?;
@@ -425,6 +441,7 @@ fn untracked_file_diff(repo: &git2::Repository, path: &str) -> Result<FileDiff, 
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: image_blob(path, content),
+            editable: false,
         });
     }
     let rel = Path::new(path);
@@ -450,6 +467,7 @@ fn patch_to_file_diff(diff: &git2::Diff, idx: usize, path: &str) -> Result<FileD
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         }),
     }
 }
@@ -466,6 +484,7 @@ fn file_diff_from_patch(patch: git2::Patch, path: &str) -> Result<FileDiff, git2
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         });
     }
     if is_oversize(&patch)? {
@@ -476,6 +495,7 @@ fn file_diff_from_patch(patch: git2::Patch, path: &str) -> Result<FileDiff, git2
             hunks: Vec::new(),
             source_lines: Vec::new(),
             image: None,
+            editable: false,
         });
     }
 
@@ -511,6 +531,7 @@ fn file_diff_from_patch(patch: git2::Patch, path: &str) -> Result<FileDiff, git2
         hunks,
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     })
 }
 

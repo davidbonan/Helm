@@ -8,6 +8,7 @@ use crate::git::ai_rebase::{AiRebaseReport, AiRebaseRequest, AiRebaseRunner};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
+use crate::git::edit::{EditError, Landing};
 use crate::git::graph::{self, Graph, LaneCache};
 use crate::git::rebase::RebaseCommit;
 use crate::git::status::RepoStatus;

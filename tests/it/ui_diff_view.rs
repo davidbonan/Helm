@@ -38,6 +38,7 @@ fn sample_diff() -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -78,6 +79,7 @@ fn adjacent_changed_lines_diff() -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -103,6 +105,7 @@ fn extendable_diff() -> FileDiff {
         }],
         source_lines: (1..=9).map(|n| format!("src-line-{n}")).collect(),
         image: None,
+        editable: false,
     }
 }
 
@@ -187,6 +190,7 @@ fn a_line_longer_than_the_preview_extends_the_row_past_the_viewport() {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     };
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
@@ -236,6 +240,7 @@ fn one_line_diff(path: &str, content: &str) -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -258,6 +263,7 @@ fn tall_diff(path: &str, marker: &str) -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -561,6 +567,7 @@ fn copy_diff(content: &str) -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -764,6 +771,7 @@ fn binary_file_offers_no_line_staging() {
         hunks: vec![],
         source_lines: vec![],
         image: None,
+        editable: false,
     };
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
@@ -797,6 +805,7 @@ fn oversize_diff_shows_summary_and_no_line_staging() {
         hunks: vec![],
         source_lines: vec![],
         image: None,
+        editable: false,
     };
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
@@ -856,6 +865,7 @@ fn gutter_shows_old_and_new_line_numbers() {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     };
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
@@ -986,6 +996,7 @@ fn reloading_a_shrunk_diff_drops_a_stale_selection_and_signals_it() {
         hunks: vec![],
         source_lines: vec![],
         image: None,
+        editable: false,
     };
     let dropped = state.borrow_mut().reconcile(&reloaded);
     *diff.borrow_mut() = reloaded;
@@ -1068,6 +1079,7 @@ fn an_image_diff_shows_a_zoomable_preview_instead_of_the_binary_placeholder() {
             bytes: tiny_png(),
             fingerprint: 1,
         }),
+        editable: false,
     };
     let mut harness = Harness::new_ui(move |ui| {
         let mut state = DiffViewState::default();
@@ -1124,6 +1136,7 @@ fn review_diff() -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -1365,6 +1378,7 @@ fn new_side_thread_on_a_modified_line_renders_once_not_on_the_deleted_row() {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     };
     let mut existing = ForgeThreads::new();
     existing.insert(

@@ -431,6 +431,7 @@ fn sample_diff() -> FileDiff {
         }],
         source_lines: Vec::new(),
         image: None,
+        editable: false,
     }
 }
 
@@ -1249,6 +1250,7 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
         hunks: Vec::new(),
         source_lines: vec!["fn main() {".to_owned(), "    work();".to_owned()],
         image: None,
+        editable: false,
     };
     let comment_diffs = vec![&fd];
     let mut diff_view = DiffViewState::default();

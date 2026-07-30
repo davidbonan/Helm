@@ -2,7 +2,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use helm::git::edit::{self, EditError, MAX_EDIT_BYTES};
+use helm::git::edit::{self, EditError, Landing, MAX_EDIT_BYTES};
+use helm::git::worker::{GitCommand, GitResult, GitWorker};
 
 fn repo_with(name: &str, content: &[u8]) -> (tempfile::TempDir, git2::Repository, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -14,6 +15,26 @@ fn repo_with(name: &str, content: &[u8]) -> (tempfile::TempDir, git2::Repository
 
 fn owned(lines: &[&str]) -> Vec<String> {
     lines.iter().map(|l| (*l).to_owned()).collect()
+}
+
+fn stage_path(repo: &git2::Repository, path: &str) {
+    helm::git::stage::stage(repo, path).unwrap();
+}
+
+/// The blob the index holds for `path` — read fresh: `flush` staged through another
+/// handle of the same index.
+fn staged_text(repo: &git2::Repository, path: &str) -> String {
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    let entry = index.get_path(std::path::Path::new(path), 0).unwrap();
+    let blob = repo.find_blob(entry.id).unwrap();
+    String::from_utf8(blob.content().to_vec()).unwrap()
+}
+
+fn index_is_empty(repo: &git2::Repository) -> bool {
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    index.is_empty()
 }
 
 #[test]
@@ -146,4 +167,105 @@ fn editable_accepts_a_plain_text_file() {
     let (_tmp, repo, _full) = repo_with("a.txt", b"one\ntwo\n");
 
     assert!(edit::editable(&repo, "a.txt").is_ok());
+}
+
+#[test]
+fn flush_from_the_unstaged_section_touches_only_the_working_tree() {
+    let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
+
+    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", false).unwrap();
+
+    assert_eq!(landing, Landing::Unstaged);
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\n");
+    assert!(index_is_empty(&repo));
+}
+
+#[test]
+fn flush_from_the_staged_section_stages_the_file_it_wrote() {
+    let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
+    stage_path(&repo, "a.txt");
+
+    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap();
+
+    assert_eq!(landing, Landing::Staged);
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\n");
+    assert_eq!(staged_text(&repo, "a.txt"), "one\nTWO\n");
+}
+
+#[test]
+fn flush_writes_unstaged_when_the_file_grew_an_unstaged_change() {
+    let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
+    stage_path(&repo, "a.txt");
+    // The precondition the editor opened on is gone: index != working tree, so a
+    // file-level stage would swallow the third line the user never saw.
+    fs::write(&full, "one\ntwo\nthree\n").unwrap();
+
+    let landing = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap();
+
+    assert_eq!(
+        landing,
+        Landing::NotStaged("the file also has unstaged changes".to_owned())
+    );
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\nthree\n");
+    assert_eq!(staged_text(&repo, "a.txt"), "one\ntwo\n");
+}
+
+#[test]
+fn flush_stages_nothing_when_the_anchor_is_lost() {
+    let (_tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
+    stage_path(&repo, "a.txt");
+    fs::write(&full, "one\nCHANGED\n").unwrap();
+
+    let err = edit::flush(&repo, "a.txt", 1..2, &owned(&["two"]), "TWO", true).unwrap_err();
+
+    assert_eq!(err, EditError::Diverged);
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nCHANGED\n");
+    assert_eq!(staged_text(&repo, "a.txt"), "one\ntwo\n");
+}
+
+#[test]
+fn worker_edit_file_replies_with_its_own_landing() {
+    let (tmp, repo, full) = repo_with("a.txt", b"one\ntwo\n");
+    stage_path(&repo, "a.txt");
+
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    worker.send(GitCommand::EditFile {
+        path: "a.txt".to_owned(),
+        range: 1..2,
+        original: owned(&["two"]),
+        replacement: "TWO".to_owned(),
+        stage_after: true,
+    });
+
+    match worker.recv() {
+        Some((_, GitResult::Edit { path, result })) => {
+            assert_eq!(path, "a.txt");
+            assert_eq!(result.unwrap(), Landing::Staged);
+        }
+        other => panic!("expected an Edit reply, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\nTWO\n");
+    assert_eq!(staged_text(&repo, "a.txt"), "one\nTWO\n");
+}
+
+#[test]
+fn worker_edit_file_reports_a_lost_anchor_without_writing() {
+    let (tmp, _repo, full) = repo_with("a.txt", b"one\ntwo\n");
+
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    worker.send(GitCommand::EditFile {
+        path: "a.txt".to_owned(),
+        range: 1..2,
+        original: owned(&["gone"]),
+        replacement: "TWO".to_owned(),
+        stage_after: false,
+    });
+
+    match worker.recv() {
+        Some((_, GitResult::Edit { result, .. })) => {
+            assert_eq!(result.unwrap_err(), EditError::Diverged);
+        }
+        other => panic!("expected an Edit reply, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&full).unwrap(), "one\ntwo\n");
 }

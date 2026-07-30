@@ -11,7 +11,7 @@
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **2/6**.
+with no save control. Counter: **3/6**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -26,13 +26,18 @@ with no save control. Counter: **2/6**.
   *Files*: `src/git/edit.rs`, `src/git/mod.rs`. *Tests*: unit (splice, EOL, final
   newline, divergence) + `tests/it/git_edit_e2e.rs` (real repo: CRLF, no final
   newline, divergence refused, symlink, binary, perms kept, oversize).
-- ☐ **T3 — Worker command.** `GitCommand::EditFile { path, range, original,
-  replacement, stage_after }`, `mutates() == true`; `stage_after` re-checked under
-  the mutation lock (file absent from unstaged), reply reports whether the stage
-  happened; failure message arm.
-  *Files*: `src/git/worker.rs`, `src/app/git_session.rs`. *Tests*:
-  `tests/it/git_edit_e2e.rs` (unstaged edit, staged edit + stage, precondition
-  lost ⇒ written unstaged).
+- ☑ **T3 — Worker command.** `GitCommand::EditFile { path, range, original,
+  replacement, stage_after }` (mutation answered by its own `GitResult::Edit`,
+  `ResultKind::Edit`, never gated by staleness); `edit::flush` = precondition read
+  **before** the write, then `write_range`, then the file-level stage;
+  `Landing::{Unstaged, Staged, NotStaged(reason)}`; `on_edit` toasts the landing /
+  the failure and re-requests status + open diff. `FileDiff::editable` surfaced by
+  `diff::file_diff` so the click needs no disk access.
+  *Files*: `src/git/{edit,worker,diff}.rs`, `src/app/{mod,git_session}.rs`. *Tests*:
+  `tests/it/git_edit_e2e.rs` (unstaged / staged+stage / precondition lost ⇒ written
+  unstaged / anchor lost stages nothing / 2 worker round-trips),
+  `tests/it/git_diff_e2e.rs` (`editable` carried), `src/app/tests.rs` (toast +
+  refresh).
 - ☐ **T4 — Inline editor rendering.** Hunk rows swapped for a `TextEdit` at
   identical metrics, caret placed from `text_position_at`, accent bar + dimmed
   sign column + galley-renumbered gutter; entry on content click and `Cmd+E`;
@@ -51,8 +56,9 @@ with no save control. Counter: **2/6**.
   auto-indent on `Enter`, several editors at once, *Save & next hunk*.
 
 ### Next actions (M-Edit)
-- **T3** — worker command over `edit::write_range`, plus `editable` surfaced on
-  `FileDiff` so the click stays free of disk access.
+- **T4** — inline editor rendering in `diff_view`: the hunk's rows swapped for a
+  `TextEdit` at identical metrics, entry on a content click (`FileDiff::editable`
+  gates it), line pick moved to the number strip.
 
 ---
 
