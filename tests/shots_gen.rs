@@ -1,8 +1,8 @@
 //! Screenshot generator for the README (run on demand, not part of the gate):
 //!   cargo test --features headless-verify --test shots_gen -- --nocapture
-//! Renders the cross-repo agents dashboard (List + Terminals wall) with authentic
-//! terminal content fed through the real emulator, and saves PNGs under
-//! verify-artifacts/shots/. Deterministic — no PTY, no timing.
+//! Renders the app's surfaces with authentic terminal content fed through the real
+//! emulator, and saves PNGs under verify-artifacts/shots/ — plus the frame sequence
+//! the agents-wall GIF is encoded from. Deterministic — no PTY, no timing.
 #![cfg(feature = "headless-verify")]
 
 use egui_kittest::Harness;
@@ -204,8 +204,9 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
-/// `shown` lists the rows the wall mirrors, in the order they were put on it.
-fn render(selected: Option<usize>, shown: &[usize], size: egui::Vec2, out: &str) {
+/// `shown` lists the rows the wall mirrors, in the order they were put on it; `seam`
+/// nudges the root split's ratio by that much (the seam starts at a fresh 50/50).
+fn render(selected: Option<usize>, shown: &[usize], seam: f32, size: egui::Vec2, out: &str) {
     let palette = Palette::dark();
     let term_pal = TermPalette::dark();
     let data = specs();
@@ -221,17 +222,29 @@ fn render(selected: Option<usize>, shown: &[usize], size: egui::Vec2, out: &str)
         .collect();
 
     // The wall's own tree: one slot per shown agent, split the way the app splits it.
+    let area = helm::terminal::layout::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: size.x,
+        h: size.y,
+    };
     let mut wall = helm::agents_wall::AgentWall::new();
     for row in shown {
-        wall.show(
-            *row,
-            helm::terminal::layout::Rect {
-                x: 0.0,
-                y: 0.0,
-                w: size.x,
-                h: size.y,
-            },
-        );
+        wall.show(*row, area);
+    }
+    // Same seam the user drags: the root split, pinned by the first slot and the one
+    // that halved it.
+    if let ([(first, _), (second, _), ..], true) = (wall.slots(), seam != 0.0) {
+        let (first, second) = (*first, *second);
+        // Only the min-size clamp reads the cell metrics, so a bare context measuring
+        // the real monospace font is enough here.
+        let ctx = egui::Context::default();
+        helm::theme::install_fonts(&ctx);
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let (cell_w, cell_h) = helm::ui::terminal_view::cell_metrics(&ctx, DEFAULT_FONT_SIZE);
+        if let Some(layout) = wall.layout_mut() {
+            layout.resize_split(first, second, seam, area, cell_w, cell_h);
+        }
     }
     let slots: Vec<(PaneId, usize)> = wall.slots().to_vec();
     let wall_layout = wall.layout().cloned();
@@ -287,15 +300,88 @@ fn render(selected: Option<usize>, shown: &[usize], size: egui::Vec2, out: &str)
         .unwrap();
 }
 
+/// One beat of the wall animation: the state its frame renders, and how long the GIF
+/// holds it (centiseconds — the format's own unit).
+struct Beat {
+    shown: &'static [usize],
+    /// Ratio the root seam has moved from its 50/50 start.
+    seam: f32,
+    hold_cs: u32,
+}
+
+/// The wall filling up — empty, then one agent picked from the strip, then two, then
+/// three — and the root seam dragged wider on the one being watched.
+const WALL_BEATS: &[Beat] = &[
+    Beat {
+        shown: &[],
+        seam: 0.0,
+        hold_cs: 110,
+    },
+    Beat {
+        shown: &[0],
+        seam: 0.0,
+        hold_cs: 120,
+    },
+    Beat {
+        shown: &[0, 1],
+        seam: 0.0,
+        hold_cs: 120,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.0,
+        hold_cs: 130,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.03,
+        hold_cs: 7,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.06,
+        hold_cs: 7,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.09,
+        hold_cs: 7,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.11,
+        hold_cs: 7,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.12,
+        hold_cs: 190,
+    },
+];
+
 #[test]
-fn gen_agents_terminals() {
-    // Three of the four agents on the wall: one full column, two stacked beside it.
-    render(
-        Some(0),
-        &[0, 1, 2],
-        egui::vec2(1920.0, 900.0),
-        "agents_terminals",
-    );
+fn gen_agents_wall_frames() {
+    let dir = "verify-artifacts/shots/agents-wall";
+    std::fs::create_dir_all(dir).unwrap();
+    let mut list = String::new();
+    for (i, beat) in WALL_BEATS.iter().enumerate() {
+        render(
+            beat.shown.last().copied(),
+            beat.shown,
+            beat.seam,
+            // Tall enough that the second split lands horizontal: the wall reads as a
+            // column plus two stacked tiles, the shape the app gives a 4-up wall.
+            egui::vec2(1440.0, 900.0),
+            &format!("agents-wall/frame-{i:02}"),
+        );
+        let secs = f64::from(beat.hold_cs) / 100.0;
+        list.push_str(&format!("file 'frame-{i:02}.png'\nduration {secs:.2}\n"));
+    }
+    // The concat demuxer drops the last entry's duration unless the file repeats.
+    let last = WALL_BEATS.len() - 1;
+    list.push_str(&format!("file 'frame-{last:02}.png'\n"));
+    std::fs::write(format!("{dir}/frames.txt"), list).unwrap();
+    println!("{} frames + frames.txt in {dir}", WALL_BEATS.len());
 }
 
 fn hero_term() -> SharedTerm {

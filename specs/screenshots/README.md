@@ -1,6 +1,6 @@
 # Screenshots
 
-These PNGs use **these exact filenames** — the root `README.md` references them
+These files use **these exact filenames** — the root `README.md` references them
 directly. They are **generated at 2× (retina)** by the headless render tests, not
 captured by hand.
 
@@ -14,7 +14,7 @@ captured by hand.
 | `git-staging.png` | The **diff view** with hunk/line staging controls, plus the unstaged/staged/commit sidebar (bonus: the ✨ AI commit message button). | A file diff mid-stage |
 | `conflicts.png` | The in-app **conflict editor**: ours/theirs panes over a live merged result, with the Conflicted/Resolved sidebar and Continue/Abort. | A merge stopped on a conflict |
 | `agents.png` | Left sidebar with **agent activity badges**: a spinner (Working) and a green dot (Done) on different workspaces. | The sidebar while an agent is mid-turn in one repo and finished in another |
-| `agents-terminals.png` | The cross-repo **agents dashboard** — the wall of live agent terminals (generated). | — |
+| `agents-wall.gif` | The cross-repo **agents dashboard** in motion: the wall fills up one chip at a time, then a seam is dragged. | Empty wall → 1 → 2 → 3 tiles, then the root seam widened on the Working agent |
 | `pr-list.png` | The **pull-request cockpit**: the *To review* and *Mine* groups with status, reviewers and age. | Two PRs awaiting review (one with changes requested), two authored (one draft) |
 | `pr-review-comments.png` | **In-app PR review**: a file diff with anchored comment threads, a reply and the *Ask {agent}* action. | A posted thread on a hunk, plus a draft note in each pool (forge + agent) |
 | `preferences.png` | The full-window **Preferences** page (left nav + a settings card). | Appearance or Project section |
@@ -28,3 +28,22 @@ Each `gen_*` test in [`tests/shots_gen.rs`](../../tests/shots_gen.rs) drives the
 real widgets headless with curated in-memory fixtures, so the set stays in sync
 with the UI and never drifts from a stale capture. The "What to capture" column
 documents the intent each shot is composed to convey.
+
+## The animated one
+
+`agents-wall.gif` is the same renders, one per beat: `gen_agents_wall_frames`
+writes `frame-NN.png` plus the `frames.txt` the encoder reads — the per-frame hold
+times live in `WALL_BEATS`, so the list can never drift from the frames. Encode
+from `verify-artifacts/shots/agents-wall/`:
+
+```sh
+ffmpeg -y -f concat -safe 0 -i frames.txt -fps_mode vfr \
+  -vf "scale=1920:-1:flags=lanczos,split[a][b];\
+[a]palettegen=max_colors=128:stats_mode=diff[p];\
+[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
+  -loop 0 agents-wall.gif
+```
+
+128 colors on a flat dark UI leaves the text clean, and the 2× render downscaled
+to 1920 keeps it sharp at the README's 960 — **1.5 MB**, the whole budget for a
+file that lives in git forever.

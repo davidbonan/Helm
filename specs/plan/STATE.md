@@ -52,6 +52,11 @@ seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
   panel, `branch_chip`) are removed; the page reserves the titlebar and starts at the
   chip strip. `AgentRow.worktree_id`, which only the old views read, goes with them. `specs/agents.md` §5 + README + `agents-terminals.png` follow;
   `agents-list.png` dropped.
+- ☑ **Post-M-Wall — the wall's shot moves.** `gen_agents_wall_frames` renders one frame
+  per `WALL_BEATS` entry (empty → 3 tiles → seam dragged) plus the `frames.txt` the
+  encoder reads; `specs/screenshots/agents-wall.gif` (1.5 MB) replaces
+  `agents-terminals.png` in the README, `gen_agents_terminals` with it. Encoder command
+  in `specs/screenshots/README.md`.
 
 ---
 
