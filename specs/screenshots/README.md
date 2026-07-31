@@ -14,8 +14,9 @@ captured by hand.
 | `git-staging.png` | The **diff view** with hunk/line staging controls, plus the unstaged/staged/commit sidebar (bonus: the ✨ AI commit message button). | A file diff mid-stage |
 | `conflicts.png` | The in-app **conflict editor**: ours/theirs panes over a live merged result, with the Conflicted/Resolved sidebar and Continue/Abort. | A merge stopped on a conflict |
 | `agents.png` | Left sidebar with **agent activity badges**: a spinner (Working) and a green dot (Done) on different workspaces. | The sidebar while an agent is mid-turn in one repo and finished in another |
-| `agents-list.png` | The cross-repo **agents dashboard**, List view (generated). | — |
-| `agents-terminals.png` | The cross-repo **agents dashboard**, Terminals view — the wall (generated). | — |
+| `agents-terminals.png` | The cross-repo **agents dashboard** — the wall of live agent terminals (generated). | — |
+| `pr-list.png` | The **pull-request cockpit**: the *To review* and *Mine* groups with status, reviewers and age. | Two PRs awaiting review (one with changes requested), two authored (one draft) |
+| `pr-review-comments.png` | **In-app PR review**: a file diff with anchored comment threads, a reply and the *Ask {agent}* action. | A posted thread on a hunk, plus a draft note in each pool (forge + agent) |
 | `preferences.png` | The full-window **Preferences** page (left nav + a settings card). | Appearance or Project section |
 
 **All** of these are deterministic renders, not manual captures — regenerate the
