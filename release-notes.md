@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.6.0
+
+- Fix a file straight from its diff: click a line — or `Cmd+E` on the hovered
+  one — and a caret opens right there, the hunk turning into an editor without
+  moving a pixel. Context lines are editable too, so *Extend context* widens the
+  window; untracked files take a caret like any other.
+- No save button to hunt for: the buffer is written to the working tree when you
+  step out — `Cmd+S`, `Esc`, a click elsewhere, even switching repo — and after
+  a short pause in typing. `Cmd+Z` undoes inside the buffer.
+- An edit stays in the section it was made from: from *Staged* the file is
+  re-staged for you, and where a caret cannot open (binary, symlink, a file
+  sitting in both sections) a toast says why and offers *Open in editor*.
+- The Agents *Columns* wall is now one borderless lane per worktree.
+
 ## 1.5.2
 
 - Maintenance release: no user-facing changes since 1.5.1.
@@ -87,13 +101,4 @@
   warns about the ignored files it would wipe.
 - Smoother diff view (per-file scroll kept, faster redraw) and a workspace
   sidebar that no longer stalls while counting branches and changes.
-
-## 1.2.0
-
-- Amend the last commit's message right from the commit panel.
-- Rebasing a diverged branch that has no commits of its own now just moves it
-  onto the target, with no commits to replay.
-- Click anywhere on the Run panel header to collapse or expand it; its collapsed
-  state is now remembered per worktree.
-
 
