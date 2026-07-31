@@ -15,7 +15,7 @@ captured by hand.
 | `conflicts.png` | The in-app **conflict editor**: ours/theirs panes over a live merged result, with the Conflicted/Resolved sidebar and Continue/Abort. | A merge stopped on a conflict |
 | `agents.png` | Left sidebar with **agent activity badges**: a spinner (Working) and a green dot (Done) on different workspaces. | The sidebar while an agent is mid-turn in one repo and finished in another |
 | `agents-list.png` | The cross-repo **agents dashboard**, List view (generated). | — |
-| `agents-columns.png` | The cross-repo **agents dashboard**, Columns view (generated). | — |
+| `agents-terminals.png` | The cross-repo **agents dashboard**, Terminals view — the wall (generated). | — |
 | `preferences.png` | The full-window **Preferences** page (left nav + a settings card). | Appearance or Project section |
 
 **All** of these are deterministic renders, not manual captures — regenerate the

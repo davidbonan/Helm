@@ -200,19 +200,19 @@ switched from the titlebar and remembered across launches:
 - **List** — a two-pane cockpit: agents grouped by project on the left (branch
   chip, live state, *Finished 3m ago*), the selected agent's terminal mirrored
   **live and fully interactive** on the right.
-- **Columns** — a **wall of live terminals**, one column per worktree under a
-  single *project · branch* header (a project's columns share its hue), every agent
-  a card you can type into. The focused terminal takes whatever height its column
-  has left; the shared column width is resizable, with horizontal scroll when they
-  overflow.
-- **Click** a row to mirror it; the **jump icon** teleports you straight to that
-  pane in its workspace. `Esc` in a focused terminal reaches the agent as an
-  interrupt; otherwise it leaves the dashboard.
+- **Terminals** — a **wall of live terminals**: a header strip lists every running
+  agent as a chip (state indicator, name, *project · branch*), and clicking one puts
+  its terminal on the wall — up to **four at once**, each fully typeable. The wall is
+  the terminal's own split tree, so you **drag a seam** to resize and **drag a tile's
+  grip** onto another to rearrange or swap, exactly as in a workspace tab.
+- **Click** a row (or a tile's band) to make it the keyboard's; the **jump icon**
+  teleports you straight to that pane in its workspace. `Esc` in a focused terminal
+  reaches the agent as an interrupt; otherwise it leaves the dashboard.
 
 <p align="center">
   <img src="specs/screenshots/agents-list.png" alt="Helm — the agents dashboard, List view: agents grouped by project with the selected terminal mirrored live" width="960">
   <br>
-  <img src="specs/screenshots/agents-columns.png" alt="Helm — the agents dashboard, Columns view: a wall of live agent terminals, one column per worktree" width="960">
+  <img src="specs/screenshots/agents-terminals.png" alt="Helm — the agents dashboard, Terminals view: a wall of live agent terminals picked from the header strip" width="960">
 </p>
 
 ---

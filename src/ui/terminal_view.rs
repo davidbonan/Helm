@@ -30,6 +30,10 @@ const GRIP_W: f32 = 26.0;
 const GRIP_H: f32 = 14.0;
 const GRIP_TOP: f32 = 3.0;
 const GRIP_ICON: f32 = 13.0;
+/// Room the grip takes at a pane's top-right corner. A pane that draws its own chrome
+/// up there (the agents wall's status band) keeps this much clear of it, so the two
+/// affordances never sit on top of each other.
+pub const GRIP_RESERVE: f32 = GRIP_W + 2.0 * GRIP_TOP;
 /// Half-extent (per axis, as a fraction of the target pane) of the central
 /// "swap" zone of a drop target; outside it the nearest edge picks the re-split
 /// side.
@@ -901,140 +905,6 @@ pub fn terminal_view_readonly(
     }
 }
 
-/// Glanceable progress preview for the agents dashboard's collapsed cards: the
-/// agent's last few **conversation** rows at readable native size, left-aligned and
-/// clipped to the card width with a soft right-edge fade. The agent's chrome is
-/// dropped (see [`condense_preview_rows`]) — its bottom composer / status block and
-/// any box-framed startup banner left on screen — so a condensed glance shows what
-/// the agent is *doing*, not its input UI; the header badge already carries the live
-/// state. The pane is never resized; takes no focus, draws no cursor, forwards
-/// nothing; hugs the rows it shows.
-pub fn terminal_view_preview(
-    ui: &mut egui::Ui,
-    grid: &SharedTerm,
-    palette: &TermPalette,
-    font_size: f32,
-    lines: usize,
-) {
-    let mut snap = snapshot(grid, palette);
-    let rows = std::mem::take(&mut snap.rows);
-    snap.rows = condense_preview_rows(rows, snap.cursor_line, lines);
-    snap.cursor_line = usize::MAX; // static preview, no cursor
-
-    let (char_w, row_h) = cell_metrics(ui.ctx(), font_size);
-    let width = ui.available_width().max(1.0);
-    let area = egui::vec2(width, snap.rows.len() as f32 * row_h);
-    let (rect, _) = ui.allocate_exact_size(area, egui::Sense::hover());
-    if snap.rows.is_empty() {
-        return;
-    }
-    // Clip to the card width: a transcript line wider than the card is cut at the
-    // right edge (left-aligned content stays readable) rather than forcing the
-    // column wider or bleeding over the next card. Intersect with the inherited clip
-    // so a card scrolled under the sidebar stays clipped to the scroll viewport
-    // instead of painting over it.
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    paint_grid(
-        &mut child, &snap, area, char_w, row_h, font_size, palette, false, false,
-    );
-    paint_right_fade(ui.painter(), rect, rgb(palette.background));
-    // A collapsed card is never the keyboard target, so its preview carries the same
-    // dim an unfocused split does: the wall then recedes uniformly, collapsed previews
-    // and mirrored terminals alike, behind the one active terminal.
-    let bg = palette.background;
-    ui.painter().rect_filled(
-        rect,
-        0.0,
-        egui::Color32::from_rgba_unmultiplied(bg.r, bg.g, bg.b, UNFOCUSED_DIM_ALPHA),
-    );
-}
-
-/// Reduces a snapshot's rows to the condensed preview a collapsed card shows: drop
-/// the bottom chrome block from the composer down, then keep only **conversation**
-/// — blank lines and box-framed chrome (the composer itself, and any top startup
-/// banner still on screen) fall out — and finally keep the last `lines` of it.
-fn condense_preview_rows(
-    mut rows: Vec<Vec<CellView>>,
-    cursor_line: usize,
-    lines: usize,
-) -> Vec<Vec<CellView>> {
-    rows.truncate(composer_block_top(&rows, cursor_line));
-    rows.retain(|row| row.iter().any(CellView::has_ink) && !is_box_part(row));
-    if rows.len() > lines {
-        rows.drain(..rows.len() - lines);
-    }
-    rows
-}
-
-/// First row of an agent TUI's bottom **chrome block** — its composer (boxed for
-/// Claude Code, a bare prompt line for Codex) plus the status / hint lines under it
-/// — so a condensed preview can drop everything from there down and keep only the
-/// conversation above. The **cursor** is the generic anchor (no per-agent parsing):
-/// it lives in the input composer, always pinned to the bottom of the screen. We
-/// trust it only when it actually sits in the lower half — a cursor parked high
-/// (fresh banner, no input yet) is not a composer — and then walk up over any
-/// box-walled rows above it to clear a multi-line boxed composer's top edge.
-/// Returns `rows.len()` (cut nothing here) when the cursor is unusable.
-fn composer_block_top(rows: &[Vec<CellView>], cursor_line: usize) -> usize {
-    if cursor_line >= rows.len() || cursor_line * 2 < rows.len() {
-        return rows.len();
-    }
-    let mut top = cursor_line;
-    while top > 0 && is_box_part(&rows[top - 1]) {
-        top -= 1;
-    }
-    top
-}
-
-/// A row whose inked content is at least half box-drawing glyphs — a composer's
-/// `╭─╮` / `╰─╯` border, or the `│ … │` walls of a near-empty input line.
-fn is_box_dominated(row: &[CellView]) -> bool {
-    let mut inked = 0usize;
-    let mut box_glyphs = 0usize;
-    for cell in row {
-        if !cell.has_ink() {
-            continue;
-        }
-        inked += 1;
-        if is_box_drawing(cell.c) {
-            box_glyphs += 1;
-        }
-    }
-    inked > 0 && box_glyphs * 2 >= inked
-}
-
-/// Part of the composer box: a box-dominated border, or a **box-walled** input row
-/// whose first and last inked cells are both box-drawing (`│ > … │`).
-fn is_box_part(row: &[CellView]) -> bool {
-    if is_box_dominated(row) {
-        return true;
-    }
-    let first = row.iter().find(|c| c.has_ink());
-    let last = row.iter().rev().find(|c| c.has_ink());
-    matches!((first, last), (Some(f), Some(l)) if is_box_drawing(f.c) && is_box_drawing(l.c))
-}
-
-fn is_box_drawing(c: char) -> bool {
-    matches!(c, '\u{2500}'..='\u{259F}')
-}
-
-/// Fades the right edge of `rect` to `bg` so a transcript line clipped at the card
-/// edge trails off instead of cutting hard.
-fn paint_right_fade(painter: &egui::Painter, rect: egui::Rect, bg: egui::Color32) {
-    let fade_w = (rect.width() * 0.18).clamp(12.0, 32.0);
-    let x0 = rect.right() - fade_w;
-    let transparent = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 0);
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(egui::pos2(x0, rect.top()), transparent);
-    mesh.colored_vertex(egui::pos2(rect.right(), rect.top()), bg);
-    mesh.colored_vertex(egui::pos2(rect.right(), rect.bottom()), bg);
-    mesh.colored_vertex(egui::pos2(x0, rect.bottom()), transparent);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    painter.add(egui::Shape::mesh(mesh));
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn terminal_view(
     ui: &mut egui::Ui,
@@ -1786,6 +1656,7 @@ fn enter_pressed(ui: &egui::Ui) -> bool {
 /// exact seam grabbed, never the nearest same-orientation split (that "nearest"
 /// rule is the keyboard semantics, wrong for a pointed seam). `delta` is the
 /// signed per-frame ratio change in that split's local extent.
+#[derive(Clone, Copy)]
 pub struct ResizeDrag {
     pub first: PaneId,
     pub second: PaneId,
@@ -2142,79 +2013,6 @@ mod tests {
                 char_w,
             )
         })
-    }
-
-    fn row(s: &str) -> Vec<CellView> {
-        s.chars().map(cv).collect()
-    }
-
-    fn preview_texts(rows: Vec<Vec<CellView>>, cursor: usize, lines: usize) -> Vec<String> {
-        condense_preview_rows(rows, cursor, lines)
-            .iter()
-            .map(|r| r.iter().map(|c| c.c).collect())
-            .collect()
-    }
-
-    #[test]
-    fn preview_drops_a_boxed_composer_anchored_on_the_cursor() {
-        // Claude Code: conversation, then a boxed composer holding the cursor, then
-        // status / hint lines below it — all of it must fall away.
-        let rows = vec![
-            row("> fix the failing billing test"),
-            row(""),
-            row("\u{23fa} Update src/billing/proration.rs (+18 -7)"),
-            row("\u{256d}\u{2500}\u{2500}\u{2500}\u{256e}"),
-            row("\u{2502} > _ \u{2502}"),
-            row("\u{2570}\u{2500}\u{2500}\u{2500}\u{256f}"),
-            row("  ? for shortcuts"),
-            row("  \u{273b} Crunching..."),
-        ];
-        assert_eq!(
-            preview_texts(rows, 4, 9),
-            [
-                "> fix the failing billing test",
-                "\u{23fa} Update src/billing/proration.rs (+18 -7)",
-            ]
-        );
-    }
-
-    #[test]
-    fn preview_strips_a_top_banner_and_a_non_boxed_composer() {
-        // Codex: a top startup banner box, conversation, then a bare prompt composer
-        // holding the cursor with a status line under it (no box around the input).
-        let rows = vec![
-            row("\u{256d}\u{2500}\u{2500}\u{2500}\u{256e}"),
-            row("\u{2502} Update available! 0.139 -> 0.141 \u{2502}"),
-            row("\u{2570}\u{2500}\u{2500}\u{2500}\u{256f}"),
-            row(""),
-            row("\u{2022} explain the worktree grouping"),
-            row("  helm groups a root with its worktrees"),
-            row(""),
-            row("\u{203a} summarize recent commits"),
-            row("  gpt-5.5 xhigh - ~/dev/helm-studio"),
-        ];
-        assert_eq!(
-            preview_texts(rows, 7, 9),
-            [
-                "\u{2022} explain the worktree grouping",
-                "  helm groups a root with its worktrees",
-            ]
-        );
-    }
-
-    #[test]
-    fn preview_keeps_the_transcript_when_the_cursor_is_parked_high() {
-        // Fresh session: a banner is on screen and the cursor is still up in it (no
-        // input yet). The cursor is not a composer anchor, so nothing is cut from
-        // the bottom — only box chrome and blanks drop.
-        let rows = vec![
-            row("\u{256d}\u{2500}\u{2500}\u{2500}\u{256e}"),
-            row("\u{2502} welcome \u{2502}"),
-            row("\u{2570}\u{2500}\u{2500}\u{2500}\u{256f}"),
-            row(""),
-            row("ready when you are"),
-        ];
-        assert_eq!(preview_texts(rows, 1, 9), ["ready when you are"]);
     }
 
     #[test]

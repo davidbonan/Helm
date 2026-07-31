@@ -392,7 +392,7 @@ impl HelmApp {
     /// unset or stale (its tab/pane closed), auto-selects the most urgent agent
     /// (Working > Done > Idle, ties by workspace order) so the dashboard opens on
     /// a populated panel. Returns the triple to mirror, or `None` when none runs.
-    fn resolve_selected_agent(&mut self) -> Option<(RepoKey, TabId, PaneId)> {
+    pub(super) fn resolve_selected_agent(&mut self) -> Option<(RepoKey, TabId, PaneId)> {
         let valid = self.selected_agent.as_ref().is_some_and(|(rk, tid, pid)| {
             self.caches
                 .agents
@@ -409,6 +409,26 @@ impl HelmApp {
                 .map(|(_, e)| (e.repo_key.clone(), e.tab_id, e.pane_id));
         }
         self.selected_agent.clone()
+    }
+
+    /// Applies a header-chip click (specs/agents.md §5): puts that agent's terminal on
+    /// the wall, or takes it off when it is already there. Showing one makes it the
+    /// active tile — the keyboard follows it there; hiding one hands the keyboard to the
+    /// sibling that took its room. A full wall refuses, and the chip that would overflow
+    /// it is drawn disabled, so this is only reached with a slot free.
+    pub(super) fn toggle_wall_agent(&mut self, index: usize, area: egui::Rect) {
+        let Some(entry) = self.caches.agents.get(index) else {
+            return;
+        };
+        let key = (entry.repo_key.clone(), entry.tab_id, entry.pane_id);
+        if self.agents_wall.shows(&key) {
+            self.agents_wall.hide(&key);
+            if let Some(next) = self.agents_wall.focused().cloned() {
+                self.selected_agent = Some(next);
+            }
+        } else if self.agents_wall.show(key.clone(), rect(area)).is_some() {
+            self.selected_agent = Some(key);
+        }
     }
 
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) -> FrameKeys {
@@ -822,17 +842,16 @@ impl HelmApp {
         let mut agents_select = None;
         let mut agents_focus = None;
         let mut agents_set_view = None;
-        let mut agents_set_column_width = None;
-        // Column view: a clicked column terminal becomes the single focused agent
-        // next frame (merged into `agents_select`).
-        let mut terminal_click = None;
+        let mut agents_toggle = None;
+        let mut agents_wall_rect = None;
+        let mut agents_resize = None;
+        let mut agents_drop = None;
         let agents_view = self.agents_view;
-        let agents_column_width = self.agents_column_width;
         // Set by the dashboard's mirrored terminal when it holds egui focus: gates
         // `Esc` (it must reach the agent as interrupt, not close the dashboard).
         let mut agents_terminal_focused = false;
-        // `agent_keys` is index-aligned with `agent_rows`: the column view mirrors
-        // each agent's live pane via `caches.panes[(repo, tab)][pane]`.
+        // `agent_keys` is index-aligned with `agent_rows`: both views mirror an agent's
+        // live pane via `caches.panes[(repo, tab)][pane]`.
         let (agent_rows, agent_keys): (
             Vec<crate::ui::agents_view::AgentRow>,
             Vec<(RepoKey, TabId, PaneId)>,
@@ -864,7 +883,6 @@ impl HelmApp {
                             },
                             worktree_id,
                             lane: lane_of_repo.get(worktree_id).copied().unwrap_or(0),
-                            stats: self.caches.dirty.get(&e.repo_key).copied(),
                         },
                         (e.repo_key.clone(), e.tab_id, e.pane_id),
                     )
@@ -873,6 +891,31 @@ impl HelmApp {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Field-by-field (not through `&mut self`): `agent_rows` borrows
+        // `self.caches.agents` for the whole frame.
+        sync_agents_wall(
+            &mut self.agents_wall,
+            &mut self.agents_wall_seeded,
+            &agent_keys,
+            selected_agent.as_ref(),
+            agents_active,
+        );
+        // Slot → row for the frame: the wall keys agents by their stable triple, the
+        // view addresses them by their row. The tree is cloned (a handful of nodes) so
+        // the render closure holds no borrow on the app.
+        let wall_slots: Vec<(PaneId, usize)> = self
+            .agents_wall
+            .slots()
+            .iter()
+            .filter_map(|(slot, key)| {
+                agent_keys
+                    .iter()
+                    .position(|k| k == key)
+                    .map(|row| (*slot, row))
+            })
+            .collect();
+        let wall_layout = self.agents_wall.layout().cloned();
+        let wall_full = self.agents_wall.full();
         let mut open_feedback_request = false;
         let mut open_dialog_requested = false;
         let mut open_link: Option<LinkAction> = None;
@@ -1162,47 +1205,41 @@ impl HelmApp {
                         // The cross-repo dashboard owns the whole central area; it
                         // takes priority over the per-repo diff overlay.
                         else if central_mode == CentralMode::Agents {
+                            let wall = crate::ui::agents_view::WallView {
+                                layout: wall_layout.as_ref(),
+                                slots: &wall_slots,
+                                full: wall_full,
+                            };
                             let action = crate::ui::agents_view::agents_page(
                                 ui,
                                 &palette,
                                 &agent_rows,
                                 selected_index,
                                 agents_view,
-                                agents_column_width,
-                                |idx, term_ui, view| match view {
-                                    crate::ui::agents_view::TermView::Full => {
-                                        if mirror_agent_terminal(
-                                            term_ui,
-                                            panes_all,
-                                            &agent_keys,
-                                            idx,
-                                            selected_agent.as_ref(),
-                                            font_size,
-                                            &term_palette,
-                                            &palette,
-                                            clear_shortcut,
-                                            &mut agents_terminal_focused,
-                                            &mut open_link,
-                                        ) {
-                                            terminal_click = Some(idx);
-                                        }
-                                    }
-                                    crate::ui::agents_view::TermView::Preview => {
-                                        mirror_agent_preview(
-                                            term_ui,
-                                            panes_all,
-                                            &agent_keys,
-                                            idx,
-                                            font_size,
-                                            &term_palette,
-                                        );
-                                    }
+                                &wall,
+                                |idx, term_ui| {
+                                    mirror_agent_terminal(
+                                        term_ui,
+                                        panes_all,
+                                        &agent_keys,
+                                        idx,
+                                        selected_agent.as_ref(),
+                                        font_size,
+                                        &term_palette,
+                                        &palette,
+                                        clear_shortcut,
+                                        &mut agents_terminal_focused,
+                                        &mut open_link,
+                                    )
                                 },
                             );
                             agents_set_view = action.set_view;
-                            agents_set_column_width = action.set_column_width;
-                            agents_select = action.select.or(terminal_click);
+                            agents_select = action.select;
                             agents_focus = action.jump;
+                            agents_toggle = action.toggle;
+                            agents_wall_rect = action.wall_rect;
+                            agents_resize = action.resize;
+                            agents_drop = action.drop;
                         }
                         // The PR cockpit owns the central area like the dashboard, so
                         // the term/graph switch is suppressed and it takes priority
@@ -2049,47 +2086,41 @@ impl HelmApp {
                     |_ui| {},
                     |ui| {
                         if agents_active {
+                            let wall = crate::ui::agents_view::WallView {
+                                layout: wall_layout.as_ref(),
+                                slots: &wall_slots,
+                                full: wall_full,
+                            };
                             let action = crate::ui::agents_view::agents_page(
                                 ui,
                                 &palette,
                                 &agent_rows,
                                 selected_index,
                                 agents_view,
-                                agents_column_width,
-                                |idx, term_ui, view| match view {
-                                    crate::ui::agents_view::TermView::Full => {
-                                        if mirror_agent_terminal(
-                                            term_ui,
-                                            panes_all,
-                                            &agent_keys,
-                                            idx,
-                                            selected_agent.as_ref(),
-                                            font_size,
-                                            &term_palette,
-                                            &palette,
-                                            clear_shortcut,
-                                            &mut agents_terminal_focused,
-                                            &mut open_link,
-                                        ) {
-                                            terminal_click = Some(idx);
-                                        }
-                                    }
-                                    crate::ui::agents_view::TermView::Preview => {
-                                        mirror_agent_preview(
-                                            term_ui,
-                                            panes_all,
-                                            &agent_keys,
-                                            idx,
-                                            font_size,
-                                            &term_palette,
-                                        );
-                                    }
+                                &wall,
+                                |idx, term_ui| {
+                                    mirror_agent_terminal(
+                                        term_ui,
+                                        panes_all,
+                                        &agent_keys,
+                                        idx,
+                                        selected_agent.as_ref(),
+                                        font_size,
+                                        &term_palette,
+                                        &palette,
+                                        clear_shortcut,
+                                        &mut agents_terminal_focused,
+                                        &mut open_link,
+                                    )
                                 },
                             );
                             agents_set_view = action.set_view;
-                            agents_set_column_width = action.set_column_width;
-                            agents_select = action.select.or(terminal_click);
+                            agents_select = action.select;
                             agents_focus = action.jump;
+                            agents_toggle = action.toggle;
+                            agents_wall_rect = action.wall_rect;
+                            agents_resize = action.resize;
+                            agents_drop = action.drop;
                         } else if pr_active {
                             let mut review_view = pr_review_local
                                 .as_mut()
@@ -2368,6 +2399,47 @@ impl HelmApp {
         if let Some(index) = agents_focus {
             self.focus_agent(index, ctx);
         }
+        if let Some(index) = agents_toggle {
+            self.toggle_wall_agent(index, agents_wall_rect.unwrap_or(egui::Rect::ZERO));
+            ctx.request_repaint();
+        }
+        // Wall relayout — the split tree's own gestures and chords (terminal.md §5,
+        // keybindings §2), applied to the wall's tree exactly as the workspace applies
+        // them to a tab's.
+        if agents_active {
+            // A grip drag carries the focus with the pane it moves, and a focus chord
+            // moves it outright: either way the dashboard's selection follows the tree.
+            let mut focus_moved = agents_drop.is_some();
+            if let (Some(area), Some(layout)) = (agents_wall_rect, self.agents_wall.layout_mut()) {
+                let (cell_w, cell_h) = cell_metrics(ctx, font_size);
+                if let Some(drag) = agents_resize {
+                    layout.resize_split(
+                        drag.first,
+                        drag.second,
+                        drag.delta,
+                        rect(area),
+                        cell_w,
+                        cell_h,
+                    );
+                }
+                if let Some(drop) = agents_drop {
+                    match drop.zone {
+                        crate::ui::terminal_view::DropZone::Swap => {
+                            layout.swap_panes(drop.src, drop.target)
+                        }
+                        crate::ui::terminal_view::DropZone::Side(side) => {
+                            layout.move_pane(drop.src, drop.target, side)
+                        }
+                    }
+                }
+                focus_moved |= route_wall_keys(ctx, &self.keymap, layout, area, font_size);
+            }
+            if focus_moved {
+                if let Some(key) = self.agents_wall.focused().cloned() {
+                    self.selected_agent = Some(key);
+                }
+            }
+        }
         if let Some(view) = agents_set_view {
             self.agents_view = view;
             self.persist(move |prefs| Prefs {
@@ -2379,13 +2451,6 @@ impl HelmApp {
             self.git_file_view = view;
             self.persist(move |prefs| Prefs {
                 git_file_view: view,
-                ..prefs
-            });
-        }
-        if let Some(width) = agents_set_column_width {
-            self.agents_column_width = width;
-            self.persist(move |prefs| Prefs {
-                agents_column_width: width,
                 ..prefs
             });
         }
@@ -2963,6 +3028,39 @@ fn project_root_label(root: &Path) -> String {
         .unwrap_or_else(|| root.display().to_string())
 }
 
+/// Keeps the Terminals wall in step with what is running (specs/agents.md §5), and with
+/// the page's selection. Off screen it only rearms the seed — `live` is empty then, and
+/// pruning against it would wipe a wall the user set up. On screen: an agent that stopped
+/// running loses its tile; the **first** frame of a visit seeds an empty wall with the
+/// selected agent, so the view never opens on an empty grid, while a wall the user emptied
+/// afterwards stays empty for the rest of the visit; and the tree's focus tracks the
+/// selection, so the wall marks the tile the keyboard drives.
+///
+/// Takes the two fields rather than `&mut self`: the frame's agent rows borrow
+/// `caches.agents` throughout.
+pub(super) fn sync_agents_wall<K: Clone + PartialEq>(
+    wall: &mut crate::agents_wall::AgentWall<K>,
+    seeded: &mut bool,
+    live: &[K],
+    selected: Option<&K>,
+    on_screen: bool,
+) {
+    if !on_screen {
+        *seeded = false;
+        return;
+    }
+    wall.retain(|key| live.contains(key));
+    if !*seeded {
+        *seeded = true;
+        if let (true, Some(key)) = (wall.is_empty(), selected) {
+            wall.show(key.clone(), rect(egui::Rect::ZERO));
+        }
+    }
+    if let Some(key) = selected {
+        wall.set_focus(key);
+    }
+}
+
 /// Mirrors agent `idx`'s live pane into a dashboard card (list panel or column
 /// terminal). `focused` is true for the single `selected` agent; clicking an
 /// unfocused card returns `true` so the caller can promote it. Missing keys or
@@ -3001,36 +3099,6 @@ fn mirror_agent_terminal(
         any_focused,
         open_link,
     )
-}
-
-/// Read-only progress preview of an agent's pane for a collapsed Columns card: its
-/// last lines, scaled to fit the card (the pane is kept visible so its reader stays
-/// live, but never resized — only the expanded card drives a PTY resize).
-fn mirror_agent_preview(
-    ui: &mut egui::Ui,
-    panes: &mut HashMap<PaneKey, Panes>,
-    keys: &[(RepoKey, TabId, PaneId)],
-    idx: usize,
-    font_size: f32,
-    term_palette: &TermPalette,
-) {
-    let Some((rk, tid, pid)) = keys.get(idx) else {
-        return;
-    };
-    let Some(panes) = panes.get_mut(&(rk.clone(), *tid)) else {
-        return;
-    };
-    if let Some(TerminalState::Live(pane)) = panes.get_mut(pid) {
-        pane.set_visible(true);
-        pane.set_reply_palette(*term_palette);
-        terminal_view_preview(
-            ui,
-            pane.grid(),
-            term_palette,
-            font_size,
-            crate::ui::agents_view::AGENT_PREVIEW_LINES,
-        );
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

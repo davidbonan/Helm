@@ -3,6 +3,7 @@ use super::keys::{
     git_command, layout_command, open_agents_command, positional_key, select_repo_command,
     select_tab_command, tab_action, zoom_command, FocusZone, LayoutCommand, TabAction, ZoomCommand,
 };
+use super::render::sync_agents_wall;
 use super::*;
 use crate::persistence::Project;
 
@@ -903,6 +904,135 @@ fn empty_workspace_has_no_panes() {
 
 fn app_with(names: &[&str]) -> HelmApp {
     HelmApp::with_workspace(workspace_with(names))
+}
+
+/// Agents dashboard fixture: `agent` entries on the first repo's first tab, one per
+/// pane id, in the order given. Mirrors what the agent watch rebuilds each tick.
+fn app_with_agents(agents: &[(&'static str, AgentBadge)]) -> HelmApp {
+    let mut app = app_with(&["a"]);
+    let (repo_key, tab_id) = key_of(&app.workspace, 0, 0);
+    app.caches.agents = agents
+        .iter()
+        .enumerate()
+        .map(|(i, (agent, badge))| crate::app::git_session::AgentEntry {
+            repo_key: repo_key.clone(),
+            group_name: "a".to_owned(),
+            branch: Some("main".to_owned()),
+            tab_id,
+            tab_name: format!("Tab {}", i + 1),
+            pane_id: PaneId(i as u32),
+            agent,
+            badge: *badge,
+            last_output_ms: 0,
+        })
+        .collect();
+    app
+}
+
+fn agent_keys(app: &HelmApp) -> Vec<(RepoKey, TabId, PaneId)> {
+    app.caches
+        .agents
+        .iter()
+        .map(|e| (e.repo_key.clone(), e.tab_id, e.pane_id))
+        .collect()
+}
+
+#[test]
+fn opening_the_dashboard_seeds_the_wall_with_the_selected_agent() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Idle), ("codex", AgentBadge::Working)]);
+    let keys = agent_keys(&app);
+    // The page resolves its selection first (most urgent = the Working one), then the
+    // wall syncs: an empty wall opens on that agent, not on nothing.
+    let selected = app.resolve_selected_agent();
+    assert_eq!(selected.as_ref(), Some(&keys[1]));
+    sync_agents_wall(
+        &mut app.agents_wall,
+        &mut app.agents_wall_seeded,
+        &keys,
+        selected.as_ref(),
+        true,
+    );
+    assert_eq!(app.agents_wall.len(), 1);
+    assert_eq!(app.agents_wall.focused(), Some(&keys[1]));
+}
+
+#[test]
+fn a_wall_the_user_emptied_stays_empty_until_the_page_is_left() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Working)]);
+    let keys = agent_keys(&app);
+    let selected = app.resolve_selected_agent();
+    let sync = |app: &mut HelmApp, on_screen: bool| {
+        sync_agents_wall(
+            &mut app.agents_wall,
+            &mut app.agents_wall_seeded,
+            &keys,
+            selected.as_ref(),
+            on_screen,
+        )
+    };
+    sync(&mut app, true);
+    assert_eq!(app.agents_wall.len(), 1);
+    // Hiding the last tile is an answer, not a gap: further frames leave it empty.
+    app.agents_wall.hide(&keys[0]);
+    sync(&mut app, true);
+    sync(&mut app, true);
+    assert!(app.agents_wall.is_empty());
+    // Leaving the dashboard rearms the seed, so the next visit opens populated again.
+    sync(&mut app, false);
+    sync(&mut app, true);
+    assert_eq!(app.agents_wall.len(), 1);
+}
+
+#[test]
+fn an_agent_that_stops_running_loses_its_tile() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Working), ("codex", AgentBadge::Idle)]);
+    let keys = agent_keys(&app);
+    for key in &keys {
+        app.agents_wall.show(key.clone(), rect(egui::Rect::ZERO));
+    }
+    assert_eq!(app.agents_wall.len(), 2);
+    // Its pane closed (or the agent left the foreground): the watch drops the entry.
+    app.caches.agents.remove(1);
+    let live = agent_keys(&app);
+    sync_agents_wall(
+        &mut app.agents_wall,
+        &mut app.agents_wall_seeded,
+        &live,
+        Some(&keys[0]),
+        true,
+    );
+    assert_eq!(app.agents_wall.len(), 1);
+    assert!(app.agents_wall.shows(&keys[0]));
+    // Off screen the wall is left alone — `live` is empty then, and pruning against it
+    // would wipe a wall the user set up.
+    sync_agents_wall(
+        &mut app.agents_wall,
+        &mut app.agents_wall_seeded,
+        &[],
+        None,
+        false,
+    );
+    assert_eq!(app.agents_wall.len(), 1);
+}
+
+#[test]
+fn a_chip_toggles_its_terminal_onto_the_wall_and_off_again() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Working), ("codex", AgentBadge::Idle)]);
+    let keys = agent_keys(&app);
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+    app.toggle_wall_agent(0, area);
+    app.toggle_wall_agent(1, area);
+    assert_eq!(app.agents_wall.len(), 2);
+    // Showing an agent makes it the active tile — the keyboard follows it there.
+    assert_eq!(app.selected_agent.as_ref(), Some(&keys[1]));
+    // Hiding it hands the keyboard to the sibling that took its room.
+    app.toggle_wall_agent(1, area);
+    assert!(!app.agents_wall.shows(&keys[1]));
+    assert_eq!(app.selected_agent.as_ref(), Some(&keys[0]));
+    // An index no longer in the list (the watch rebuilt between click and apply) is a
+    // no-op, not a panic.
+    app.toggle_wall_agent(9, area);
+    assert_eq!(app.agents_wall.len(), 1);
 }
 
 #[test]
@@ -2575,7 +2705,6 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         editor: Editor::default(),
         notify_on_agent_completion: true,
         agents_view: crate::ui::agents_view::AgentsViewMode::default(),
-        agents_column_width: 672.0,
         git_file_view: crate::ui::file_list::FileViewMode::default(),
         run_panel_height: 200.0,
         run_panel_collapsed: false,

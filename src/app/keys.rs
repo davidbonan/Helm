@@ -423,3 +423,47 @@ pub fn route_layout_keys(
         }
     }
 }
+
+/// Routes the **wall**'s share of the terminal shortcuts (§2) to the agents dashboard's
+/// own tree: the geometric focus moves and the seam resizes, the two that mean the same
+/// thing on a wall of mirrored panes. Split and close are deliberately not routed — a
+/// tile mirrors an agent the tree neither creates nor kills, and the header chips are
+/// what put one on the wall or take it off. Returns whether the focus moved, so the
+/// caller can follow it with the dashboard's selection.
+pub(crate) fn route_wall_keys(
+    ctx: &egui::Context,
+    keymap: &Keymap,
+    layout: &mut Layout,
+    area: egui::Rect,
+    font_size: f32,
+) -> bool {
+    let commands: Vec<LayoutCommand> = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => layout_command(keymap, *key, *modifiers),
+                _ => None,
+            })
+            .collect()
+    });
+    if commands.is_empty() {
+        return false;
+    }
+    let (cell_w, cell_h) = cell_metrics(ctx, font_size);
+    let area = rect(area);
+    let before = layout.focus();
+    for command in commands {
+        match command {
+            LayoutCommand::Focus(dir) => layout.focus_neighbor(dir, area),
+            LayoutCommand::Resize(dir) => layout.resize(dir, area, cell_w, cell_h),
+            LayoutCommand::Split(_) | LayoutCommand::Close => {}
+        }
+    }
+    layout.focus() != before
+}

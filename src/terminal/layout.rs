@@ -39,6 +39,10 @@ pub struct Rect {
     pub h: f32,
 }
 
+/// `Clone` so a caller can hand a snapshot of the tree to a renderer without keeping
+/// the owner borrowed for the frame (the agents wall does, `agents_wall`): a tree is a
+/// handful of nodes, no pane state hangs off it.
+#[derive(Clone)]
 pub struct Layout {
     root: Node,
     focus: PaneId,

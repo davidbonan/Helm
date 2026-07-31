@@ -6,6 +6,49 @@
 
 ---
 
+## ☑ Milestone — M-Wall · Agents dashboard: the Terminals wall
+
+Spec: [`specs/agents.md`](../agents.md) §5 (+ [`keybindings.md`](../keybindings.md) §2).
+The dashboard's second view is no longer a column per worktree: a **header strip** of
+chips (one per running agent, with its state indicator) over a **wall** of the mirrored
+terminals picked from it — at most 4 — laid out by the terminal's own split tree, so its
+seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
+
+- ☑ **T1 — Domain `src/agents_wall.rs`.** `AgentWall<K>` (`MAX_SHOWN = 4`): `show`
+  (splits the roomiest tile across its longer axis), `hide`, `toggle`, `retain`,
+  `slot_of`/`key_of`, `focused`/`set_focus`, over `terminal::layout::Layout` (now
+  `Clone`). Session state, not persisted. *Tests*: 14 unit (tile shapes for 1–4, cap
+  refused, freed slot reused, focus handoff, prune).
+- ☑ **T2 — View `src/ui/agents_view.rs`.** `AgentsViewMode::Terminals` (serde token
+  `columns` kept), `WallView`, `render_terminals` = `agent_chips` (wrapped, scrolling,
+  disabled past the cap) + `render_wall` via `terminal_tree`; `wall_tile` = status band
+  (indicator, agent, `project · branch`, tab, caption, jump icon clear of the grip's
+  corner) over the mirrored pane. `AgentsPageAction` gains `toggle` / `wall_rect` /
+  `resize` / `drop`. The whole columns implementation, `TermView`, `AgentRow.stats` and
+  `terminal_view_preview` are gone. *Tests*: `tests/it/ui_agents_view.rs` 22 (chips,
+  toggle both ways, cap, mirrors, tile geometry, band/jump split, seam drag, grip drop).
+- ☑ **T3 — App wiring.** `HelmApp::agents_wall` + `agents_wall_seeded`;
+  `sync_agents_wall` (prune to live agents, seed the first frame of a visit, focus
+  follows the selection), `toggle_wall_agent`, seam/drop applied to the wall's tree,
+  `route_wall_keys` (focus + resize chords only). `Prefs.agents_column_width` dropped.
+  *Tests*: `src/app/tests.rs` 4 (seed, emptied wall stays empty until the page is left,
+  agent that stops loses its tile, chip toggle moves the selection).
+- ☑ **T4 — Spec + README.** `agents.md` §5 rewritten, `keybindings.md` §2 (wall chords),
+  README bullet + `specs/screenshots/agents-terminals.png` (regenerated,
+  `gen_agents_terminals`).
+- ☑ **T5 — Verification.** Gate green (`fmt`, `clippy --all-targets -D warnings`, 1987
+  tests). Real app via `headless-verify`: `Cmd+Ctrl+0` → the `List | Terminals` switch,
+  Terminals selected, page renders, no-agents empty state —
+  `verify-artifacts/20260731_145554_38087/`. A **populated** wall cannot be driven in the
+  real app (no agent process in a fixture, `caches.agents` is crate-private): covered by
+  the 22 kittest e2e on `agents_page` + the wgpu shot of the real widgets.
+
+### Next actions (M-Wall)
+- Done. Deliberately out: persisting which agents are shown (session state by design),
+  hover previews for the agents left off the wall, `Cmd+W` as "hide the active tile".
+
+---
+
 ## ☑ Milestone — M-Edit · Edit the file from the diff
 
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,

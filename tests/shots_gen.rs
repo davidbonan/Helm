@@ -1,6 +1,6 @@
 //! Screenshot generator for the README (run on demand, not part of the gate):
 //!   cargo test --features headless-verify --test shots_gen -- --nocapture
-//! Renders the cross-repo agents dashboard (List + Columns) with authentic
+//! Renders the cross-repo agents dashboard (List + Terminals wall) with authentic
 //! terminal content fed through the real emulator, and saves PNGs under
 //! verify-artifacts/shots/. Deterministic — no PTY, no timing.
 #![cfg(feature = "headless-verify")]
@@ -24,7 +24,7 @@ use helm::terminal::layout::{Layout, Orient, PaneId};
 use helm::terminal::links::Editor;
 use helm::terminal::palette::TermPalette;
 use helm::theme::Palette;
-use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, TermView, AGENT_PREVIEW_LINES};
+use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, WallView};
 use helm::ui::ai_rebase_modal::{ai_rebase_modal, AiRebasePage};
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState};
 use helm::ui::diff_view::{diff_view, DiffSurface, DiffViewState};
@@ -41,7 +41,7 @@ use helm::ui::repo_sidebar::{
     SidebarAction, SidebarItem,
 };
 use helm::ui::tab_bar::{tab_bar, TabBarAction};
-use helm::ui::terminal_view::{terminal_tree, terminal_view, terminal_view_preview};
+use helm::ui::terminal_view::{terminal_tree, terminal_view};
 use helm::ui::{central_switch, root_layout};
 use helm::update::UpdateState;
 use helm::workspace_launcher::WorkspaceOpener;
@@ -56,10 +56,9 @@ struct Spec {
     badge: AgentBadge,
     detail: &'static str,
     worktree_id: usize,
-    /// Project color index — the worktrees of one project share it, so their columns
-    /// carry the same hue.
+    /// Project color index — the worktrees of one project share it, so their chips and
+    /// wall bands carry the same hue.
     lane: usize,
-    stats: Option<(usize, usize)>,
     body: &'static [&'static str],
     /// Grid row (0-based) the cursor is parked on after the body is fed — the
     /// preview anchors its chrome cut on it, so it must sit in the composer.
@@ -89,7 +88,6 @@ fn specs() -> Vec<Spec> {
             detail: "Working…",
             worktree_id: 0,
             lane: 0,
-            stats: Some((128, 34)),
             body: &[
                 "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
                 "$ claude",
@@ -118,7 +116,6 @@ fn specs() -> Vec<Spec> {
             detail: "Idle",
             worktree_id: 0,
             lane: 0,
-            stats: Some((128, 34)),
             body: &[
                 "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
                 "$ aider --model sonnet",
@@ -145,7 +142,6 @@ fn specs() -> Vec<Spec> {
             detail: "Finished 3m ago",
             worktree_id: 1,
             lane: 0,
-            stats: Some((57, 9)),
             // Codex leaves its startup chrome on screen: a top "update available"
             // banner box and a boxed session-info banner, both box-framed. Its
             // composer is a *bare* prompt line (no box) with a status line under it.
@@ -185,7 +181,6 @@ fn specs() -> Vec<Spec> {
             detail: "Working…",
             worktree_id: 2,
             lane: 1,
-            stats: None,
             // A full-screen TUI at the pane's real 110-col width, ending in Claude
             // Code's bottom chrome block — a multi-row boxed composer plus mode /
             // hint / status lines under it: the condensed preview must detect and
@@ -214,7 +209,15 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
-fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: &str) {
+/// `shown` lists the rows the Terminals view mirrors, in the order they were put on the
+/// wall (ignored by the List view, which mirrors the selected row alone).
+fn render(
+    view: AgentsViewMode,
+    selected: Option<usize>,
+    shown: &[usize],
+    size: egui::Vec2,
+    out: &str,
+) {
     let palette = Palette::dark();
     let term_pal = TermPalette::dark();
     let data = specs();
@@ -228,6 +231,23 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
             t
         })
         .collect();
+
+    // The wall's own tree: one slot per shown agent, split the way the app splits it.
+    let mut wall = helm::agents_wall::AgentWall::new();
+    for row in shown {
+        wall.show(
+            *row,
+            helm::terminal::layout::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: size.x,
+                h: size.y,
+            },
+        );
+    }
+    let slots: Vec<(PaneId, usize)> = wall.slots().to_vec();
+    let wall_layout = wall.layout().cloned();
+    let wall_full = wall.full();
 
     let mut harness = Harness::builder()
         .with_size(size)
@@ -246,40 +266,26 @@ fn render(view: AgentsViewMode, selected: Option<usize>, size: egui::Vec2, out: 
                     detail: s.detail.to_owned(),
                     worktree_id: s.worktree_id,
                     lane: s.lane,
-                    stats: s.stats,
                 })
                 .collect();
-            agents_page(
-                ui,
-                &palette,
-                &rows,
-                selected,
-                view,
-                620.0,
-                |idx, tui, view| match view {
-                    TermView::Full => {
-                        terminal_view(
-                            tui,
-                            &grids[idx],
-                            &term_pal,
-                            DEFAULT_FONT_SIZE,
-                            selected == Some(idx),
-                            false,
-                            None,
-                            None,
-                        );
-                    }
-                    TermView::Preview => {
-                        terminal_view_preview(
-                            tui,
-                            &grids[idx],
-                            &term_pal,
-                            DEFAULT_FONT_SIZE,
-                            AGENT_PREVIEW_LINES,
-                        );
-                    }
-                },
-            );
+            let wall = WallView {
+                layout: wall_layout.as_ref(),
+                slots: &slots,
+                full: wall_full,
+            };
+            agents_page(ui, &palette, &rows, selected, view, &wall, |idx, tui| {
+                terminal_view(
+                    tui,
+                    &grids[idx],
+                    &term_pal,
+                    DEFAULT_FONT_SIZE,
+                    selected == Some(idx),
+                    false,
+                    None,
+                    None,
+                )
+                .clicked
+            });
         });
 
     // A Working row repaints forever (spinner) — settle a fixed number of frames.
@@ -299,18 +305,21 @@ fn gen_agents_list() {
     render(
         AgentsViewMode::List,
         Some(0),
+        &[],
         egui::vec2(1280.0, 800.0),
         "agents_list",
     );
 }
 
 #[test]
-fn gen_agents_columns() {
+fn gen_agents_terminals() {
+    // Three of the four agents on the wall: one full column, two stacked beside it.
     render(
-        AgentsViewMode::Columns,
+        AgentsViewMode::Terminals,
         Some(0),
+        &[0, 1, 2],
         egui::vec2(1920.0, 900.0),
-        "agents_columns",
+        "agents_terminals",
     );
 }
 

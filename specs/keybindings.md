@@ -59,6 +59,12 @@ reserved by macOS for screenshots).
 
 Behavior details: [`terminal.md`](terminal.md).
 
+The **agents dashboard's Terminals wall** ([`agents.md`](agents.md) §5) is the same
+split tree, so `Cmd+Alt+arrows` (focus) and `Cmd+Ctrl+arrows` (resize) drive it too
+while it is on screen. `Cmd+D` / `Cmd+Shift+D` / `Cmd+W` are **not** routed there: a
+tile mirrors an agent the tree neither creates nor kills — the header chips are what
+put a terminal on the wall or take it off.
+
 ## 3. Git & diff view
 
 | Shortcut | Action |

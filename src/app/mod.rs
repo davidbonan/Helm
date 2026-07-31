@@ -51,7 +51,7 @@ use crate::ui::repo_sidebar::{
 };
 use crate::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 use crate::ui::terminal_view::{
-    cell_metrics, terminal_tree, terminal_view, terminal_view_preview, terminal_view_readonly,
+    cell_metrics, terminal_tree, terminal_view, terminal_view_readonly,
 };
 use crate::ui::toast::{toast_overlay, ToastAction, Toasts};
 use crate::ui::{central_empty_state, central_switch, root_layout, TITLEBAR_HEIGHT};
@@ -130,6 +130,7 @@ pub fn should_refresh_pr(
 }
 
 mod keys;
+use keys::route_wall_keys;
 use keys::{action_pressed, open_agents_pressed, overlay_or_command};
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
@@ -453,15 +454,20 @@ pub struct HelmApp {
     /// is dropped (and the most urgent agent re-picked) each frame.
     selected_agent: Option<(RepoKey, TabId, PaneId)>,
     /// Cross-repo dashboard layout (specs/agents.md §5): master-detail list or the
-    /// multi-terminal column grid. Persisted; toggled from the dashboard header.
+    /// wall of mirrored terminals. Persisted; toggled from the dashboard header.
     agents_view: crate::ui::agents_view::AgentsViewMode,
+    /// Which agents the dashboard's Terminals view mirrors, and how their tiles are
+    /// laid out (specs/agents.md §5). Session state — an agent key only means
+    /// something while its pane runs, so nothing is persisted.
+    agents_wall: crate::agents_wall::AgentWall<(RepoKey, TabId, PaneId)>,
+    /// The wall is seeded with the most urgent agent when the dashboard opens, so it
+    /// never opens empty; cleared on leaving, so hiding every tile stays the user's
+    /// answer for as long as the page is up.
+    agents_wall_seeded: bool,
     /// Shared flat/tree mode of the Git file lists — WIP sections and the
     /// commit-detail "Files changed" (specs/git.md, M40). Persisted; toggled from
     /// either header.
     git_file_view: crate::ui::file_list::FileViewMode,
-    /// Shared column width of the dashboard's columns view (specs/agents.md §5),
-    /// live source for rendering; mirrored into `Prefs` on drag (persisted).
-    agents_column_width: f32,
     /// Height of the Run terminal strip in the git sidebar (git.md §3); live source
     /// for rendering, mirrored into `Prefs` on drag (persisted).
     run_panel_height: f32,
@@ -718,8 +724,9 @@ impl HelmApp {
             central_mode: CentralMode::default(),
             selected_agent: None,
             agents_view: prefs.agents_view,
+            agents_wall: crate::agents_wall::AgentWall::new(),
+            agents_wall_seeded: false,
             git_file_view: prefs.git_file_view,
-            agents_column_width: prefs.agents_column_width,
             run_panel_height: prefs.run_panel_height,
             run_collapsed: HashMap::new(),
             run_command_edit: None,

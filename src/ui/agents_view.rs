@@ -1,44 +1,39 @@
 //! Cross-repo agents dashboard (specs/agents.md): the central content rendered
-//! while the sidebar's Agents entry is selected — a left list of every running
-//! (or just-finished) agent across all open repositories (grouped by project)
-//! and a right panel mirroring the selected agent's terminal live. Clicking a
-//! row body selects it (the panel follows); its discreet jump icon focuses that
-//! agent's workspace. Rendering only — the page returns the targeted action, the
-//! app applies it.
+//! while the sidebar's Agents entry is selected — every running (or just-finished)
+//! agent across all open repositories, in one of two views. **List** is a master-detail
+//! cockpit (a list grouped by project + a panel mirroring the selected agent's
+//! terminal). **Terminals** is a header strip of chips over a wall of the mirrored
+//! terminals picked from it, laid out by the terminal's own split tree. A row / band
+//! click selects; the discreet jump icon focuses that agent's workspace. Rendering
+//! only — the page returns the targeted action, the app applies it.
 
 use serde::{Deserialize, Serialize};
 
 use crate::agent_watch::AgentBadge;
+use crate::agents_wall::MAX_SHOWN;
+use crate::terminal::layout::{Layout, PaneId};
 use crate::theme::{self, Palette};
 use crate::ui::preferences::{setting_divider, settings_card};
 use crate::ui::spinner::{paint_done_dot, Spinner};
+use crate::ui::terminal_view::{terminal_tree, PaneDrop, ResizeDrag, GRIP_RESERVE};
 use crate::ui::{clickable, paint_icon, with_alpha};
 
 /// Which dashboard layout the central area shows. **List** is the master-detail
-/// cockpit (a list + one mirrored terminal); **Columns** is a grid — a fixed-width
-/// column per **worktree**, headed by one light project · branch line, holding a
-/// status card per agent that expands to its live terminal (specs/agents.md §5).
-/// Persisted in `Prefs`.
+/// cockpit (a list + one mirrored terminal); **Terminals** is the wall — a header strip
+/// of every running agent over the mirrored terminals of the ones picked from it, up to
+/// [`MAX_SHOWN`], on a split tree that resizes and rearranges like a workspace tab's
+/// (specs/agents.md §5). Persisted in `Prefs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentsViewMode {
     #[default]
     List,
-    Columns,
+    /// Persisted as `columns`: the token predates the wall (the view used to be a
+    /// column per worktree) and an unknown value would make a whole existing prefs
+    /// file fail to parse, falling back to defaults.
+    #[serde(rename = "columns")]
+    Terminals,
 }
-
-/// How a Columns card asks the app to draw its pane: the **selected** card shows
-/// the `Full` interactive terminal, every other card a read-only `Preview` (a
-/// scaled tail of its last lines — a progress glance). The app dispatches on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TermView {
-    Full,
-    Preview,
-}
-
-/// Meaningful lines a collapsed card's progress preview shows (its recent
-/// conversation, at readable native size, chrome stripped).
-pub const AGENT_PREVIEW_LINES: usize = 12;
 
 const CONTENT_PAD_X: f32 = 32.0;
 const CONTENT_PAD_Y: f32 = 32.0;
@@ -50,86 +45,45 @@ const CARD_HEADER_HEIGHT: f32 = 48.0;
 const ROW_HEIGHT: f32 = 60.0;
 const GROUP_GAP: f32 = 16.0;
 const ROW_RADIUS: u8 = 8;
-/// Narrow elision, shared by a list row (name + branch chip) and a column card's
-/// status band (name + tab label): both stop short of the right-aligned state
+/// Narrow elision, shared by a list row (name + branch chip) and a wall tile's status
+/// band (name + branch chip + tab label): both stop short of the right-aligned state
 /// caption — reserving a minimum for the second label — and gain a `…` instead of
-/// running underneath it. A tab is renamed freely, so at `COLUMN_MIN_WIDTH` it does
-/// reach the caption.
+/// running underneath it. A quarter-width tile is narrow, so the tab label is the first
+/// to go.
 const ROW_TEXT_GAP: f32 = 10.0;
 const ROW_MIN_NAME_W: f32 = 40.0;
 const ROW_MIN_CHIP_W: f32 = 48.0;
 
-/// Columns view: one column per worktree on a single 2D scroll plane (horizontal
-/// between columns, vertical down the wall). **One or two** columns fill the
-/// viewport (full width / 50-50); **three or more** keep the persisted,
-/// **resizable** shared width (drag the handle in any gap, clamped to
-/// [`COLUMN_MIN_WIDTH`, `COLUMN_MAX_WIDTH`]) and let the wall scroll — as does a
-/// two-up split that would fall below `COLUMN_MIN_WIDTH` on a narrow window.
-/// Every column is a **borderless tinted lane** (its project's hue), not a bordered
-/// card: its header, its agents' status bands and their terminals are flat rows
-/// stacked on it, hairline-separated and flush, so the wall reads as one surface per
-/// worktree — strokeless throughout, the active card's spine included.
-const COLUMN_MIN_WIDTH: f32 = 420.0;
-const COLUMN_MAX_WIDTH: f32 = 1200.0;
-const COLUMN_GAP: f32 = 8.0;
-/// Slack left when sizing columns to fill the viewport, so sub-pixel rounding never
-/// nudges content past the edge into a spurious scrollbar.
-const COLUMN_FILL_SLACK: f32 = 2.0;
-/// The lane is rounded at the **top** only: its content runs flush to the bottom
-/// (the filling terminal ends there, square), so rounding it would clip the pane.
-const COLUMN_RADIUS: u8 = 12;
-/// Leading inset before the first column — tight so the wall of terminals sits
-/// close to the edge (the central panel already adds its own small margin).
-const COLUMN_EDGE_PAD: f32 = 8.0;
-/// Breathing room between the page-header hairline and the top of the columns,
-/// so they don't sit flush against it.
-const COLUMN_TOP_MARGIN: f32 = 8.0;
-/// The column's single light header — project · branch (+ dirty bar / agent
-/// count) on one line (the list view keeps the taller `CARD_HEADER_HEIGHT`).
-const COLUMN_HEADER_HEIGHT: f32 = 34.0;
-/// Floor for the expanded terminal: it fills the column's leftover height, so this
-/// only kicks in when the collapsed siblings leave it less than a workable strip
-/// (then the column grows past the viewport and the wall scrolls).
-const TERM_MIN_HEIGHT: f32 = 360.0;
-/// Also the height of the band's jump target (`CARD_JUMP_HIT` wide): 40 keeps it at
-/// the 40×40 floor a dense desktop UI should still afford.
-const AGENT_HEADER_HEIGHT: f32 = 40.0;
+/// Terminals view header: one chip per running agent, wrapping onto further lines and
+/// scrolling past `CHIP_STRIP_MAX_ROWS` of them, so even a workspace full of agents
+/// leaves the wall its room.
+const CHIP_HEIGHT: f32 = 30.0;
+const CHIP_GAP: f32 = 8.0;
+const CHIP_PAD_X: f32 = 10.0;
+const CHIP_RADIUS: u8 = 8;
+const CHIP_ICON_GAP: f32 = 7.0;
+const CHIP_NAME_SIZE: f32 = 12.5;
+const CHIP_MAX_NAME_W: f32 = 150.0;
+const CHIP_MAX_ORIGIN_W: f32 = 190.0;
+const CHIP_STRIP_PAD_X: f32 = 12.0;
+const CHIP_STRIP_PAD_Y: f32 = 10.0;
+const CHIP_STRIP_MAX_ROWS: f32 = 3.0;
 
-/// Distinguishing the single **active** (keyboard) card from the other cards: the
-/// active one carries a **spine** flush on its left edge — a filled rail running that
-/// card alone, its status band down to its terminal, never the whole column — while
-/// every other card recedes behind the terminal's own unfocused dim, one single dim
-/// level, so a collapsed preview and a mirrored terminal read equally recessed. A rail,
-/// not a ring: the wall stays strokeless and the terminal keeps its full width. It is
-/// painted in the **column header's own wash** (`project_header_tint`), so it introduces
-/// no color of its own — the header's strip simply runs down the side of the card it
-/// belongs to, and the wall stays at one color per project.
-const AGENTS_ACTIVE_SPINE: f32 = 3.0;
-/// Every agent's status band wears its project's hue too — focused or not — so each pane
-/// reads as belonging to its column at a glance. Its wash sits **under** the column
-/// header's (`HEADER_ICON_TINT`), which stays the firmest strip on the lane, and lifts
-/// under the pointer; the hue is the column's throughout, so no band adds a color.
-const AGENTS_BAND_TINT: f32 = 0.10;
-const AGENTS_BAND_HOVER_TINT: f32 = 0.22;
-/// A pane unfolds instead of snapping in when its card takes focus, and the preview it
-/// displaces fades in on the same clock. Short enough to read as a transition rather
-/// than as a wait.
-const AGENT_UNFOLD_TIME: f32 = 0.16;
+/// A wall tile's status band, over the mirrored pane flush under it. Also the height of
+/// the band's jump target (`CARD_JUMP_HIT` wide).
+const TILE_BAND_HEIGHT: f32 = 32.0;
+/// Every tile's status band wears its project's hue, so a pane reads as belonging to its
+/// project at a glance; the band of the tile the keyboard drives wears it firmest, and a
+/// band lifts under the pointer. The panes themselves need no other mark: a mirrored
+/// terminal dims itself when it isn't the active one, exactly as an unfocused split does.
+const AGENTS_BAND_TINT: f32 = 0.08;
+const AGENTS_BAND_HOVER_TINT: f32 = 0.16;
+const AGENTS_BAND_ACTIVE_TINT: f32 = 0.26;
 
-/// Compact uncommitted-changes ratio bar on a dirty worktree header — same
-/// green/red proportion device as the workspace sidebar (`repo_sidebar`).
-const STAT_BAR_W: f32 = 26.0;
-const STAT_BAR_H: f32 = 3.0;
-const STAT_BAR_MIN: f32 = 3.0;
-const STAT_BAR_GAP: f32 = 1.5;
-
-/// Each column is tinted with its project's hue (cycled from `palette.lane_colors`,
-/// the theme-tuned graph palette) so projects read apart at a glance and a project's
-/// worktrees read together. The hue is mixed against the theme's own base, not
-/// applied flat, so it stays balanced in light and dark.
-const COLUMN_TINT_BODY: f32 = 0.10;
-/// Sidebar header icon: a touch firmer than the column body — the tint carries the
-/// project color on a much smaller surface.
+/// Project hue (cycled from `palette.lane_colors`, the theme-tuned graph palette) worn
+/// by a header chip once its agent is on the wall and by the sidebar's project header
+/// icon. Mixed against the theme's own base rather than applied flat, so it stays
+/// balanced in light and dark.
 const HEADER_ICON_TINT: f32 = 0.16;
 
 const REPO_ICON_SIZE: f32 = 15.0;
@@ -140,14 +94,14 @@ const DETAIL_SIZE: f32 = 12.0;
 const INDICATOR_SIZE: f32 = 16.0;
 const JUMP_ICON_SIZE: f32 = 15.0;
 const JUMP_ICON_HIT: f32 = 28.0;
-/// On a column card the jump icon's target spans the status band's full height and a
+/// On a wall tile the jump icon's target spans the status band's full height and a
 /// comfortable width (dense-desktop 40px minimum); the chip it paints on hover stays
 /// small, so the affordance is easy to hit without looking heavy.
 const CARD_JUMP_HIT: f32 = 40.0;
 const CARD_JUMP_CHIP: f32 = 26.0;
-/// Trailing pad of the jump glyph on a column card: `CARD_PAD_X` less 2px — the
-/// optical correction that lands an icon on the same right rail as the column
-/// header's text, which at equal padding would look short of it.
+/// Trailing pad of the jump glyph on a wall tile: `CARD_PAD_X` less 2px — the optical
+/// correction that lands an icon on the same right rail as text at equal padding, which
+/// would otherwise look short of it.
 const CARD_JUMP_PAD: f32 = CARD_PAD_X - 2.0;
 
 /// Left list width when the right terminal panel is shown; below
@@ -172,40 +126,44 @@ pub struct AgentRow<'a> {
     /// "Idle").
     pub detail: String,
     /// Stable per-worktree discriminator (the app's index of this entry's repo in
-    /// the workspace): equal ids = same worktree. Splits a project's rows into
-    /// worktree sub-cards in the column view; ignored by the list view.
+    /// the workspace): equal ids = same worktree.
     pub worktree_id: usize,
     /// Project color index (rank of the group root among root projects): tints this
-    /// row's column and, via the same index, the project's sidebar header icon.
+    /// agent's header chip and wall band and, via the same index, the project's sidebar
+    /// header icon.
     pub lane: usize,
-    /// Uncommitted line stats `(additions, deletions)` of this row's worktree when
-    /// dirty: drives the ratio bar on the column view's worktree header (a
-    /// worktree's rows all carry the same value). `None` when clean.
-    pub stats: Option<(usize, usize)>,
 }
 
-/// What a click on the dashboard targeted: a row body (mirror that agent in the
-/// right panel) or its jump icon (focus that agent's workspace).
+/// What a gesture on the dashboard targeted. The app applies it: a select mirrors that
+/// agent (List panel) or makes its tile active (Terminals), a jump focuses its pane in
+/// its workspace, a toggle puts its terminal on the wall or takes it off, and a
+/// resize / drop relayouts the wall.
 #[derive(Default)]
 pub struct AgentsPageAction {
     pub select: Option<usize>,
     pub jump: Option<usize>,
     /// The view-mode toggle was clicked: the app persists the new mode.
     pub set_view: Option<AgentsViewMode>,
-    /// The columns view's width handle was dragged: the app stores the new
-    /// shared column width and persists it (debounced, like a sidebar drag).
-    pub set_column_width: Option<f32>,
+    /// A header chip was clicked: show that agent's terminal on the wall, or hide it
+    /// when it is already there.
+    pub toggle: Option<usize>,
+    /// The wall's own rect this frame — the app splits it to place a newly shown
+    /// terminal, and reads a seam drag against it. `None` outside the Terminals view.
+    pub wall_rect: Option<egui::Rect>,
+    /// A seam between two tiles was dragged (the split tree's own resize).
+    pub resize: Option<ResizeDrag>,
+    /// A tile was dragged onto another by its grip: re-split on that side, or swap.
+    pub drop: Option<PaneDrop>,
 }
 
-/// Cross-repo dashboard for the central area. A centered List/Columns switch —
-/// sharing the Terminal/Git switch's design and titlebar placement — tops both
-/// views; below it, **List** is the master-detail cockpit (a left list + a right
-/// panel mirroring the selected agent's terminal) and **Columns** is a wall of
-/// status cards, one fixed-width column per worktree, where **each** column expands
-/// one card to its live terminal. `render_terminal(idx, ui)` draws the live pane
-/// for the agent at row `idx` — called for the selected row (List) or once per
-/// column's expanded card (Columns). Returns the targeted action
-/// (select / jump / view).
+/// Cross-repo dashboard for the central area. A centered List/Terminals switch —
+/// sharing the Terminal/Git switch's design and titlebar placement — tops both views;
+/// below it, **List** is the master-detail cockpit (a left list + a right panel
+/// mirroring the selected agent's terminal) and **Terminals** is the wall: a header
+/// strip of every running agent over the mirrored terminals picked from it.
+/// `render_terminal(idx, ui)` draws the live pane of the agent at row `idx` — called for
+/// the selected row (List) or once per wall tile (Terminals) — and reports whether it
+/// was clicked. Returns the targeted action.
 #[allow(clippy::too_many_arguments)]
 pub fn agents_page(
     ui: &mut egui::Ui,
@@ -213,21 +171,20 @@ pub fn agents_page(
     rows: &[AgentRow],
     selected: Option<usize>,
     view: AgentsViewMode,
-    column_width: f32,
-    render_terminal: impl FnMut(usize, &mut egui::Ui, TermView),
+    wall: &WallView,
+    render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
 ) -> AgentsPageAction {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
 
-    let set_view = crate::ui::agents_view_switch(ui, palette, view == AgentsViewMode::Columns).map(
-        |columns| {
-            if columns {
-                AgentsViewMode::Columns
+    let set_view = crate::ui::agents_view_switch(ui, palette, view == AgentsViewMode::Terminals)
+        .map(|terminals| {
+            if terminals {
+                AgentsViewMode::Terminals
             } else {
                 AgentsViewMode::List
             }
-        },
-    );
+        });
     let mut action = AgentsPageAction {
         set_view,
         ..Default::default()
@@ -244,18 +201,40 @@ pub fn agents_page(
             render_terminal,
             &mut action,
         ),
-        AgentsViewMode::Columns => render_columns(
+        AgentsViewMode::Terminals => render_terminals(
             ui,
             palette,
             rows,
             selected,
             body,
-            column_width,
+            wall,
             &mut action,
             render_terminal,
         ),
     }
     action
+}
+
+/// The wall's live composition, handed in by the app (which owns the `AgentWall`): the
+/// split tree to lay the tiles out with — `None` while nothing is shown — the row each
+/// slot mirrors, and whether every slot is taken.
+pub struct WallView<'a> {
+    pub layout: Option<&'a Layout>,
+    pub slots: &'a [(PaneId, usize)],
+    pub full: bool,
+}
+
+impl WallView<'_> {
+    fn row_of(&self, slot: PaneId) -> Option<usize> {
+        self.slots
+            .iter()
+            .find(|(id, _)| *id == slot)
+            .map(|(_, row)| *row)
+    }
+
+    fn shows(&self, row: usize) -> bool {
+        self.slots.iter().any(|(_, r)| *r == row)
+    }
 }
 
 /// List view body: the scrollable project list and, when an agent is selected and
@@ -266,7 +245,7 @@ fn render_list_view(
     rows: &[AgentRow],
     selected: Option<usize>,
     rect: egui::Rect,
-    render_terminal: impl FnMut(usize, &mut egui::Ui, TermView),
+    render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
     action: &mut AgentsPageAction,
 ) {
     let show_panel =
@@ -346,7 +325,7 @@ fn render_panel(
     rows: &[AgentRow],
     selected: Option<usize>,
     rect: egui::Rect,
-    mut render_terminal: impl FnMut(usize, &mut egui::Ui, TermView),
+    mut render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
 ) {
     ui.painter().vline(
         rect.left(),
@@ -370,7 +349,7 @@ fn render_panel(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     if let Some(idx) = selected {
-        render_terminal(idx, &mut panel_ui, TermView::Full);
+        render_terminal(idx, &mut panel_ui);
     }
 }
 
@@ -407,466 +386,308 @@ fn panel_header(
     }
 }
 
-/// Columns view: a wall of fixed-width **worktree** columns on a single 2D scroll
-/// plane — horizontal between columns, vertical down the wall. Each column carries
-/// one light project · branch header, then a status card per agent. Every column
-/// expands **one** card to its live terminal (the selected agent when it lives here,
-/// else the column's most urgent one — `column_expanded`), the rest a collapsed
-/// preview. `render_terminal(idx, ui)` draws the pane for the agent at row `idx`.
+/// Terminals view: a **header strip** listing every running agent — one chip apiece,
+/// carrying its live state indicator — over a **wall** of the ones picked from it, at
+/// most [`MAX_SHOWN`]. A chip click shows or hides that agent's terminal; the shown
+/// ones are laid out by the **terminal's own split tree**, so the wall's seams resize
+/// and its panes rearrange exactly like a workspace tab's (terminal.md §5).
+/// `render_terminal(idx, ui)` mirrors the pane of the agent at row `idx` and reports
+/// whether it was clicked.
 #[allow(clippy::too_many_arguments)]
-fn render_columns(
+fn render_terminals(
     ui: &mut egui::Ui,
     palette: &Palette,
     rows: &[AgentRow],
     selected: Option<usize>,
     rect: egui::Rect,
-    column_width: f32,
+    wall: &WallView,
     action: &mut AgentsPageAction,
-    mut render_terminal: impl FnMut(usize, &mut egui::Ui, TermView),
+    render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
 ) {
     if rows.is_empty() {
         let inner = egui::Rect::from_min_max(
             egui::pos2(rect.left() + CONTENT_PAD_X, rect.top()),
             rect.max,
         );
-        let mut e = ui.new_child(
+        let mut empty = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        empty_state(&mut e, palette);
+        empty_state(&mut empty, palette);
         return;
     }
-    let columns = worktree_columns(rows);
-    let n = columns.len();
-    // Width that fills the viewport evenly: the trailing gap lives outside
-    // `column_width`, so back it out per column.
-    let fill =
-        (rect.width() - COLUMN_EDGE_PAD - n as f32 * COLUMN_GAP - COLUMN_FILL_SLACK) / n as f32;
-    // Only one or two projects fill the viewport (full width / 50-50). Three or more,
-    // or a fill below the minimum (a narrow window), keep the comfortable persisted
-    // width and let the wall scroll — an even split would crush the columns, which
-    // breaks down on a small screen.
-    let fill_viewport = n <= 2 && fill >= COLUMN_MIN_WIDTH;
-    let resizable = !fill_viewport;
-    let column_width = if fill_viewport {
-        fill
-    } else {
-        column_width.clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH)
-    };
-    // Each column fills at least the visible viewport height, so its tinted lane
-    // reads full-height even when its agents are collapsed; taller content scrolls.
-    let col_min_height = (rect.height() - COLUMN_TOP_MARGIN - COLUMN_FILL_SLACK).max(0.0);
-    let mut area = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
+    let header_bottom = agent_chips(ui, palette, rows, rect, wall, action);
+    ui.painter().hline(
+        rect.x_range(),
+        header_bottom,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
-    // One 2D scroll plane for the whole wall: horizontal between columns, vertical
-    // down the wall. No per-column scroll — each column fills the viewport height,
-    // then grows with its content, so the tallest column drives the vertical extent.
-    egui::ScrollArea::both()
-        .id_salt("agents_columns")
-        .show(&mut area, |ui| {
-            ui.add_space(COLUMN_TOP_MARGIN);
-            ui.horizontal_top(|ui| {
-                // Gaps are the explicit edge pad + per-column resize handle; drop the
-                // inherited item spacing so the fill math lands on the viewport edge.
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.add_space(COLUMN_EDGE_PAD);
-                for (col_idx, (start, end)) in columns.into_iter().enumerate() {
-                    let lane = rows[start].lane;
-                    // The lane is a bare tinted surface — no border, no padding: its
-                    // header, status bands and terminals are flat full-bleed rows on it,
-                    // so the column reads as one surface instead of nested cards.
-                    let col = egui::Frame::new()
-                        .fill(project_tint(palette, lane))
-                        .corner_radius(egui::CornerRadius {
-                            nw: COLUMN_RADIUS,
-                            ne: COLUMN_RADIUS,
-                            sw: 0,
-                            se: 0,
-                        })
-                        .show(ui, |ui| {
-                            // The frame inherits the row's horizontal layout; the column
-                            // stacks top-down inside it.
-                            ui.vertical(|ui| {
-                                ui.set_width(column_width);
-                                ui.set_min_height(col_min_height);
-                                worktree_column(
-                                    ui,
-                                    palette,
-                                    rows,
-                                    start,
-                                    end,
-                                    selected,
-                                    col_min_height,
-                                    action,
-                                    &mut render_terminal,
-                                );
-                            });
-                        });
-                    let col_height = col.response.rect.height();
-                    column_resize_handle(
-                        ui,
-                        palette,
-                        col_idx,
-                        col_height,
-                        column_width,
-                        resizable,
-                        action,
-                    );
-                }
-            });
-        });
+    let body = egui::Rect::from_min_max(egui::pos2(rect.left(), header_bottom + 1.0), rect.max);
+    // The app needs the wall's own rect to place a newly shown terminal (it splits the
+    // roomiest tile) and to turn a seam drag into a ratio.
+    action.wall_rect = Some(body);
+    render_wall(
+        ui,
+        palette,
+        rows,
+        selected,
+        body,
+        wall,
+        action,
+        render_terminal,
+    );
 }
 
-/// Separator occupying a column's trailing gap. While the wall overflows
-/// (`resizable`), dragging adjusts the shared column width (clamped, persisted by
-/// the app), surfaced by a faint accent rule and the resize cursor on hover. When
-/// columns fill the viewport evenly the width is derived, so it's just empty gap.
-fn column_resize_handle(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    col_idx: usize,
-    col_height: f32,
-    column_width: f32,
-    resizable: bool,
-    action: &mut AgentsPageAction,
-) {
-    let (gap, _) = ui.allocate_exact_size(egui::vec2(COLUMN_GAP, col_height), egui::Sense::hover());
-    if !resizable {
-        return;
-    }
-    let handle = ui.interact(
-        gap.expand2(egui::vec2(3.0, 0.0)),
-        ui.id().with(("agents_col_resize", col_idx)),
-        egui::Sense::drag(),
-    );
-    if handle.hovered() || handle.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        ui.painter().vline(
-            gap.center().x,
-            egui::Rangef::new(gap.top() + 10.0, gap.bottom() - 10.0),
-            egui::Stroke::new(2.0_f32, palette.accent),
-        );
-    }
-    if handle.dragged() {
-        action.set_column_width =
-            Some((column_width + handle.drag_delta().x).clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH));
-    }
-}
-
-/// One worktree column: the single light header (project · branch), then its agents
-/// stacked flush on the column's lane — no per-agent card frame, a hairline between
-/// each. The whole wall is a single 2D scroll plane, so the column hugs its full
-/// content height rather than scrolling on its own.
-#[allow(clippy::too_many_arguments)]
-fn worktree_column<F: FnMut(usize, &mut egui::Ui, TermView)>(
+/// The header strip, in workspace order (so a project's worktrees stay adjacent):
+/// a chip per running agent, wrapping onto further lines and scrolling past
+/// `CHIP_STRIP_MAX_ROWS` so a busy workspace never eats the wall. Returns the strip's
+/// bottom edge.
+fn agent_chips(
     ui: &mut egui::Ui,
     palette: &Palette,
     rows: &[AgentRow],
-    start: usize,
-    end: usize,
-    selected: Option<usize>,
-    col_min_height: f32,
+    rect: egui::Rect,
+    wall: &WallView,
     action: &mut AgentsPageAction,
-    render_terminal: &mut F,
-) {
-    // The column lays out on explicit spacing alone (headers, bands and terminal
-    // strips are allocated at exact heights), so the inherited item spacing would
-    // just add slack between them.
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let col_top = ui.min_rect().top();
-    column_header(ui, palette, &rows[start], end - start);
-    // The agents stack in a **permanently** inset body: the gutter it leaves on the lane
-    // is where the active card paints its focus spine, so the spine never covers a
-    // terminal's first column of glyphs and selecting another card shifts no content.
-    let body = ui.available_rect_before_wrap();
-    let mut body_ui = ui.new_child(
+) -> f32 {
+    let max_height =
+        CHIP_STRIP_MAX_ROWS * (CHIP_HEIGHT + CHIP_GAP) - CHIP_GAP + 2.0 * CHIP_STRIP_PAD_Y;
+    let inner = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + CHIP_STRIP_PAD_X, rect.top()),
+        egui::pos2(rect.right() - CHIP_STRIP_PAD_X, rect.bottom()),
+    );
+    let mut strip = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(egui::Rect::from_min_max(
-                egui::pos2(body.left() + AGENTS_ACTIVE_SPINE, body.top()),
-                body.max,
-            ))
+            .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    body_ui.spacing_mut().item_spacing.y = 0.0;
-    // Every column expands one card (agents.md §5): the selected agent when it lives
-    // here, else the column's most urgent one. That card's terminal swallows the
-    // column's leftover height instead of sitting at a fixed strip above an empty
-    // lane, so the wall reads as equal-height columns. The collapsed siblings' height
-    // isn't statically known (each preview hugs a variable row count), so size the
-    // strip from the column *overhead* — every laid-out pixel but the strip — measured
-    // the previous frame. Live panes repaint each frame, so the settle is unseen.
-    let expanded = column_expanded(rows, start, end, selected);
-    let col_id = ui.id().with(("agents_col_fill", start));
-    let fill_height = match ui.data(|d| d.get_temp::<f32>(col_id)) {
-        Some(overhead) => (col_min_height - overhead).max(TERM_MIN_HEIGHT),
-        None => TERM_MIN_HEIGHT,
+    let used = egui::ScrollArea::vertical()
+        .id_salt("agents_chips")
+        .max_height(max_height)
+        .show(&mut strip, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add_space(CHIP_STRIP_PAD_Y);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(CHIP_GAP, CHIP_GAP);
+                for (idx, row) in rows.iter().enumerate() {
+                    let shown = wall.shows(idx);
+                    if agent_chip(ui, palette, row, shown, !shown && wall.full) {
+                        action.toggle = Some(idx);
+                    }
+                }
+            });
+            ui.add_space(CHIP_STRIP_PAD_Y);
+        })
+        .content_size
+        .y;
+    rect.top() + used.min(max_height)
+}
+
+/// Where an agent runs: `project · branch`, or the project alone on a detached worktree.
+/// The dashboard is cross-repo, so the project is what tells two agents on `main` apart —
+/// it rides with the branch on every chip and every wall band.
+fn origin(row: &AgentRow) -> String {
+    match row.branch.filter(|b| !b.is_empty()) {
+        Some(branch) => format!("{} · {branch}", row.repo),
+        None => row.repo.to_owned(),
+    }
+}
+
+/// One header chip: state indicator, agent name, and where it runs. Filled in the
+/// project's hue while the agent is **on the wall** (clicking takes it off), quiet
+/// otherwise. With every slot taken the remaining chips read **disabled** and say so on
+/// hover — hiding one is the way to make room (agents.md §5). Returns true when clicked.
+fn agent_chip(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    row: &AgentRow,
+    shown: bool,
+    blocked: bool,
+) -> bool {
+    let name = crate::agent_watch::display_name(row.agent);
+    let name_font = egui::FontId::new(CHIP_NAME_SIZE, theme::medium_family(ui.ctx()));
+    let origin_font = egui::FontId::monospace(CHIP_SIZE);
+    let origin = origin(row);
+    // A blocked chip is legible but visibly out of reach: the whole chip fades, ink and
+    // indicator alike.
+    let fade = |c: egui::Color32| if blocked { with_alpha(c, 110) } else { c };
+    let measure = |text: &str, font: egui::FontId, max: f32| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font, palette.text_primary)
+            .size()
+            .x
+            .min(max)
     };
-    for (offset, row) in rows[start..end].iter().enumerate() {
-        let idx = start + offset;
-        // A hairline is all that separates the stacked agents (under the header, then
-        // between each pane and the next status band) — the rows themselves stay flush.
-        hairline(&mut body_ui, palette);
-        agent_terminal_card(
-            &mut body_ui,
+    let name_w = measure(&name, name_font.clone(), CHIP_MAX_NAME_W);
+    let origin_w = measure(&origin, origin_font.clone(), CHIP_MAX_ORIGIN_W);
+    let width =
+        2.0 * CHIP_PAD_X + INDICATOR_SIZE + CHIP_ICON_GAP + name_w + CHIP_ICON_GAP + origin_w;
+    let (rect, response, hovered) = clickable(ui, egui::vec2(width, CHIP_HEIGHT), !blocked);
+    let fill = if shown {
+        project_header_tint(palette, row.lane)
+    } else if hovered {
+        palette.bg_surface_hover
+    } else {
+        palette.bg_surface
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(CHIP_RADIUS),
+        fill,
+        egui::Stroke::new(
+            1.0_f32,
+            if shown {
+                with_alpha(palette.accent, 110)
+            } else {
+                palette.border_subtle
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let indicator = egui::Rect::from_center_size(
+        egui::pos2(
+            rect.left() + CHIP_PAD_X + INDICATOR_SIZE / 2.0,
+            rect.center().y,
+        ),
+        egui::Vec2::splat(INDICATOR_SIZE),
+    );
+    paint_indicator(ui, palette, row.badge, indicator, fade);
+    let painter = ui.painter();
+    let text_x = indicator.right() + CHIP_ICON_GAP;
+    let painted = paint_elided(
+        painter,
+        egui::pos2(text_x, rect.center().y),
+        &name,
+        name_font,
+        fade(if shown {
+            palette.text_primary
+        } else {
+            palette.text_secondary
+        }),
+        name_w,
+    );
+    paint_elided(
+        painter,
+        egui::pos2(text_x + painted + CHIP_ICON_GAP, rect.center().y),
+        &origin,
+        origin_font,
+        fade(palette.text_muted),
+        origin_w,
+    );
+    let label = format!("{name} · {origin} · {}", row.tab);
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, shown, &label));
+    if blocked {
+        response.on_hover_text(format!(
+            "{MAX_SHOWN} terminals at most — hide one to make room"
+        ));
+        return false;
+    }
+    response.clicked()
+}
+
+/// The wall itself: one mirrored terminal per shown agent, laid out by
+/// [`terminal_tree`] — the workspace's own split renderer, so the seams between tiles
+/// drag to resize and each tile's grip drags onto another to re-split or swap
+/// (terminal.md §5). The reorg it reports rides back on the action; the app applies it
+/// to the wall's tree.
+#[allow(clippy::too_many_arguments)]
+fn render_wall(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rows: &[AgentRow],
+    selected: Option<usize>,
+    rect: egui::Rect,
+    wall: &WallView,
+    action: &mut AgentsPageAction,
+    mut render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
+) {
+    let mut body = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .id_salt("agents_wall")
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let Some(layout) = wall.layout else {
+        empty_wall(&mut body, palette);
+        return;
+    };
+    let mut clicked = None;
+    let out = terminal_tree(&mut body, layout, palette, |tile, slot, _focused| {
+        let Some(idx) = wall.row_of(slot) else {
+            return false;
+        };
+        let Some(row) = rows.get(idx) else {
+            return false;
+        };
+        let hit = wall_tile(
+            tile,
             palette,
             row,
             idx,
-            idx == expanded,
             selected == Some(idx),
-            fill_height,
             action,
-            render_terminal,
+            &mut render_terminal,
         );
-    }
-    let overhead = body_ui.next_widget_position().y - col_top - fill_height;
-    ui.data_mut(|d| d.insert_temp(col_id, overhead));
-    // The inset body is a child ui: hand its extent back so the lane (and the frame
-    // measuring it) grows with the agents stacked inside it.
-    ui.advance_cursor_after_rect(body_ui.min_rect());
+        if hit {
+            clicked = Some(idx);
+        }
+        hit
+    });
+    action.select = action.select.or(clicked);
+    action.resize = out.resize;
+    action.drop = out.drop;
 }
 
-/// The one rule the flattened column uses: a full-bleed hairline between two of its
-/// stacked rows, in place of any card frame around them.
-fn hairline(ui: &mut egui::Ui, palette: &Palette) {
-    let (rule, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-    // Full-bleed over the spine gutter the body is inset by: the rule is the only
-    // structure left on a flattened column, so stopping 3px short of the lane's edge
-    // reads as a nick in it rather than as the gutter.
-    ui.painter().hline(
-        egui::Rangef::new(rule.left() - AGENTS_ACTIVE_SPINE, rule.right()),
-        rule.center().y,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-    );
-}
-
-/// The column's single light header, gathering every project/worktree indication on
-/// one line: repo icon + project name, branch, then — right-aligned — the
-/// uncommitted ratio bar when the worktree is dirty and the agent count once it
-/// holds more than one. Its own row carries the **project hue** at the column's firmest
-/// wash — above the lane behind it and the status bands below, which share its base and
-/// its hue: once the agents run full-bleed over the lane, this strip is where a project
-/// reads at a glance.
-fn column_header(ui: &mut egui::Ui, palette: &Palette, first: &AgentRow, count: usize) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), COLUMN_HEADER_HEIGHT),
-        egui::Sense::hover(),
-    );
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius {
-            nw: COLUMN_RADIUS,
-            ne: COLUMN_RADIUS,
-            sw: 0,
-            se: 0,
-        },
-        project_header_tint(palette, first.lane),
-    );
-    let inner = rect.shrink2(egui::vec2(CARD_PAD_X, 0.0));
-    let center_y = inner.center().y;
-    // Lay the right edge out first: the count and the ratio bar bound the room the
-    // branch label gets before it elides.
-    let mut right = inner.right();
-    if count > 1 {
-        let label = format!("{count} agents");
-        let font = egui::FontId::proportional(DETAIL_SIZE);
-        let width = ui
-            .painter()
-            .layout_no_wrap(label.clone(), font.clone(), palette.text_muted)
-            .size()
-            .x;
-        ui.painter().text(
-            egui::pos2(right, center_y),
-            egui::Align2::RIGHT_CENTER,
-            label,
-            font,
-            palette.text_muted,
-        );
-        right -= width + 10.0;
-    }
-    let dirty = first.stats.filter(|&(a, d)| a > 0 || d > 0);
-    if let Some((additions, deletions)) = dirty {
-        paint_stat_bar(ui, palette, right, center_y, additions, deletions);
-        right -= STAT_BAR_W + 10.0;
-    }
-    let painter = ui.painter();
-    paint_icon(
-        painter,
-        egui::pos2(inner.left() + REPO_ICON_SIZE / 2.0, center_y),
-        REPO_ICON_SIZE,
-        lucide_icons::Icon::FolderGit2,
-        palette.text_secondary,
-    );
-    let name_end = painter
-        .text(
-            egui::pos2(inner.left() + REPO_ICON_SIZE + 10.0, center_y),
-            egui::Align2::LEFT_CENTER,
-            first.repo,
-            egui::FontId::new(NAME_SIZE, theme::medium_family(ui.ctx())),
-            palette.text_primary,
-        )
-        .right();
-    let label = first.branch.filter(|b| !b.is_empty()).unwrap_or("—");
-    let branch_icon_x = name_end + 12.0;
-    paint_icon(
-        painter,
-        egui::pos2(branch_icon_x + REPO_ICON_SIZE / 2.0, center_y),
-        REPO_ICON_SIZE - 1.0,
-        lucide_icons::Icon::GitBranch,
-        palette.accent,
-    );
-    let branch_x = branch_icon_x + REPO_ICON_SIZE + 6.0;
-    paint_elided(
-        painter,
-        egui::pos2(branch_x, center_y),
-        label,
-        egui::FontId::monospace(CHIP_SIZE + 1.0),
-        palette.text_secondary,
-        right - ROW_TEXT_GAP - branch_x,
-    );
-    let info = match dirty {
-        Some((a, d)) => format!("{} · {label} · +{a} −{d} uncommitted", first.repo),
-        None => format!("{} · {label}", first.repo),
-    };
-    ui.interact(
-        rect,
-        ui.id().with(("agents_col_header", first.repo, label)),
-        egui::Sense::hover(),
-    )
-    .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &info));
-}
-
-/// Linear per-channel blend of `base` toward `tint` by `t` (0 = base, 1 = tint),
-/// in sRGB space — enough for the subtle column washes. Blending against the
-/// theme's own base keeps the tint balanced in both light and dark.
-fn mix(base: egui::Color32, tint: egui::Color32, t: f32) -> egui::Color32 {
-    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
-    egui::Color32::from_rgb(
-        lerp(base.r(), tint.r()),
-        lerp(base.g(), tint.g()),
-        lerp(base.b(), tint.b()),
-    )
-}
-
-/// The faint column-body wash for project `lane` — the background the Agents
-/// columns view tints each column with.
-pub(crate) fn project_tint(palette: &Palette, lane: usize) -> egui::Color32 {
-    mix(
-        palette.bg_sidebar,
-        palette.lane_color(lane),
-        COLUMN_TINT_BODY,
-    )
-}
-
-/// Firmer wash for project `lane`, on the same base as a status band: worn by the
-/// workspace sidebar's header icon and by a column's header row — the same hue as the
-/// project's Agents columns, a touch firmer than their body wash.
-pub(crate) fn project_header_tint(palette: &Palette, lane: usize) -> egui::Color32 {
-    mix(
-        palette.bg_surface_hover,
-        palette.lane_color(lane),
-        HEADER_ICON_TINT,
-    )
-}
-
-/// Compact green/red uncommitted ratio bar, vertically centered on `center_y`
-/// with its right edge at `right` (mirrors the workspace sidebar's bar).
-fn paint_stat_bar(
-    ui: &egui::Ui,
-    palette: &Palette,
-    right: f32,
-    center_y: f32,
-    additions: usize,
-    deletions: usize,
-) {
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(right - STAT_BAR_W, center_y - STAT_BAR_H / 2.0),
-        egui::vec2(STAT_BAR_W, STAT_BAR_H),
-    );
-    let radius = egui::CornerRadius::same((STAT_BAR_H / 2.0) as u8);
-    let (green_w, red_w) = crate::ui::git_panel::ratio_bar_widths(
-        additions,
-        deletions,
-        STAT_BAR_W,
-        STAT_BAR_GAP,
-        STAT_BAR_MIN,
-    );
-    let painter = ui.painter();
-    if green_w > 0.0 {
-        painter.rect_filled(
-            egui::Rect::from_min_size(rect.min, egui::vec2(green_w, STAT_BAR_H)),
-            radius,
-            palette.git_added,
-        );
-    }
-    if red_w > 0.0 {
-        painter.rect_filled(
-            egui::Rect::from_min_max(egui::pos2(rect.right() - red_w, rect.top()), rect.max),
-            radius,
-            palette.git_deleted,
-        );
-    }
-}
-
-/// One agent inside its worktree column. Collapsed to a status band — a state
-/// indicator + name + tab + state-caption + jump icon — over a **read-only preview**
-/// (the pane's last lines, scaled to fit, drawn via `TermView::Preview`) when
-/// `expanded` is false. Each column expands **one** card to a mirrored live terminal
-/// (read / scroll / type), filling the column's leftover height; the **active** one
-/// (the single keyboard target, `selected_agent`) carries the left spine and its band
-/// wash, the other columns' expanded terminals stay dimmed until clicked. Band and pane are
-/// flat and flush — the card is a segment of the column, not a card on it. Clicking
-/// the header or the preview **selects** the card. The jump icon (same right-edge
-/// affordance as the list row) focuses that pane in its workspace. Each expanded
-/// card's terminal gets a unique `id_salt` so it owns its own focus.
-#[allow(clippy::too_many_arguments)]
-fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
+/// One tile: a compact status band — state indicator, agent name, branch chip, tab,
+/// state caption, jump icon — over the agent's **live terminal**, flush under it. The
+/// band wears the project's hue, firmest on the tile the keyboard drives (the mirrored
+/// pane dims itself when it isn't the active one, as an unfocused split does), and lifts
+/// under the pointer. Clicking the band or the terminal makes the tile active; the jump
+/// icon focuses that pane in its workspace. Returns whether the tile was clicked.
+fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &AgentRow,
     idx: usize,
-    expanded: bool,
     active: bool,
-    fill_height: f32,
     action: &mut AgentsPageAction,
     render_terminal: &mut F,
-) {
-    let (hrect, response, hovered) = clickable(
-        ui,
-        egui::vec2(ui.available_width(), AGENT_HEADER_HEIGHT),
-        true,
+) -> bool {
+    let rect = ui.available_rect_before_wrap();
+    let band = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(
+            rect.right(),
+            (rect.top() + TILE_BAND_HEIGHT).min(rect.bottom()),
+        ),
     );
-    // The agent's status band: a flat full-bleed row that sets the status apart from the
-    // pane flush below it, tinted with the project's hue like the column header above it
-    // (a wash below it, so the header stays the column's firmest strip) and lifting under
-    // the pointer to signal it expands on click. The active card is marked by its spine
-    // alone — no wash on top of this one, so every band reads the same. Its wash is
-    // painted at the end: a collapsed card's preview lifts the band with it, and that is
-    // only known once the preview below is laid out.
-    let band_bg = ui.painter().add(egui::Shape::Noop);
-    // Content rides the **column header's** rail, not the body's: the body is
-    // permanently inset by the spine gutter, so back it out here — otherwise every agent
-    // name hangs a few px right of its project name and the column's left edge wobbles
-    // down the stack.
-    let inner = egui::Rect::from_min_max(
-        egui::pos2(hrect.left() - AGENTS_ACTIVE_SPINE + CARD_PAD_X, hrect.top()),
-        egui::pos2(hrect.right() - CARD_PAD_X, hrect.bottom()),
+    let response = ui
+        .interact(band, ui.id().with("agent_band"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let tint = if active {
+        AGENTS_BAND_ACTIVE_TINT
+    } else if response.hovered() {
+        AGENTS_BAND_HOVER_TINT
+    } else {
+        AGENTS_BAND_TINT
+    };
+    ui.painter().rect_filled(
+        band,
+        0,
+        mix(palette.bg_surface_hover, palette.lane_color(row.lane), tint),
     );
-    // Jump-to-workspace affordance at the right edge, mirroring the list row's
-    // external-link icon: clicking it focuses this agent's pane in its workspace. The
-    // glyph lands on the header meta's right rail (`CARD_JUMP_PAD`); its hit box takes
-    // the band's full height and a comfortable width — the icon it paints is small, but
-    // the target isn't.
+    // Jump-to-workspace affordance, the list row's external-link icon: its hit box takes
+    // the band's full height, the chip it paints on hover stays small. It stops short of
+    // the tile's top-right corner, which the tree's own drag grip owns (`GRIP_RESERVE`) —
+    // the two affordances must not sit on top of each other.
     let icon_rect = egui::Rect::from_center_size(
         egui::pos2(
-            hrect.right() - CARD_JUMP_PAD - JUMP_ICON_SIZE / 2.0,
-            inner.center().y,
+            band.right() - GRIP_RESERVE - CARD_JUMP_PAD - JUMP_ICON_SIZE / 2.0,
+            band.center().y,
         ),
-        egui::vec2(CARD_JUMP_HIT, hrect.height()),
+        egui::vec2(CARD_JUMP_HIT, band.height()),
     );
     let on_icon = ui.rect_contains_pointer(icon_rect);
     if on_icon {
@@ -876,42 +697,38 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
             palette.bg_surface_hover,
         );
     }
-    // Centered on the header's repo-icon center (not on its own box), so the state
-    // indicator and the folder icon above it share one rail despite differing in size.
     let indicator = egui::Rect::from_center_size(
-        egui::pos2(inner.left() + REPO_ICON_SIZE / 2.0, inner.center().y),
+        egui::pos2(
+            band.left() + CARD_PAD_X + INDICATOR_SIZE / 2.0,
+            band.center().y,
+        ),
         egui::Vec2::splat(INDICATOR_SIZE),
     );
     paint_indicator(ui, palette, row.badge, indicator, |c| c);
     let painter = ui.painter();
-    // Same icon → label step as the column header, so the agent name starts exactly
-    // under the project name.
-    let text_x = inner.left() + REPO_ICON_SIZE + 10.0;
     let detail_font = egui::FontId::proportional(DETAIL_SIZE);
     let detail_w = painter
         .layout_no_wrap(row.detail.clone(), detail_font.clone(), palette.text_muted)
         .size()
         .x;
     let content_right = icon_rect.left() - 8.0 - detail_w - ROW_TEXT_GAP;
-    let name_w = paint_elided(
-        painter,
-        egui::pos2(text_x, inner.center().y),
-        crate::agent_watch::display_name(row.agent),
-        egui::FontId::new(NAME_SIZE, theme::medium_family(ui.ctx())),
-        palette.text_primary,
-        (content_right - text_x - ROW_TEXT_GAP - ROW_MIN_CHIP_W).max(ROW_MIN_NAME_W),
-    );
-    let tab_x = text_x + name_w + 9.0;
-    paint_elided(
-        painter,
-        egui::pos2(tab_x, inner.center().y),
-        row.tab,
-        egui::FontId::proportional(TAB_SIZE),
-        palette.text_muted,
-        content_right - tab_x,
-    );
+    let text_x = indicator.right() + 10.0;
+    let name = crate::agent_watch::display_name(row.agent);
+    let origin = origin(row);
+    // Agent, then where it runs (`project · branch` — the wall is cross-repo, so two
+    // agents on `main` need their project), then the tab. A narrow tile elides from the
+    // right, so the least identifying label is the first to go.
+    let name_end = text_x
+        + paint_elided(
+            painter,
+            egui::pos2(text_x, band.center().y),
+            &name,
+            egui::FontId::new(NAME_SIZE, theme::medium_family(ui.ctx())),
+            palette.text_primary,
+            (content_right - text_x - 8.0 - ROW_MIN_CHIP_W).max(ROW_MIN_NAME_W),
+        );
     painter.text(
-        egui::pos2(icon_rect.left() - 8.0, inner.center().y),
+        egui::pos2(icon_rect.left() - 8.0, band.center().y),
         egui::Align2::RIGHT_CENTER,
         &row.detail,
         detail_font,
@@ -928,170 +745,105 @@ fn agent_terminal_card<F: FnMut(usize, &mut egui::Ui, TermView)>(
             palette.text_muted
         },
     );
+    let origin_x = name_end + 9.0;
+    let tab_x = origin_x
+        + paint_elided(
+            painter,
+            egui::pos2(origin_x, band.center().y),
+            &origin,
+            egui::FontId::monospace(CHIP_SIZE),
+            palette.text_secondary,
+            (content_right - origin_x).max(0.0),
+        )
+        + 9.0;
+    paint_elided(
+        painter,
+        egui::pos2(tab_x, band.center().y),
+        row.tab,
+        egui::FontId::proportional(TAB_SIZE),
+        palette.text_muted,
+        (content_right - tab_x).max(0.0),
+    );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!(
-                "{} in {} — {}",
-                crate::agent_watch::display_name(row.agent),
-                row.repo,
-                row.tab
-            ),
+            format!("{name} in {origin} — {}", row.tab),
         )
     });
     let on_icon_click = response
         .interact_pointer_pos()
         .is_some_and(|p| icon_rect.contains(p));
-    if response.clicked() {
-        if on_icon_click {
-            action.jump = Some(idx);
-        } else {
-            action.select = Some(idx);
-        }
+    if response.clicked() && on_icon_click {
+        action.jump = Some(idx);
+        return false;
     }
-
-    // How far this card is unfolded. egui snaps a value the first time it sees an id, so
-    // opening the page paints no animation — only a later expand does — and the value
-    // retargets mid-run when the pointer walks through cards.
-    let unfold = ui.ctx().animate_bool_with_time_and_easing(
-        ui.id().with(("agent_unfold", idx)),
-        expanded,
-        AGENT_UNFOLD_TIME,
-        egui::emath::easing::cubic_out,
+    // The pane fills whatever the band leaves; it is the tile's own child ui, so its
+    // egui state (focus, scroll) hangs off the slot the tree salted, not off a row index
+    // that shifts as agents come and go.
+    let term_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), band.bottom()), rect.max);
+    let mut term_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(term_rect)
+            .id_salt("agent_term")
+            .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    let mut card_hovered = hovered;
-    if !expanded {
-        // Collapsed: a read-only progress preview (the pane's last lines, scaled to
-        // fit), flush under the band. Clicking it — like the header — selects the card
-        // so it expands. It arrives on the clock the pane it displaces leaves on.
-        let preview = ui
-            .scope(|ui| {
-                ui.multiply_opacity(1.0 - unfold);
-                render_terminal(idx, ui, TermView::Preview);
-            })
-            .response
-            .rect;
-        let hit = ui
-            .interact(
-                preview,
-                ui.id().with(("agent_preview", idx)),
-                egui::Sense::click(),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        // Band and preview are one target, so they light as one: hovering the preview
-        // lifts the band above it instead of leaving the taller half of a clickable
-        // card unlit.
-        card_hovered |= hit.hovered();
-        if hit.clicked() {
-            action.select = Some(idx);
-        }
-    } else {
-        // Fill the column's leftover height (`fill_height`, sized by the caller from
-        // the column overhead and already floored at `TERM_MIN_HEIGHT`).
-        let (strip, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), fill_height),
-            egui::Sense::hover(),
-        );
-        // The pane is laid out at its final rect from the first frame — the grid, and so
-        // the PTY, is sized from that rect, so animating it would resize the shell every
-        // frame. It is *revealed* instead: its own base fills the strip and a clip runs
-        // down it, unfolding the pane out from under its band.
-        ui.painter().rect_filled(strip, 0, palette.bg_canvas);
-        let mut term_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(strip)
-                .id_salt(("agent_term", idx))
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        if unfold < 1.0 {
-            term_ui.multiply_opacity(unfold);
-            let revealed = egui::Rect::from_min_max(
-                strip.min,
-                egui::pos2(strip.right(), strip.top() + unfold * strip.height()),
-            );
-            term_ui.set_clip_rect(revealed.intersect(ui.clip_rect()));
-        }
-        render_terminal(idx, &mut term_ui, TermView::Full);
-        // The hovered terminal owns one wheel axis (vertical scrollback, or horizontal
-        // under Shift — terminal.md §8); it reads the delta without consuming it, so
-        // swallow just that axis to stop the wall's 2D scroll plane from scrolling in
-        // tandem, while the cross axis still reaches it.
-        if ui.rect_contains_pointer(strip) {
-            ui.ctx().input_mut(|i| {
-                if i.modifiers.shift {
-                    i.smooth_scroll_delta.x = 0.0;
-                } else {
-                    i.smooth_scroll_delta.y = 0.0;
-                }
-            });
-        }
-    }
-    // The lane reserves a gutter left of every card so the active spine never covers a
-    // pane's first column of glyphs — but left bare it reads as a notch beside the column
-    // header, which spans the lane edge to edge. So the card covers it: the band's wash
-    // down the band…
-    let gutter = egui::Rect::from_min_max(
-        egui::pos2(hrect.left() - AGENTS_ACTIVE_SPINE, hrect.top()),
-        egui::pos2(hrect.left(), ui.next_widget_position().y),
-    );
-    ui.painter().set(
-        band_bg,
-        egui::Shape::rect_filled(
-            egui::Rect::from_min_max(gutter.min, hrect.max),
-            0,
-            mix(
-                palette.bg_surface_hover,
-                palette.lane_color(row.lane),
-                if card_hovered {
-                    AGENTS_BAND_HOVER_TINT
-                } else {
-                    AGENTS_BAND_TINT
-                },
-            ),
-        ),
-    );
-    // …and the pane's own base down the rest of it. A theme pairs its chrome and its
-    // terminal palette on one background (`bg_canvas` — asserted in `theme`), so the
-    // gutter beside a pane is seamless whichever preset is on.
-    ui.painter().rect_filled(
-        egui::Rect::from_min_max(egui::pos2(gutter.left(), hrect.bottom()), gutter.max),
-        0,
-        palette.bg_canvas,
-    );
-    if active {
-        // The focus mark: a spine down **this card's** left edge — its status band to its
-        // pane's bottom — so the focus reads on the pane the keyboard drives, not on the
-        // column it sits in, and no frame boxes in a terminal. It takes over the gutter,
-        // which covers no content.
-        ui.painter()
-            .rect_filled(gutter, 0, project_header_tint(palette, row.lane));
-    }
+    let term_clicked = render_terminal(idx, &mut term_ui);
+    response.clicked() || term_clicked
 }
 
-/// One column per **worktree**: consecutive rows sharing project *and*
-/// `worktree_id`. A project's worktrees carry the same `repo` name and arrive
-/// adjacent (workspace order), so their columns end up side by side under the same
-/// project hue.
-fn worktree_columns(rows: &[AgentRow]) -> Vec<(usize, usize)> {
-    runs(rows, |a, b| {
-        a.repo == b.repo && a.worktree_id == b.worktree_id
-    })
+/// Agents are running but the wall is empty (nothing picked yet, or everything hidden):
+/// the header strip is the way in, so say so rather than showing a bare canvas.
+fn empty_wall(ui: &mut egui::Ui, palette: &Palette) {
+    ui.add_space(48.0);
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+        paint_icon(
+            ui.painter(),
+            rect.center(),
+            36.0,
+            lucide_icons::Icon::LayoutGrid,
+            palette.text_muted,
+        );
+        ui.add_space(14.0);
+        ui.label(
+            egui::RichText::new("No terminal on the wall")
+                .size(16.0)
+                .family(theme::medium_family(ui.ctx()))
+                .color(palette.text_primary),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "Pick an agent above to watch it live — up to {MAX_SHOWN} at once."
+            ))
+            .size(SUBTITLE_SIZE)
+            .color(palette.text_muted),
+        );
+    });
 }
 
-/// The row a column expands to its live terminal: the globally-selected agent
-/// when it lives in this column, otherwise the column's most urgent agent
-/// (Working > Done > Idle, ties by workspace order — the global default rule).
-/// So every column shows one live terminal — the selected one active (keyboard +
-/// spine), the rest a live glance (agents.md §5). `start < end` always
-/// (a column is a non-empty group), so the fallback never yields `start` spuriously.
-fn column_expanded(rows: &[AgentRow], start: usize, end: usize, selected: Option<usize>) -> usize {
-    if let Some(s) = selected.filter(|s| (start..end).contains(s)) {
-        return s;
-    }
-    (start..end)
-        .max_by_key(|&i| (rows[i].badge, std::cmp::Reverse(i)))
-        .unwrap_or(start)
+/// Linear per-channel blend of `base` toward `tint` by `t` (0 = base, 1 = tint), in
+/// sRGB space — enough for the subtle project washes. Blending against the theme's own
+/// base keeps the tint balanced in both light and dark.
+fn mix(base: egui::Color32, tint: egui::Color32, t: f32) -> egui::Color32 {
+    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    egui::Color32::from_rgb(
+        lerp(base.r(), tint.r()),
+        lerp(base.g(), tint.g()),
+        lerp(base.b(), tint.b()),
+    )
+}
+
+/// Wash for project `lane` on a status-band base: worn by a header chip whose agent is
+/// on the wall and by the workspace sidebar's project header icon — one hue per project,
+/// the same one its wall bands carry.
+pub(crate) fn project_header_tint(palette: &Palette, lane: usize) -> egui::Color32 {
+    mix(
+        palette.bg_surface_hover,
+        palette.lane_color(lane),
+        HEADER_ICON_TINT,
+    )
 }
 
 /// Consecutive `[start, end)` ranges sharing the same project — the list view's
@@ -1181,7 +933,8 @@ fn paint_elided(
 /// Pill carrying the project's branch (mono, design-system §2), `bg.surface`
 /// fill + `border.subtle` stroke so it reads as a chip on the canvas card. The
 /// branch is elided past `max_text_width` so a long name never pushes the chip
-/// under the row's right-aligned caption.
+/// under the row's right-aligned caption. Returns the pill's width, so a caller
+/// laying out a third label (a wall tile's tab) knows where the chip ends.
 fn branch_chip(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -1189,7 +942,7 @@ fn branch_chip(
     left: f32,
     center_y: f32,
     max_text_width: f32,
-) {
+) -> f32 {
     let font = egui::FontId::monospace(CHIP_SIZE);
     let mut job = egui::text::LayoutJob::single_section(
         branch.to_owned(),
@@ -1216,6 +969,7 @@ fn branch_chip(
         galley,
         palette.text_secondary,
     );
+    chip.width()
 }
 
 /// Outcome of a click on an agent row: its body selects, its jump icon focuses.
@@ -1426,7 +1180,6 @@ mod tests {
             detail: String::new(),
             worktree_id: 0,
             lane: 0,
-            stats: None,
         }
     }
 
@@ -1442,39 +1195,16 @@ mod tests {
     }
 
     #[test]
-    fn columns_split_per_worktree() {
-        let mut rows = [
-            row("helm", "claude", AgentBadge::Working),
-            row("helm", "codex", AgentBadge::Done),
-            row("helm", "aider", AgentBadge::Idle),
-        ];
-        rows[2].worktree_id = 1;
-        // Two agents in the same worktree share a column; the other worktree gets its own.
-        assert_eq!(worktree_columns(&rows), vec![(0, 2), (2, 3)]);
-        assert_eq!(worktree_columns(&[]), Vec::<(usize, usize)>::new());
-        // Two projects whose entries happen to carry the same id still split.
-        let other = [
-            row("helm", "claude", AgentBadge::Idle),
-            row("api", "codex", AgentBadge::Idle),
-        ];
-        assert_eq!(worktree_columns(&other), vec![(0, 1), (1, 2)]);
-    }
-
-    #[test]
-    fn column_expanded_prefers_selection_then_urgency() {
-        let rows = [
-            row("a", "claude", AgentBadge::Idle),   // 0
-            row("a", "codex", AgentBadge::Working), // 1
-            row("a", "aider", AgentBadge::Working), // 2
-            row("b", "amp", AgentBadge::Done),      // 3
-        ];
-        // A selection inside the column wins outright, even over a more urgent sibling.
-        assert_eq!(column_expanded(&rows, 0, 3, Some(0)), 0);
-        // No selection here ⇒ most urgent, ties broken to the earliest row (idx 1 over
-        // the equally-Working idx 2), regardless of a selection in another column.
-        assert_eq!(column_expanded(&rows, 0, 3, None), 1);
-        assert_eq!(column_expanded(&rows, 0, 3, Some(3)), 1);
-        // A lone-agent column always expands that agent.
-        assert_eq!(column_expanded(&rows, 3, 4, None), 3);
+    fn the_wall_maps_its_slots_to_rows() {
+        let slots = [(PaneId(3), 2), (PaneId(1), 0)];
+        let wall = WallView {
+            layout: None,
+            slots: &slots,
+            full: false,
+        };
+        assert_eq!(wall.row_of(PaneId(3)), Some(2));
+        assert_eq!(wall.row_of(PaneId(9)), None);
+        assert!(wall.shows(0));
+        assert!(!wall.shows(1));
     }
 }

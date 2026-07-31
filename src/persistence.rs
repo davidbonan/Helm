@@ -16,9 +16,6 @@ use crate::workspace_launcher::WorkspaceOpener;
 const PREFS_FILE: &str = "prefs.toml";
 const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 280.0;
 const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 480.0;
-/// Default shared width of a project column in the agents dashboard's columns
-/// view; the user resizes it by dragging a column gap (specs/agents.md §5).
-const DEFAULT_AGENTS_COLUMN_WIDTH: f32 = 874.0;
 /// Default width of the PR cockpit's detail panel; the user resizes it by
 /// dragging the list/detail split (specs/pull-requests.md §5).
 const DEFAULT_PR_DETAIL_WIDTH: f32 = 460.0;
@@ -116,12 +113,9 @@ pub struct Prefs {
     /// on by default.
     pub notify_on_agent_completion: bool,
     /// Cross-repo agents dashboard layout (specs/agents.md §5): the master-detail
-    /// list or the multi-terminal column grid. Restored on launch.
+    /// list or the wall of mirrored terminals. Restored on launch. (Which agents the
+    /// wall shows is session state, deliberately not persisted.)
     pub agents_view: AgentsViewMode,
-    /// Shared width of a project column in the dashboard's columns view, set by
-    /// dragging a column gap (specs/agents.md §5). Restored on launch; clamped by
-    /// the view.
-    pub agents_column_width: f32,
     /// Flat vs IDE-style tree layout shared by the WIP and commit-detail file
     /// lists (M40). Restored on launch; absent in older prefs falls back to Flat.
     pub git_file_view: FileViewMode,
@@ -182,7 +176,6 @@ impl Default for Prefs {
             editor: Editor::default(),
             notify_on_agent_completion: true,
             agents_view: AgentsViewMode::default(),
-            agents_column_width: DEFAULT_AGENTS_COLUMN_WIDTH,
             git_file_view: FileViewMode::default(),
             run_panel_height: DEFAULT_RUN_PANEL_HEIGHT,
             run_panel_collapsed: false,
@@ -537,8 +530,7 @@ mod tests {
             ai_rebase_provider: AiProvider::Opencode,
             editor: Editor::Zed,
             notify_on_agent_completion: false,
-            agents_view: AgentsViewMode::Columns,
-            agents_column_width: 540.0,
+            agents_view: AgentsViewMode::Terminals,
             git_file_view: FileViewMode::Tree,
             run_panel_height: 240.0,
             run_panel_collapsed: true,
@@ -765,24 +757,6 @@ mod tests {
     }
 
     #[test]
-    fn agents_column_width_default_and_round_trip() {
-        assert_eq!(
-            Prefs::default().agents_column_width,
-            DEFAULT_AGENTS_COLUMN_WIDTH
-        );
-        // Absent from an older file ⇒ the defaults.
-        let old = Prefs::from_toml("theme = \"Light\"\n").unwrap();
-        assert_eq!(old.agents_column_width, DEFAULT_AGENTS_COLUMN_WIDTH);
-        let prefs = Prefs {
-            agents_column_width: 540.0,
-            ..Prefs::default()
-        };
-        let text = prefs.to_toml().unwrap();
-        let back = Prefs::from_toml(&text).unwrap();
-        assert_eq!(back.agents_column_width, 540.0);
-    }
-
-    #[test]
     fn run_panel_metrics_default_and_round_trip() {
         assert_eq!(Prefs::default().run_panel_height, DEFAULT_RUN_PANEL_HEIGHT);
         assert!(!Prefs::default().run_panel_collapsed);
@@ -803,17 +777,26 @@ mod tests {
     #[test]
     fn agents_view_round_trips_in_snake_case() {
         let prefs = Prefs {
-            agents_view: AgentsViewMode::Columns,
+            agents_view: AgentsViewMode::Terminals,
             ..Prefs::default()
         };
         let text = prefs.to_toml().unwrap();
+        // The wall's token stays `columns`, the name it was written under before the
+        // view became a wall of terminals: an unknown value would sink the whole file.
         assert!(
             text.contains("agents_view = \"columns\""),
             "unexpected format:\n{text}"
         );
         assert_eq!(
             Prefs::from_toml(&text).unwrap().agents_view,
-            AgentsViewMode::Columns
+            AgentsViewMode::Terminals
+        );
+        // And a file written by an older build still restores the wall.
+        assert_eq!(
+            Prefs::from_toml("agents_view = \"columns\"\n")
+                .unwrap()
+                .agents_view,
+            AgentsViewMode::Terminals
         );
     }
 

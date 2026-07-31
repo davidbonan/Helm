@@ -338,7 +338,7 @@ const SWITCH_SEG_RESERVE: f32 = SWITCH_SEG_PAD_X + SWITCH_BADGE_W;
 const SWITCH_TERMINAL: &str = "Terminal";
 const SWITCH_GRAPH: &str = "Git";
 const SWITCH_LIST: &str = "List";
-const SWITCH_COLUMNS: &str = "Columns";
+const SWITCH_TERMINALS: &str = "Terminals";
 // Gap kept between the project/worktree reminder and the centered switch so the
 // reminder never reaches it when the panel narrows.
 const SWITCH_LABEL_GAP: f32 = 12.0;
@@ -430,14 +430,14 @@ pub fn central_switch(
     requested
 }
 
-/// Segmented "List ⇄ Columns" switch for the Agents dashboard. Shares the central
+/// Segmented "List ⇄ Terminals" switch for the Agents dashboard. Shares the central
 /// switch's pill design and titlebar placement (design-system §4) so it sits where
-/// Terminal/Git would in the other modes. `columns_active` marks the current
-/// segment; clicking the other returns `Some(new_columns_active)`. Pure rendering.
+/// Terminal/Git would in the other modes. `terminals_active` marks the current
+/// segment; clicking the other returns `Some(new_terminals_active)`. Pure rendering.
 pub fn agents_view_switch(
     ui: &mut egui::Ui,
     palette: &Palette,
-    columns_active: bool,
+    terminals_active: bool,
 ) -> Option<bool> {
     let mut requested = None;
     let row_top = f32::from(MACOS_TITLEBAR_INSET) / 2.0 - SWITCH_HEIGHT / 2.0;
@@ -448,7 +448,7 @@ pub fn agents_view_switch(
         |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             let list_w = segment_width(ui, SWITCH_LIST);
-            let total = list_w + segment_width(ui, SWITCH_COLUMNS);
+            let total = list_w + segment_width(ui, SWITCH_TERMINALS);
             let gutter = ((ui.available_width() - total) / 2.0).max(0.0);
             let row = ui.max_rect();
             let container = egui::Rect::from_min_size(
@@ -468,24 +468,24 @@ pub fn agents_view_switch(
                 palette,
                 SWITCH_LIST,
                 lucide_icons::Icon::List,
-                !columns_active,
+                !terminals_active,
                 None,
             );
-            if list.clicked() && columns_active {
+            if list.clicked() && terminals_active {
                 requested = Some(false);
             }
-            let columns = switch_segment(
+            let terminals = switch_segment(
                 ui,
                 palette,
-                SWITCH_COLUMNS,
-                lucide_icons::Icon::Columns3,
-                columns_active,
+                SWITCH_TERMINALS,
+                lucide_icons::Icon::LayoutGrid,
+                terminals_active,
                 None,
             );
-            if columns.clicked() && !columns_active {
+            if terminals.clicked() && !terminals_active {
                 requested = Some(true);
             }
-            paint_active_border(ui, palette, container, list_w, columns_active);
+            paint_active_border(ui, palette, container, list_w, terminals_active);
         },
     );
     ui.add_space(f32::from(TITLEBAR_HEIGHT) - row_top - SWITCH_HEIGHT);

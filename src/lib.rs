@@ -1,4 +1,5 @@
 pub mod agent_watch;
+pub mod agents_wall;
 pub mod ai;
 pub mod app;
 pub mod cli;
