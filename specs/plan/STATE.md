@@ -46,6 +46,12 @@ seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
 ### Next actions (M-Wall)
 - Done. Deliberately out: persisting which agents are shown (session state by design),
   hover previews for the agents left off the wall, `Cmd+W` as "hide the active tile".
+- ☑ **Post-M-Wall — the List view is gone.** The wall is the dashboard's only view: the
+  `List | Terminals` switch (`ui::agents_view_switch`), `AgentsViewMode`,
+  `Prefs.agents_view` and the whole master-detail cockpit (list cards, right terminal
+  panel, `branch_chip`) are removed; the page reserves the titlebar and starts at the
+  chip strip. `AgentRow.worktree_id`, which only the old views read, goes with them. `specs/agents.md` §5 + README + `agents-terminals.png` follow;
+  `agents-list.png` dropped.
 
 ---
 

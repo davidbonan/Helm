@@ -448,15 +448,12 @@ pub struct HelmApp {
     caches: RepoCaches,
     font_zoom: FontZoom,
     central_mode: CentralMode,
-    /// Agent picked in the cross-repo dashboard (specs/agents.md §5): its pane is
-    /// mirrored live in the dashboard's right panel. The stable triple survives
-    /// the per-tick rebuild of `caches.agents`; a selection whose tab/pane closed
-    /// is dropped (and the most urgent agent re-picked) each frame.
+    /// Agent picked in the cross-repo dashboard (specs/agents.md §5): its tile is the
+    /// active one, the single pane of the wall that owns the keyboard. The stable
+    /// triple survives the per-tick rebuild of `caches.agents`; a selection whose
+    /// tab/pane closed is dropped (and the most urgent agent re-picked) each frame.
     selected_agent: Option<(RepoKey, TabId, PaneId)>,
-    /// Cross-repo dashboard layout (specs/agents.md §5): master-detail list or the
-    /// wall of mirrored terminals. Persisted; toggled from the dashboard header.
-    agents_view: crate::ui::agents_view::AgentsViewMode,
-    /// Which agents the dashboard's Terminals view mirrors, and how their tiles are
+    /// Which agents the dashboard's wall mirrors, and how their tiles are
     /// laid out (specs/agents.md §5). Session state — an agent key only means
     /// something while its pane runs, so nothing is persisted.
     agents_wall: crate::agents_wall::AgentWall<(RepoKey, TabId, PaneId)>,
@@ -723,7 +720,6 @@ impl HelmApp {
             font_zoom: FontZoom::default(),
             central_mode: CentralMode::default(),
             selected_agent: None,
-            agents_view: prefs.agents_view,
             agents_wall: crate::agents_wall::AgentWall::new(),
             agents_wall_seeded: false,
             git_file_view: prefs.git_file_view,

@@ -1,9 +1,8 @@
 //! UI E2E for the cross-repo agents dashboard (specs/agents.md §5): drives
-//! `agents_page` headless and checks the List cockpit (grouped rows, empty state,
-//! row-body → select vs jump-icon → focus, the panel mirror), the List/Terminals view
-//! switch, and the Terminals **wall** — the header chip per running agent, the toggle
-//! that puts one on the wall or takes it off, the cap of four, the mirrored terminal per
-//! tile, and the split-tree gestures (seam resize, grip drop) it reports back.
+//! `agents_page` headless and checks the **wall** — the empty state, the header chip per
+//! running agent, the toggle that puts one on the wall or takes it off, the cap of four,
+//! the mirrored terminal per tile, the band → select vs jump-icon → focus split, and the
+//! split-tree gestures (seam resize, grip drop) it reports back.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -15,7 +14,7 @@ use helm::agent_watch::AgentBadge;
 use helm::agents_wall::AgentWall;
 use helm::terminal::layout::{Dir, PaneId, Rect};
 use helm::theme::Palette;
-use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, WallView};
+use helm::ui::agents_view::{agents_page, AgentRow, WallView};
 use helm::ui::terminal_view::{DropZone, PaneDrop, ResizeDrag};
 
 const WINDOW: egui::Vec2 = egui::vec2(1500.0, 1200.0);
@@ -41,7 +40,6 @@ const JUMP_INSET: f32 = 53.5;
 struct Captured {
     select: Cell<Option<usize>>,
     jump: Cell<Option<usize>>,
-    set_view: Cell<Option<AgentsViewMode>>,
     toggle: Cell<Option<usize>>,
     resize: Cell<Option<ResizeDrag>>,
     drop: Cell<Option<PaneDrop>>,
@@ -76,7 +74,6 @@ struct Row {
     agent: &'static str,
     badge: AgentBadge,
     detail: &'static str,
-    worktree_id: usize,
 }
 
 fn row(repo: &'static str, agent: &'static str, tab: &'static str, badge: AgentBadge) -> Row {
@@ -87,24 +84,18 @@ fn row(repo: &'static str, agent: &'static str, tab: &'static str, badge: AgentB
         agent,
         badge,
         detail: "",
-        worktree_id: 0,
     }
 }
 
-fn harness(
-    data: Vec<Row>,
-    selected: Option<usize>,
-    view: AgentsViewMode,
-) -> (Harness<'static>, Rc<Captured>) {
-    wall_harness(data, selected, view, &[])
+fn harness(data: Vec<Row>, selected: Option<usize>) -> (Harness<'static>, Rc<Captured>) {
+    wall_harness(data, selected, &[])
 }
 
-/// Same, with `shown` naming the rows the Terminals view mirrors — in the order they
-/// were put on the wall, so the tree splits exactly as the app's would.
+/// Same, with `shown` naming the rows the wall mirrors — in the order they were put on
+/// it, so the tree splits exactly as the app's would.
 fn wall_harness(
     data: Vec<Row>,
     selected: Option<usize>,
-    view: AgentsViewMode,
     shown: &[usize],
 ) -> (Harness<'static>, Rc<Captured>) {
     let palette = Palette::light();
@@ -127,7 +118,6 @@ fn wall_harness(
                 agent: r.agent,
                 badge: r.badge,
                 detail: r.detail.to_owned(),
-                worktree_id: r.worktree_id,
                 lane: 0,
             })
             .collect();
@@ -136,20 +126,12 @@ fn wall_harness(
             slots: &slots,
             full,
         };
-        let action = agents_page(
-            ui,
-            &palette,
-            &rows,
-            selected,
-            view,
-            &wall,
-            |idx, term_ui| {
-                sink.drawn.borrow_mut().push(idx);
-                sink.term_rects.borrow_mut().push((idx, term_ui.max_rect()));
-                term_ui.label(format!("TERM-{idx}"));
-                false
-            },
-        );
+        let action = agents_page(ui, &palette, &rows, selected, &wall, |idx, term_ui| {
+            sink.drawn.borrow_mut().push(idx);
+            sink.term_rects.borrow_mut().push((idx, term_ui.max_rect()));
+            term_ui.label(format!("TERM-{idx}"));
+            false
+        });
         // Latch: a Working row repaints (spinner), so later settle frames see no
         // click and would otherwise clear the action captured on the click frame.
         if action.select.is_some() {
@@ -157,9 +139,6 @@ fn wall_harness(
         }
         if action.jump.is_some() {
             sink.jump.set(action.jump);
-        }
-        if action.set_view.is_some() {
-            sink.set_view.set(action.set_view);
         }
         if action.toggle.is_some() {
             sink.toggle.set(action.toggle);
@@ -227,159 +206,10 @@ fn click_at(harness: &mut Harness<'static>, pos: egui::Pos2) {
 }
 
 #[test]
-fn lists_every_agent_grouped_by_project() {
-    let (harness, _) = harness(
-        vec![
-            row("helm", "claude", "Tab 1", AgentBadge::Working),
-            row("helm", "codex", "Tab 2", AgentBadge::Done),
-            row("api", "aider", "Tab 1", AgentBadge::Idle),
-        ],
-        None,
-        AgentsViewMode::List,
-    );
-    harness.get_by_label("Claude in helm — Tab 1");
-    harness.get_by_label("Codex in helm — Tab 2");
-    harness.get_by_label("Aider in api — Tab 1");
-}
-
-#[test]
-fn worktrees_of_one_project_share_a_group() {
-    // Same project name, different branches (a root and its worktree): they stay
-    // in a single group — "across 1 project", not two.
-    let (harness, _) = harness(
-        vec![
-            Row {
-                repo: "helm",
-                branch: Some("main"),
-                tab: "Tab 1",
-                agent: "claude",
-                badge: AgentBadge::Working,
-                detail: "",
-                worktree_id: 0,
-            },
-            Row {
-                repo: "helm",
-                branch: Some("feature/login"),
-                tab: "Tab 1",
-                agent: "codex",
-                badge: AgentBadge::Done,
-                detail: "",
-                worktree_id: 1,
-            },
-        ],
-        None,
-        AgentsViewMode::List,
-    );
-    harness.get_by_label("Claude in helm — Tab 1");
-    harness.get_by_label("Codex in helm — Tab 1");
-}
-
-#[test]
-fn long_branch_and_detail_keep_the_row_reachable() {
-    // Selected + a wide window ⇒ the panel shows and the list runs at its narrow
-    // 440px width: a very long branch chip and state caption used to collide with
-    // each other and the jump icon. They now elide; the row stays rendered and
-    // a11y-reachable (its label carries agent/repo/tab — elision is visual only).
-    let (harness, _) = harness(
-        vec![Row {
-            repo: "helm",
-            branch: Some("feature/a-very-long-branch-name-that-would-overflow-the-narrow-list"),
-            tab: "Tab 1",
-            agent: "claude",
-            badge: AgentBadge::Done,
-            detail: "Finished 12 minutes ago",
-            worktree_id: 0,
-        }],
-        Some(0),
-        AgentsViewMode::List,
-    );
-    harness.get_by_label("Claude in helm — Tab 1");
-}
-
-#[test]
-fn clicking_a_row_body_selects_it() {
-    let (mut harness, cap) = harness(
-        vec![
-            row("helm", "claude", "Tab 1", AgentBadge::Working),
-            row("helm", "codex", "Tab 2", AgentBadge::Done),
-        ],
-        None,
-        AgentsViewMode::List,
-    );
-    // `Node::click()` clicks the row center — the body, well left of the jump icon.
-    harness.get_by_label("Codex in helm — Tab 2").click();
-    harness.step();
-    assert_eq!(cap.select.get(), Some(1));
-    assert_eq!(cap.jump.get(), None);
-}
-
-#[test]
-fn clicking_the_jump_icon_focuses_the_workspace() {
-    let (mut harness, cap) = harness(
-        vec![
-            row("helm", "claude", "Tab 1", AgentBadge::Working),
-            row("helm", "codex", "Tab 2", AgentBadge::Done),
-        ],
-        None,
-        AgentsViewMode::List,
-    );
-    // The jump icon sits at the right edge: its center is CARD_PAD_X (16) + half the
-    // 28px hit box in from the row's right — i.e. 30px. Click there, not the center.
-    let r = harness.get_by_label("Codex in helm — Tab 2").rect();
-    click_at(&mut harness, egui::pos2(r.right() - 30.0, r.center().y));
-    assert_eq!(cap.jump.get(), Some(1));
-    assert_eq!(cap.select.get(), None);
-}
-
-#[test]
-fn selecting_an_agent_mirrors_its_terminal_in_the_panel() {
-    let (harness, cap) = harness(
-        vec![
-            row("helm", "claude", "Tab 1", AgentBadge::Working),
-            row("helm", "codex", "Tab 2", AgentBadge::Done),
-        ],
-        Some(0),
-        AgentsViewMode::List,
-    );
-    // List view mirrors only the selected agent (deduped across settle frames).
-    assert_eq!(cap.drawn_rows(), vec![0]);
-    harness.get_by_label("TERM-0");
-}
-
-#[test]
 fn empty_state_when_no_agents() {
-    let (list, _) = harness(Vec::new(), None, AgentsViewMode::List);
-    list.get_by_label("No agents running");
-    // The wall says the same thing when nothing runs at all — the header would be empty
-    // too, so there is nothing to pick.
-    let (wall, _) = harness(Vec::new(), None, AgentsViewMode::Terminals);
+    // Nothing runs at all: the header would be empty too, so there is nothing to pick.
+    let (wall, _) = harness(Vec::new(), None);
     wall.get_by_label("No agents running");
-}
-
-#[test]
-fn header_toggle_switches_to_the_wall() {
-    let (mut harness, cap) = harness(
-        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
-        None,
-        AgentsViewMode::List,
-    );
-    // The toggle shows in both modes; clicking the inactive segment emits the mode.
-    harness.get_by_label("List");
-    harness.get_by_label("Terminals").click();
-    harness.step();
-    assert_eq!(cap.set_view.get(), Some(AgentsViewMode::Terminals));
-}
-
-#[test]
-fn header_toggle_switches_back_to_list() {
-    let (mut harness, cap) = harness(
-        vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
-        None,
-        AgentsViewMode::Terminals,
-    );
-    harness.get_by_label("List").click();
-    harness.step();
-    assert_eq!(cap.set_view.get(), Some(AgentsViewMode::List));
 }
 
 #[test]
@@ -391,17 +221,14 @@ fn the_header_carries_a_chip_per_running_agent() {
             row("helm", "claude", "Tab 1", AgentBadge::Working),
             Row {
                 branch: Some("feature"),
-                worktree_id: 1,
                 ..row("helm", "codex", "Tab 2", AgentBadge::Done)
             },
             Row {
                 branch: None,
-                worktree_id: 2,
                 ..row("api", "aider", "Tab 1", AgentBadge::Idle)
             },
         ],
         None,
-        AgentsViewMode::Terminals,
         &[0],
     );
     harness.get_by_label("Claude · helm · main · Tab 1");
@@ -418,7 +245,6 @@ fn clicking_a_chip_puts_that_agent_on_the_wall() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0],
     );
     harness.get_by_label("Codex · helm · main · Tab 2").click();
@@ -439,7 +265,6 @@ fn clicking_the_chip_of_a_shown_agent_takes_it_off_the_wall() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     harness.get_by_label("Claude · helm · main · Tab 1").click();
@@ -456,7 +281,6 @@ fn the_wall_mirrors_a_live_terminal_per_shown_agent() {
             row("api", "aider", "Tab 1", AgentBadge::Done),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 2],
     );
     assert_eq!(cap.drawn_rows(), vec![0, 2], "only the shown agents mirror");
@@ -481,7 +305,6 @@ fn two_tiles_split_the_wall_side_by_side() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     let left = cap.term_rect(0);
@@ -508,7 +331,6 @@ fn a_lone_tile_fills_the_wall() {
     let (_harness, cap) = wall_harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0],
     );
     let term = cap.term_rect(0);
@@ -525,7 +347,6 @@ fn a_tile_pane_sits_flush_under_its_band() {
     let (harness, cap) = wall_harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0],
     );
     let band = harness.get_by_label("Claude in helm · main — Tab 1").rect();
@@ -556,7 +377,6 @@ fn a_full_wall_leaves_the_remaining_chips_out_of_reach() {
             row("helm", "gemini", "Tab 5", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1, 2, 3],
     );
     assert_eq!(cap.drawn_rows(), vec![0, 1, 2, 3]);
@@ -574,7 +394,6 @@ fn an_empty_wall_points_back_at_the_header() {
     let (harness, cap) = wall_harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
         Some(0),
-        AgentsViewMode::Terminals,
         &[],
     );
     harness.get_by_label("No terminal on the wall");
@@ -591,7 +410,6 @@ fn clicking_a_tile_band_selects_it() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     // `Node::click()` clicks the band center — well left of its jump icon.
@@ -606,7 +424,6 @@ fn clicking_a_tile_jump_icon_focuses_the_workspace() {
     let (mut harness, cap) = wall_harness(
         vec![row("helm", "claude", "Tab 1", AgentBadge::Working)],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0],
     );
     let band = harness.get_by_label("Claude in helm · main — Tab 1").rect();
@@ -628,7 +445,6 @@ fn dragging_the_seam_between_two_tiles_resizes_them() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     let left = cap.term_rect(0);
@@ -654,7 +470,6 @@ fn dropping_a_tile_grip_on_another_tile_rearranges_the_wall() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     let band = harness.get_by_label("Claude in helm · main — Tab 1").rect();
@@ -670,7 +485,6 @@ fn dropping_a_tile_grip_on_another_tile_rearranges_the_wall() {
             row("helm", "codex", "Tab 2", AgentBadge::Idle),
         ],
         Some(0),
-        AgentsViewMode::Terminals,
         &[0, 1],
     );
     let band = harness.get_by_label("Claude in helm · main — Tab 1").rect();

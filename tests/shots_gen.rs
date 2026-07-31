@@ -24,7 +24,7 @@ use helm::terminal::layout::{Layout, Orient, PaneId};
 use helm::terminal::links::Editor;
 use helm::terminal::palette::TermPalette;
 use helm::theme::Palette;
-use helm::ui::agents_view::{agents_page, AgentRow, AgentsViewMode, WallView};
+use helm::ui::agents_view::{agents_page, AgentRow, WallView};
 use helm::ui::ai_rebase_modal::{ai_rebase_modal, AiRebasePage};
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState};
 use helm::ui::diff_view::{diff_view, DiffSurface, DiffViewState};
@@ -55,7 +55,6 @@ struct Spec {
     agent: &'static str,
     badge: AgentBadge,
     detail: &'static str,
-    worktree_id: usize,
     /// Project color index — the worktrees of one project share it, so their chips and
     /// wall bands carry the same hue.
     lane: usize,
@@ -86,7 +85,6 @@ fn specs() -> Vec<Spec> {
             agent: "claude",
             badge: AgentBadge::Working,
             detail: "Working…",
-            worktree_id: 0,
             lane: 0,
             body: &[
                 "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
@@ -114,7 +112,6 @@ fn specs() -> Vec<Spec> {
             agent: "aider",
             badge: AgentBadge::Idle,
             detail: "Idle",
-            worktree_id: 0,
             lane: 0,
             body: &[
                 "\x1b[2mhelm  ~/dev/helm  main\x1b[0m",
@@ -140,7 +137,6 @@ fn specs() -> Vec<Spec> {
             agent: "codex",
             badge: AgentBadge::Done,
             detail: "Finished 3m ago",
-            worktree_id: 1,
             lane: 0,
             // Codex leaves its startup chrome on screen: a top "update available"
             // banner box and a boxed session-info banner, both box-framed. Its
@@ -179,7 +175,6 @@ fn specs() -> Vec<Spec> {
             agent: "claude",
             badge: AgentBadge::Working,
             detail: "Working…",
-            worktree_id: 2,
             lane: 1,
             // A full-screen TUI at the pane's real 110-col width, ending in Claude
             // Code's bottom chrome block — a multi-row boxed composer plus mode /
@@ -209,15 +204,8 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
-/// `shown` lists the rows the Terminals view mirrors, in the order they were put on the
-/// wall (ignored by the List view, which mirrors the selected row alone).
-fn render(
-    view: AgentsViewMode,
-    selected: Option<usize>,
-    shown: &[usize],
-    size: egui::Vec2,
-    out: &str,
-) {
+/// `shown` lists the rows the wall mirrors, in the order they were put on it.
+fn render(selected: Option<usize>, shown: &[usize], size: egui::Vec2, out: &str) {
     let palette = Palette::dark();
     let term_pal = TermPalette::dark();
     let data = specs();
@@ -264,7 +252,6 @@ fn render(
                     agent: s.agent,
                     badge: s.badge,
                     detail: s.detail.to_owned(),
-                    worktree_id: s.worktree_id,
                     lane: s.lane,
                 })
                 .collect();
@@ -273,7 +260,7 @@ fn render(
                 slots: &slots,
                 full: wall_full,
             };
-            agents_page(ui, &palette, &rows, selected, view, &wall, |idx, tui| {
+            agents_page(ui, &palette, &rows, selected, &wall, |idx, tui| {
                 terminal_view(
                     tui,
                     &grids[idx],
@@ -301,21 +288,9 @@ fn render(
 }
 
 #[test]
-fn gen_agents_list() {
-    render(
-        AgentsViewMode::List,
-        Some(0),
-        &[],
-        egui::vec2(1280.0, 800.0),
-        "agents_list",
-    );
-}
-
-#[test]
 fn gen_agents_terminals() {
     // Three of the four agents on the wall: one full column, two stacked beside it.
     render(
-        AgentsViewMode::Terminals,
         Some(0),
         &[0, 1, 2],
         egui::vec2(1920.0, 900.0),

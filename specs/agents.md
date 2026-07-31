@@ -157,38 +157,13 @@ workspace-wide max badge (accent spinner = working, green dot = a finished turn)
 the central area to the dashboard while the **project sidebar stays** (the entry
 highlighted); the per-repo git panel is **hidden** (the view is cross-repo).
 
-The dashboard is a **two-pane cockpit**: a left **list** and a right **terminal
-panel**. The list (flush to the left edge) groups rows by **project**: a root and
-its worktrees share one card (titled with the root's name + agent count), so their
-agents sit together. One row per agenting pane: agent name, a per-row **branch
-chip** (which worktree), tab, a state indicator (accent arc spinner / green dot +
-faint static halo / hollow gray ring), a detail (*Working…* / *Finished Nm ago* /
-*Idle*) and a discreet **jump icon** (external-link) at the right edge.
-
-Clicking a row **body selects** it; the right panel then mirrors that agent's pane
-**live** — the same terminal widget as the workspace, fully interactive
-(read / scroll the scrollback, type a reply). The selection is a stable
-`(repo, tab, pane)` triple that survives the per-frame agent-list rebuild; if its
-tab/pane closes it's dropped and the **most urgent** agent re-picked (Working >
-Done > Idle, ties by workspace order) so the panel never opens empty. Clicking the
-row's **jump icon** instead **focuses** that pane in its workspace — activates the
-repo, its tab, sets pane focus, switches back to the terminal. Below a minimum
-width the panel folds away and the list spans the full area (the jump icon remains
-the way to reach a workspace).
-
-**Two view modes.** A segmented control — sharing the Terminal/Git switch's
-design and **titlebar placement** (centered, shown in both modes, no separate
-header bar) — switches between **List** and **Terminals**; the choice is
-**persisted** (`Prefs.agents_view`, default **List**, token `columns` for the
-wall — the name it was written under before the view became a wall) and restored
-next launch. *List* is the cockpit above.
-
-*Terminals* is a **wall of live terminals**: a **header strip** listing every
-running agent as a **chip**, over the mirrored terminals of the ones picked from
-it. A chip carries the agent's **state indicator** (accent arc spinner / green dot
-+ faint static halo / hollow grey ring), its name and **where it runs** —
-`project · branch`, because the dashboard is cross-repo and two agents on `main`
-must read apart. Clicking a chip **shows** that agent's terminal on the wall, or
+The dashboard is a **wall of live terminals** — its only view, with no control of
+its own in the titlebar (the title row stays empty, clear of the traffic lights): a
+**header strip** listing every running agent as a **chip**, over the mirrored
+terminals of the ones picked from it. A chip carries the agent's **state indicator**
+(accent arc spinner / green dot + faint static halo / hollow grey ring), its name
+and **where it runs** — `project · branch`, because the dashboard is cross-repo and
+two agents on `main` must read apart. Clicking a chip **shows** that agent's terminal on the wall, or
 **hides** it when it is already there; a chip whose agent is on the wall is filled
 in its project's hue. At most **`MAX_SHOWN` = 4** terminals are shown at once —
 past that the remaining chips read **disabled** and say so on hover, since a fifth
@@ -215,8 +190,8 @@ the rest of the visit, with a hint pointing back at the header.
 
 Each tile is a **status band** over its pane, flush and full-bleed — no card frame,
 no gap: the band carries the state indicator, the agent, `project · branch`, the
-tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and the list
-view's **jump icon** (external-link, clear of the grip's corner), and it wears the
+tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
+**jump icon** (external-link, clear of the grip's corner), and it wears the
 project's hue — firmest on the tile the keyboard drives, lifting under the pointer.
 The pane below it is the **same terminal widget as the workspace**, mirrored live
 and fully interactive (read / scroll the scrollback, type a reply,
@@ -224,10 +199,13 @@ and fully interactive (read / scroll the scrollback, type a reply,
 `selected_agent` that owns the keyboard focus lock; every other pane recedes behind
 the **split-unfocused dim** it applies to itself, so no extra mark is needed on the
 wall. Clicking a band or a pane selects that tile; the jump icon **focuses** that
-pane in its workspace instead (same handshake as the list row's). Both modes mirror
-panes from the same `(repo, tab, pane)` keys.
+pane in its workspace instead — activates the repo, its tab, sets pane focus,
+switches back to the terminal. The selection is a stable `(repo, tab, pane)` triple
+that survives the per-frame agent-list rebuild; if its tab/pane closes it is dropped
+and the **most urgent** agent re-picked (Working > Done > Idle, ties by workspace
+order).
 
-Leaving the dashboard: picking any project, or `Esc` — **except** when the panel
+Leaving the dashboard: picking any project, or `Esc` — **except** when a mirrored
 terminal holds keyboard focus, where `Esc` reaches the agent as an interrupt
 (the dashboard stays). Because the page stays `Main`, the regular worker drain
 keeps the watch live; viewing the dashboard does **not** acknowledge greens (focus

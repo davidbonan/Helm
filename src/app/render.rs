@@ -841,12 +841,10 @@ impl HelmApp {
         // the dashboard is on screen, to skip the per-frame allocation otherwise.
         let mut agents_select = None;
         let mut agents_focus = None;
-        let mut agents_set_view = None;
         let mut agents_toggle = None;
         let mut agents_wall_rect = None;
         let mut agents_resize = None;
         let mut agents_drop = None;
-        let agents_view = self.agents_view;
         // Set by the dashboard's mirrored terminal when it holds egui focus: gates
         // `Esc` (it must reach the agent as interrupt, not close the dashboard).
         let mut agents_terminal_focused = false;
@@ -861,7 +859,9 @@ impl HelmApp {
                 .agents
                 .iter()
                 .map(|e| {
-                    let worktree_id = self
+                    // Index of this entry's repo in the workspace: the key into the
+                    // per-repo lane (its project's hue).
+                    let repo_index = self
                         .caches
                         .keys
                         .iter()
@@ -881,8 +881,7 @@ impl HelmApp {
                                 }
                                 _ => "Idle".to_owned(),
                             },
-                            worktree_id,
-                            lane: lane_of_repo.get(worktree_id).copied().unwrap_or(0),
+                            lane: lane_of_repo.get(repo_index).copied().unwrap_or(0),
                         },
                         (e.repo_key.clone(), e.tab_id, e.pane_id),
                     )
@@ -1215,7 +1214,6 @@ impl HelmApp {
                                 &palette,
                                 &agent_rows,
                                 selected_index,
-                                agents_view,
                                 &wall,
                                 |idx, term_ui| {
                                     mirror_agent_terminal(
@@ -1233,7 +1231,6 @@ impl HelmApp {
                                     )
                                 },
                             );
-                            agents_set_view = action.set_view;
                             agents_select = action.select;
                             agents_focus = action.jump;
                             agents_toggle = action.toggle;
@@ -2096,7 +2093,6 @@ impl HelmApp {
                                 &palette,
                                 &agent_rows,
                                 selected_index,
-                                agents_view,
                                 &wall,
                                 |idx, term_ui| {
                                     mirror_agent_terminal(
@@ -2114,7 +2110,6 @@ impl HelmApp {
                                     )
                                 },
                             );
-                            agents_set_view = action.set_view;
                             agents_select = action.select;
                             agents_focus = action.jump;
                             agents_toggle = action.toggle;
@@ -2439,13 +2434,6 @@ impl HelmApp {
                     self.selected_agent = Some(key);
                 }
             }
-        }
-        if let Some(view) = agents_set_view {
-            self.agents_view = view;
-            self.persist(move |prefs| Prefs {
-                agents_view: view,
-                ..prefs
-            });
         }
         if let Some(view) = set_file_view {
             self.git_file_view = view;
