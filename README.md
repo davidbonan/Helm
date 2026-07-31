@@ -69,7 +69,7 @@ worktrees** — read, scroll and **reply** to each one live.
   workspace; `Esc` in a focused terminal reaches the agent as an interrupt.
 
 <p align="center">
-  <img src="specs/screenshots/agents-wall.gif" alt="Helm — the agents dashboard: agents picked from the header strip land on the wall one by one, then a seam is dragged to give the working one more room" width="960">
+  <img src="specs/screenshots/agents-wall.gif" alt="Helm — the agents dashboard beside the project sidebar: agents picked from the header strip land on the wall one by one, a seam is dragged to give the working one more room, and its badge turns green when the turn lands" width="960">
 </p>
 
 Helm also shows **where each workspace stands** right in the sidebar — no hooks,

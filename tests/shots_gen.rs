@@ -204,16 +204,45 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
+/// Replaces the working agent's spinner line once its turn lands: the transcript, the
+/// chip, the tile band and the sidebar badge all have to tell the same story.
+const FINISHED_TAIL: &[&str] = &[
+    "  \x1b[2mLanes are reused now — a freed lane goes to the next commit, so\x1b[0m",
+    "  \x1b[2mthe layout stops drifting right. 12 passed, clippy clean.\x1b[0m",
+    "",
+    "\x1b[1m>\x1b[0m ",
+];
+
+/// Width the app gives the project sidebar (`root_layout`'s default).
+const SIDEBAR_W: f32 = 248.0;
+
 /// `shown` lists the rows the wall mirrors, in the order they were put on it; `seam`
 /// nudges the root split's ratio by that much (the seam starts at a fresh 50/50).
-fn render(selected: Option<usize>, shown: &[usize], seam: f32, size: egui::Vec2, out: &str) {
+/// `finished` lands the first agent's turn: its badge goes green everywhere at once.
+/// `phase` offsets how many frames the harness settles, so the Working spinner sits at
+/// a different angle in each beat instead of freezing across the sequence.
+fn render(
+    selected: Option<usize>,
+    shown: &[usize],
+    seam: f32,
+    finished: bool,
+    phase: usize,
+    size: egui::Vec2,
+    out: &str,
+) {
     let palette = Palette::dark();
     let term_pal = TermPalette::dark();
     let data = specs();
     let grids: Vec<SharedTerm> = data
         .iter()
-        .map(|s| {
-            let t = term(22, 110, s.body);
+        .enumerate()
+        .map(|(i, s)| {
+            let mut body = s.body.to_vec();
+            if finished && i == 0 {
+                body.pop();
+                body.extend_from_slice(FINISHED_TAIL);
+            }
+            let t = term(22, 110, &body);
             if let Some(row) = s.cursor_row {
                 emu::feed(&t, format!("\x1b[{};1H", row + 1).as_bytes());
             }
@@ -221,11 +250,12 @@ fn render(selected: Option<usize>, shown: &[usize], seam: f32, size: egui::Vec2,
         })
         .collect();
 
-    // The wall's own tree: one slot per shown agent, split the way the app splits it.
+    // The wall's own tree: one slot per shown agent, split the way the app splits it —
+    // over the area the page really gets, the window minus the project sidebar.
     let area = helm::terminal::layout::Rect {
         x: 0.0,
         y: 0.0,
-        w: size.x,
+        w: size.x - SIDEBAR_W,
         h: size.y,
     };
     let mut wall = helm::agents_wall::AgentWall::new();
@@ -254,42 +284,102 @@ fn render(selected: Option<usize>, shown: &[usize], seam: f32, size: egui::Vec2,
         .with_size(size)
         .with_pixels_per_point(2.0)
         .build_ui(move |ui| {
-            helm::theme::install_fonts(ui.ctx());
-            ui.ctx().set_visuals(egui::Visuals::dark());
+            boot(ui);
             let rows: Vec<AgentRow> = data
                 .iter()
-                .map(|s| AgentRow {
+                .enumerate()
+                .map(|(i, s)| AgentRow {
                     repo: s.repo,
                     branch: Some(s.branch),
                     tab: s.tab,
                     agent: s.agent,
-                    badge: s.badge,
-                    detail: s.detail.to_owned(),
+                    badge: if finished && i == 0 {
+                        AgentBadge::Done
+                    } else {
+                        s.badge
+                    },
+                    detail: if finished && i == 0 {
+                        "Finished just now".to_owned()
+                    } else {
+                        s.detail.to_owned()
+                    },
                     lane: s.lane,
                 })
                 .collect();
+            // Where the agents come from: the same project tree as every full-window
+            // shot, Agents selected, and the `helm` rows carrying the turn's state.
+            let mut items = demo_items();
+            if finished {
+                for item in &mut items {
+                    match item {
+                        SidebarItem::Header(h) if h.root == 0 => h.agent = AgentBadge::Done,
+                        SidebarItem::Row(r) if r.index == 0 => r.agent = AgentBadge::Done,
+                        _ => {}
+                    }
+                }
+            }
+            let projects = demo_projects();
+            let keymap = Keymap::default();
+            let mut sidebar_out = SidebarAction::default();
+            egui::Panel::left("wall_sidebar")
+                .exact_size(SIDEBAR_W)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.bg_sidebar)
+                        .inner_margin(egui::Margin {
+                            left: 10,
+                            right: 10,
+                            top: 40,
+                            bottom: 10,
+                        }),
+                )
+                .show_inside(ui, |ui| {
+                    repo_sidebar(
+                        ui,
+                        &palette,
+                        &items,
+                        &CHILD_FLAGS,
+                        &projects,
+                        Some(0),
+                        if finished {
+                            AgentBadge::Done
+                        } else {
+                            AgentBadge::Working
+                        },
+                        true,
+                        &[],
+                        0,
+                        false,
+                        &keymap,
+                        &mut sidebar_out,
+                    );
+                });
             let wall = WallView {
                 layout: wall_layout.as_ref(),
                 slots: &slots,
                 full: wall_full,
             };
-            agents_page(ui, &palette, &rows, selected, &wall, |idx, tui| {
-                terminal_view(
-                    tui,
-                    &grids[idx],
-                    &term_pal,
-                    DEFAULT_FONT_SIZE,
-                    selected == Some(idx),
-                    false,
-                    None,
-                    None,
-                )
-                .clicked
-            });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(palette.bg_canvas))
+                .show_inside(ui, |ui| {
+                    agents_page(ui, &palette, &rows, selected, &wall, |idx, tui| {
+                        terminal_view(
+                            tui,
+                            &grids[idx],
+                            &term_pal,
+                            DEFAULT_FONT_SIZE,
+                            selected == Some(idx),
+                            false,
+                            None,
+                            None,
+                        )
+                        .clicked
+                    });
+                });
         });
 
     // A Working row repaints forever (spinner) — settle a fixed number of frames.
-    for _ in 0..6 {
+    for _ in 0..6 + phase {
         harness.step();
     }
     std::fs::create_dir_all("verify-artifacts/shots").unwrap();
@@ -306,56 +396,73 @@ struct Beat {
     shown: &'static [usize],
     /// Ratio the root seam has moved from its 50/50 start.
     seam: f32,
+    /// The watched agent's turn has landed: Working → Done, sidebar included.
+    finished: bool,
     hold_cs: u32,
 }
 
 /// The wall filling up — empty, then one agent picked from the strip, then two, then
-/// three — and the root seam dragged wider on the one being watched.
+/// three — the root seam dragged wider on the one being watched, and its turn landing.
 const WALL_BEATS: &[Beat] = &[
     Beat {
         shown: &[],
         seam: 0.0,
+        finished: false,
         hold_cs: 110,
     },
     Beat {
         shown: &[0],
         seam: 0.0,
+        finished: false,
         hold_cs: 120,
     },
     Beat {
         shown: &[0, 1],
         seam: 0.0,
+        finished: false,
         hold_cs: 120,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.0,
+        finished: false,
         hold_cs: 130,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.03,
+        finished: false,
         hold_cs: 7,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.06,
+        finished: false,
         hold_cs: 7,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.09,
+        finished: false,
         hold_cs: 7,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.11,
+        finished: false,
         hold_cs: 7,
     },
     Beat {
         shown: &[0, 1, 2],
         seam: 0.12,
-        hold_cs: 190,
+        finished: false,
+        hold_cs: 110,
+    },
+    Beat {
+        shown: &[0, 1, 2],
+        seam: 0.12,
+        finished: true,
+        hold_cs: 180,
     },
 ];
 
@@ -369,6 +476,8 @@ fn gen_agents_wall_frames() {
             beat.shown.last().copied(),
             beat.shown,
             beat.seam,
+            beat.finished,
+            i,
             // Tall enough that the second split lands horizontal: the wall reads as a
             // column plus two stacked tiles, the shape the app gives a 4-up wall.
             egui::vec2(1440.0, 900.0),
