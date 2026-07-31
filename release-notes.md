@@ -1,5 +1,21 @@
 # Release notes
 
+## 2.0.0
+
+- The Agents dashboard is one view now — a wall of live terminals you compose.
+  A header strip lists every running agent as a chip carrying its state, its
+  name and `project · branch`: click one to put its terminal on the wall, click
+  again to take it off. Four at a time is the cap; past it the remaining chips
+  read disabled and say so on hover.
+- The wall is the terminal's own layout, so the workspace splits carry over —
+  drag a seam to resize, drag a tile's grip onto another to re-split or swap,
+  and the focus/resize chords drive it. Showing an agent splits the roomiest
+  tile across its longer axis: one fills the wall, two sit side by side, and a
+  wall you rearranged keeps its shape.
+- The `List | Terminals` switch is gone with the grouped agent list and the
+  per-card conversation preview. The dashboard always opens on the wall, and
+  which terminals you watch is a choice instead of something derived.
+
 ## 1.6.1
 
 - `Esc` now leaves an inline edit *without* keeping it: the buffer is dropped
@@ -75,16 +91,4 @@
   project.
 - A path with no working tree to open is refused on the spot, without leaving a
   half-imported project behind.
-
-## 1.3.0
-
-- Open a repository straight from your terminal: install the shell command once
-  (*Preferences › Terminal › Shell command*) and `helm .` brings up the project
-  you are standing in, from any subdirectory.
-- A worktree path lands on that worktree. An unknown project is imported with
-  its whole worktree group; a known one is simply raised and focused.
-- helm is now a single instance: a second launch hands its target to the window
-  already open instead of starting a second app.
-- Other applications reach the same door through the `helm://open?path=…` URL
-  scheme — a Raycast script, an Alfred workflow, a link in your notes.
 
