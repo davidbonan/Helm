@@ -76,7 +76,8 @@ with no save control. Counter: **7/7**.
   actionable. `leave_inline_edit` emits the write on every exit (`Esc`, `Cmd+S`, blur,
   another hunk's content, a surface that stops being writable ⇒ file switch) and
   `idle_edit_write` after **800 ms** without a keystroke (`request_repaint_after` makes
-  the deadline arrive), each write recorded in `InlineEdit::flushed` so nothing is
+  the deadline arrive — **since removed**, see *Next actions*: `Esc` is a rollback), each
+  write recorded in `InlineEdit::flushed` so nothing is
   written twice; `edit_written` re-anchors the open editor on what landed. Diff poll
   suspended and `on_edit`'s reload skipped while an editor is open (git.md §7).
   `EditError::Diverged` ⇒ `DiffViewState::diverged` band: *Reload* (drops the buffer,
@@ -108,6 +109,16 @@ with no save control. Counter: **7/7**.
 
 ### Next actions (M-Edit)
 - Milestone closed, and every follow-up it left open is fixed.
+- ☑ **`Esc` = rollback** (per the user): the buffer is dropped and nothing is written
+  (`cancel_inline_edit`), and the **800 ms idle write is gone** — an open buffer only
+  reaches the working tree on an exit that keeps it (`Cmd+S`, click elsewhere, teardown
+  flush), which is what makes the rollback exact. Hint: *"Saved when you leave the editor
+  · Esc discards"*. `git.md` §4 + `keybindings.md` §3 updated. *Tests*:
+  `src/ui/diff_view.rs` (leave writes once, `Esc` drops the buffer and its divergence
+  notice, re-anchor), `tests/it/ui_diff_view.rs` (`Esc` writes nothing, an idle pause
+  writes nothing, `Cmd+S` still saves). Verified on the real app: caret → `ZZ` → 3 s idle
+  (disk untouched) → `Esc` (disk untouched, diff back to `+ BRAVO`) → control `Cmd+S`
+  landing `+ QQBRAVO` — `verify-artifacts/20260731_122312_2624/`.
 - ☑ The five follow-ups the T4b review left open are fixed (see the two commits after
   T6): **(5)** a hunk that cannot back a buffer (only deletions, or past
   `MAX_EDIT_LINES`) now answers `Cmd+E` with its reason — `CaretOffer` per hunk,

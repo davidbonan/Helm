@@ -70,8 +70,8 @@ Behavior details: [`terminal.md`](terminal.md).
 | `Click` on a line's **number strip** (numbers + sign) | Toggles that line's pick for partial stage/unstage |
 | `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; where no caret can open (non-editable file, or a hunk with nothing on the new side / above the line cap), toasts the reason with an **Open in editor** action |
 | `Cmd+S` (inline editor open) | Writes the buffer and **leaves** the editor — the keyboard's version of clicking elsewhere (there is no save control) |
-| `Cmd+Z` (inline editor open) | Undo inside the buffer (`Esc` never reverts a change); each editor has its own history, never the previous hunk's |
-| `Esc` (inline editor open) | Leaves the editor **keeping** the change; a second `Esc` closes the diff |
+| `Cmd+Z` (inline editor open) | Undo inside the buffer; each editor has its own history, never the previous hunk's |
+| `Esc` (inline editor open) | Leaves the editor **rolling the change back**: the buffer is dropped and nothing is written (nothing landed while it was open — there is no idle write, [`git.md`](git.md) §4). A second `Esc` closes the diff |
 | `Cmd+C` (diff view) | Copies the diff's text selection; without a selection: no-op |
 | `↑` / `↓` (file selected in the sidebar) | Opens the diff of the previous / next file, traversing only the files (**Unstaged** then **Staged**) with start/end wrap. Disarmed as soon as a **terminal** regains keyboard focus (the arrows go back to the PTY); rearmed on the next click on a file |
 | `↑` / `↓` (**Graph** mode) | Moves the **commit selection** row by row (**WIP** row included), scrolling the targeted row in the viewport — **no wrap** (paginated history). Inactive if a widget has keyboard focus or if the arrows already navigate elsewhere (rows below) |

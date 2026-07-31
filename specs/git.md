@@ -245,12 +245,16 @@ placeholder launches verbatim.
   the only perceptible change is the caret appearing. Context lines are editable
   too, so **Extend context** widens the editable window. One editor at a time; a
   click in another hunk's content moves it there in a single gesture. `Esc`
-  leaves the editor, a click outside leaves it too, and the diff then recomposes.
-  - **No save control**: the buffer is written to the working tree on **exit**
-    and after **800 ms** of idle typing — *exit* covers the ways the diff is torn
-    down from elsewhere too (a **repo switch**, another file taking the view), and
-    the write then rides the leaving repo's worker: none of them is a discard.
-    `Cmd+Z` undoes inside the buffer (git's
+  leaves the editor **rolling the change back**, a click outside leaves it
+  keeping the change, and the diff then recomposes.
+  - **No save control**: the buffer is written to the working tree on **exit** —
+    *exit* covers the ways the diff is torn down from elsewhere too (a **repo
+    switch**, another file taking the view), and the write then rides the leaving
+    repo's worker: none of them is a discard. There is **no idle write**: an open
+    buffer never reaches disk on its own, which is what makes `Esc` a **rollback**
+    — it drops the buffer, nothing was written, the working tree still reads what
+    it read when the caret appeared (a second `Esc` closes the diff). `Cmd+Z`
+    undoes inside the buffer (git's
     **Discard hunk** stays the coarser net, and each editor starts its own undo
     history — an undo never reaches back into the hunk edited before), `Cmd+S`
     is simply the keyboard's way of stepping out: it writes and **leaves** the

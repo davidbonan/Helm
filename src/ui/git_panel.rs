@@ -72,7 +72,7 @@ pub enum GitIntent {
     /// `Prefs.git_file_view` (shared, persisted) and re-renders both panels.
     SetFileView(FileViewMode),
     /// One inline-editor buffer to write back to the working tree (git.md §4):
-    /// emitted 800 ms after the last keystroke, on the way out of the editor, and
+    /// emitted on the way out of the editor (`Esc` excepted — it rolls back), and
     /// again with `force` when the user answers **Overwrite** to a divergence
     /// notice. Self-contained — the intent outlives the editor that produced it.
     FlushEdit(EditRequest),

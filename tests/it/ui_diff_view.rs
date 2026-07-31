@@ -2179,8 +2179,8 @@ fn a_frozen_surface_leaves_the_editor() {
 
 /// Drives `diff_view` on a working-tree surface with a caller-owned state, and hands
 /// back the intents it emitted — an inline editor's writes leave that way (git.md §4).
-/// `step_dt` is the clock each frame advances by: the autosave is a deadline, so a test
-/// about it steps in tenths of a second rather than sixtieths.
+/// `step_dt` is the clock each frame advances by: a test about idle typing steps in
+/// tenths of a second rather than sixtieths.
 fn drive_editor(
     state: Rc<RefCell<DiffViewState>>,
     diff: FileDiff,
@@ -2245,7 +2245,7 @@ fn cmd_s_writes_the_buffer_it_leaves() {
 }
 
 #[test]
-fn esc_writes_the_buffer_on_the_way_out() {
+fn esc_rolls_the_typed_buffer_back() {
     let state = Rc::new(RefCell::new(DiffViewState::default()));
     let intents = drive_editor(state.clone(), editable_diff(), false, 1.0 / 60.0, |h| {
         open_editor(h, &editable_diff(), "new()");
@@ -2255,11 +2255,10 @@ fn esc_writes_the_buffer_on_the_way_out() {
         h.run();
     });
 
-    assert!(state.borrow().inline_edit().is_none());
-    assert_eq!(
-        writes(&intents).first().map(|r| r.replacement.clone()),
-        Some("fn main() {\nY    new();\n}".to_owned()),
-        "leaving is the save, `Esc` included, got {intents:?}"
+    assert!(state.borrow().inline_edit().is_none(), "the editor is left");
+    assert!(
+        writes(&intents).is_empty(),
+        "`Esc` discards the session: nothing reaches the working tree, got {intents:?}"
     );
 }
 
@@ -2268,7 +2267,8 @@ fn an_untouched_buffer_leaves_without_a_write() {
     let state = Rc::new(RefCell::new(DiffViewState::default()));
     let intents = drive_editor(state, editable_diff(), false, 1.0 / 60.0, |h| {
         open_editor(h, &editable_diff(), "new()");
-        h.key_press(egui::Key::Escape);
+        // The exit that keeps the change: even it has nothing to write here.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
         h.run();
     });
 
@@ -2305,27 +2305,23 @@ fn a_click_outside_writes_the_buffer_it_leaves() {
 }
 
 #[test]
-fn the_buffer_lands_by_itself_when_the_typing_pauses() {
+fn a_pause_in_the_typing_writes_nothing() {
+    // What makes `Esc` a rollback: an open buffer only travels on a deliberate exit, so
+    // seconds of idle typing leave the working tree untouched (git.md §4).
     let state = Rc::new(RefCell::new(DiffViewState::default()));
     let intents = drive_editor(state.clone(), editable_diff(), false, 0.5, |h| {
         open_editor(h, &editable_diff(), "new()");
         h.input_mut().events.push(egui::Event::Text("W".to_owned()));
-        // Two half-second frames: past the 800 ms idle, without leaving the editor.
-        h.run_steps(3);
+        h.run_steps(6);
     });
 
     assert!(
         state.borrow().inline_edit().is_some(),
-        "the autosave is not an exit"
+        "the editor stays open on its buffer"
     );
-    let written = writes(&intents);
-    assert_eq!(
-        written
-            .iter()
-            .map(|r| r.replacement.as_str())
-            .collect::<Vec<_>>(),
-        vec!["fn main() {\nW    new();\n}"],
-        "the pause writes exactly once, got {intents:?}"
+    assert!(
+        writes(&intents).is_empty(),
+        "nothing is written without an exit gesture, got {intents:?}"
     );
 }
 
