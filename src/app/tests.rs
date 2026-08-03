@@ -924,6 +924,7 @@ fn app_with_agents(agents: &[(&'static str, AgentBadge)]) -> HelmApp {
             agent,
             badge: *badge,
             last_output_ms: 0,
+            done_at_ms: (*badge == AgentBadge::Done).then_some(0),
         })
         .collect();
     app

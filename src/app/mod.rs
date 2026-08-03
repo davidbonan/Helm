@@ -1018,17 +1018,18 @@ impl HelmApp {
         })
         .flatten();
         let now_ms = crate::terminal::activity::now_ms();
-        // Previous tick's per-pane badge + agent name: the rising edge into
-        // `Done` fires the notification, and a just-departed agent (the green
+        // Previous tick's per-pane badge, agent name and completion stamp: the rising
+        // edge into `Done` fires the notification and stamps the flash, a green that
+        // persists carries its stamp forward, and a just-departed agent (the green
         // outlives the probe by one tolerated absent tick) keeps its name.
-        let prev: HashMap<(PaneKey, PaneId), (AgentBadge, &'static str)> = self
+        let prev: HashMap<(PaneKey, PaneId), (AgentBadge, &'static str, Option<u64>)> = self
             .caches
             .agents
             .iter()
             .map(|e| {
                 (
                     ((e.repo_key.clone(), e.tab_id), e.pane_id),
-                    (e.badge, e.agent),
+                    (e.badge, e.agent, e.done_at_ms),
                 )
             })
             .collect();
@@ -1082,9 +1083,15 @@ impl HelmApp {
                 }
                 let prev_entry = prev.get(&(key.clone(), *pane_id));
                 let agent = agent
-                    .or_else(|| prev_entry.map(|(_, name)| *name))
+                    .or_else(|| prev_entry.map(|(_, name, _)| *name))
                     .unwrap_or("agent");
-                let prev_badge = prev_entry.map_or(AgentBadge::None, |(b, _)| *b);
+                let prev_badge = prev_entry.map_or(AgentBadge::None, |(b, _, _)| *b);
+                let done_at_ms = crate::agent_watch::done_stamp(
+                    prev_badge,
+                    prev_entry.and_then(|(_, _, at)| *at),
+                    badge,
+                    now_ms,
+                );
                 let repo_name = repo_names.get(&key.0).cloned().unwrap_or_default();
                 let group_name = group_names.get(&key.0).cloned().unwrap_or_default();
                 let branch = self.caches.branch_labels.get(&key.0).cloned();
@@ -1110,6 +1117,7 @@ impl HelmApp {
                     agent,
                     badge,
                     last_output_ms: snapshot.last_spont_output_ms,
+                    done_at_ms,
                 });
             }
         }

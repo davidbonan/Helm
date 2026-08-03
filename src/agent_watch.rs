@@ -112,6 +112,25 @@ pub fn newly_completed(prev: AgentBadge, now: AgentBadge) -> bool {
     now == AgentBadge::Done && prev != AgentBadge::Done
 }
 
+/// When the current green started: `now` on the rising edge, the stamp carried over
+/// while it lasts, `None` in any other state. The dashboard measures its arrival
+/// flash from it — which is why it is stamped at the **edge** and not at the pane's
+/// last output: the badge only turns green once the silence window has passed.
+pub fn done_stamp(
+    prev: AgentBadge,
+    prev_stamp: Option<u64>,
+    now: AgentBadge,
+    now_ms: u64,
+) -> Option<u64> {
+    if now != AgentBadge::Done {
+        None
+    } else if newly_completed(prev, now) {
+        Some(now_ms)
+    } else {
+        prev_stamp.or(Some(now_ms))
+    }
+}
+
 /// Human-facing form of an agent's name (a lowercase binary name, `claude` →
 /// `Claude`), for the completion banner and the dashboard.
 pub fn display_name(agent: &str) -> String {
@@ -464,6 +483,21 @@ mod tests {
         assert!(!newly_completed(Done, Done));
         assert!(!newly_completed(Done, Idle));
         assert!(!newly_completed(Working, Working));
+    }
+
+    /// The flash is measured from the edge, so the stamp is taken there and then held
+    /// still: a green that lasts minutes must not keep re-flashing at every tick.
+    #[test]
+    fn done_stamp_freezes_at_the_rising_edge() {
+        // Not the `AgentBadge::*` glob of the test above: it shadows `Option::None`.
+        use AgentBadge::{Done, Idle, Working};
+        assert_eq!(done_stamp(Working, None, Done, 1_000), Some(1_000));
+        // Held across the ticks that follow, however late they come.
+        assert_eq!(done_stamp(Done, Some(1_000), Done, 9_000), Some(1_000));
+        // Acknowledged (or working again): no green, no stamp — and the next
+        // completion stamps afresh.
+        assert_eq!(done_stamp(Done, Some(1_000), Idle, 9_000), None);
+        assert_eq!(done_stamp(Idle, None, Done, 12_000), Some(12_000));
     }
 
     /// Spontaneous run: `len` ms of regular, copious chunks ending at `end`.

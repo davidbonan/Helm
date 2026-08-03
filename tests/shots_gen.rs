@@ -303,6 +303,9 @@ fn render(
                     } else {
                         s.detail.to_owned()
                     },
+                    // The shots hold steady states; the arrival flash is a transient
+                    // that would freeze into a stray ring across the beat's frames.
+                    done_ago_ms: None,
                     lane: s.lane,
                 })
                 .collect();

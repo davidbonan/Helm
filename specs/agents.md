@@ -196,6 +196,21 @@ no gap: the band carries the state indicator, `project · branch` (the project f
 and firmest, as on a chip), the tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
 **jump icon** (external-link, clear of the grip's corner), and it wears the
 project's hue — firmest on the tile the keyboard drives, lifting under the pointer.
+
+A **finished** turn is the one state worth spotting from across the screen, and a
+badge dot is too small to carry it: on `Done` the band **goes green, whole** — it drops
+the project's hue for a `git.added` fill far past the hue's own tints (firmer on the
+active tile, lifting under the pointer as ever). Its labels flip to ink that holds over
+the green — the state dot included, since it is painted in that very color. The repo
+still leads the band, so a tile going green does not stop saying whose it is.
+
+The **arrival** gets one beat of motion: the band lifts to a brighter green and settles
+over ~0.7 s (a header chip, which keeps its surface, gets a ring out of its dot
+instead). It marks the *event*, not the state — the window is bounded, so unlike a
+looping pulse it stops booking repaints and lets the app sleep while the green lingers
+(the reason the dot itself is static). It is measured from the **rising edge** into
+`Done`, never from the last output — the badge only turns green once the silence window
+has passed — so a completion the user was not there to see simply never flashes.
 The pane below it is the **same terminal widget as the workspace**, mirrored live
 and fully interactive (read / scroll the scrollback, type a reply,
 `Esc`-as-interrupt). Only the **selected** tile is *active* — the single

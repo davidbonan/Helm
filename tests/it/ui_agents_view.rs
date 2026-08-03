@@ -74,6 +74,7 @@ struct Row {
     agent: &'static str,
     badge: AgentBadge,
     detail: &'static str,
+    done_ago_ms: Option<u64>,
 }
 
 fn row(repo: &'static str, agent: &'static str, tab: &'static str, badge: AgentBadge) -> Row {
@@ -84,6 +85,7 @@ fn row(repo: &'static str, agent: &'static str, tab: &'static str, badge: AgentB
         agent,
         badge,
         detail: "",
+        done_ago_ms: None,
     }
 }
 
@@ -118,6 +120,7 @@ fn wall_harness(
                 agent: r.agent,
                 badge: r.badge,
                 detail: r.detail.to_owned(),
+                done_ago_ms: r.done_ago_ms,
                 lane: 0,
             })
             .collect();
@@ -499,5 +502,35 @@ fn dropping_a_tile_grip_on_another_tile_rearranges_the_wall() {
         drop.zone,
         DropZone::Side(Dir::Down),
         "the bottom edge stacks"
+    );
+}
+
+/// A turn that just landed gets one beat of motion, and only one: the page books
+/// animation wakeups while the arrival ring runs and none once it is spent, so the
+/// green that lingers afterwards still lets the app sleep (spinner.rs).
+#[test]
+fn a_just_finished_tile_flashes_then_lets_the_app_sleep() {
+    let fresh = Row {
+        done_ago_ms: Some(0),
+        ..row("helm", "claude", "Tab 1", AgentBadge::Done)
+    };
+    let (mut harness, _) = wall_harness(vec![fresh], Some(0), &[0]);
+    harness.step();
+    let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    assert!(
+        delay < std::time::Duration::from_millis(100),
+        "a landing turn must book its animation wakeup (got {delay:?})"
+    );
+
+    let spent = Row {
+        done_ago_ms: Some(helm::ui::spinner::DONE_FLASH_MS),
+        ..row("helm", "claude", "Tab 1", AgentBadge::Done)
+    };
+    let (mut harness, _) = wall_harness(vec![spent], Some(0), &[0]);
+    harness.step();
+    let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    assert!(
+        delay > std::time::Duration::from_millis(500),
+        "a spent flash must not keep the app awake (got {delay:?})"
     );
 }

@@ -9,7 +9,7 @@ use crate::agent_watch::AgentBadge;
 use crate::agents_wall::MAX_SHOWN;
 use crate::terminal::layout::{Layout, PaneId};
 use crate::theme::{self, Palette};
-use crate::ui::spinner::{paint_done_dot, Spinner};
+use crate::ui::spinner::{done_flash_lift, paint_done_dot, paint_done_flash, Spinner};
 use crate::ui::terminal_view::{terminal_tree, PaneDrop, ResizeDrag, GRIP_RESERVE};
 use crate::ui::{clickable, paint_icon, with_alpha, TITLEBAR_HEIGHT};
 
@@ -24,6 +24,13 @@ const CARD_PAD_X: f32 = 16.0;
 const ROW_TEXT_GAP: f32 = 10.0;
 const ROW_MIN_REPO_W: f32 = 40.0;
 const ROW_MIN_BRANCH_W: f32 = 48.0;
+
+/// Ink over a green band: `text_primary` is the theme's own contrast against its
+/// background (near-white in dark, near-black in light), and it holds against the green
+/// in both. The softer labels step down by alpha rather than to the muted greys, which
+/// the green would swallow.
+const ON_GREEN_SOFT: u8 = 205;
+const ON_GREEN_FAINT: u8 = 165;
 
 /// Page header: one chip per running agent, wrapping onto further lines and scrolling
 /// past `CHIP_STRIP_MAX_ROWS` of them, so even a workspace full of agents leaves the
@@ -50,6 +57,19 @@ const TILE_BAND_HEIGHT: f32 = 32.0;
 const AGENTS_BAND_TINT: f32 = 0.08;
 const AGENTS_BAND_HOVER_TINT: f32 = 0.16;
 const AGENTS_BAND_ACTIVE_TINT: f32 = 0.26;
+
+/// …until a turn lands. Then the band drops the project's hue and goes **green, whole**
+/// — the tiles you must come back to have to read from across the room, and a 10px dot
+/// on a project-colored strip does not. Far past the hue's own tints on purpose: this
+/// one is the signal, not a decoration. The repo still leads the band, so the tile does
+/// not lose whose it is.
+const DONE_BAND_TINT: f32 = 0.46;
+const DONE_BAND_HOVER_TINT: f32 = 0.56;
+const DONE_BAND_ACTIVE_TINT: f32 = 0.66;
+/// The extra green the arrival lifts the band by, fading over the flash window: the
+/// beat is the band brightening and settling, since a green ring on a green band would
+/// have nothing to read against.
+const DONE_BAND_FLASH_TINT: f32 = 0.3;
 
 /// Project hue (cycled from `palette.lane_colors`, the theme-tuned graph palette) worn
 /// by a header chip once its agent is on the wall and by the sidebar's project header
@@ -87,6 +107,11 @@ pub struct AgentRow<'a> {
     /// State-relative caption built by the app ("Working…", "Finished 2m ago",
     /// "Idle").
     pub detail: String,
+    /// Milliseconds since the turn landed — `Some` only on `Done`, and counted from
+    /// the **rising edge** into it (not from the last output, which the silence
+    /// window already leaves stale). Drives the one-shot arrival flash; past
+    /// [`DONE_FLASH_MS`] it costs nothing.
+    pub done_ago_ms: Option<u64>,
     /// Project color index (rank of the group root among root projects): tints this
     /// agent's header chip and wall band and, via the same index, the project's sidebar
     /// header icon.
@@ -321,7 +346,7 @@ fn agent_chip(
         ),
         egui::Vec2::splat(INDICATOR_SIZE),
     );
-    paint_indicator(ui, palette, row.badge, indicator, fade);
+    paint_indicator(ui, palette, row.badge, row.done_ago_ms, indicator, fade);
     let painter = ui.painter();
     let text_x = indicator.right() + CHIP_ICON_GAP;
     let painted = paint_elided(
@@ -439,18 +464,32 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     let response = ui
         .interact(band, ui.id().with("agent_band"), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let tint = if active {
-        AGENTS_BAND_ACTIVE_TINT
-    } else if response.hovered() {
-        AGENTS_BAND_HOVER_TINT
+    let done = row.badge == AgentBadge::Done;
+    let (hue, tint) = if done {
+        (
+            palette.git_added,
+            if active {
+                DONE_BAND_ACTIVE_TINT
+            } else if response.hovered() {
+                DONE_BAND_HOVER_TINT
+            } else {
+                DONE_BAND_TINT
+            } + DONE_BAND_FLASH_TINT * done_flash_lift(ui, row.done_ago_ms),
+        )
     } else {
-        AGENTS_BAND_TINT
+        (
+            palette.lane_color(row.lane),
+            if active {
+                AGENTS_BAND_ACTIVE_TINT
+            } else if response.hovered() {
+                AGENTS_BAND_HOVER_TINT
+            } else {
+                AGENTS_BAND_TINT
+            },
+        )
     };
-    ui.painter().rect_filled(
-        band,
-        0,
-        mix(palette.bg_surface_hover, palette.lane_color(row.lane), tint),
-    );
+    ui.painter()
+        .rect_filled(band, 0, mix(palette.bg_surface_hover, hue, tint));
     // Jump-to-workspace affordance, the list row's external-link icon: its hit box takes
     // the band's full height, the chip it paints on hover stays small. It stops short of
     // the tile's top-right corner, which the tree's own drag grip owns (`GRIP_RESERVE`) —
@@ -477,13 +516,42 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
         ),
         egui::Vec2::splat(INDICATOR_SIZE),
     );
-    paint_indicator(ui, palette, row.badge, indicator, |c| c);
+    // Everything the band carries flips ink over the green — the dot first, which is the
+    // one thing painted in that very color. The band's own beat replaces the ring.
+    paint_indicator(ui, palette, row.badge, None, indicator, |c| {
+        if done {
+            palette.text_primary
+        } else {
+            c
+        }
+    });
+    let (strong, soft, faint) = if done {
+        (
+            palette.text_primary,
+            with_alpha(palette.text_primary, ON_GREEN_SOFT),
+            with_alpha(palette.text_primary, ON_GREEN_FAINT),
+        )
+    } else {
+        (
+            palette.text_primary,
+            palette.text_secondary,
+            palette.text_muted,
+        )
+    };
     let painter = ui.painter();
-    let detail_font = egui::FontId::proportional(DETAIL_SIZE);
-    let detail_w = painter
-        .layout_no_wrap(row.detail.clone(), detail_font.clone(), palette.text_muted)
-        .size()
-        .x;
+    let detail_ink = if done {
+        soft
+    } else if row.badge == AgentBadge::Working {
+        palette.accent
+    } else {
+        palette.text_muted
+    };
+    let detail = painter.layout_no_wrap(
+        row.detail.clone(),
+        egui::FontId::proportional(DETAIL_SIZE),
+        detail_ink,
+    );
+    let detail_w = detail.size().x;
     let content_right = icon_rect.left() - 8.0 - detail_w - ROW_TEXT_GAP;
     let text_x = indicator.right() + 10.0;
     let name = crate::agent_watch::display_name(row.agent);
@@ -497,26 +565,24 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
             egui::pos2(text_x, band.center().y),
             row.repo,
             egui::FontId::new(REPO_SIZE, theme::medium_family(ui.ctx())),
-            palette.text_primary,
+            strong,
             (content_right - text_x - 8.0 - ROW_MIN_BRANCH_W).max(ROW_MIN_REPO_W),
         );
-    painter.text(
-        egui::pos2(icon_rect.left() - 8.0, band.center().y),
-        egui::Align2::RIGHT_CENTER,
-        &row.detail,
-        detail_font,
-        detail_color(palette, row.badge),
+    let detail_size = detail.size();
+    painter.galley(
+        egui::pos2(
+            icon_rect.left() - 8.0 - detail_w,
+            band.center().y - detail_size.y / 2.0,
+        ),
+        detail,
+        detail_ink,
     );
     paint_icon(
         painter,
         icon_rect.center(),
         JUMP_ICON_SIZE,
         lucide_icons::Icon::ExternalLink,
-        if on_icon {
-            palette.text_secondary
-        } else {
-            palette.text_muted
-        },
+        if on_icon { soft } else { faint },
     );
     let tab_x = if branch.is_empty() {
         repo_end + 9.0
@@ -528,7 +594,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
                 egui::pos2(branch_x, band.center().y),
                 &branch,
                 egui::FontId::monospace(BRANCH_SIZE),
-                palette.text_secondary,
+                soft,
                 (content_right - branch_x).max(0.0),
             )
             + 9.0
@@ -538,7 +604,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
         egui::pos2(tab_x, band.center().y),
         row.tab,
         egui::FontId::proportional(TAB_SIZE),
-        palette.text_muted,
+        faint,
         (content_right - tab_x).max(0.0),
     );
     response.widget_info(|| {
@@ -646,12 +712,14 @@ fn paint_elided(
 }
 
 /// State dot: a spinner while working, a green dot once finished, a hollow grey
-/// dot when idle (same visual language as the sidebar badge). `ink` dims the
-/// colors when this agent's chip is out of reach (identity otherwise).
+/// dot when idle (same visual language as the sidebar badge). A turn that *just*
+/// landed also gets its one-shot ring (`done_ago_ms`). `ink` dims the colors when
+/// this agent's chip is out of reach (identity otherwise).
 fn paint_indicator(
     ui: &egui::Ui,
     palette: &Palette,
     badge: AgentBadge,
+    done_ago_ms: Option<u64>,
     rect: egui::Rect,
     ink: impl Fn(egui::Color32) -> egui::Color32,
 ) {
@@ -664,6 +732,9 @@ fn paint_indicator(
         }
         AgentBadge::Done => {
             paint_done_dot(ui, rect.center(), 5.0, ink(palette.git_added));
+            if let Some(elapsed) = done_ago_ms {
+                paint_done_flash(ui, rect.center(), 5.0, ink(palette.git_added), elapsed);
+            }
         }
         _ => {
             ui.painter().circle_stroke(
@@ -672,14 +743,6 @@ fn paint_indicator(
                 egui::Stroke::new(1.5_f32, ink(palette.text_muted)),
             );
         }
-    }
-}
-
-fn detail_color(palette: &Palette, badge: AgentBadge) -> egui::Color32 {
-    match badge {
-        AgentBadge::Working => palette.accent,
-        AgentBadge::Done => palette.git_added,
-        _ => palette.text_muted,
     }
 }
 

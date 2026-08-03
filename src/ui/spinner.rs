@@ -96,6 +96,54 @@ pub fn paint_done_dot(ui: &Ui, center: Pos2, dot_radius: f32, color: Color32) {
     painter.circle_filled(center, dot_radius, color);
 }
 
+/// How long the arrival ring lives, in ms.
+pub const DONE_FLASH_MS: u64 = 700;
+/// How far past the static halo the ring travels before it dies.
+const DONE_FLASH_GROW: f32 = 13.0;
+/// Opacity the ring starts from (it fades to nothing across the window).
+const DONE_FLASH_ALPHA: f32 = 210.0;
+
+/// Eased progress `0→1` across the flash window, `None` once it closed — pure, so a
+/// caller can skip the paint **and** the animation wakeup in the same test.
+pub fn done_flash_progress(elapsed_ms: u64) -> Option<f32> {
+    (elapsed_ms < DONE_FLASH_MS).then(|| elapsed_ms as f32 / DONE_FLASH_MS as f32)
+}
+
+/// The arrival's remaining share `1→0`, **and** its animation wakeup — the same bounded
+/// window as [`paint_done_flash`], for a caller that paints the beat itself rather than
+/// as a ring (the wall's band lifts its own green: a ring would have nothing to read
+/// against there). `0.0` once the window closed, and then no wakeup is booked.
+pub fn done_flash_lift(ui: &Ui, elapsed_ms: Option<u64>) -> f32 {
+    let Some(t) = elapsed_ms.and_then(done_flash_progress) else {
+        return 0.0;
+    };
+    ui.ctx().request_repaint_after(SPINNER_FRAME);
+    1.0 - t
+}
+
+/// The **arrival** of a finished turn: one ring expanding out of the Done dot and
+/// fading, painted over [`paint_done_dot`]. `Done` itself stays static (see there) —
+/// what animates here is the *event*, not the state: the window is bounded, so the
+/// booked repaints stop with it and the app sleeps again while the green lingers.
+/// `elapsed_ms` counts from the rising edge into `Done`, so a flash that the user
+/// missed (page opened later) simply never paints.
+pub fn paint_done_flash(ui: &Ui, center: Pos2, dot_radius: f32, color: Color32, elapsed_ms: u64) {
+    let Some(t) = done_flash_progress(elapsed_ms) else {
+        return;
+    };
+    ui.ctx().request_repaint_after(SPINNER_FRAME);
+    let fade = 1.0 - t;
+    let [r, g, b, _] = color.to_array();
+    ui.painter().circle_stroke(
+        center,
+        dot_radius + DONE_HALO_GROW + t * DONE_FLASH_GROW,
+        Stroke::new(
+            1.0 + 2.0 * fade,
+            Color32::from_rgba_unmultiplied(r, g, b, (DONE_FLASH_ALPHA * fade * fade) as u8),
+        ),
+    );
+}
+
 /// Seconds for the pinwheel highlight to make one full turn.
 const PINWHEEL_PERIOD: f64 = 1.1;
 /// Gap between adjacent tiles, in points.
@@ -248,6 +296,49 @@ mod tests {
             assert!(
                 delay > SPINNER_FRAME * 10,
                 "a static Done dot must not book an animation wakeup (got {delay:?})"
+            );
+        }
+    }
+
+    /// The arrival flash runs over its window and stops: `0` is the start, the last
+    /// millisecond still paints, and `DONE_FLASH_MS` onwards is over — that `None` is
+    /// what lets the caller skip the wakeup too.
+    #[test]
+    fn done_flash_progress_spans_its_window_and_ends() {
+        assert_eq!(done_flash_progress(0), Some(0.0));
+        assert!(done_flash_progress(DONE_FLASH_MS - 1).is_some_and(|t| t > 0.99 && t < 1.0));
+        assert_eq!(done_flash_progress(DONE_FLASH_MS), None);
+        assert_eq!(done_flash_progress(60_000), None);
+    }
+
+    /// The flash is the one animated thing about `Done`, and it is **bounded**: it books
+    /// wakeups while it runs, and none once the window closed — the green that lingers
+    /// afterwards must still let the app sleep (see `done_dot_books_no_animation_wakeup`).
+    #[test]
+    fn done_flash_books_wakeups_only_inside_its_window() {
+        let elapsed = std::cell::Cell::new(0_u64);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_step_dt(1.0 / 60.0)
+            .build_ui(|ui| {
+                paint_done_flash(
+                    ui,
+                    ui.max_rect().center(),
+                    3.5,
+                    Color32::GREEN,
+                    elapsed.get(),
+                );
+            });
+        harness.step();
+        let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(delay <= SPINNER_FRAME, "flash wakeup not booked");
+        assert!(!harness.ctx.requested_repaint_last_pass());
+        elapsed.set(DONE_FLASH_MS);
+        for _ in 0..2 {
+            harness.step();
+            let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            assert!(
+                delay > SPINNER_FRAME * 10,
+                "a spent flash must let the app sleep (got {delay:?})"
             );
         }
     }

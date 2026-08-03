@@ -881,6 +881,7 @@ impl HelmApp {
                                 }
                                 _ => "Idle".to_owned(),
                             },
+                            done_ago_ms: e.done_at_ms.map(|at| now_ms.saturating_sub(at)),
                             lane: lane_of_repo.get(repo_index).copied().unwrap_or(0),
                         },
                         (e.repo_key.clone(), e.tab_id, e.pane_id),

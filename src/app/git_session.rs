@@ -51,6 +51,11 @@ pub(crate) struct AgentEntry {
     /// Monotonic stamp (`activity::now_ms`) of the pane's last spontaneous output
     /// — the page renders "finished <ago>" off the live clock.
     pub(crate) last_output_ms: u64,
+    /// Monotonic stamp of the **rising edge** into `Done` (`None` in any other
+    /// state), held for as long as the green lasts: the dashboard flashes the tile
+    /// for a moment after a turn lands. Not `last_output_ms` — the badge only flips
+    /// once the silence window has passed, so the output stamp is already stale.
+    pub(crate) done_at_ms: Option<u64>,
 }
 
 /// Per-repo UI state under one roof (M17-11), reconciled by `sync` after every
