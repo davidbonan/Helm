@@ -161,9 +161,12 @@ The dashboard is a **wall of live terminals** — its only view, with no control
 its own in the titlebar (the title row stays empty, clear of the traffic lights): a
 **header strip** listing every running agent as a **chip**, over the mirrored
 terminals of the ones picked from it. A chip carries the agent's **state indicator**
-(accent arc spinner / green dot + faint static halo / hollow grey ring), its name
-and **where it runs** — `project · branch`, because the dashboard is cross-repo and
-two agents on `main` must read apart. Clicking a chip **shows** that agent's terminal on the wall, or
+(accent arc spinner / green dot + faint static halo / hollow grey ring) and **where it
+runs** — the **project leading**, in the chip's own weight, its branch trailing in
+quieter mono, because the dashboard is cross-repo and two agents on `main` must read
+apart. The agent's **name is not painted**: a strip of identical `Claude` labels drowns
+the one thing that identifies a terminal; it rides on the chip's **hover text** with the
+tab, and on the accessibility label. Clicking a chip **shows** that agent's terminal on the wall, or
 **hides** it when it is already there; a chip whose agent is on the wall is filled
 in its project's hue. At most **`MAX_SHOWN` = 4** terminals are shown at once —
 past that the remaining chips read **disabled** and say so on hover, since a fifth
@@ -189,8 +192,8 @@ view never opens on an empty grid; a wall the user then empties **stays** empty 
 the rest of the visit, with a hint pointing back at the header.
 
 Each tile is a **status band** over its pane, flush and full-bleed — no card frame,
-no gap: the band carries the state indicator, the agent, `project · branch`, the
-tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
+no gap: the band carries the state indicator, `project · branch` (the project first
+and firmest, as on a chip), the tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
 **jump icon** (external-link, clear of the grip's corner), and it wears the
 project's hue — firmest on the tile the keyboard drives, lifting under the pointer.
 The pane below it is the **same terminal widget as the workspace**, mirrored live

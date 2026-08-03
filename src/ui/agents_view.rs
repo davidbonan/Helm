@@ -17,13 +17,13 @@ const CONTENT_PAD_X: f32 = 32.0;
 const SUBTITLE_SIZE: f32 = 13.0;
 
 const CARD_PAD_X: f32 = 16.0;
-/// Narrow elision on a wall tile's status band (name + origin + tab label): each label
+/// Narrow elision on a wall tile's status band (project + branch + tab label): each label
 /// stops short of the right-aligned state caption — reserving a minimum for the one that
 /// follows — and gains a `…` instead of running underneath it. A quarter-width tile is
 /// narrow, so the tab label is the first to go.
 const ROW_TEXT_GAP: f32 = 10.0;
-const ROW_MIN_NAME_W: f32 = 40.0;
-const ROW_MIN_CHIP_W: f32 = 48.0;
+const ROW_MIN_REPO_W: f32 = 40.0;
+const ROW_MIN_BRANCH_W: f32 = 48.0;
 
 /// Page header: one chip per running agent, wrapping onto further lines and scrolling
 /// past `CHIP_STRIP_MAX_ROWS` of them, so even a workspace full of agents leaves the
@@ -33,9 +33,9 @@ const CHIP_GAP: f32 = 8.0;
 const CHIP_PAD_X: f32 = 10.0;
 const CHIP_RADIUS: u8 = 8;
 const CHIP_ICON_GAP: f32 = 7.0;
-const CHIP_NAME_SIZE: f32 = 12.5;
-const CHIP_MAX_NAME_W: f32 = 150.0;
-const CHIP_MAX_ORIGIN_W: f32 = 190.0;
+const CHIP_REPO_SIZE: f32 = 12.5;
+const CHIP_MAX_REPO_W: f32 = 190.0;
+const CHIP_MAX_BRANCH_W: f32 = 150.0;
 const CHIP_STRIP_PAD_X: f32 = 12.0;
 const CHIP_STRIP_PAD_Y: f32 = 10.0;
 const CHIP_STRIP_MAX_ROWS: f32 = 3.0;
@@ -57,9 +57,9 @@ const AGENTS_BAND_ACTIVE_TINT: f32 = 0.26;
 /// balanced in light and dark.
 const HEADER_ICON_TINT: f32 = 0.16;
 
-const NAME_SIZE: f32 = 14.0;
+const REPO_SIZE: f32 = 14.0;
 const TAB_SIZE: f32 = 12.0;
-const CHIP_SIZE: f32 = 11.5;
+const BRANCH_SIZE: f32 = 11.5;
 const DETAIL_SIZE: f32 = 12.0;
 const INDICATOR_SIZE: f32 = 16.0;
 const JUMP_ICON_SIZE: f32 = 15.0;
@@ -239,8 +239,9 @@ fn agent_chips(
 }
 
 /// Where an agent runs: `project · branch`, or the project alone on a detached worktree.
-/// The dashboard is cross-repo, so the project is what tells two agents on `main` apart —
-/// it rides with the branch on every chip and every wall band.
+/// The dashboard is cross-repo, so the project is what tells two agents on `main` apart.
+/// Spelled out for screen readers and hover text; the chips and bands paint the two
+/// halves themselves, so the project can lead in its own weight.
 fn origin(row: &AgentRow) -> String {
     match row.branch.filter(|b| !b.is_empty()) {
         Some(branch) => format!("{} · {branch}", row.repo),
@@ -248,10 +249,21 @@ fn origin(row: &AgentRow) -> String {
     }
 }
 
-/// One header chip: state indicator, agent name, and where it runs. Filled in the
-/// project's hue while the agent is **on the wall** (clicking takes it off), quiet
-/// otherwise. With every slot taken the remaining chips read **disabled** and say so on
-/// hover — hiding one is the way to make room (agents.md §5). Returns true when clicked.
+/// The branch as it trails the project on a chip or a band — empty on a detached
+/// worktree, where the project stands alone.
+fn branch_suffix(row: &AgentRow) -> String {
+    match row.branch.filter(|b| !b.is_empty()) {
+        Some(branch) => format!("· {branch}"),
+        None => String::new(),
+    }
+}
+
+/// One header chip: state indicator, then where the agent runs — the project leading,
+/// its branch trailing. The agent's own name is not painted (a wall of `Claude` chips
+/// says nothing); it rides on the hover text with the tab. Filled in the project's hue
+/// while the agent is **on the wall** (clicking takes it off), quiet otherwise. With
+/// every slot taken the remaining chips read **disabled** and say so on hover — hiding
+/// one is the way to make room (agents.md §5). Returns true when clicked.
 fn agent_chip(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -260,9 +272,9 @@ fn agent_chip(
     blocked: bool,
 ) -> bool {
     let name = crate::agent_watch::display_name(row.agent);
-    let name_font = egui::FontId::new(CHIP_NAME_SIZE, theme::medium_family(ui.ctx()));
-    let origin_font = egui::FontId::monospace(CHIP_SIZE);
-    let origin = origin(row);
+    let repo_font = egui::FontId::new(CHIP_REPO_SIZE, theme::medium_family(ui.ctx()));
+    let branch_font = egui::FontId::monospace(BRANCH_SIZE);
+    let branch = branch_suffix(row);
     // A blocked chip is legible but visibly out of reach: the whole chip fades, ink and
     // indicator alike.
     let fade = |c: egui::Color32| if blocked { with_alpha(c, 110) } else { c };
@@ -273,10 +285,13 @@ fn agent_chip(
             .x
             .min(max)
     };
-    let name_w = measure(&name, name_font.clone(), CHIP_MAX_NAME_W);
-    let origin_w = measure(&origin, origin_font.clone(), CHIP_MAX_ORIGIN_W);
-    let width =
-        2.0 * CHIP_PAD_X + INDICATOR_SIZE + CHIP_ICON_GAP + name_w + CHIP_ICON_GAP + origin_w;
+    let repo_w = measure(row.repo, repo_font.clone(), CHIP_MAX_REPO_W);
+    let branch_w = if branch.is_empty() {
+        0.0
+    } else {
+        CHIP_ICON_GAP + measure(&branch, branch_font.clone(), CHIP_MAX_BRANCH_W)
+    };
+    let width = 2.0 * CHIP_PAD_X + INDICATOR_SIZE + CHIP_ICON_GAP + repo_w + branch_w;
     let (rect, response, hovered) = clickable(ui, egui::vec2(width, CHIP_HEIGHT), !blocked);
     let fill = if shown {
         project_header_tint(palette, row.lane)
@@ -312,24 +327,26 @@ fn agent_chip(
     let painted = paint_elided(
         painter,
         egui::pos2(text_x, rect.center().y),
-        &name,
-        name_font,
+        row.repo,
+        repo_font,
         fade(if shown {
             palette.text_primary
         } else {
             palette.text_secondary
         }),
-        name_w,
+        repo_w,
     );
-    paint_elided(
-        painter,
-        egui::pos2(text_x + painted + CHIP_ICON_GAP, rect.center().y),
-        &origin,
-        origin_font,
-        fade(palette.text_muted),
-        origin_w,
-    );
-    let label = format!("{name} · {origin} · {}", row.tab);
+    if !branch.is_empty() {
+        paint_elided(
+            painter,
+            egui::pos2(text_x + painted + CHIP_ICON_GAP, rect.center().y),
+            &branch,
+            branch_font,
+            fade(palette.text_muted),
+            branch_w - CHIP_ICON_GAP,
+        );
+    }
+    let label = format!("{name} · {} · {}", origin(row), row.tab);
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, shown, &label));
     if blocked {
@@ -338,7 +355,9 @@ fn agent_chip(
         ));
         return false;
     }
-    response.clicked()
+    response
+        .on_hover_text(format!("{name} · {}", row.tab))
+        .clicked()
 }
 
 /// The wall itself: one mirrored terminal per shown agent, laid out by
@@ -394,8 +413,8 @@ fn render_wall(
     action.drop = out.drop;
 }
 
-/// One tile: a compact status band — state indicator, agent name, branch chip, tab,
-/// state caption, jump icon — over the agent's **live terminal**, flush under it. The
+/// One tile: a compact status band — state indicator, project, branch, tab, state
+/// caption, jump icon — over the agent's **live terminal**, flush under it. The
 /// band wears the project's hue, firmest on the tile the keyboard drives (the mirrored
 /// pane dims itself when it isn't the active one, as an unfocused split does), and lifts
 /// under the pointer. Clicking the band or the terminal makes the tile active; the jump
@@ -468,18 +487,18 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     let content_right = icon_rect.left() - 8.0 - detail_w - ROW_TEXT_GAP;
     let text_x = indicator.right() + 10.0;
     let name = crate::agent_watch::display_name(row.agent);
-    let origin = origin(row);
-    // Agent, then where it runs (`project · branch` — the wall is cross-repo, so two
-    // agents on `main` need their project), then the tab. A narrow tile elides from the
-    // right, so the least identifying label is the first to go.
-    let name_end = text_x
+    let branch = branch_suffix(row);
+    // The project leads (the wall is cross-repo: it is what says which tile is whose),
+    // then its branch, then the tab. A narrow tile elides from the right, so the least
+    // identifying label is the first to go.
+    let repo_end = text_x
         + paint_elided(
             painter,
             egui::pos2(text_x, band.center().y),
-            &name,
-            egui::FontId::new(NAME_SIZE, theme::medium_family(ui.ctx())),
+            row.repo,
+            egui::FontId::new(REPO_SIZE, theme::medium_family(ui.ctx())),
             palette.text_primary,
-            (content_right - text_x - 8.0 - ROW_MIN_CHIP_W).max(ROW_MIN_NAME_W),
+            (content_right - text_x - 8.0 - ROW_MIN_BRANCH_W).max(ROW_MIN_REPO_W),
         );
     painter.text(
         egui::pos2(icon_rect.left() - 8.0, band.center().y),
@@ -499,17 +518,21 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
             palette.text_muted
         },
     );
-    let origin_x = name_end + 9.0;
-    let tab_x = origin_x
-        + paint_elided(
-            painter,
-            egui::pos2(origin_x, band.center().y),
-            &origin,
-            egui::FontId::monospace(CHIP_SIZE),
-            palette.text_secondary,
-            (content_right - origin_x).max(0.0),
-        )
-        + 9.0;
+    let tab_x = if branch.is_empty() {
+        repo_end + 9.0
+    } else {
+        let branch_x = repo_end + 9.0;
+        branch_x
+            + paint_elided(
+                painter,
+                egui::pos2(branch_x, band.center().y),
+                &branch,
+                egui::FontId::monospace(BRANCH_SIZE),
+                palette.text_secondary,
+                (content_right - branch_x).max(0.0),
+            )
+            + 9.0
+    };
     paint_elided(
         painter,
         egui::pos2(tab_x, band.center().y),
@@ -522,7 +545,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("{name} in {origin} — {}", row.tab),
+            format!("{name} in {} — {}", origin(row), row.tab),
         )
     });
     let on_icon_click = response
