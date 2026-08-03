@@ -1,5 +1,15 @@
 # Release notes
 
+## 2.0.1
+
+- A finished agent now turns its whole tile band green on the Agents wall,
+  instead of marking it with a small dot — the tile you have to come back to
+  reads from across the screen. The moment a turn lands, the band brightens
+  once and settles.
+- Agent chips and tile bands lead with the project instead of the agent's name:
+  `helm-studio · main` rather than a wall of identical `Claude` labels. The
+  agent's name and its tab moved to the chip's hover text.
+
 ## 2.0.0
 
 - The Agents dashboard is one view now — a wall of live terminals you compose.
@@ -83,12 +93,4 @@
   with its terminals and running agent untouched.
 - The Agents *Columns* view now expands one terminal per column instead of a
   single card over the whole wall; the active card keeps its accent ring.
-
-## 1.4.0
-
-- A `helm://open?path=…` URL now opens exactly what `helm <path>` would: a
-  subdirectory lands on its working tree instead of being imported as its own
-  project.
-- A path with no working tree to open is refused on the spot, without leaving a
-  half-imported project behind.
 
