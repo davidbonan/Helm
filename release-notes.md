@@ -1,5 +1,11 @@
 # Release notes
 
+## 2.0.2
+
+- The Run panel's output can be selected and copied: drag over it, double-click
+  a word, triple-click a line, then `Cmd+C`. A server error no longer has to be
+  retyped to be shared — lift it straight out of the strip.
+
 ## 2.0.1
 
 - A finished agent now turns its whole tile band green on the Agents wall,
@@ -85,12 +91,4 @@
 - The sidebar count of pull requests awaiting your review now stays fresh from
   anywhere in the app, and is already right on launch instead of only after a
   first visit to the cockpit.
-
-## 1.4.1
-
-- Rename a linked worktree from its context menu: *Rename worktree…*
-  previews the destination as you type, and the sidebar entry follows the move
-  with its terminals and running agent untouched.
-- The Agents *Columns* view now expands one terminal per column instead of a
-  single card over the whole wall; the active card keeps its accent ring.
 
