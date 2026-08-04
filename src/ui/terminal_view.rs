@@ -873,9 +873,11 @@ pub struct ReadonlyTerminalOutput {
     pub scroll: Option<ScrollKind>,
 }
 
-/// Read-only terminal viewer: paints the grid and walks the scrollback on wheel,
-/// but takes no keyboard focus and forwards nothing to the PTY — the Run panel
-/// drives the process through its own buttons (git.md §3).
+/// Read-only terminal viewer: paints the grid, walks the scrollback on wheel and
+/// supports the same mouse selection + `Cmd+C` copy as a live pane, but forwards
+/// nothing to the PTY — the Run panel drives the process through its own buttons
+/// (git.md §3). It only takes keyboard focus (on click / drag) so the copy
+/// shortcut has a target.
 pub fn terminal_view_readonly(
     ui: &mut egui::Ui,
     grid: &SharedTerm,
@@ -891,7 +893,31 @@ pub fn terminal_view_readonly(
         ui, &snap, area, char_w, row_h, font_size, palette, false, exited,
     );
     let id = ui.id().with("run_terminal_scroll");
-    let response = ui.interact(region, id, egui::Sense::hover());
+    let response = ui.interact(region, id, egui::Sense::click_and_drag());
+    if response.drag_started() || response.clicked() {
+        response.request_focus();
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
+    if let Some(sel) = update_selection(ui, id, &response, region, char_w, row_h) {
+        let char_rows = snap.char_rows();
+        paint_selection(
+            ui.painter(),
+            region,
+            char_w,
+            row_h,
+            &char_rows,
+            &sel,
+            palette,
+        );
+        if response.has_focus() && copy_requested(ui) {
+            let text = selected_text(&sel, &char_rows, 0);
+            if !text.is_empty() {
+                ui.ctx().copy_text(text);
+            }
+        }
+    }
     let scroll = response
         .hovered()
         .then(|| wheel_scroll(ui, id, row_h).map(ScrollKind::Lines))

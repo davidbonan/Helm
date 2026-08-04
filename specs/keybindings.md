@@ -107,6 +107,8 @@ of shortcuts depends on this zone.
 - **Commit field**: captures text input and `Cmd+Enter` (commit); the
   terminal shortcuts are inactive there.
 - **Diff view** open: only the §3 shortcuts (`Cmd+C` included) and `Esc` apply.
+- **Run viewer** ([`git.md`](git.md) §3) clicked: `Cmd+C` copies its selection;
+  the rest of the terminal keys (§2) stay inactive — it forwards nothing.
 - **Inline editor** open ([`git.md`](git.md) §4): it takes the text input, so the
   sidebar's `↑`/`↓` file navigation is **disarmed** and `Cmd+Enter` (commit) is
   inactive until it closes; the global shortcuts of §1 keep applying (an action

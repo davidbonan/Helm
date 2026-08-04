@@ -278,3 +278,92 @@ fn no_shortcut_hides_the_badge() {
         );
     });
 }
+
+/// The viewer sits in a clipped child `Ui` built by `run_panel`: the selection is
+/// kept in egui memory under that child's id, so this drives the real nesting —
+/// not just `terminal_view_readonly` on its own.
+#[test]
+fn dragging_the_viewer_copies_the_server_output() {
+    use std::sync::{Arc, Mutex};
+
+    use helm::terminal::emu::{feed, shared_term, DEFAULT_FONT_SIZE};
+    use helm::terminal::palette::{TermPalette, TermTheme};
+    use helm::ui::terminal_view::terminal_view_readonly;
+
+    let term = shared_term(6, 40);
+    feed(&term, b"Error: EADDRINUSE");
+
+    let palette = Palette::light();
+    let term_palette = TermPalette::variant(TermTheme::Dark);
+    // (grid origin x/y, cell width, line height) of the viewer inside the strip.
+    let metrics: Arc<Mutex<(f32, f32, f32, f32)>> = Arc::new(Mutex::new((0.0, 0.0, 8.0, 16.0)));
+    let probe = metrics.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 320.0))
+        .build_ui(move |ui| {
+            run_panel(
+                ui,
+                &palette,
+                &RunStatus::Running,
+                "cargo run",
+                None,
+                false,
+                None,
+                None,
+                None,
+                |ui| {
+                    let origin = ui.next_widget_position();
+                    let (w, h) = ui.ctx().fonts_mut(|f| {
+                        let font = egui::FontId::monospace(DEFAULT_FONT_SIZE);
+                        (
+                            f.glyph_width(&font, ' ').max(1.0),
+                            f.row_height(&font).max(1.0),
+                        )
+                    });
+                    *probe.lock().unwrap() = (origin.x, origin.y, w, h);
+                    terminal_view_readonly(ui, &term, &term_palette, DEFAULT_FONT_SIZE, false);
+                },
+            );
+        });
+    harness.run();
+
+    let (ox, oy, w, h) = *metrics.lock().unwrap();
+    let cell = |col: usize| egui::pos2(ox + (col as f32 + 0.5) * w, oy + 0.5 * h);
+    harness.event(egui::Event::PointerMoved(cell(0)));
+    harness.event(egui::Event::PointerButton {
+        pos: cell(0),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+    harness.event(egui::Event::PointerMoved(cell(16)));
+    harness.run();
+    harness.event(egui::Event::PointerButton {
+        pos: cell(16),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+
+    // `step`, not `run`: the clipboard command only lives in the frame that
+    // handled the Copy event.
+    harness.event(egui::Event::Copy);
+    harness.step();
+
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|cmd| match cmd {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
+    assert_eq!(
+        copied.as_deref(),
+        Some("Error: EADDRINUSE"),
+        "a drag over the Run viewer + Cmd+C copies the server output"
+    );
+}

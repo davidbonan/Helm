@@ -182,8 +182,12 @@ placeholder launches verbatim.
   running — revealing the git sidebar and expanding the strip; with no command
   resolved it opens the inline editor instead.
 - **Viewer**: a **read-only** terminal mirroring the process output — it scrolls
-  on wheel but takes no keyboard focus and forwards nothing to the PTY (the
-  buttons are the only controls).
+  on wheel and forwards nothing to the PTY (the buttons are the only controls).
+  The output is **selectable** with the same mouse gestures as a live pane (drag
+  = chars, double-click = word, triple-click = line) and `Cmd+C` copies the
+  selection — the point being to lift a server error out of the strip. Clicking
+  it takes the keyboard focus purely so that copy has a target: no keystroke is
+  consumed, and a plain click clears the selection.
 - **Layout**: **resizable** by dragging its top edge and **collapsible** to the
   header; the height and the collapsed flag are **persisted** and restored on
   launch.

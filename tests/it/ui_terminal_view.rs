@@ -5,7 +5,9 @@ use helm::keybindings::Shortcut;
 use helm::terminal::emu::{clear, feed, scroll, shared_term, DEFAULT_FONT_SIZE};
 use helm::terminal::links::LinkAction;
 use helm::terminal::palette::{TermPalette, TermTheme};
-use helm::ui::terminal_view::{cell_metrics, terminal_view, PROCESS_ENDED_BANNER};
+use helm::ui::terminal_view::{
+    cell_metrics, terminal_view, terminal_view_readonly, PROCESS_ENDED_BANNER,
+};
 
 const CLEAR: Option<Shortcut> = Some(Shortcut::cmd(egui::Key::K));
 
@@ -1203,5 +1205,76 @@ fn drag_select_still_copies_with_link_detection_wired() {
         copied_text(&harness).as_deref(),
         Some("hello"),
         "without Cmd, a drag still selects and Cmd+C copies — link_cwd does not change it"
+    );
+}
+
+/// Renders the Run panel's read-only viewer over `hello world` and returns the
+/// harness plus a cell-center locator, ready for the selection gestures.
+fn readonly_harness() -> (Harness<'static>, impl Fn(usize) -> egui::Pos2) {
+    use std::sync::{Arc, Mutex};
+
+    let term = shared_term(6, 40);
+    feed(&term, b"hello world");
+
+    let palette = TermPalette::variant(TermTheme::Dark);
+    let metrics: Arc<Mutex<(f32, f32, f32, f32)>> = Arc::new(Mutex::new((0.0, 0.0, 8.0, 16.0)));
+    let probe = metrics.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        *probe.lock().unwrap() = grid_metrics(ui);
+        terminal_view_readonly(ui, &term, &palette, DEFAULT_FONT_SIZE, false);
+    });
+    harness.run();
+
+    let (ox, oy, w, h) = *metrics.lock().unwrap();
+    (harness, move |col: usize| {
+        egui::pos2(ox + (col as f32 + 0.5) * w, oy + 0.5 * h)
+    })
+}
+
+fn drag_cells(harness: &mut Harness, from: egui::Pos2, to: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+    harness.event(egui::Event::PointerMoved(to));
+    harness.run();
+    harness.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+}
+
+#[test]
+fn readonly_viewer_drag_then_cmd_c_copies_selection() {
+    let (mut harness, cell) = readonly_harness();
+
+    drag_cells(&mut harness, cell(0), cell(4));
+    harness.event(egui::Event::Copy);
+    harness.step();
+
+    assert_eq!(
+        copied_text(&harness).as_deref(),
+        Some("hello"),
+        "the Run viewer selects on drag and copies the selection on Cmd+C"
+    );
+}
+
+#[test]
+fn readonly_viewer_copy_without_selection_is_a_no_op() {
+    let (mut harness, _) = readonly_harness();
+
+    harness.event(egui::Event::Copy);
+    harness.step();
+
+    assert!(
+        copied_text(&harness).is_none(),
+        "Cmd+C without a selection leaves the clipboard alone"
     );
 }
