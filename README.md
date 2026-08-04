@@ -45,8 +45,8 @@ curl -fsSL https://raw.githubusercontent.com/davidbonan/Helm/main/install.sh | s
   created in two keystrokes, with a post-create script.
 - **Commit graph** — every local ref in one lane layout; check out, rebase, or
   hand the whole rebase to an AI.
-- **Git down to the line** — stage by file, hunk or single line; AI-drafted
-  commit messages that follow your repo's conventions.
+- **Git down to the line** — stage by file, hunk or single line, **edit the diff in
+  place**; AI-drafted commit messages that follow your repo's conventions.
 - **Conflicts in place** — a three-pane editor with one-click takes, no
   `<<<<<<<` to untangle.
 
@@ -196,12 +196,18 @@ commit**, refreshed on every action and on disk change, with `⌘↵` to commit.
 
 - **Granular staging** — stage and unstage by **file, hunk, or individual line**
   straight from the diff view.
+- **Edit the WIP in the diff** — click a line's content and the hunk becomes a code
+  editor at the exact same metrics: fix the change where you are reading it, no
+  round-trip to an editor. It is written to the working tree when you leave, `Esc`
+  rolls it back, and `⌘Z` undoes inside the buffer.
 - **AI commit messages** — a ✨ button drafts a summary + description from your
   staged changes, **following the repo's existing commit conventions**.
 - **Uncommitted at a glance** — every dirty repo in the left sidebar carries a
   green/red **ratio bar** with a `+N −M` line count.
 
 <p align="center">
+  <img src="specs/screenshots/wip-edit.gif" alt="Helm — editing the uncommitted change from the diff itself: a click puts a caret on a line, a new line is typed in place, and leaving the editor lands it in the working tree as a real addition" width="960">
+  <br>
   <img src="specs/screenshots/git-staging.png" alt="Helm — diff view with hunk and line staging" width="960">
 </p>
 

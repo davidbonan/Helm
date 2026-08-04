@@ -18,6 +18,7 @@ captured by hand.
 | `pr-list.png` | The **pull-request cockpit**: the *To review* and *Mine* groups with status, reviewers and age. | Two PRs awaiting review (one with changes requested), two authored (one draft) |
 | `pr-review-comments.png` | **In-app PR review**: a file diff with anchored comment threads, a reply and the *Ask {agent}* action. | A posted thread on a hunk, plus a draft note in each pool (forge + agent) |
 | `preferences.png` | The full-window **Preferences** page (left nav + a settings card). | Appearance or Project section |
+| `wip-edit.gif` | The **WIP edited from the diff itself** (git.md §4): a caret placed by a click in the content column, a line typed under it, and the write landing when the editor is left. | The unstaged diff → the caret + the accent bar → the line typed in → the same diff carrying it as an addition, sidebar `+N` included |
 
 **All** of these are deterministic renders, not manual captures — regenerate the
 whole set with
@@ -29,24 +30,33 @@ real widgets headless with curated in-memory fixtures, so the set stays in sync
 with the UI and never drifts from a stale capture. The "What to capture" column
 documents the intent each shot is composed to convey.
 
-## The animated one
+## The animated ones
 
-`agents-wall.gif` is the same renders, one per beat: `gen_agents_wall_frames`
+Both GIFs are the same renders, one per beat, and both go through the encode below.
+
+`agents-wall.gif`: `gen_agents_wall_frames`
 writes `frame-NN.png` plus the `frames.txt` the encoder reads — the per-frame hold
 times live in `WALL_BEATS`, so the list can never drift from the frames. Each beat
 also settles one frame longer than the last, so the Working spinner turns across the
 sequence instead of freezing. The wall's tree is built over the window **minus the
-sidebar**, which is why its splits are the ones the app would pick. Encode from
-`verify-artifacts/shots/agents-wall/`:
+sidebar**, which is why its splits are the ones the app would pick.
+
+`wip-edit.gif`: `gen_wip_edit_frames`, hold times in `EDIT_BEATS`. Each beat rebuilds
+the shell and replays the gesture from scratch — the click that puts the caret, then
+the line typed as far as that beat, so the frames are a real editing session driven
+through `diff_view`, not a mock-up of one. The caret's blink is turned off for the
+same reason the hold times are fixed: the frame must not depend on when it was taken.
+
+Encode from `verify-artifacts/shots/<name>/`, `<name>` being the GIF's own:
 
 ```sh
 ffmpeg -y -f concat -safe 0 -i frames.txt -fps_mode vfr \
   -vf "scale=1920:-1:flags=lanczos,split[a][b];\
 [a]palettegen=max_colors=128:stats_mode=diff[p];\
 [b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
-  -loop 0 agents-wall.gif
+  -loop 0 <name>.gif
 ```
 
 128 colors on a flat dark UI leaves the text clean, and the 2× render downscaled
-to 1920 keeps it sharp at the README's 960 — **1.9 MB** for 8 s, the whole budget
-for a file that lives in git forever.
+to 1920 keeps it sharp at the README's 960 — **1.9 MB** for the wall's 8 s, **1.7 MB**
+for the WIP edit's 6 s, the whole budget for files that live in git forever.

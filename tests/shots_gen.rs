@@ -5,6 +5,7 @@
 //! the agents-wall GIF is encoded from. Deterministic — no PTY, no timing.
 #![cfg(feature = "headless-verify")]
 
+use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::agent_watch::AgentBadge;
@@ -45,8 +46,10 @@ use helm::ui::terminal_view::{terminal_tree, terminal_view};
 use helm::ui::{central_switch, root_layout};
 use helm::update::UpdateState;
 use helm::workspace_launcher::WorkspaceOpener;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 struct Spec {
     repo: &'static str,
@@ -1370,6 +1373,357 @@ fn gen_git_staging() {
             );
         });
     finish(harness, "git_staging");
+}
+
+/// One beat of the WIP-edit animation: the state its frame renders, and how long the GIF
+/// holds it (centiseconds — the format's own unit).
+struct EditBeat {
+    /// A click in the content column has put the caret on the anchor line.
+    caret: bool,
+    /// Characters of `EDIT_LINE` typed so far, under the newline that opened the line;
+    /// `None` before that newline.
+    typed: Option<usize>,
+    /// The editor has been left: the write landed and the diff recomposed around it.
+    landed: bool,
+    hold_cs: u32,
+}
+
+/// The line typed into the working tree from the diff itself.
+const EDIT_LINE: &str = "        debug_assert!(!self.free.contains(&id));";
+
+/// Context line the caret is put on — the click lands at its end, so the newline opens
+/// the line below it.
+const EDIT_ANCHOR: &str = "        self.lanes[id] = None;";
+
+/// The diff on screen, a caret placed in it, a line typed under that caret, and the
+/// write landing when the editor is left.
+const EDIT_BEATS: &[EditBeat] = &[
+    EditBeat {
+        caret: false,
+        typed: None,
+        landed: false,
+        hold_cs: 130,
+    },
+    EditBeat {
+        caret: true,
+        typed: None,
+        landed: false,
+        hold_cs: 95,
+    },
+    EditBeat {
+        caret: true,
+        typed: Some(0),
+        landed: false,
+        hold_cs: 25,
+    },
+    EditBeat {
+        caret: true,
+        typed: Some(14),
+        landed: false,
+        hold_cs: 16,
+    },
+    EditBeat {
+        caret: true,
+        typed: Some(26),
+        landed: false,
+        hold_cs: 16,
+    },
+    EditBeat {
+        caret: true,
+        typed: Some(38),
+        landed: false,
+        hold_cs: 16,
+    },
+    EditBeat {
+        caret: true,
+        typed: Some(EDIT_LINE.len()),
+        landed: false,
+        hold_cs: 120,
+    },
+    EditBeat {
+        caret: false,
+        typed: None,
+        landed: true,
+        hold_cs: 210,
+    },
+];
+
+/// The new side of the file the WIP-edit GIF is composed on: the working tree the inline
+/// editor writes back to (git.md §4). The diff below and this listing are one fixture —
+/// `source_lines` is what the editor seeds its buffer from.
+const LANE_FILE: &[&str] = &[
+    "use git2::Oid;",
+    "",
+    "/// Lanes the commit graph draws its edges in.",
+    "#[derive(Default)]",
+    "pub struct LaneCache {",
+    "    lanes: Vec<Option<Oid>>,",
+    "    free: Vec<usize>,",
+    "    next_id: usize,",
+    "}",
+    "",
+    "impl LaneCache {",
+    "    fn alloc(&mut self) -> usize {",
+    "        if let Some(id) = self.free.pop() {",
+    "            return id;",
+    "        }",
+    "        let id = self.next_id;",
+    "        self.next_id += 1;",
+    "        id",
+    "    }",
+    "",
+    "    fn free(&mut self, id: usize) {",
+    "        self.lanes[id] = None;",
+    "        self.free.push(id);",
+    "    }",
+    "}",
+];
+
+/// The unstaged diff of `LANE_FILE`; `landed` is the same diff once the typed line
+/// reached the working tree — the line is an addition like any other.
+fn wip_edit_diff(landed: bool) -> FileDiff {
+    let ctx = |s: &str, old: u32, new: u32| DiffLine {
+        origin: LineOrigin::Context,
+        content: s.to_owned(),
+        old_lineno: Some(old),
+        new_lineno: Some(new),
+    };
+    let add = |s: &str, new: u32| DiffLine {
+        origin: LineOrigin::Addition,
+        content: s.to_owned(),
+        old_lineno: None,
+        new_lineno: Some(new),
+    };
+    let mut source: Vec<String> = LANE_FILE.iter().map(|l| (*l).to_owned()).collect();
+    let mut free_hunk = Hunk {
+        header: "@@ -18,3 +21,4 @@ impl LaneCache {".to_owned(),
+        old_start: 18,
+        old_lines: 3,
+        new_start: 21,
+        new_lines: 4,
+        lines: vec![
+            ctx("    fn free(&mut self, id: usize) {", 18, 21),
+            ctx(EDIT_ANCHOR, 19, 22),
+            add("        self.free.push(id);", 23),
+            ctx("    }", 20, 24),
+        ],
+    };
+    if landed {
+        source.insert(22, EDIT_LINE.to_owned());
+        free_hunk.header = "@@ -18,3 +21,5 @@ impl LaneCache {".to_owned();
+        free_hunk.new_lines = 5;
+        free_hunk.lines = vec![
+            ctx("    fn free(&mut self, id: usize) {", 18, 21),
+            ctx(EDIT_ANCHOR, 19, 22),
+            add(EDIT_LINE, 23),
+            add("        self.free.push(id);", 24),
+            ctx("    }", 20, 25),
+        ];
+    }
+    FileDiff {
+        path: "src/git/graph.rs".to_owned(),
+        binary: false,
+        oversize: false,
+        editable: true,
+        hunks: vec![
+            Hunk {
+                header: "@@ -12,5 +12,8 @@ impl LaneCache {".to_owned(),
+                old_start: 12,
+                old_lines: 5,
+                new_start: 12,
+                new_lines: 8,
+                lines: vec![
+                    ctx("    fn alloc(&mut self) -> usize {", 12, 12),
+                    add("        if let Some(id) = self.free.pop() {", 13),
+                    add("            return id;", 14),
+                    add("        }", 15),
+                    ctx("        let id = self.next_id;", 13, 16),
+                    ctx("        self.next_id += 1;", 14, 17),
+                    ctx("        id", 15, 18),
+                    ctx("    }", 16, 19),
+                ],
+            },
+            free_hunk,
+        ],
+        source_lines: source,
+        image: None,
+    }
+}
+
+/// The sidebar beside that diff: the edited file's `+N` counts the typed line once it
+/// lands, so the write is visible outside the diff too.
+fn wip_edit_status(landed: bool) -> RepoStatus {
+    let entry = |path: &str, kind, additions, deletions| FileEntry {
+        path: path.to_owned(),
+        kind,
+        additions,
+        deletions,
+    };
+    RepoStatus {
+        staged: vec![entry("src/ui/git_graph.rs", ChangeKind::Modified, 8, 2)],
+        unstaged: vec![
+            entry(
+                "src/git/graph.rs",
+                ChangeKind::Modified,
+                if landed { 5 } else { 4 },
+                0,
+            ),
+            entry("tests/graph_alloc.rs", ChangeKind::Added, 37, 0),
+        ],
+    }
+}
+
+fn char_width(harness: &mut Harness<'_, ()>) -> f32 {
+    harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(12.0), ' ')
+            .max(1.0)
+    })
+}
+
+/// A plain click — press and release without a drag — at `pos`: the gesture that puts
+/// the caret in the content column (git.md §4).
+fn click_at(harness: &mut Harness<'_, ()>, pos: egui::Pos2) {
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    harness.step();
+}
+
+/// The real diff view driven the way a hand would drive it: the caret is placed by a
+/// click in the content column, the line is typed into the field the hunk's rows became,
+/// and the last beat is the diff after the write — the whole shell, so the sidebar's
+/// `+N` ticks up in the same frame.
+fn render_wip_edit(beat: &EditBeat, out: &str) {
+    let palette = Palette::dark();
+    let file = wip_edit_diff(beat.landed);
+    let aim = file.clone();
+    let status = wip_edit_status(beat.landed);
+    let view = Rc::new(RefCell::new(DiffViewState::default()));
+    let view_in_ui = view.clone();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(2.0)
+        .build_ui(move |ui| {
+            boot(ui);
+            // The caret is what this GIF is about: a blink would leave it out of half the
+            // frames, and which half would depend on the step count.
+            let mut style = (*ui.ctx().global_style()).clone();
+            style.visuals.text_cursor.blink = false;
+            ui.ctx().set_global_style(style);
+            let keymap = Keymap::default();
+            let mut git_state = GitPanelState {
+                subject: "Reuse freed lanes in the git graph allocator".to_owned(),
+                description: "Pop the free list before growing next_id so a closed pane \
+                    returns its lane."
+                    .to_owned(),
+                ..Default::default()
+            };
+            app_shell(
+                ui,
+                &palette,
+                &keymap,
+                &status,
+                &mut git_state,
+                None,
+                false,
+                None,
+                |ui| {
+                    ui.add_space(40.0); // clear the macOS traffic-light line
+                    let mut intents: Vec<GitIntent> = Vec::new();
+                    let _ = diff_view(
+                        ui,
+                        &palette,
+                        &file,
+                        DiffSurface::WorkingTree { staged: false },
+                        &mut view_in_ui.borrow_mut(),
+                        &mut intents,
+                        None,
+                    );
+                },
+            );
+        });
+    harness.run_steps(3);
+
+    // The accessibility rect is in physical pixels; the events below are in points, like
+    // the offsets the row layout is measured in.
+    let ppp = harness.ctx.pixels_per_point();
+    let row = harness.get_by_label_contains(EDIT_ANCHOR).rect();
+    let char_w = char_width(&mut harness);
+    // Past the end of the anchor line — the caret clamps to the line's end, and aiming at
+    // the exact last boundary would round to the character before it.
+    let anchor = egui::pos2(
+        row.left() / ppp
+            + helm::ui::diff_view::content_x_offset(&aim, char_w)
+            + (EDIT_ANCHOR.chars().count() + 4) as f32 * char_w,
+        row.center().y / ppp,
+    );
+    if beat.caret {
+        click_at(&mut harness, anchor);
+        harness.run_steps(3);
+    } else if beat.landed {
+        // Where the click that left the editor took the pointer: the write lands on the
+        // way out, so the last beat still carries a cursor — off the rows, or it would
+        // hover one of them.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(
+                anchor.x - 60.0,
+                row.bottom() / ppp + 90.0,
+            )));
+        harness.run_steps(3);
+    }
+    if let Some(chars) = beat.typed {
+        harness.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run_steps(3);
+        if chars > 0 {
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::Text(EDIT_LINE[..chars].to_owned()));
+            harness.run_steps(3);
+        }
+    }
+    assert_eq!(
+        view.borrow().inline_edit().is_some(),
+        beat.caret,
+        "{out}: the editor's state must be the beat's, not what the click happened to do"
+    );
+    finish(harness, out);
+}
+
+#[test]
+fn gen_wip_edit_frames() {
+    let dir = "verify-artifacts/shots/wip-edit";
+    std::fs::create_dir_all(dir).unwrap();
+    let mut list = String::new();
+    for (i, beat) in EDIT_BEATS.iter().enumerate() {
+        render_wip_edit(beat, &format!("wip-edit/frame-{i:02}"));
+        let secs = f64::from(beat.hold_cs) / 100.0;
+        list.push_str(&format!("file 'frame-{i:02}.png'\nduration {secs:.2}\n"));
+    }
+    // The concat demuxer drops the last entry's duration unless the file repeats.
+    let last = EDIT_BEATS.len() - 1;
+    list.push_str(&format!("file 'frame-{last:02}.png'\n"));
+    std::fs::write(format!("{dir}/frames.txt"), list).unwrap();
+    println!("{} frames + frames.txt in {dir}", EDIT_BEATS.len());
 }
 
 #[test]
