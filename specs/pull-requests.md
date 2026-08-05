@@ -75,6 +75,8 @@ PullRequest {
   review: Approved | ChangesRequested | Pending | None,
   reviewers: Vec<Reviewer>,
   labels: Vec<String>,                                        // GitHub labels; empty on Bitbucket (§11 meta-row)
+  diffstat: Option<(u32, u32)>,                               // ± tally; GitHub-only (§5)
+  comment_count: Option<u32>,                                 // comment tally; Bitbucket-only (§5)
 }
 PrComment { author, body, path, old_lineno, new_lineno, id, parent_id, context }  // a fetched thread comment (§11)
 PrCommit  { sha, short, subject, author }                     // one PR commit, oldest-first (§11)
@@ -92,36 +94,58 @@ unit-tested on fixtures**; the runner (§6) owns the shell-out. `forge_kind` /
 
 A **full-width list page** owning the central area (like the Agents dashboard):
 no side-by-side detail pane — selecting a PR **navigates** to its review surface
-(§11), which fills the same area, and **Back** returns to the list. The header
-carries only the **Pull Requests** title and a **Refresh** button (§6) — no
-global search, notification or theme chrome (the theme lives in Preferences), and
-**no tabs** (the two role groups below are the only split). All labels are in
-**English** ([`design-system.md`](design-system.md) §7).
+(§11), which fills the same area, and **Back** returns to the list. All labels are
+in **English** ([`design-system.md`](design-system.md) §7) — the design canvas this
+round was drawn on is French, but the label language is a frozen decision.
 
-- **List**, two **grouped sections** — **To review** then **Mine** (each section
-  title carries a count and sits **above** a **rounded card**) — each card is a
-  **column table** with a header row and hairline row separators. The shared
-  columns are **Title** (the PR title with its **`source → dest` branch** beneath,
-  led by the open / draft **state icon**), **Project** (repo chip), **Status** and
-  **Updated** (relative age); **To review** adds an **Author** and a **Requested
-  reviewer** column, **Mine** a **Reviewers** column (stacked avatars, `+N`
-  overflow). **Status** is a single **plain colored label** encoding state +
-  review decision (*Open* / *In review* / *Approved* / *Changes requested* /
-  *Draft*) — no pill fill; the CI **checks** (✓ / ✗ / •) live in the §11 review
-  detail, not the list. A trailing chevron marks the row → detail affordance.
-  **No** project / reviewer / status **filter** or sort control —
-  workspace-scoped + grouped is the only ordering. A PR **stacked** on another
-  listed PR — its **target** branch is that PR's **source** in the same repo —
-  **nests** under it as an **indented tree** (base first, `├`/`└` gutter
-  connectors); an unstacked group renders flat as before. Clicking a row
-  **selects** it (→ the §11 review surface).
-- **Detail** of the selection: header (title · `#number` · state), `source →
-  dest`, author, **checks** + **reviewers**, and the **diff-centric review
-  surface** (§11) — the PR's changed files and their diffs, with in-diff comments,
-  **inline-comment cards with code context** and a **per-commit** view in the
-  center, and a submit composer. PR-level actions: **Open in browser** (reuses
-  `terminal::links::open_url` on the PR's `url`), **Checkout** (§7), and **Ask
-  Claude** (§11). **Merging** stays out of scope (opens the browser).
+- **Header** — a raised band carrying the **Pull Requests** title, a **search
+  field** (`model::matches_search`: title, number, author, branch, project), and
+  the **Filters** / **Priority** / **Refresh** (§6) controls. **Filters** opens a
+  checkbox per workspace project, so a noisy repo can be muted; **Priority**
+  chooses the ordering *inside* each band — *Priority* (oldest touched first: a PR
+  that has been sitting is the more urgent one) or *Recently updated*. Both are
+  **session state**, not persisted. No notification or theme chrome (the theme
+  lives in Preferences).
+- **Tabs** — **Open · To review · Mine · Drafts** (`model::ListTab`), each with its
+  count. Every fetched PR is open by construction (§1), so the tabs are views over
+  the same cache: no extra query, and **no Merged tab** (merged PRs are out of the
+  fetch's scope).
+- **List**, grouped by **what each PR is waiting on** rather than by role or date
+  (`model::ActionGroup`, in this order): **Waiting on your review** ·
+  **Ready to merge** · **Waiting on the author** · **In review**. First match wins,
+  so a PR blocked on its author never masquerades as reviewable and a review the
+  user still owes outranks an approval someone else already gave. Each band is a
+  colored section header (glyph + uppercase label + count) over **full-bleed rows**
+  separated by hairlines — no card, no column-header row.
+- **Row** — the open / draft / changes-requested **state icon**, the **title** with
+  an optional amber **Blocks N** flag (`model::blocked_count`: how many listed PRs
+  target this one's source branch), and a meta line
+  `#number · project · author · age · source → dest`. In the **Waiting on the
+  author** band the row reads a notch quieter and the branch flow gives way to what
+  it is blocked on (*Changes requested* / *Checks failing* / *Draft*). On the right:
+  the **CI status**, the **comment** tally, the **± tally**, and the author avatar —
+  and in **Ready to merge**, an inline **Merge** button in place of the tallies.
+  A PR **stacked** on another listed PR — its **target** branch is that PR's
+  **source** in the same repo — still **nests** under it as an **indented tree**
+  (base first, `├`/`└` gutter connectors) **within its band**.
+  Clicking a row **selects** it (→ the §11 review surface).
+- **Per-forge gaps in the row tallies** (§4): the **± tally** is GitHub-only
+  (`gh pr list` returns the scalars; Bitbucket would need one `diffstat` request per
+  PR) and the **comment tally** is Bitbucket-only (its list payload carries
+  `comment_count`, whereas `gh pr list --json comments` would pull every comment
+  *body* of every PR). Each column is simply left blank on the forge that cannot
+  supply it cheaply, the way `labels` already is.
+- **Merge** — from the inline button on a ready-to-merge row, or from the review
+  surface header (§11). Both raise a **confirmation modal** naming the repo, the
+  branch flow and the forge; confirmed, a gated `PrMergeRequest` posts off-thread
+  (GitHub `gh pr merge --merge`, Bitbucket `POST …/pullrequests/{id}/merge` with
+  `merge_strategy: merge_commit`). **No strategy picker** — squash vs rebase is a
+  repository policy the cockpit does not own — and the **source branch is kept**
+  (`--delete-branch` / `close_source_branch` deliberately absent: helm may hold a
+  worktree on that branch, §7). On success the merged PR's cached review is dropped,
+  the surface returns to the list and the list re-fetches; on failure the forge's own
+  message surfaces.
+- **Detail** of the selection: the **diff-centric review surface** (§11).
 
 Empty / edge states: no recognized-forge repo ⇒ *"No GitHub or Bitbucket
 repository in your workspace"*; a source unavailable ⇒ its inline hint (§3) while
@@ -205,6 +229,13 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
 - **M-PR2 (write)**: the three-dot `pr_changed_files` / `pr_file_diff` delta on a
   throwaway repo; `draft_comments` flattening (blank notes dropped) into the
   GitHub review payload and the Bitbucket inline-comment / verdict-URL builders.
+- **M-PR6 (Tour-1 redesign)**: `ActionGroup::of` band classification (draft /
+  changes-requested / red CI outrank a review owed, which outranks an approval),
+  `ListTab::accepts`, `matches_search`, `blocked_count` (unit); the `gh pr merge` /
+  Bitbucket merge URL + body builders (unit); UI e2e — the actionability bands, the
+  tab filter, the search field, a ready-to-merge row's inline **Merge**, the surface
+  header's **Merge**, the popover verdict group driving the submit label, and
+  **Hide tests** filtering the rail's file list.
 - **M-PR3 (cache & richer reviewing)**: the bounded review-cache LRU + the
   `should_refresh_pr` throttle predicate (unit); the GitHub / Bitbucket commit and
   `diff_hunk` parsers + the reply / issue-comment arg & body builders (unit); the
@@ -215,9 +246,16 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
 
 ## 10. Accepted limitations / out of scope (v1)
 
-- **No merging** from the app (opens the browser). Line comments, **replies to
+- **Merging is supported in-app** (§5), with a confirmation and no strategy picker
+  — always a plain merge commit, source branch kept. Line comments, **replies to
   existing threads**, **conversation comments** (add + reply), and approve /
-  request-changes / comment reviews **are** supported in-app (§11).
+  request-changes / comment reviews are in-app too (§11).
+- **No module graph.** A map of the touched modules needs an import graph helm does
+  not build, and git alone yields changed files, not dependencies. Inventing edges
+  from folder nesting would be a lie. The **Graph ⇄ Files** toggle that once carried
+  a disabled Graph segment is **gone** from the rail — a permanently inert control at
+  the top of the list was worse than no control; it returns when there is real data
+  behind it.
 - **Bitbucket Cloud only** — no Server / Data Center (different API base & auth).
 - **Workspace-scoped** — no global account search (a PR to review on a repo not
   in the sidebar is not shown).
@@ -236,34 +274,193 @@ PR shown **without cloning the branch**, each diff annotatable, with a composer 
 M-RC review engine (`review.rs`, `ui::diff_view`) so the in-diff comment UX is the
 same one as commit/working-tree review.
 
-- **Layout.** The **center** area shows the selected file's diff, or — when **no
-  file is open** — the PR **detail**: a compact full-width header with **Back**,
-  the PR **title**, `author · source → dest`, compact **Open in browser** /
-  **Checkout** PR-level actions and a `#number` chip, followed by the author block
-  (avatar, name, `source → dest`) with a right-aligned **Created** relative age
-  (`model::relative_age` over `PrDetail.created_at`), a **meta-row** (the reviewer
-  avatar cluster + neutral **label** pills — labels are GitHub-only, monochrome so
-  the `accent.ai` hue stays reserved for AI surfaces), the **body in a card**
-  (`bg_surface` + `border_subtle`) **rendered as markdown** (an in-house
-  `pulldown-cmark` renderer, as are the comment bodies — it controls font size,
-  line-height and letter-spacing so prose blocks don't read as a dense wall), then
-  Checks and the **Conversation** — each top-level comment a card with an **Author** /
-  **Reviewer** role tag and a quiet **Reply** pill, ordered by an **Oldest | Newest**
-  toggle (persisted per PR), closed by an always-visible **Add a comment** composer
-  bar (the signed-in user's avatar + field + filled **Comment** button). The detail uses the
-  commit-detail visual language on `bg_canvas`. The **rail sits on the right** —
-  the commit-detail sidebar's place — carrying only a **Files changed** band, the
-  file rows and the composer; it never holds PR-level actions, the title or
-  detail. The **Files changed** band reuses the shared
-  Flat ⇄ Tree file-view toggle (`Prefs.git_file_view`): Flat shows full paths,
-  Tree groups files under collapsible directory rows (`git::file_tree`). File rows
-  show only quiet monochrome icons when they carry forge-review draft comments or
-  agent notes; opened state stays out of the rows and is exposed through a compact
-  icon-only unread filter chip carrying the unread count in the header. The rail **collapses**
-  via the header toggle
-  (`PanelRight*`) or **⌘G** (the git-sidebar key, rebound here since the standard
-  git sidebar is suppressed in the PR cockpit), persisted in `Prefs.pr_rail_collapsed`;
-  the split width stays `Prefs.pr_detail_width`. On row hover the gutter shows
+- **Surface header.** A **full-width band above both panes**, so the PR's identity
+  and the review actions stay put whatever the body shows. Three rows: **Back** ·
+  the **title** · `#number` · a **health cluster** (passing checks · unresolved
+  threads · mergeability) · a hairline · icon-only **Open in browser** / **Checkout**
+  · **Finish review** · the **Merge** button (§5); then the identity line (state chip,
+  author avatar, `source → dest`, **Created** relative age via `model::relative_age`
+  over `PrDetail.created_at`); then the **tabs**.
+  The right cluster reads in three groups, spaced apart and split by the hairline:
+  **read-only status**, then **navigation**, then the two **actions** — the health
+  icons are not buttons and must not sit flush against ones that are.
+- **Finish review.** An outlined header button badged with the pending draft count,
+  opening the **composer as a popover**: the **verdict group** (Comment-only review ·
+  Request changes · Approve) with a caption naming the selection, the summary field
+  and **Submit**, whose label names what will be sent. Verdict and submit are one
+  control group — the header carries no verdict selector of its own, and there is
+  exactly one place a review leaves the app. The popover is the composer's only home:
+  it is reachable from every tab, unlike a rail footer.
+- **Tabs.** **Conversation · Files**, each with its count, stored per PR url. An
+  **opened file *is* the Files tab** — picking one from the conversation lands on the
+  column, scrolled to that file; leaving Files drops the current-file mark. There is
+  **no Commits tab**: its only real function
+  was scoping the diff to one commit, which the Files toolbar's commit dropdown
+  already does, and it listed the commits that dropdown lists anyway.
+  - **Conversation** — the PR detail: a **meta-row** (reviewer
+    avatar cluster + neutral **label** pills — labels are GitHub-only, monochrome so
+    the `accent.ai` hue stays reserved for AI surfaces), the **body in a card**
+    (`bg_surface` + `border_subtle`) **rendered as markdown** (an in-house
+    `pulldown-cmark` renderer, as are the comment bodies — it controls font size,
+    line-height and letter-spacing so prose blocks don't read as a dense wall), then
+    Checks, then the **conversation card** (below). No author block over the body:
+    author, branches and age are the surface header's second line, and repeating them
+    under the tabs reads as a rendering slip rather than as context. On `bg_canvas`, in
+    the commit-detail visual language. **Cards bounded, prose bounded inside them**:
+    the cards run to ~1200px (a step and a half past the measure — a surface three
+    times wider than its text reads as a rendering slip), and the *text* inside stops
+    at its reading measure of ~900px. The measure is held by laying the galley out from
+    the job: handed a bare `LayoutJob`, egui's `Label` relayouts it at the width of the
+    `Ui` and the bound is lost. Tables, fenced blocks and images keep the card's width —
+    those gain from it. The **scroll area reaches ~16px past the column, into the
+    gutter, and does not auto-shrink**: egui floats the bar against the area's right
+    edge, so an area that ends where the cards end puts the bar on their border — and
+    `auto_shrink` (on by default) pulls it right back there however far the rect is told
+    to reach, which is the trap. Held open, the bar clears the cards by ~24px and they
+    keep an even margin on both sides.
+  - **Prose ink.** Body text is `text_primary`, **strong** runs the *medium* face
+    (~500) rather than a brighter ink — emphasis carried by colour means everything
+    that isn't bold sits at `text_secondary`, which reads as disabled and greys a whole
+    description in dark mode. Quotes stay muted, links accent.
+  - **Metadata rail.** Everything *about* the PR lives in a rail (~300px) full height,
+    **one ~32px gutter to the right of the conversation column**, the pair **centered in
+    the pane** the way a forge centers its review page: anchored to opposite edges they
+    drift into two islands separated by a hole wider than the card itself, so what a
+    wide window leaves over is split between the two sides instead. Below ~1530px the
+    pair fills the pane and the rail lands flush right. **No rule between the two** —
+    the gutter and the cards' own borders already say where one ends and the other
+    starts, and a hairline there only fences off a column that is already set apart. It
+    carries **Reviewers** (avatar, name, and the verdict on the right: a tick once
+    approved, a cross for changes requested,
+    *Awaiting review* while it is still owed), **Checks**, **Labels**. It stands down
+    when the conversation would be left under ~520px, and Checks then falls back into
+    the column; the meta-row over the body gives way to the rail rather than naming the
+    reviewers and labels twice.
+  - **Markdown coverage.** Headings, emphasis, code (inline + fenced), lists, quotes,
+    **GFM tables** and **images** — a review body states its results in a table and
+    shows them in screenshots, and both were being flattened into a paragraph of
+    pipes. A table spans the **card**, not the prose measure, and its columns are
+    **sized on what their content asks for**, then scaled to that width: shared evenly,
+    a *Step* column of single digits takes the same quarter as the sentence beside it,
+    which then wraps over three lines for nothing. What a column asks for is its widest
+    unwrapped cell, floored so rows line up under their headers and capped so one long
+    line (a URL, a stack trace) can't claim the table; a cell holding an image asks for
+    the image's share, since its text says nothing about the thumbnail below it. Scaling
+    to the available width is what keeps a content-sized table from pushing past the
+    pane and taking the horizontal scroll with it. An **image inside a table cell** is a
+    picture there too — hung under the cell's text, scaled to its column: a smoke-test
+    table carries its evidence in the Evidence column, and naming the file there is not
+    the evidence. Until the bytes
+    land (or if they never do) the placeholder names it — its alt text, else the URL's
+    file name — and says why.
+  - **Links.** A link run is clickable where it sits in the prose: the renderer records
+    each run's range, hit-tests it on the laid-out galley (one box per row it wraps
+    over) and names the clicked URL to the app, which owns the opening. Bitbucket's
+    smart-link attribute run — `{: data-inline-card='' }` right after a link, which the
+    parser hands back as prose without the attribute-list extension — is dropped.
+  - **Image viewer.** In the flow an embedded picture is a thumbnail; clicking it opens
+    it **full-surface** over the review: scroll or pinch zooms (1× fit to 8×, about the
+    pointer), drag moves it, double click resets, and `Esc` / a click on the backdrop /
+    the ✕ closes. The viewer owns `Esc` while it is up, so that press never also drops
+    the file or leaves the review.
+  - **Bitbucket repo downloads.** A screenshot linked from a comment normally sits under
+    `bitbucket.org/{ws}/{repo}/downloads/{file}`, which answers **401** to the API
+    credentials: the website host is not the API. Such a URL is rewritten to
+    `api.bitbucket.org/2.0/repositories/{ws}/{repo}/downloads/{file}`, which redirects to
+    a signed link curl follows **without** the header (it drops it off-host). Every other
+    URL is fetched as written.
+  - **Embedded images** are fetched off-thread by URL (`PrReviewRequest::Image`,
+    `curl`), decoded with the `image` crate already in use for diff previews, and kept
+    as a texture in a **URL-keyed cache** — one fetch per asset however many bodies
+    link it. Until it lands (or if it fails) the body shows a muted placeholder naming
+    the image, which is also what asks for the fetch. The forge credentials only
+    travel to the **forge's own hosts** (`github.com`, `bitbucket.org`): an image URL
+    can name any host on the internet. A raw `<img src="…">` is read too — a pasted
+    screenshot often arrives as HTML — but the bodies' HTML is not parsed further.
+  - **Files** — the rail + diff pane (below).
+- **Conversation card.** Everything the conversation *is*, in **one** card
+  (`bg_surface` + `border_subtle`), drawn to the `PR Conversation.dc.html` design
+  canvas in helm's own palette tokens (the canvas carries the Directskills MUI
+  palette — §5's frozen decisions hold: EN labels, helm's palette):
+  - **Head** — the title, the **total** comment tally as plain text, and the
+    **Oldest | Newest** order toggle boxed as one segmented control (persisted per PR,
+    shown only past one comment), closed by a hairline.
+  - **One list of threads.** PR-level comments and line-anchored threads sit in the
+    **same** list; there is **no separate *Inline comments* band**. A thread is one
+    object whether it hangs on the PR or on a line, and two bands made a reviewer read
+    "what is still open" twice on the same screen. Grouping: PR-level comments nested
+    by `parent_id`, then one thread per (file, anchor), oldest-first.
+  - **Open work first** — a **Needs attention · N** section over one raised block per
+    unresolved thread: its `path:line`, the code it hangs on (the click target that
+    opens the file at that line), the comments (root at full weight, replies under a
+    thread rail), then **Reply** — plus **Resolve** when the forge gives the thread a
+    handle (a GitHub issue comment has none).
+  - **Resolved threads fold into one block** — a header (tick, *Resolved*,
+    `N threads · M comments · K files`, Show / Hide) over **one row per thread**:
+    `path:line`, its comment tally, a **one-line elided excerpt** of the root, the
+    participants' avatars (at most 3) and the last activity. A row **opens in place**
+    to the snippet, the comments, a *Resolved · last reply …* note and
+    **Reply** / **Reopen**. The block's open state is session state per PR, each row's
+    per thread id. The forges do not say **who** resolved a thread (neither GitHub's
+    `isResolved` nor Bitbucket's `resolution` carries an actor into the model), so the
+    note states what is known rather than naming a resolver helm never fetched.
+  - **Composer** — one object at the foot: the field and its action bar
+    (*Markdown supported* · **Comment**) inside a single frame beside the user's
+    avatar. The button fills with accent only once the draft holds non-blank text.
+- **Files tab: one continuous column.** The center stacks **every** changed file's
+  diff, one band under the next, in the rail's order — a review is read as one
+  document, not opened file by file. The **rail is that column's table of contents**:
+  a row click scrolls to its band (and marks it the current file), it never swaps the
+  center for a single diff. Each band is the ordinary diff renderer under **band
+  chrome** (`diff_view_band`): its path + ± header carries a **fold chevron** instead
+  of Close, and it scrolls **horizontally only** — the column owns the vertical axis.
+  A band is **flat**: no card, no outline, **no rounded corners**. What tells two
+  files apart is a **full-bleed header strip** — `bg_surface_hover` (the quietest fill
+  that reads as a header; `bg_surface` is a hair off the canvas) closed top and bottom
+  by a hairline, running edge to edge, with 10pt of air between bands. A rounded,
+  outlined card around a wall of code reads as a heavy object boxing in the review;
+  a bar reads as a seam, which is all this has to be.
+  A band whose diff has not landed keeps its header over a muted *Loading diff…* (or
+  its own error): a per-file failure never takes the column down, and it is a **line,
+  not a spinner** — dozens of animations would repaint the app for as long as the
+  fetches trickle in. The rail's **filters gate both lists**, so the contents and the
+  column always cover the same files.
+  A slim **toolbar** heads the pane: the PR's `N files · +A −B` tally, the **commit
+  scope** dropdown (*All commits* or one commit → `commit^..commit`), and a
+  **thread navigator** pinned right (*Thread i / N*, prev/next, scrolling to the file
+  that carries the thread). The navigator is **hidden below two threads** — a
+  navigator for a single item is noise, and the file row already flags it.
+  Two consequences the shape forces, and how they are paid for:
+  - **State is per file.** A `DiffViewState` caches one file's highlighting and holds
+    its open editors, so the app keys them **by path** (`PrReview.file_views`); the
+    conversation tab keeps its own. This is what made the earlier attempt fall back to
+    an accordion.
+  - **Off-screen bands are not laid out.** A band whose height was measured and which
+    sits over a screenful away only **reserves that height**; laying out thousands of
+    rows every frame is what made a continuous view unaffordable. The height is kept
+    per (file, width), so a resize re-measures instead of reserving a stale one.
+  Every file's diff is fetched for the range (`ensure_range_diffs`), not just a
+  selected one — the column shows them all.
+
+- **Rail.** The rail **sits on the left**, under the surface header, and **only in
+  the Files tab** — Conversation has no use for a file list and takes the full width.
+  It carries the **Files changed** band and the file rows, nothing else: no PR-level
+  actions, no title, no detail, no composer. There is **no Graph ⇄ Files toggle**;
+  the graph needs an import graph helm does not build (§10), and a permanently
+  disabled half-control was occupying the rail's first row.
+  The **Files changed** band reuses the shared Flat ⇄ Tree file-view toggle
+  (`Prefs.git_file_view`): Flat shows full paths, Tree groups files under collapsible
+  directory rows (`git::file_tree`). Next to the count sit the two **list filters**,
+  as icon + count chips: **unread only** (`EyeOff`) and **hide tests**
+  (`FlaskConical`). Filters live beside the list they filter, not in the diff pane
+  across the split; the ± totals live in the toolbar, which always has room for them
+  where a usefully narrow rail does not. File rows show only quiet monochrome icons
+  when they carry forge-review draft comments or agent notes.
+  The rail **collapses** via the header toggle (`PanelRight*`) or **⌘G** (the
+  git-sidebar key, rebound here since the standard git sidebar is suppressed in the
+  PR cockpit), persisted in `Prefs.pr_rail_collapsed`; the split width stays
+  `Prefs.pr_detail_width` (dragging the split **right** widens it now that the rail
+  is on the left). On row hover the gutter shows
   **two** review-note buttons feeding **two separate pools** (`ReviewPool`): a
   `MessageSquarePlus` button (slot 0 — the **forge** pool, posted to GitHub /
   Bitbucket on the exact submit action label) and the `Sparkles` button (slot 1 — the
@@ -278,14 +475,19 @@ same one as commit/working-tree review.
   in the matched workspace repo; an unfetched head ⇒ the diff is unavailable with
   a one-line hint (Checkout §7 fetches it).
 - **Changed files + diff (read).** The rail lists the changed files (path, kind,
-  ±counts, quiet review/agent icons); selecting one loads its diff lazily (its own
-  gated request) and marks it viewed for that review session. The header's
-  icon-only unread filter chip filters the list down to files not yet opened; when the
-  filter hides every row, the list shows **All files viewed**. The
-  surface opens with **no file selected**, so the center shows the **PR detail**;
-  the diff's **Close** (or `Esc` over it) clears the selection back to that detail
-  **without leaving the surface** — distinct from **Back**, which returns to the
-  list. Binary / oversize blobs degrade as elsewhere (git.md).
+  ±counts, quiet review/agent icons); every one of them is diffed in the column, each
+  fetched once per (range, file) and cached. Picking a row scrolls to its band and
+  marks it viewed for that review session. The header's icon-only unread filter chip
+  filters the list down to files not yet opened; when the filter hides every row, the
+  list shows **All files viewed**. The surface opens on the **Conversation** tab;
+  `Esc` over the column clears the current-file mark, then returns to the list
+  (**Back**). Binary / oversize blobs degrade as elsewhere (git.md).
+- **`Esc` cascade.** One step per press, innermost first: an **open editor or
+  composer** takes it (an inline editor rolls its buffer back, a reply/comment field
+  closes; a focused always-on composer just gives up its focus) and the key **stops
+  there**; else the current-file mark; else back to the list; and only from the list
+  does `Esc` leave the cockpit for the terminal. A press that closes a comment field
+  never also closes the panel behind it.
 - **Existing threads (read).** Posted PR comments overlay the diff **anchored at
   their line**, read-only, via `review::ForgeThreads` (author + body cards with a
   compact in-card **Ask {agent}** action on the thread). They are **never edited**
@@ -296,9 +498,9 @@ same one as commit/working-tree review.
   composer's **Submit review (N)** (count = `review::count(draft)`); the agent pool
   feeds the diff's **Send to {agent}** recap and the whole-PR **Ask Claude** prompt
   — so review comments destined for the forge are never sent to the agent.
-- **Forge submission (write).** The rail footer composer carries a **segmented
-  verdict control** (`ReviewVerdict`: Comment · Approve · Request changes), an
-  optional **summary**, and a primary button whose label names what will be sent
+- **Forge submission (write).** The rail footer composer carries an optional
+  **summary** and a primary button whose label names what will be sent — the
+  `ReviewVerdict` itself is chosen in the surface header's verdict group (above)
   (`Submit 1 comment`, `Approve`, `Request changes + 2 comments`, etc.; an empty
   Comment review reads **Nothing to submit** and is disabled). On submit,
   `model::draft_comments` flattens the forge pool to
@@ -324,12 +526,12 @@ same one as commit/working-tree review.
 
 **M-PR3 — richer reviewing** (folded into the same surface):
 
-- **Per-commit view (read).** A **commit band** above *Files changed* lists the
-  PR's commits **oldest-first** (short sha · subject · author); selecting one
-  recomputes the changed files + diffs over `commit^..commit` (explicit
-  base/head — the cache key includes it), while **All commits** restores the
-  three-dot PR diff. Reuses `pr_changed_files` / `pr_file_diff` with the commit's
-  oids (local once the head is fetched).
+- **Per-commit view (read).** The Files toolbar's **commit scope** dropdown lists the
+  PR's commits **oldest-first** (short sha · subject) under *All commits*, and is the
+  only place they are listed; selecting one recomputes the changed files +
+  diffs over `commit^..commit` (explicit base/head — the cache key includes it),
+  while **All commits** restores the three-dot PR diff. Reuses `pr_changed_files` /
+  `pr_file_diff` with the commit's oids (local once the head is fetched).
 - **Inline comments in the center (read).** Line-anchored threads are also
   surfaced in the center **detail**, grouped per file: each card shows a small
   monochrome **code-context** snippet (GitHub `diff_hunk` straight from the
@@ -352,5 +554,4 @@ same one as commit/working-tree review.
   untouched — only a submitted *review* clears it).
 
 This supersedes the §10 "no posting / approving / requesting changes / replying"
-limitations for **GitHub + Bitbucket Cloud** reviews; only **merging** remains out
-of scope (opens the browser).
+limitations for **GitHub + Bitbucket Cloud** reviews; **merging** is covered by §5.

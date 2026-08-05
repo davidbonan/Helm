@@ -73,6 +73,19 @@ pub fn request_changes_url(workspace: &str, repo: &str, id: u64) -> String {
     format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/request-changes")
 }
 
+/// `…/pullrequests/{id}/merge` — POST merges the PR (pull-requests.md §5).
+pub fn merge_url(workspace: &str, repo: &str, id: u64) -> String {
+    format!("{API}/repositories/{workspace}/{repo}/pullrequests/{id}/merge")
+}
+
+/// POST body for a merge: the plain merge-commit strategy, matching `gh pr merge
+/// --merge`, and `close_source_branch` left off — helm may hold a worktree on that
+/// branch (pull-requests.md §7).
+pub fn merge_body() -> String {
+    serde_json::json!({ "merge_strategy": "merge_commit", "close_source_branch": false })
+        .to_string()
+}
+
 /// `…/comments/{comment_id}/resolve` — POST resolves the thread, DELETE reopens it
 /// (pull-requests.md §11). The comment id is the thread root's numeric id.
 pub fn resolve_comment_url(workspace: &str, repo: &str, id: u64, comment_id: u64) -> String {
@@ -311,6 +324,9 @@ fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
         review,
         reviewers,
         labels: Vec::new(),
+        // A ± tally would need one `diffstat` request per PR (model §4).
+        diffstat: None,
+        comment_count: o["comment_count"].as_u64().map(|n| n as u32),
     }
 }
 
@@ -679,5 +695,15 @@ mod tests {
         let comments = parse_comments(&json).unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].body, "kept");
+    }
+    #[test]
+    fn merge_url_and_body_target_a_plain_merge_commit() {
+        assert_eq!(
+            merge_url("acme", "web", 1284),
+            "https://api.bitbucket.org/2.0/repositories/acme/web/pullrequests/1284/merge"
+        );
+        let body: serde_json::Value = serde_json::from_str(&merge_body()).unwrap();
+        assert_eq!(body["merge_strategy"], "merge_commit");
+        assert_eq!(body["close_source_branch"], false);
     }
 }

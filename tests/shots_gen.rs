@@ -2201,6 +2201,8 @@ fn gen_pr_list() {
         review,
         reviewers,
         labels: Vec::new(),
+        diffstat: Some((number as u32 * 3, number as u32)),
+        comment_count: Some((number % 7) as u32),
     };
 
     let prs = vec![
@@ -2260,7 +2262,7 @@ fn gen_pr_list() {
     ];
 
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(1500.0, 560.0))
+        .with_size(egui::vec2(1500.0, 720.0))
         .with_pixels_per_point(2.0)
         .build_ui(move |ui| {
             boot(ui);
@@ -2281,6 +2283,211 @@ fn gen_pr_list() {
         });
     harness.run();
     finish(harness, "pr_list");
+}
+
+/// The review surface's **Files** tab: the toolbar over the continuous column of
+/// changed-file bands, with the open file's diff expanded inline.
+#[test]
+fn gen_pr_files() {
+    use helm::git::commit_detail::CommitFile;
+    use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
+    use helm::git::status::ChangeKind;
+    use helm::pull_requests::model::{
+        Checks, ForgeKind, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict, Reviewer,
+    };
+    use helm::review::{FileComments, ForgeThreads};
+    use helm::ui::diff_view::DiffViewState;
+    use helm::ui::file_list::FileViewMode;
+    use helm::ui::pull_requests_view::{pull_requests_page, PrReviewView, PrSourceHints};
+
+    let pr = PullRequest {
+        forge_kind: ForgeKind::GitHub,
+        repo_label: "acme/web".to_owned(),
+        number: 1284,
+        title: "Dedupe webhook deliveries during retry storms".to_owned(),
+        role: PrRole::ToReview,
+        state: PrState::Open,
+        author: "Thomas Lenoir".to_owned(),
+        source_branch: "feat/webhook-dedupe".to_owned(),
+        dest_branch: "develop".to_owned(),
+        url: "https://example.test/acme/web/pull/1284".to_owned(),
+        updated_at: "2026-06-20T10:00:00Z".to_owned(),
+        checks: Checks::Passing,
+        review: Review::Pending,
+        reviewers: vec![Reviewer {
+            name: "Camille Rey".to_owned(),
+            state: Review::Pending,
+        }],
+        labels: Vec::new(),
+        diffstat: Some((142, 38)),
+        comment_count: None,
+    };
+    let detail = PrDetail {
+        created_at: "2026-06-17T09:00:00Z".to_owned(),
+        ..PrDetail::default()
+    };
+    let file = |path: &str, additions: usize, deletions: usize| CommitFile {
+        path: path.to_owned(),
+        kind: ChangeKind::Modified,
+        additions,
+        deletions,
+    };
+    let files = vec![
+        file("src/webhooks/delivery/DeliveryQueueStore.ts", 28, 6),
+        file("src/webhooks/delivery/BackoffPolicy.ts", 18, 2),
+        file("src/webhooks/transport/WebhookTransport.ts", 9, 12),
+        file("tests/delivery_queue_store.spec.ts", 41, 0),
+    ];
+    let line = |origin, content: &str, old, new| DiffLine {
+        origin,
+        content: content.to_owned(),
+        old_lineno: old,
+        new_lineno: new,
+    };
+    let diff = FileDiff {
+        path: "src/webhooks/delivery/DeliveryQueueStore.ts".to_owned(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -118,7 +118,13 @@ class DeliveryQueueStore".to_owned(),
+            old_start: 118,
+            old_lines: 7,
+            new_start: 118,
+            new_lines: 13,
+            lines: vec![
+                line(
+                    LineOrigin::Context,
+                    "  enqueue(delivery: QueuedDelivery) {\n",
+                    Some(120),
+                    Some(120),
+                ),
+                line(
+                    LineOrigin::Deletion,
+                    "    this.pending.set(delivery.id, delivery);\n",
+                    Some(121),
+                    None,
+                ),
+                line(
+                    LineOrigin::Addition,
+                    "    const existing = this.pending.get(delivery.id);\n",
+                    None,
+                    Some(121),
+                ),
+                line(
+                    LineOrigin::Addition,
+                    "    if (existing && existing.attempt >= delivery.attempt) return;\n",
+                    None,
+                    Some(122),
+                ),
+                line(LineOrigin::Context, "  }\n", Some(122), Some(124)),
+            ],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+        editable: false,
+    };
+    // The column diffs every file, so the shot carries a second band under the first.
+    let backoff = FileDiff {
+        path: "src/webhooks/delivery/BackoffPolicy.ts".to_owned(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -12,5 +12,8 @@ export class BackoffPolicy".to_owned(),
+            old_start: 12,
+            old_lines: 5,
+            new_start: 12,
+            new_lines: 8,
+            lines: vec![
+                line(
+                    LineOrigin::Context,
+                    "  next(attempt: number): number {\n",
+                    Some(12),
+                    Some(12),
+                ),
+                line(
+                    LineOrigin::Deletion,
+                    "    return 2 ** attempt * 1000;\n",
+                    Some(13),
+                    None,
+                ),
+                line(
+                    LineOrigin::Addition,
+                    "    const capped = Math.min(attempt, MAX_ATTEMPT);\n",
+                    None,
+                    Some(13),
+                ),
+                line(
+                    LineOrigin::Addition,
+                    "    return 2 ** capped * 1000 + jitter();\n",
+                    None,
+                    Some(14),
+                ),
+                line(LineOrigin::Context, "  }\n", Some(14), Some(15)),
+            ],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+        editable: false,
+    };
+
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .with_pixels_per_point(2.0)
+        .build_ui(move |ui| {
+            boot(ui);
+            let palette = Palette::dark();
+            ui.painter()
+                .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, palette.bg_canvas);
+            let mut review = PrReviewView {
+                pr: &pr,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: Some(0),
+                commits: &[],
+                selected_commit: None,
+                diffs: vec![Some(&diff), Some(&backoff), None, None],
+                diff_errors: vec![None, None, None, None],
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: Some("Sam Rivers"),
+            };
+            let _ = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                300.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.run();
+    finish(harness, "pr_files");
 }
 
 #[test]
@@ -2332,6 +2539,8 @@ fn gen_pr_detail() {
             },
         ],
         labels: vec!["bug".to_owned(), "auth".to_owned(), "priority".to_owned()],
+        diffstat: Some((142, 38)),
+        comment_count: Some(4),
     };
     let detail = PrDetail {
         body: "## Problem\n\nExpired sessions sent users into a **redirect loop**: the \
@@ -2357,6 +2566,8 @@ fn gen_pr_detail() {
     };
     let files: &[helm::git::commit_detail::CommitFile] = &[];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -2382,10 +2593,11 @@ fn gen_pr_detail() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
-                diff_loading: false,
-                diff_error: None,
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,

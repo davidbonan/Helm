@@ -234,8 +234,19 @@ placeholder launches verbatim.
   (**old** no. | **new** no.) — context = both, deletion = old
   only, addition = new only; colored `+`/`−` sign between the gutter and the
   content. View header: file icon + path + `+N −M` stats + **Close**.
-- **Context extension**: an **Extend context** button in the header
-  band of each hunk — reveals 5 extra context lines
+- **Hunk seam**: what separates two hunks is a **hairline**, not a filled band. The
+  `@@ -19,7 +20,6 @@` line is **gone**: the numbers are in every row's gutter and the
+  trailing context is the first row itself, so it restated what was already under it —
+  and once it is gone, a filled band is a box drawn around a couple of controls. Over
+  the rule sit the hunk's **actions only**: **Extend context** on the **left** (it
+  widens what is on screen), Stage / Unstage / Discard on the right (they act on the
+  change). No actions at all (a read-only diff with nothing left to extend) ⇒ the rule
+  alone; the file's **first** hunk drops even that, the file header being right above it.
+- **Context extension**: **Extend context** on the **left** of each hunk's seam — a
+  **quiet inline control** (muted label, accent on hover), not an outlined pill: it is
+  offered on every hunk of every diff, so a bordered button there is a row of furniture
+  between two rows of code. Its hit area is padded well past the 12pt label. It reveals
+  5 extra context lines
   above **and** below (cumulative; hidden when there is nothing left to
   show), clamped to the file boundaries and to neighboring hunks (never a
   duplicate on screen). The lines come from the **new** side of the diff

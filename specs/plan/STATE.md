@@ -6,6 +6,328 @@
 
 ---
 
+## ☑ Milestone — M-PR8 · Continuous Files column + markdown fidelity
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §11. Per the user: read a PR's
+files **one after the other**, not one at a time — then read its bodies as written,
+tables and screenshots included; then see where one file's diff ends. Counter: **4/4**.
+
+**Locked decision** (it *supersedes* M-PR7 T1's master-detail): the Files tab stacks
+**every** file's diff in one scroll; the **rail stays** as that column's table of
+contents (a row click scrolls to its band); bands are **expanded by default**, each
+foldable by its own chevron.
+
+- ☑ **T1 — Continuous column.** `DiffChrome::{Card, Band}` splits `diff_view` into a
+  shared `diff_render`: a band drops the card's Close for a **fold chevron**, scrolls
+  **horizontal only** (the column owns the vertical axis), never escalates `Esc` to
+  closing, and never answers `Cmd+E` (one refusal per press, not one per band on
+  screen). It returns a `DiffOutcome` — `reveal` carries the row a `reveal_line` asked
+  for, because a scroll target **cannot reach an enclosing** scroll area (egui takes
+  both axes' targets whatever it enables, `scroll_area.rs`), so the column scrolls.
+  App: `PrReview.file_views` keys `DiffViewState` **by path** (a state holds one
+  file's syntax + width caches), `ensure_range_diffs` replaces `ensure_selected_diff`
+  and fetches every file of the range, `diff_errors` is per file, and `scroll_to_file`
+  is the one-shot the view consumes. `diff_column` culls: a band whose height was
+  measured and which sits a screenful away only reserves that height (kept per
+  (file, width), so a resize re-measures). The rail's filters gate the column too.
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`, `src/app/{mod,render}.rs`,
+  `specs/pull-requests.md`. *Tests*: 2 UI e2e added (column stacks every diff; the
+  chevron folds a band), 5 rewritten (a path is now on screen twice — rail row +
+  band header — which is a diff's title, not a second list), 2 app tests rewritten
+  around the range fetch. Gate green (2000 tests); `gen_pr_files` shot regenerated
+  with a second band.
+
+- ☑ **T2 — Markdown: tables + images** (per the user, on the shipped surface). Two
+  defects, one root cause each. **(1)** The parser ran with `ENABLE_STRIKETHROUGH`
+  alone, so a GFM table was never a table — the pipes landed in a paragraph and read
+  as a wall of text. Now `ENABLE_TABLES | ENABLE_TASKLISTS` too, with `MdTable`
+  collected per cell while parsing and `md_table` drawing evenly-shared columns over
+  the reading width; each cell's width is **floored** (`set_min_width`), else it
+  shrinks to its text and the rows stop lining up under their headers.
+  **(2)** `Tag::Image` fell into the `_ => {}` arm: the URL was dropped and only the
+  alt text survived. Now the renderer draws the picture — `PrReviewRequest::Image`
+  fetches the bytes over `curl` off-thread, the app decodes them (`image`) and loads a
+  texture into a URL-keyed cache in egui temp memory, which is also the channel the
+  renderer asks through (`md_image_wanted_id`) — no media borrow threaded through the
+  three `markdown` call sites. Credentials go only to the forge's own hosts
+  (`image_auth`); a `<img src>` in raw HTML is read as well; inside a table cell an
+  image reads as its alt / file name.
+  *Files*: `src/ui/pull_requests_view.rs`, `src/app/mod.rs`,
+  `src/pull_requests/runner.rs`, `specs/pull-requests.md`. *Tests*: 2 unit
+  (`html_img`, `image_label`) + 2 UI e2e (table cells are their own labels; an image
+  stands in and queues its fetch). Gate green (2006). Verified on the real render:
+  `verify-artifacts/shots/pr_detail.png` (regenerated from a temporary fixture, then
+  reverted). **Unverified**: the network fetch itself (no creds/network here) — the
+  curl path, the auth gating and the decode are exercised by no test.
+
+- ☑ **T3 — Flat band chrome + hunk seam** (per the user, on the shipped surface).
+  Two files in the column were told apart by a hairline and 8pt of air, which on two
+  walls of code is nothing. **First attempt — rejected by the user**: outlined cards
+  with rounded corners and a raised header ("bien trop imposant, les bords arrondis
+  sont très moches"). **Shipped instead**: nothing but a **full-bleed header strip** —
+  `bg_surface_hover`, square corners, a hairline over and under, edge to edge, 10pt of
+  air between bands, no outline anywhere. The seam does the work the box was doing, at
+  a fraction of the weight; the icon's rounded tile went with it (the strip is already
+  a fill). The pending band wears the same strip.
+  The **hunk band is gone too**: no `@@ …` line (every row's gutter already carries the
+  numbers, and the trailing context *is* the first row), no fill, no radius — a
+  **hairline** with the actions over it, **Extend context left** (where the rows begin)
+  and staging right. Extend is now a **quiet inline control**, not an outlined pill: it
+  sits on every hunk of every diff, and a bordered button there is furniture between two
+  rows of code. A hunk with no actions is the rule alone; the first hunk of a file drops
+  even that. All diff surfaces, not just the PR one.
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`, `specs/git.md`,
+  `specs/pull-requests.md`. *Tests*: the 2 column e2e now assert on the **measured band
+  height** (`pr_review_band_sizes`) — diff rows are painted, not accessibility nodes, so
+  a header-only band is what a folded one is. Gate green (2007).
+  *Verified*: `verify-artifacts/shots/{pr_files,git_staging}.png`, both palettes.
+
+- ☑ **T4 — Conversation layout, links, image viewer** (per the user, on the shipped
+  surface, over several rounds). **Layout**: cards bounded at ~1200 with the prose at
+  its ~900 measure inside them, a ~300 metadata rail (Reviewers · Checks · Labels) one
+  ~32 gutter later, the pair **centered** like a forge's review page — anchored to
+  opposite edges they read as two islands with a hole between them, which is what the
+  user rejected twice. No rule between column and rail, and the author block over the
+  body is **gone** (the surface header already names author, branches and age). The
+  prose measure needed the galley laid out from the job: handed a bare `LayoutJob`,
+  `Label` relayouts it at the `Ui`'s width and the bound is lost.
+  **Ink**: body text at `text_primary` with **strong** on the medium face — carried by
+  colour, everything not bold sat at `text_secondary` and read as disabled in dark mode.
+  **Tables**: columns sized on what their content asks for (floored, capped, an image
+  cell asking the image's share) and scaled to the width — evenly shared, a *Step*
+  column of digits took the same quarter as the sentence beside it.
+  **Esc cascade**: composer → open file → list → cockpit, one step per press, the key
+  consumed at each stage. **Links** are clickable where they sit in the prose (hit-test
+  on the laid-out galley, one box per wrapped row; the app owns the opening), and
+  Bitbucket's `{: data-inline-card='' }` attribute run is stripped. **Images** open
+  full-surface with zoom/pan; a Bitbucket repo download is fetched through
+  `api.bitbucket.org` (the website host answers **401** — verified by curl).
+  **Scroll bar**: the column's scroll area reaches into the gutter *and* is held open —
+  `auto_shrink` defaults to `true`, which pulled the floating bar back onto the cards'
+  border however far the rect reached. Two earlier fixes missed this and the user had
+  to report it three times.
+  *Files*: `src/ui/{pull_requests_view,diff_view}.rs`, `src/app/{mod,render}.rs`,
+  `src/pull_requests/runner.rs`, `specs/pull-requests.md`. *Tests*: 9 UI e2e added
+  (Esc at each stage, rail verdicts, image in a cell, link click, attribute strip,
+  viewer open/close, table sizing, scroll-bar clearance — the last two checked
+  non-vacant by reverting the fix), 1 unit (Bitbucket download URL). Gate green (2015).
+  *Verified*: `verify-artifacts/shots/pr_detail.png`, plus the geometry measured off
+  the accessibility tree. **Unverified**: the live Bitbucket image over the network,
+  and the feel of zoom/pan on a real trackpad.
+
+### Next actions (M-PR8)
+- ☐ **Follow the scroll.** The rail highlights the *picked* file, not the one the
+  column is scrolled to; making the highlight track the topmost visible band needs a
+  rule for what a scroll does to the selection the toolbar's thread navigator writes.
+- ☐ **Live verification.** The column was verified headless (UI e2e + shot); the real
+  surface over a live forge PR is unverified here (no creds/network).
+
+---
+
+## ☑ Milestone — M-PR7 · Review surface: master-detail cleanup
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §9/§10/§11. A UX pass on the
+review surface after M-PR6 shipped it: the changed-files list was drawn **twice on
+the same screen** (rail + the centre's continuous bands) and **in every tab**, the
+composer floated at the foot of a column it did not belong to, and two controls were
+permanently inert. Counter: **5/5**.
+
+**Locked decisions** (they *supersede* M-PR6 T4/T5):
+the Files tab is **master-detail** — the rail is the only file list, the centre diffs
+the selected row full height; the **Commits tab is cut** (the toolbar's commit-scope
+dropdown already does the only thing it did); the composer moves into a **Finish
+review popover** in the header; the **Graph ⇄ Files** toggle is removed rather than
+shipped disabled.
+
+- ☑ **T1 — Rail confined to Files, master-detail centre.** *(the master-detail half
+  is superseded by M-PR8 T1: the centre is a continuous column again, the rail its
+  table of contents. The rest of T1 — rail only in Files, no bands duplicating the
+  list as a second picker — stands.)* `render_review` draws the
+  rail only for `PrTab::Files`; `review_diff` is a toolbar + the ordinary `diff_view`
+  card for the selected file (which owns its path/± header and its Close), plus a
+  `diff_placeholder` for the nothing-selected / loading / error states. Deleted:
+  `diff_file_band`, the bands column, `rail_view_toggle`, `segment_content`, and
+  `diff_view_embedded` with its `embedded` plumbing (no caller left).
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`. *Tests*: 8 UI e2e updated (new `open_files`
+  helper) + `gen_pr_files` shot.
+- ☑ **T2 — Commits tab cut.** `PrTab` is `Conversation | Files`; `commits_tab` and
+  `commit_row` deleted; `commits_dropdown` moved from the rail head into the Files
+  toolbar and now takes a caller rect. *Files*: `src/ui/pull_requests_view.rs`.
+  *Tests*: `clicking_a_commit_row_selects_that_commit` rewritten against the dropdown.
+- ☑ **T3 — Composer → Finish review popover.** `finish_review_button` (outlined,
+  badged with the draft count) opens `Popup::from_toggle_button_response` holding the
+  verdict group, its caption, the summary field and Submit. The header's standalone
+  verdict group and the rail footer are gone, as is `composer_height`. The verdict
+  caption is **painted, not added**: a second node named after the verdict would make
+  the accessibility tree ambiguous. *Files*: `src/ui/pull_requests_view.rs`.
+  *Tests*: 2 UI e2e rewritten.
+- ☑ **T4 — Redundancy pass.** One ± tally, in the Files toolbar (`N files +A −B`) —
+  the rail band dropped its totals and ratio bar, which a usefully narrow rail could
+  not fit anyway. **Hide tests** moved from the diff toolbar to the rail, next to
+  **unread only**, as a shared `filter_chip`; both filter `review_file_list`.
+  **Collapse all** deleted (the diff card's Close replaces it). The thread navigator
+  hides below two threads and now *selects the file* carrying the thread. A hairline
+  separates the read-only health cluster from the action icons.
+  *Files*: `src/ui/pull_requests_view.rs`. *Tests*: 2 UI e2e rewritten.
+- ☑ **T5 — Conversation tab → one conversation card** (`PR Conversation.dc.html`
+  design canvas, imported via the `claude_design` MCP). The Conversation band and the
+  **Inline comments** band are **one card**: `ConvThread` + `conversation_threads`
+  build a single oldest-first thread list (PR-level comments nested by `parent_id`,
+  then one thread per (file, anchor)), and `conversation_card` draws the head (title,
+  **total** tally, boxed Oldest|Newest), a **Needs attention · N** section of raised
+  blocks, the **Resolved** block, then the composer. Resolved threads fold into **one**
+  collapsible block: a `N threads · M comments · K files` header over one row per
+  thread (`path:line`, tally, elided excerpt, participant avatars, last activity),
+  each opening in place to its snippet + comments + *Resolved · last reply …* note +
+  Reply/Reopen. Composer rebuilt as a single object (field + *Markdown supported* ·
+  **Comment** bar in one frame); the button now reads disabled while the draft is
+  blank. Deleted: `inline_comments_section`, `inline_comment_card`,
+  `resolved_header_row`, the per-file path headings.
+  Deviations from the canvas, and why: **Reopen** keeps the shared `resolve_pill`
+  label (the diff overlay uses the same control) instead of the canvas's *Unresolve*;
+  the footer's note replaces *Resolved by X* — **no forge payload carries the
+  resolver** (GitHub `isResolved` / Bitbucket `resolution` are booleans), and inventing
+  one would misattribute; the Reply/Reopen pair stays left-aligned under the note
+  rather than pushed right, which would have meant duplicating the shared reply-editor
+  branch.
+  *Files*: `src/ui/{pull_requests_view,detail}.rs` (`paint_author_avatar` extracted from
+  `avatar` for the painted avatar stack), `specs/pull-requests.md` §11.
+  *Tests*: 3 UI e2e rewritten (both kinds of thread in one card, the folded block's new
+  labels, the loading gate). Real render verified headless via `headless-verify` on a
+  7-comment fixture (1 open + 4 resolved threads over 4 files): 15/15 assertions,
+  `verify-artifacts/20260805_153011_88881/{1-card,2-expanded,3-folded}.png`.
+  Noted in passing (an egui_kittest quirk, not a helm bug): `Node::rect()` returns
+  **physical** pixels while `click()` sends the position in points, so a kittest click
+  misses by the `pixels_per_point` factor — drive click-based verifications at 1.0.
+- ☑ **T5b — Pills and type scale** (per the user, on the shipped surface). The thread
+  pills read as neither the canvas's nor the app's buttons: `pill_button` filled
+  `bg_surface` at rest, which **disappears** against the raised blocks the redesign puts
+  them on, at an 11pt label. Now **outlined** — no fill, `border_input` stroke,
+  `text_primary` ink, 12pt **medium** label, 14pt glyph, 28pt tall — the shape the review
+  header's *Finish review* / *Checkout* already wear, and the canvas's own outlined
+  button. The hover wash to `hover_accent` is kept, so the agent pill keeps its hue.
+  Applies to Reply / Resolve / Ask **everywhere** (the diff overlay included): one
+  control, one look. Type scale raised to the canvas's steps, since the card's text was
+  not legible at arm's length: `MD_TEXT_SIZE` 13.5 → **14**, `MD_CODE_SIZE` 12.5 → **13**
+  (so the PR body follows), the snippet 11.5 → **12.5** mono (gutter char width with it),
+  and a card-local scale — title **15**, author **13.5**, meta/mono **12.5** — replacing
+  the browse list's 11–12pt metrics inside the card; the folded row grew 58 → 62pt to
+  hold it. *Files*: `src/ui/{diff_view,detail,pull_requests_view}.rs`.
+  *Verified*: gate green (1999), and the real render of the screenshot's own thread —
+  `verify-artifacts/20260805_162200_21985/{1-open-thread,2-pill-hover}.png`.
+- ☑ **T5c — Editors: padding, frame, concentric radii** (per the user, on the shipped
+  surface). Two defects, one root cause each.
+  **(1) The composer had no padding**: `TextEdit::margin` is **silently ignored** once a
+  custom frame is passed — egui only honours it on a frame it builds itself
+  (`text_edit/builder.rs:666`, `frame.unwrap_or_else(|| Frame::new().inner_margin(margin))`)
+  — so the text sat flush against the border, above it at the top. The padding now rides on
+  the passed frame (`Frame::NONE.inner_margin(…)`), and the bar's own paddings share the
+  same `COMPOSER_PAD_X`, so all four sides agree.
+  **(2) The reply editor was unstyled**: a bare `TextEdit` with two ~20px icon buttons
+  (`✓` / `×`) floating under it. Rebuilt as the same **one framed object** as the composer
+  — padded field, a full-strength hairline, an action bar with the *Enter to send* hint and
+  **Cancel reply** / **Send reply** (accent-filled, greyed while the draft is blank, 28pt
+  tall) — plus a real **focus ring**: the frame's stroke turns accent, read from
+  `has_focus` *before* the field is added, since egui's own widget stroke is invisible on a
+  frameless field. Hit areas go from ~20pt to 28pt tall.
+  Also concentric radii, the reason the nesting read as flat: the card is 10 with 18pt of
+  padding, so a block inside it is now **8** (`BLOCK_RADIUS`) and an input inside *that*
+  **6** (`EDITOR_RADIUS`) — a nested surface no longer wears its parent's radius. And the
+  bar rules use a full-strength `border_subtle` hairline: the list's `row_separator` is
+  alpha'd for dense rows and vanished inside a framed input.
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`. *Tests*: gate green (1999; the
+  editor's `Send reply` / `Cancel reply` labels are unchanged, so the 4 e2e driving them
+  still pass). *Verified* on the real render, empty and typed:
+  `verify-artifacts/20260805_171000_31007c/{1-composer,2-reply-empty,3-reply-typed}.png`.
+
+### Next actions (M-PR7)
+- ☐ **Rail path elision.** At a 300px rail, Flat rows still elide the *head* of the
+  path (`sr…/DeliveryQueueStore.ts`). Tree view avoids it, but Flat is the default;
+  the elision lives in the shared `file_list::file_row`, so changing it touches the
+  git panel too.
+- ☐ **Graph.** Unchanged from M-PR6: needs a language-aware import graph, not git data.
+
+---
+
+## ☑ Milestone — M-PR6 · PR cockpit → Tour-1 redesign
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§10/§11 (reconciled to the
+`Pull Request Cockpit.dc.html` design canvas, "Tour 1 — refonte Pull Request").
+Rebuilds both cockpit surfaces: the **list** groups by actionability behind a
+search + tabs header, and the **review surface** grows a full-width header with a
+verdict cluster and Merge, a Conversation/Files/Commits tab bar, a **left** rail and
+a continuous multi-file diff. Counter: **6/6**.
+
+**Locked decisions** (they *supersede* M-PR4's, taken against the previous mockup):
+**tabs are back** (Open · To review · Mine · Drafts) and so are **search** and the
+**Filters / Priority** controls; the list groups by **what a PR waits on**, not by
+role; **merging is in-app** (was §10 "opens the browser"); the rail moved
+**right → left**. Kept from before: **EN labels** (the canvas is French — label
+language stays frozen, design-system §7) and helm's **own palette tokens** (the
+canvas carries the Directskills MUI palette, which is a different product).
+**Cut, with reasons**: the canvas's **module graph** (no import graph behind it —
+the toggle ships with Graph disabled) and its **Merged** tab (the fetch is
+open-only, §1).
+
+- ☑ **T1 — Domain: bands, tabs, search, stack flag.** `model::ActionGroup`
+  (`WaitingOnMyReview` / `ReadyToMerge` / `WaitingOnAuthor` / `InReview` + `of`,
+  first-match-wins), `ListTab` (+`accepts`), `matches_search`, `blocked_count`.
+  A **fourth** band beyond the canvas's three: three cannot classify a PR that is
+  merely awaiting a verdict without mislabelling it. *Files*:
+  `src/pull_requests/model.rs`. *Tests*: 7 unit.
+- ☑ **T2 — List → actionability bands.** Header band (title + search +
+  Filters/Priority/Refresh), tab bar with counts, colored section headers over
+  full-bleed rows, redesigned row (state icon, title + **Blocks N** flag, meta line,
+  CI, tallies, avatar), inline **Merge** on ready-to-merge rows. Stacked-PR nesting
+  preserved *within* a band. The M-PR4 card/column-table grammar is gone.
+  *Files*: `src/ui/pull_requests_view.rs`. *Tests*: 5 UI e2e + `gen_pr_list` shot.
+- ☑ **T3 — Row tallies from the forges.** `PullRequest.diffstat` (GitHub
+  `additions`/`deletions` on `LIST_FIELDS`) and `comment_count` (Bitbucket
+  `comment_count`). Each stays `None` on the forge that cannot serve it cheaply —
+  `gh pr list --json comments` would pull every comment *body* of every PR, and a
+  Bitbucket ± tally needs a `diffstat` request each. *Files*:
+  `src/pull_requests/{model,github,bitbucket}.rs`.
+- ☑ **T4 — Review surface: header, tabs, left rail.** Full-width `review_header`
+  (Back · title · `#n` · health cluster · Open/Checkout · verdict group · Merge,
+  then the identity line, then the tabs) replaces the in-center
+  `review_detail_header`; `PrTab` dispatches the center; the rail moved to the left
+  with a **Graph ⇄ Files** toggle (Graph disabled) and a compact commit-scope
+  dropdown in place of the commit band. The composer's segmented verdict was
+  **removed** — the header group is now the single verdict control, so a review
+  still leaves the app from exactly one button. *Files*:
+  `src/ui/pull_requests_view.rs`, `tests/shots_gen.rs`. *Tests*: 8 UI e2e updated
+  to the new structure + `gen_pr_detail` shot.
+  **Partly superseded by M-PR7 T2/T3/T4**: no Commits tab, no Graph toggle, and the
+  verdict group moved from the header into the Finish-review popover.
+- ☑ **T5 — Continuous diff + toolbar.** `diff_view_embedded` (no frame, no file
+  header, no Close, horizontal-only scroll) lets a diff stack inside a caller's
+  vertical scroll; the Files tab draws a toolbar (files/± tally, thread navigator,
+  Hide tests, Collapse all) over a column of file bands with the open file expanded
+  inline. Also fixed the *Files changed* band overlapping its chips on a narrow rail.
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`, `tests/shots_gen.rs`.
+  *Tests*: 1 UI e2e + a new `gen_pr_files` shot.
+  **Superseded by M-PR7 T1**: the bands duplicated the rail's list on the same
+  screen. `diff_view_embedded` and the whole `embedded` mode were removed with them —
+  `diff_view.rs` is back to a single card renderer.
+- ☑ **T6 — Merge write path.** `github::merge_args` (`gh pr merge --merge`),
+  `bitbucket::merge_url`/`merge_body` (`merge_commit`), `PrMergeRequest` +
+  `PrPostKind::Merge` on the gated `PrPostRunner`, `Modal::MergePr` confirmation,
+  and a success path that drops the merged PR's cached review, leaves the surface
+  and re-lists. **No strategy picker**; the **source branch is kept** (helm may hold
+  a worktree on it, §7). *Files*: `src/pull_requests/{github,bitbucket,runner}.rs`,
+  `src/app/{mod,render}.rs`, `src/ui/pull_requests_view.rs`. *Tests*: 2 unit + 1 UI e2e.
+
+### Next actions (M-PR6)
+- ☑ **True simultaneous multi-file diff.** Dropped by M-PR7, **shipped by M-PR8**:
+  `DiffViewState` is keyed per path and the Files tab is one continuous column.
+- ☐ **Graph segment.** Needs an import graph (language-aware), not git data.
+
+### Blockers / Open questions (M-PR6)
+- **Live forge round-trips unverified** for merge (no creds/network here): the arg,
+  URL and body builders are unit-tested, the `gh`/`curl` calls are not exercised.
+
+---
+
 ## ☑ Milestone — M-Wall · Agents dashboard: the Terminals wall
 
 Spec: [`specs/agents.md`](../agents.md) §5 (+ [`keybindings.md`](../keybindings.md) §2).

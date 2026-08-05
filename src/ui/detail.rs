@@ -13,9 +13,9 @@ const AVATAR_SIZE_SMALL: f32 = 20.0;
 const AVATAR_INITIALS_SIZE: f32 = 10.5;
 const AVATAR_INITIALS_SIZE_SMALL: f32 = 9.0;
 const COUNT_CHIP_SIZE: f32 = 11.0;
-const SNIPPET_TEXT_SIZE: f32 = 11.5;
-const SNIPPET_NUM_SIZE: f32 = 10.5;
-const SNIPPET_NUM_CHAR_W: f32 = 6.5;
+const SNIPPET_TEXT_SIZE: f32 = 12.5;
+const SNIPPET_NUM_SIZE: f32 = 11.5;
+const SNIPPET_NUM_CHAR_W: f32 = 7.0;
 
 /// Avatar dot: the author's initials (same rules as the graph bubble) on a
 /// stable color derived from the name — drawn from the lane palette, whose
@@ -38,25 +38,52 @@ pub fn author_avatar_small(ui: &mut egui::Ui, palette: &Palette, author: &str) {
 
 fn avatar(ui: &mut egui::Ui, palette: &Palette, author: &str, size: f32, initials_size: f32) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    paint_avatar(
+        ui.painter(),
+        palette,
+        author,
+        rect.center(),
+        size,
+        initials_size,
+    );
+    let text = initials(author);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+}
+
+/// The same avatar without allocating, for rows laid out by the painter — the folded
+/// resolved threads' participant stack (pull-requests.md §11).
+pub(crate) fn paint_author_avatar(
+    painter: &egui::Painter,
+    palette: &Palette,
+    author: &str,
+    center: egui::Pos2,
+    size: f32,
+) {
+    paint_avatar(painter, palette, author, center, size, size * 0.44);
+}
+
+fn paint_avatar(
+    painter: &egui::Painter,
+    palette: &Palette,
+    author: &str,
+    center: egui::Pos2,
+    size: f32,
+    initials_size: f32,
+) {
     let hash = author.bytes().fold(0usize, |acc, byte| {
         acc.wrapping_mul(31).wrapping_add(usize::from(byte))
     });
-    ui.painter().circle_filled(
-        rect.center(),
-        size / 2.0,
-        muted_lane(palette.lane_color(hash)),
-    );
+    painter.circle_filled(center, size / 2.0, muted_lane(palette.lane_color(hash)));
     let text = initials(author);
     if !text.is_empty() {
-        ui.painter().text(
-            rect.center(),
+        painter.text(
+            center,
             egui::Align2::CENTER_CENTER,
             &text,
             egui::FontId::proportional(initials_size),
             palette.lane_node_text,
         );
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
 }
 
 /// A calmer author dot: the lane colour pulled a quarter of the way toward its own grey,

@@ -384,6 +384,14 @@ pub enum PrReviewRequest {
         head: git2::Oid,
         path: String,
     },
+    /// An image a markdown body / comment embeds (pull-requests.md §11). Not keyed on
+    /// a review: the same asset can be linked from any PR, and the cache is the URL's.
+    Image {
+        url: String,
+        forge_kind: ForgeKind,
+        /// Bitbucket identity for the Basic header, empty on GitHub.
+        bitbucket_email: String,
+    },
 }
 
 /// The single reply per review request, echoing the key (and path/selection) for adoption.
@@ -401,6 +409,10 @@ pub enum PrReviewReply {
         key: PrReviewKey,
         path: String,
         result: Result<crate::git::diff::FileDiff, String>,
+    },
+    Image {
+        url: String,
+        result: Result<Vec<u8>, String>,
     },
 }
 
@@ -480,6 +492,133 @@ fn run_review(request: PrReviewRequest) -> PrReviewReply {
                         .map_err(|e| e.message().to_owned())
                 });
             PrReviewReply::FileDiff { key, path, result }
+        }
+        PrReviewRequest::Image {
+            url,
+            forge_kind,
+            bitbucket_email,
+        } => {
+            let result = fetch_image(&url, forge_kind, &bitbucket_email);
+            PrReviewReply::Image { url, result }
+        }
+    }
+}
+
+/// Largest embedded image helm will pull: a review body links screenshots, not
+/// archives, and the bytes cross a channel and become a GPU texture.
+const MAX_IMAGE_BYTES: u64 = 8_000_000;
+
+/// Fetches an embedded image's bytes over `curl`. The forge credentials only travel
+/// to the **forge's own hosts** (`image_auth`) — an image body can name any host on
+/// the internet, and a Basic header handed to one of them is a leaked credential.
+/// curl drops the header itself if a redirect leaves that host.
+fn fetch_image(url: &str, forge_kind: ForgeKind, bitbucket_email: &str) -> Result<Vec<u8>, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("unsupported image URL".to_owned());
+    }
+    // A repo download linked from a comment answers 401 on the **website** host even
+    // with the credentials: only the API serves it (it 302s to a signed S3 link, which
+    // curl then follows without the header).
+    let rewritten = bitbucket_download_api_url(url);
+    let url = rewritten.as_deref().unwrap_or(url);
+    let mut args = vec![
+        "--silent".to_owned(),
+        "--location".to_owned(),
+        "--fail".to_owned(),
+        "--connect-timeout".to_owned(),
+        "10".to_owned(),
+        "--max-time".to_owned(),
+        "30".to_owned(),
+        "--max-filesize".to_owned(),
+        MAX_IMAGE_BYTES.to_string(),
+        // The status goes to stderr (`%{stderr}`) so a failure can name itself instead
+        // of reading "unavailable" twice; the body stays alone on stdout.
+        "--write-out".to_owned(),
+        "%{stderr}%{http_code}".to_owned(),
+    ];
+    let auth = image_auth(url, forge_kind, bitbucket_email);
+    if auth.is_some() {
+        args.push("--config".to_owned());
+        args.push("-".to_owned());
+    }
+    args.push(url.to_owned());
+
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("curl")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "curl not available".to_owned())?;
+    if let (Some(header), Some(mut stdin)) = (auth, child.stdin.take()) {
+        let _ = stdin.write_all(format!("header = \"Authorization: {header}\"\n").as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|_| "image fetch failed".to_owned())?;
+    if !out.status.success() {
+        let status = String::from_utf8_lossy(&out.stderr);
+        let status = status.trim();
+        return Err(match status.parse::<u32>() {
+            Ok(code) if code >= 400 => format!("HTTP {code}"),
+            _ => "fetch failed".to_owned(),
+        });
+    }
+    if out.stdout.is_empty() {
+        return Err("empty image".to_owned());
+    }
+    Ok(out.stdout)
+}
+
+/// A Bitbucket **repo download** (`bitbucket.org/{ws}/{repo}/downloads/{file}`) as the
+/// API path that actually serves it to a credentialed client — the website host answers
+/// `401` to Basic auth, while `api.bitbucket.org` redirects to a signed link. `None`
+/// for any other URL, which is fetched as written (pull-requests.md §11).
+fn bitbucket_download_api_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://bitbucket.org/")
+        .or_else(|| url.strip_prefix("http://bitbucket.org/"))?;
+    let (path, query) = rest.split_once(['?', '#']).unwrap_or((rest, ""));
+    let mut parts = path.splitn(4, '/');
+    let workspace = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    if parts.next()? != "downloads" {
+        return None;
+    }
+    let file = parts.next().filter(|s| !s.is_empty())?;
+    let _ = query;
+    Some(format!(
+        "https://api.bitbucket.org/2.0/repositories/{workspace}/{repo}/downloads/{file}"
+    ))
+}
+
+/// The `Authorization` value to send with an image request, or `None` when the URL
+/// is not on a host the forge credentials belong to.
+fn image_auth(url: &str, forge_kind: ForgeKind, bitbucket_email: &str) -> Option<String> {
+    let authority = url.split_once("://")?.1.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, h)| h)
+        .split(':')
+        .next()?
+        .to_ascii_lowercase();
+    match forge_kind {
+        // Attachments under github.com itself need the session; the CDN hosts serve
+        // pre-signed URLs and must not see the token.
+        ForgeKind::GitHub => (host == "github.com" || host.ends_with(".github.com"))
+            .then(|| run_stdout("gh", &["auth".to_owned(), "token".to_owned()]))
+            .flatten()
+            .map(|token| format!("Bearer {}", token.trim())),
+        ForgeKind::Bitbucket => {
+            if host != "bitbucket.org" && !host.ends_with(".bitbucket.org") {
+                return None;
+            }
+            (!bitbucket_email.is_empty())
+                .then(|| creds::read_token(bitbucket_email))
+                .flatten()
+                .map(|token| bitbucket::basic_auth_header(bitbucket_email, &token))
         }
     }
 }
@@ -744,6 +883,18 @@ pub struct PrResolveRequest {
     pub resolved: bool,
 }
 
+/// Merge one PR on its forge (pull-requests.md §5). Carries no strategy choice: the
+/// plain merge commit is the one both forges agree on, and picking between squash and
+/// rebase is a repository policy the cockpit does not own.
+#[derive(Debug, Clone)]
+pub struct PrMergeRequest {
+    pub key: PrReviewKey,
+    pub forge_kind: ForgeKind,
+    pub repo_label: String,
+    pub number: u64,
+    pub bitbucket_email: String,
+}
+
 /// Which write the post runner carried, so the UI clears the review draft only on
 /// a submitted review — a posted reply or conversation comment leaves it untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -752,6 +903,7 @@ pub enum PrPostKind {
     Reply,
     Conversation,
     Resolve,
+    Merge,
 }
 
 /// The single reply per post request, echoing the key for adoption.
@@ -788,6 +940,20 @@ impl PrPostRunner {
             let _ = tx.send(PrPostReply {
                 key: request.key,
                 kind: PrPostKind::Review,
+                result,
+            });
+            on_event();
+        });
+    }
+
+    pub fn request_merge(&self, request: PrMergeRequest) {
+        let tx = self.results_tx.clone();
+        let on_event = std::sync::Arc::clone(&self.on_event);
+        std::thread::spawn(move || {
+            let result = post_merge(&request);
+            let _ = tx.send(PrPostReply {
+                key: request.key,
+                kind: PrPostKind::Merge,
                 result,
             });
             on_event();
@@ -1045,6 +1211,45 @@ fn post_resolve(req: &PrResolveRequest) -> Result<(), String> {
             } else {
                 curl_delete_ok(&url, &header)
             }
+        }
+    }
+}
+
+/// Merge the PR on its forge (pull-requests.md §5): `gh pr merge --merge` on GitHub,
+/// `POST …/pullrequests/{id}/merge` on Bitbucket. Mirrors `post_resolve`'s auth and
+/// error shaping so a missing CLI or token reads the same everywhere.
+fn post_merge(req: &PrMergeRequest) -> Result<(), String> {
+    match req.forge_kind {
+        ForgeKind::GitHub => {
+            if !command_ok("gh", &github::auth_status_args()) {
+                return Err("Install gh and run `gh auth login`".to_owned());
+            }
+            // `gh pr merge` refuses on an unmergeable PR; its stderr is the useful
+            // message, so route through the stdin runner that surfaces it.
+            run_stdin("gh", &github::merge_args(&req.repo_label, req.number), "")
+                .map(|_| ())
+                .map_err(|e| {
+                    let e = e.trim();
+                    if e.is_empty() {
+                        "gh merge failed".to_owned()
+                    } else {
+                        e.to_owned()
+                    }
+                })
+        }
+        ForgeKind::Bitbucket => {
+            let (workspace, repo) = req
+                .repo_label
+                .split_once('/')
+                .ok_or_else(|| format!("malformed repo label '{}'", req.repo_label))?;
+            let email = &req.bitbucket_email;
+            let token = (!email.is_empty())
+                .then(|| creds::read_token(email))
+                .flatten()
+                .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
+            let header = bitbucket::basic_auth_header(email, &token);
+            let url = bitbucket::merge_url(workspace, repo, req.number);
+            curl_post_ok(&url, &header, &bitbucket::merge_body())
         }
     }
 }
@@ -1447,6 +1652,34 @@ fn run_curl(args: &[String], auth_header: &str) -> CurlResult {
 mod tests {
     use super::*;
 
+    /// A screenshot linked from a comment lives under the repo's downloads: fetched on
+    /// the website host it answers 401 even with the credentials, so it is asked of the
+    /// API instead (pull-requests.md §11).
+    #[test]
+    fn a_bitbucket_repo_download_is_fetched_through_the_api() {
+        assert_eq!(
+            bitbucket_download_api_url(
+                "https://bitbucket.org/acme/web/downloads/step-06-final.png"
+            )
+            .as_deref(),
+            Some("https://api.bitbucket.org/2.0/repositories/acme/web/downloads/step-06-final.png"),
+        );
+        // Anything else is fetched as written — including the signed link the API hands
+        // back, and any host a body happens to name.
+        assert_eq!(
+            bitbucket_download_api_url("https://bitbucket.org/acme/web/src/main/logo.png"),
+            None,
+        );
+        assert_eq!(
+            bitbucket_download_api_url("https://bbuseruploads.s3.amazonaws.com/x/step.png"),
+            None,
+        );
+        assert_eq!(
+            bitbucket_download_api_url("https://example.test/a.png"),
+            None
+        );
+    }
+
     fn github(label: &str) -> (Forge, String) {
         let (owner, repo) = label.split_once('/').unwrap();
         (
@@ -1594,6 +1827,8 @@ mod tests {
             review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
+            diffstat: None,
+            comment_count: None,
         }
     }
 

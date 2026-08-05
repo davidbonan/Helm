@@ -37,6 +37,8 @@ struct Captured {
     select_file: Cell<Option<usize>>,
     submit_review: Cell<bool>,
     set_file_view: Cell<Option<FileViewMode>>,
+    merge: Cell<Option<usize>>,
+    merge_open: Cell<bool>,
 }
 
 fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
@@ -59,6 +61,8 @@ fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
             state: Review::Pending,
         }],
         labels: Vec::new(),
+        diffstat: None,
+        comment_count: None,
     }
 }
 
@@ -90,6 +94,9 @@ fn harness(
             if action.refresh {
                 sink.refresh.set(true);
             }
+            if action.merge.is_some() {
+                sink.merge.set(action.merge);
+            }
         });
     harness.step();
     harness.step();
@@ -107,6 +114,8 @@ fn review_harness(
     let cap = Rc::new(Captured::default());
     let sink = cap.clone();
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -126,9 +135,10 @@ fn review_harness(
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -176,10 +186,20 @@ fn review_harness(
             if action.set_file_view.is_some() {
                 sink.set_file_view.set(action.set_file_view);
             }
+            if action.merge_open {
+                sink.merge_open.set(true);
+            }
         });
     harness.step();
     harness.step();
     (harness, cap)
+}
+
+/// The changed-files rail belongs to the **Files** tab, so anything asserting on it
+/// opens that tab first (the surface starts on Conversation).
+fn open_files(harness: &mut Harness<'static>) {
+    harness.get_by_label("Files").click();
+    harness.run();
 }
 
 /// Drives the review surface for a PR whose forge detail is still in flight: `detail`
@@ -190,6 +210,8 @@ fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captur
     let cap = Rc::new(Captured::default());
     let files: Vec<CommitFile> = Vec::new();
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -209,9 +231,10 @@ fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captur
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -260,7 +283,7 @@ fn line_comment(note: &str) -> LineComment {
 }
 
 #[test]
-fn groups_to_review_then_mine_with_their_rows() {
+fn rows_group_into_their_actionability_bands() {
     let (harness, _) = harness(
         vec![
             pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
@@ -269,10 +292,75 @@ fn groups_to_review_then_mine_with_their_rows() {
         None,
         460.0,
     );
-    harness.get_by_label("To review");
-    harness.get_by_label("Mine");
+    // A PR I am asked to review leads; my own, still awaiting a verdict, follows.
+    harness.get_by_label("WAITING ON YOUR REVIEW");
+    harness.get_by_label("IN REVIEW");
     harness.get_by_label("Fix the login flow");
     harness.get_by_label("Bump the cache TTL");
+}
+
+#[test]
+fn a_draft_and_a_red_build_fall_into_the_waiting_on_author_band() {
+    let mut draft = pr("acme/web", 1, "Sketch the importer", PrRole::Mine);
+    draft.state = PrState::Draft;
+    let mut broken = pr("acme/api", 2, "Bump the cache TTL", PrRole::ToReview);
+    broken.checks = Checks::Failing;
+
+    let (harness, _) = harness(vec![draft, broken], None, 460.0);
+    harness.get_by_label("WAITING ON THE AUTHOR");
+    harness.get_by_label("Sketch the importer");
+    harness.get_by_label("Bump the cache TTL");
+}
+
+#[test]
+fn an_approved_green_pr_is_ready_to_merge_and_offers_the_inline_button() {
+    let mut approved = pr("acme/web", 1, "Add cursor pagination", PrRole::Mine);
+    approved.review = Review::Approved;
+    approved.checks = Checks::Passing;
+
+    let (mut harness, cap) = harness(vec![approved], None, 460.0);
+    harness.get_by_label("READY TO MERGE");
+    harness.get_by_label("Merge").click();
+    harness.step();
+    assert_eq!(cap.merge.get(), Some(0));
+}
+
+#[test]
+fn the_tab_bar_filters_the_list_down_to_one_role() {
+    let (mut harness, _) = harness(
+        vec![
+            pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+            pr("acme/api", 2, "Bump the cache TTL", PrRole::Mine),
+        ],
+        None,
+        460.0,
+    );
+    harness.get_by_label("Mine").click();
+    harness.step();
+    harness.get_by_label("Bump the cache TTL");
+    assert!(harness.query_by_label("Fix the login flow").is_none());
+}
+
+#[test]
+fn the_search_field_narrows_the_list_and_can_come_up_empty() {
+    let (mut harness, _) = harness(
+        vec![
+            pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+            pr("acme/api", 2, "Bump the cache TTL", PrRole::ToReview),
+        ],
+        None,
+        460.0,
+    );
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .focus();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .type_text("login");
+    harness.run();
+    harness.get_by_label("Fix the login flow");
+    assert!(harness.query_by_label("Bump the cache TTL").is_none());
 }
 
 #[test]
@@ -384,8 +472,12 @@ fn review_composer_submit_emits_the_intent() {
         Vec::new(),
         460.0,
     );
+    harness.get_by_label("Finish review").click();
+    harness.run();
     harness.get_by_label("Approve").click();
-    harness.step();
+    harness.run();
+    // Two now: the popover's verdict button and its Submit, which named itself after
+    // the chosen verdict.
     harness.get_all_by_label("Approve").last().unwrap().click();
     harness.step();
     assert!(cap.submit_review.get());
@@ -403,13 +495,28 @@ fn review_back_returns_to_the_list() {
     assert!(cap.back.get());
 }
 
+/// Height the column measured for a file's band, read from the view's own record
+/// (`pr_review_band_sizes`) — the diff rows themselves are painted, not accessibility
+/// nodes, so this is what tells a laid-out band from a folded one.
+fn band_height(harness: &Harness<'static>, pr_url: &str, path: &str) -> Option<f32> {
+    let sizes: std::collections::HashMap<String, (f32, f32)> = harness.ctx.data(|d| {
+        d.get_temp(egui::Id::new(("pr_review_band_sizes", pr_url)))
+            .unwrap_or_default()
+    });
+    sizes.get(path).map(|(_, h)| *h)
+}
+
 fn sample_diff() -> FileDiff {
+    diff_for("src/main.rs", "@@ -1,2 +1,3 @@")
+}
+
+fn diff_for(path: &str, header: &str) -> FileDiff {
     FileDiff {
-        path: "src/main.rs".to_owned(),
+        path: path.to_owned(),
         binary: false,
         oversize: false,
         hunks: vec![Hunk {
-            header: "@@ -1,2 +1,3 @@".to_owned(),
+            header: header.to_owned(),
             old_start: 1,
             old_lines: 2,
             new_start: 1,
@@ -435,15 +542,90 @@ fn sample_diff() -> FileDiff {
     }
 }
 
-/// Closing the open file clears the selection but stays on the review surface — it
-/// is **not** the same as Back (which leaves to the list).
+/// The Files tab reads as one continuous document: **every** changed file's diff is
+/// on screen at once, in rail order, with nothing selected (pull-requests.md §11).
 #[test]
-fn closing_the_open_file_emits_close_not_back() {
+fn the_files_tab_stacks_every_diff_in_one_column() {
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
+    let lib = diff_for("src/lib.rs", "@@ -10,2 +10,3 @@");
+    let main = diff_for("src/main.rs", "@@ -1,2 +1,3 @@");
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: None,
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: vec![Some(&lib), Some(&main)],
+                diff_errors: vec![None, None],
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    open_files(&mut harness);
+    let url = "https://example.test/acme/web/pull/1";
+    // Both bands laid out their rows: a header alone measures well under 60pt.
+    for path in ["src/lib.rs", "src/main.rs"] {
+        let height = band_height(&harness, url, path).unwrap_or_default();
+        assert!(
+            height > 80.0,
+            "{path} is diffed in the column, not just listed ({height}pt)",
+        );
+    }
+}
+
+/// Every changed file is diffed in one column, each band foldable in place: the
+/// chevron hides that file's rows and leaves the column (and the review) standing.
+#[test]
+fn folding_a_band_hides_its_rows_and_keeps_the_column() {
     let palette = Palette::light();
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
     let files = vec![changed_file("src/main.rs")];
     let diff = sample_diff();
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -465,9 +647,10 @@ fn closing_the_open_file_emits_close_not_back() {
                 selected_file: Some(0),
                 commits: &[],
                 selected_commit: None,
-                diff: Some(&diff),
-                diff_loading: false,
-                diff_error: None,
+                diffs: vec![Some(&diff)],
+                diff_errors: vec![None],
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -501,19 +684,31 @@ fn closing_the_open_file_emits_close_not_back() {
     harness.step();
     harness.step();
     assert!(
-        harness.query_by_label("Open in browser").is_none(),
-        "PR-level actions live in the central detail and disappear while a file diff is open",
+        harness.query_by_label("Open in browser").is_some(),
+        "PR-level actions live in the surface header and stay put while a diff is open",
     );
     assert!(
-        harness.query_by_label("Checkout").is_none(),
-        "PR-level actions live in the central detail and disappear while a file diff is open",
+        harness.query_by_label("Checkout").is_some(),
+        "PR-level actions live in the surface header and stay put while a diff is open",
     );
-    harness.get_by_label("Close").click();
+    let url = "https://example.test/acme/web/pull/1";
+    let open = band_height(&harness, url, "src/main.rs").unwrap_or_default();
+    assert!(open > 80.0, "the band diffs its file in place ({open}pt)");
+    harness.get_by_label("Collapse").click();
     harness.step();
-    assert!(cap.close_file.get(), "Close emits close_file");
+    harness.step();
+    let folded = band_height(&harness, url, "src/main.rs").unwrap_or_default();
     assert!(
-        !cap.back.get(),
-        "closing the file does not leave the review surface",
+        folded < open / 2.0,
+        "folding the band takes its rows away ({folded}pt vs {open}pt)",
+    );
+    assert!(
+        harness.query_by_label("Expand").is_some(),
+        "the folded band keeps its header, ready to unfold",
+    );
+    assert!(
+        !cap.back.get() && !cap.close_file.get(),
+        "folding a band is not leaving the file, let alone the review",
     );
 }
 
@@ -524,7 +719,14 @@ fn clicking_a_changed_file_loads_its_diff() {
         vec![changed_file("src/lib.rs"), changed_file("src/main.rs")],
         460.0,
     );
-    harness.get_by_label("src/main.rs").click();
+    open_files(&mut harness);
+    // The rail is the column's table of contents: its row is the first node with
+    // that label, the band's own header the second.
+    harness
+        .get_all_by_label("src/main.rs")
+        .next()
+        .unwrap()
+        .click();
     harness.step();
     assert_eq!(cap.select_file.get(), Some(1));
 }
@@ -544,6 +746,8 @@ fn arrows_navigate_between_changed_files() {
     let cap = Rc::new(Captured::default());
     let sink = cap.clone();
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -563,9 +767,10 @@ fn arrows_navigate_between_changed_files() {
                 selected_file: Some(1),
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -605,8 +810,8 @@ fn arrows_navigate_between_changed_files() {
     assert_eq!(cap.select_file.get(), Some(0));
 }
 
-/// The commit band lists "All commits" plus one row per commit, and clicking a commit
-/// emits a `select_commit` for that sha (per-commit diff: T5).
+/// The Files toolbar's commit scope lists "All commits" plus one row per commit, and
+/// picking a commit emits a `select_commit` for that sha (per-commit diff: T5).
 #[test]
 fn clicking_a_commit_row_selects_that_commit() {
     let palette = Palette::light();
@@ -630,6 +835,8 @@ fn clicking_a_commit_row_selects_that_commit() {
     };
     let files = vec![changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -651,9 +858,10 @@ fn clicking_a_commit_row_selects_that_commit() {
                 selected_file: None,
                 commits: &detail.commits,
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -683,11 +891,16 @@ fn clicking_a_commit_row_selects_that_commit() {
         });
     harness.step();
     harness.step();
+    open_files(&mut harness);
     assert!(
         harness.query_by_label("All commits").is_some(),
-        "the band offers the cumulative range",
+        "the Files toolbar's commit scope defaults to the cumulative range",
     );
-    harness.get_by_label("Wire the submit handler").click();
+    harness.get_by_label("All commits").click();
+    harness.run();
+    harness
+        .get_by_label("2222222  Wire the submit handler")
+        .click();
     harness.step();
     assert_eq!(
         captured.borrow().clone(),
@@ -704,6 +917,7 @@ fn files_header_toggle_requests_tree_view() {
         vec![changed_file("src/lib.rs"), changed_file("src/main.rs")],
         460.0,
     );
+    open_files(&mut harness);
     harness.get_by_label("Tree view").click();
     harness.step();
     assert_eq!(cap.set_file_view.get(), Some(FileViewMode::Tree));
@@ -719,6 +933,8 @@ fn tree_view_groups_changed_files_under_directory_rows() {
         changed_file("src/main.rs"),
     ];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -738,9 +954,10 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -767,8 +984,11 @@ fn tree_view_groups_changed_files_under_directory_rows() {
         });
     harness.step();
     harness.step();
+    open_files(&mut harness);
     harness.get_by_label("src");
-    harness.get_by_label("src/lib.rs");
+    // Twice on screen, and not as two lists: the rail's row, and the header of the
+    // band diffing that file in the column.
+    assert_eq!(harness.query_all_by_label("src/lib.rs").count(), 2);
 }
 
 #[test]
@@ -777,6 +997,8 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let mut draft = FileComments::new();
     draft.insert("src/lib.rs".to_owned(), vec![line_comment("review this")]);
@@ -798,9 +1020,10 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 selected_file: Some(0),
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -853,6 +1076,8 @@ fn unread_only_filters_out_files_opened_in_this_review() {
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -872,9 +1097,10 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 selected_file: Some(0),
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -901,27 +1127,34 @@ fn unread_only_filters_out_files_opened_in_this_review() {
         });
     harness.step();
     harness.step();
+    assert_eq!(harness.query_all_by_label("src/lib.rs").count(), 2);
     harness.get_by_label("Unread only").click();
-    harness.step();
-    assert!(
-        harness.query_by_label("src/lib.rs").is_none(),
-        "the already-opened file is hidden by the unread-only filter",
+    harness.run();
+    assert_eq!(
+        harness.query_all_by_label("src/lib.rs").count(),
+        0,
+        "the already-opened file leaves both the rail and the column",
     );
-    harness.get_by_label("src/main.rs");
+    assert_eq!(
+        harness.query_all_by_label("src/main.rs").count(),
+        2,
+        "the unopened file keeps its row and its band",
+    );
 }
 
 #[test]
 fn dragging_the_split_resizes_the_rail_width() {
-    // The rail sits on the right; its resize handle is on the split line at
-    // `body.right() - rail_width` = 1200 - 460 = 740. Dragging left widens the rail
-    // (`rail_width - drag_delta.x`).
+    // The rail sits on the left; its resize handle is on the split line at
+    // `body.left() + rail_width` = 460. Dragging right widens the rail
+    // (`rail_width + drag_delta.x`).
     let (mut harness, cap) = review_harness(
         pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
         Vec::new(),
         460.0,
     );
-    let start = egui::pos2(740.0, 400.0);
-    let end = start - egui::vec2(60.0, 0.0);
+    open_files(&mut harness);
+    let start = egui::pos2(460.0, 400.0);
+    let end = start + egui::vec2(60.0, 0.0);
     harness.event(egui::Event::PointerMoved(start));
     harness.step();
     harness.event(egui::Event::PointerButton {
@@ -946,7 +1179,7 @@ fn dragging_the_split_resizes_the_rail_width() {
         .expect("drag emits a new rail width");
     assert!(
         width > 460.0,
-        "dragging the split left widens the rail, got {width}"
+        "dragging the split right widens the rail, got {width}"
     );
 }
 
@@ -959,6 +1192,8 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
     let files = vec![changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -978,9 +1213,10 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1007,7 +1243,9 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
         });
     harness.step();
     harness.step();
-    harness.get_by_label("feature → main");
+    // The branches are named once, in the surface header — the detail below no longer
+    // repeats them (§11).
+    harness.get_by_label("octocat · feature → main");
     assert!(
         harness.query_by_label("src/main.rs").is_none(),
         "the changed-files rail is hidden when collapsed",
@@ -1056,6 +1294,8 @@ fn detail_conversation_lists_only_top_level_comments() {
     };
     let files = vec![changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1075,9 +1315,10 @@ fn detail_conversation_lists_only_top_level_comments() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1106,12 +1347,366 @@ fn detail_conversation_lists_only_top_level_comments() {
     harness.step();
     // Detail (body + conversation) renders in the center; the file list stays in the rail.
     harness.get_by_label("Describe the change");
-    harness.get_by_label("Conversation");
+    // Both kinds of open thread sit in the one conversation card, under its section head
+    // — the separate "Inline comments" band is gone.
+    harness.get_by_label("NEEDS ATTENTION · 2");
     harness.get_by_label("reviewer-top");
-    // Inline comments are segregated from the conversation into their own band (T6),
-    // not folded into it.
-    harness.get_by_label("Inline comments");
     harness.get_by_label("reviewer-inline");
+    // The anchored one still names the line it hangs on.
+    harness.get_by_label("src/main.rs:2");
+    assert!(
+        harness.query_by_label("Inline comments").is_none(),
+        "inline threads are folded into the conversation card, not a band of their own",
+    );
+}
+
+/// An embedded image is fetched, not dropped: until its bytes land the body shows a
+/// placeholder naming it, which is also what asks the app for the fetch.
+#[test]
+fn markdown_image_stands_in_until_it_loads() {
+    use helm::pull_requests::model::PrDetail;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Before:\n\n![Step 1](https://example.test/step-1.png)\n".to_owned(),
+        ..PrDetail::default()
+    };
+    let files: Vec<CommitFile> = Vec::new();
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Step 1 — loading image…");
+    // The alt text is the image's, not a paragraph run: the surrounding prose stands.
+    harness.get_by_label("Before:");
+    let wanted: Vec<String> = harness.ctx.data(|d| {
+        d.get_temp(helm::ui::pull_requests_view::md_image_wanted_id())
+            .unwrap_or_default()
+    });
+    assert_eq!(
+        wanted,
+        vec!["https://example.test/step-1.png".to_owned()],
+        "drawing the placeholder is what asks the app to fetch it",
+    );
+}
+
+/// Drives the review surface over a PR whose detail carries `body`, on the
+/// Conversation tab — for the markdown cases, which only need that body.
+fn body_harness(body: &str) -> Harness<'static> {
+    use helm::pull_requests::model::PrDetail;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: body.to_owned(),
+        ..PrDetail::default()
+    };
+    let files: Vec<CommitFile> = Vec::new();
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness
+}
+
+/// The conversation's scroll bar rides in the gutter, clear of the cards — egui floats
+/// it against the scroll area's right edge, and an area left to shrink to its content
+/// drags it back onto their border (§11).
+#[test]
+fn the_conversation_scroll_bar_clears_the_cards() {
+    // A right-aligned table column ends flush against the card's own margin, which makes
+    // it the rightmost thing the cards draw.
+    let harness = body_harness(&format!(
+        "| Step | Evidence |\n|------|-------:|\n{}",
+        "| 1 | flush |\n".repeat(60)
+    ));
+    let bar = harness
+        .get_all_by(|n| format!("{:?}", n.role()) == "ScrollBar")
+        .map(|n| n.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .expect("the conversation scrolls, so it has a bar");
+    let card = harness
+        .get_all_by_label("flush")
+        .map(|n| n.rect().right())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        bar.left() - card >= 40.0,
+        "the bar starts at {} with the cards ending around {card} — it is riding on them",
+        bar.left(),
+    );
+}
+
+/// Table columns take what their content asks for: a column of single digits must not
+/// hold a quarter of the table while the sentence beside it wraps for nothing (§11).
+#[test]
+fn a_table_column_of_digits_gives_its_room_to_the_sentence_beside_it() {
+    let sentence = "Row action \"Emettre une nouvelle demande\" opens the request form";
+    let harness = body_harness(&format!(
+        "| Step | Action |\n|------|--------|\n| 1 | {sentence} |\n"
+    ));
+    let row = harness.get_by_label("1").rect().height();
+    let action = harness.get_by_label(sentence).rect().height();
+    assert!(
+        action <= row * 1.5,
+        "the sentence should sit on one line ({action} high, a row being {row}) — \
+         an even split would wrap it",
+    );
+}
+
+/// A screenshot embedded **in a table cell** is a picture there too — an evidence
+/// column that names the file instead of showing it is not evidence (§11).
+#[test]
+fn markdown_image_in_a_table_cell_is_fetched_like_any_other() {
+    let harness = body_harness(
+        "| Step | Evidence |\n|------|----------|\n\
+         | 1 | ![step-06](https://example.test/step-06.png) |\n",
+    );
+    harness.get_by_label("step-06 — loading image…");
+    let wanted: Vec<String> = harness.ctx.data(|d| {
+        d.get_temp(helm::ui::pull_requests_view::md_image_wanted_id())
+            .unwrap_or_default()
+    });
+    assert_eq!(
+        wanted,
+        vec!["https://example.test/step-06.png".to_owned()],
+        "a cell's picture asks for its bytes like one in a paragraph",
+    );
+}
+
+/// A loaded picture opens full-surface on a click, and `Esc` closes it again — that
+/// press being the viewer's, not the review's (§11).
+#[test]
+fn a_loaded_image_opens_in_the_viewer_and_esc_closes_it() {
+    use helm::ui::pull_requests_view::{md_image_cache_id, md_viewer_open, MdImage};
+    let url = "https://example.test/step-1.png";
+    let mut harness = body_harness("![Step 1](https://example.test/step-1.png)\n");
+    // Stand in for the fetch: the app writes the decoded texture into this cache.
+    let texture = harness.ctx.load_texture(
+        "test-image",
+        egui::ColorImage::filled([8, 8], egui::Color32::RED),
+        egui::TextureOptions::default(),
+    );
+    harness.ctx.data_mut(|d| {
+        let images: &mut std::collections::HashMap<String, MdImage> =
+            d.get_temp_mut_or_default(md_image_cache_id());
+        images.insert(url.to_owned(), MdImage::Ready(texture));
+    });
+    harness.run();
+
+    let opened = |h: &Harness<'static>| md_viewer_open(&h.ctx);
+    assert!(!opened(&harness), "the viewer is closed until the click");
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "Image")
+        .click();
+    harness.run();
+    assert!(opened(&harness), "clicking the picture opens the viewer");
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(!opened(&harness), "Esc closes the viewer");
+}
+
+/// A link in a body is a link: clicking its run hands the URL to the app, which is
+/// what opens the browser (§11).
+#[test]
+fn markdown_link_click_hands_the_url_to_the_app() {
+    let mut harness = body_harness("See [the ticket](https://jira.test/browse/BNG-1) for why.\n");
+    harness
+        .get_by_label("https://jira.test/browse/BNG-1")
+        .click();
+    harness.run();
+    let clicked: Vec<String> = harness.ctx.data(|d| {
+        d.get_temp(helm::ui::pull_requests_view::md_link_clicked_id())
+            .unwrap_or_default()
+    });
+    assert_eq!(clicked, vec!["https://jira.test/browse/BNG-1".to_owned()]);
+}
+
+/// Bitbucket's smart-link attribute run is markup, not prose: it never reaches the page.
+#[test]
+fn markdown_drops_the_bitbucket_smart_link_attributes() {
+    let harness = body_harness(
+        "Puisque [BNG-2](https://jira.test/browse/BNG-2){: data-inline-card='' }  résout tout.\n",
+    );
+    assert!(
+        harness
+            .query_by_label_contains("data-inline-card")
+            .is_none(),
+        "the attribute run must not read as prose",
+    );
+    harness.get_by_label_contains("résout tout");
+}
+
+/// A cell with no alt text still names the file while it loads.
+#[test]
+fn markdown_image_without_alt_names_the_file_while_it_loads() {
+    let harness = body_harness("![](https://example.test/shots/step-06.png)\n");
+    harness.get_by_label("step-06.png — loading image…");
+}
+
+/// A GFM table in a PR body is a **table**: one label per cell, not a paragraph of
+/// pipes (which is what an unextended `pulldown-cmark` parser hands back).
+#[test]
+fn markdown_table_renders_as_cells_not_a_wall_of_pipes() {
+    use helm::pull_requests::model::PrDetail;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "| Step | Result |\n|------|--------|\n| Open the list | OK |\n".to_owned(),
+        ..PrDetail::default()
+    };
+    let files: Vec<CommitFile> = Vec::new();
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Step");
+    harness.get_by_label("Result");
+    harness.get_by_label("Open the list");
+    harness.get_by_label("OK");
 }
 
 #[test]
@@ -1120,7 +1715,7 @@ fn review_detail_loading_shows_a_loader_not_the_sections() {
         review_loading_harness(pr("acme/web", 1, "Fix the login flow", PrRole::ToReview));
     harness.get_by_label("Loading pull request…");
     assert!(
-        harness.query_by_label("Conversation").is_none(),
+        harness.query_by_label("Markdown supported").is_none(),
         "detail sections must not render while the detail is loading"
     );
 }
@@ -1154,6 +1749,8 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1176,9 +1773,10 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1254,6 +1852,8 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
     };
     let comment_diffs = vec![&fd];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1276,10 +1876,11 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: comment_diffs.clone(),
-                diff_loading: false,
-                diff_error: None,
                 diff_view: &mut diff_view,
                 existing: &existing,
                 draft: &draft,
@@ -1345,6 +1946,8 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1366,9 +1969,10 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1418,6 +2022,180 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
     );
 }
 
+/// Review surface on the Conversation tab with one PR-level comment (so the card
+/// carries a Reply pill) and the rail collapsed, capturing `back`: the `Esc` cascade
+/// tests drive its composers.
+fn conversation_harness() -> (Harness<'static>, Rc<Captured>) {
+    use helm::pull_requests::model::PrComment;
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer".to_owned(),
+            body: "looks good".to_owned(),
+            path: None,
+            old_lineno: None,
+            new_lineno: None,
+            id: Some(11),
+            parent_id: None,
+            context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
+        }],
+        check_runs: Vec::new(),
+        commits: Vec::new(),
+        created_at: String::new(),
+    };
+    let files = vec![changed_file("src/lib.rs")];
+    let cap = Rc::new(Captured::default());
+    let sink = cap.clone();
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                // Rail collapsed: the conversation composer is then the only multiline
+                // field on the surface.
+                true,
+                FileViewMode::Flat,
+            );
+            if action.back {
+                sink.back.set(true);
+            }
+        });
+    harness.run();
+    (harness, cap)
+}
+
+/// The Conversation tab's metadata rail names the PR's reviewers — each by name, with
+/// their verdict on the ones who gave it — plus the checks and the labels (§11).
+#[test]
+fn conversation_rail_lists_the_reviewers_and_their_verdict() {
+    let mut pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    pr_value.reviewers = vec![
+        Reviewer {
+            name: "dana".to_owned(),
+            state: Review::Approved,
+        },
+        Reviewer {
+            name: "sam".to_owned(),
+            state: Review::Pending,
+        },
+    ];
+    pr_value.labels = vec!["bug".to_owned()];
+    let (harness, _) = review_harness(pr_value, vec![changed_file("src/lib.rs")], 460.0);
+    assert!(harness.query_by_label("Reviewers").is_some());
+    // The rail also carries what the conversation column used to repeat.
+    assert!(harness.query_by_label("Checks").is_some());
+    assert!(harness.query_by_label("Labels").is_some());
+    assert!(harness.query_by_label("bug").is_some());
+    assert!(harness.query_by_label("dana").is_some());
+    assert!(harness.query_by_label("sam").is_some());
+    // Only the approval is marked; the reviewer who still owes one says so.
+    assert!(harness.query_by_label("Approved").is_some());
+    assert!(harness.query_by_label("Awaiting review").is_some());
+    assert!(harness.query_by_label("Changes requested").is_none());
+}
+
+/// `Esc` over an open reply editor closes that editor and stops there — leaving the
+/// review takes a second press, with nothing left to close (pull-requests.md §11).
+#[test]
+fn esc_closes_the_open_reply_editor_before_leaving_the_review() {
+    let (mut harness, cap) = conversation_harness();
+    harness.get_by_label("Reply").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Send reply").is_some(),
+        "the Reply pill must have opened the composer",
+    );
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        harness.query_by_label("Send reply").is_none(),
+        "Esc must close the reply editor",
+    );
+    assert!(
+        !cap.back.get(),
+        "the press that closed the composer must not leave the review",
+    );
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        cap.back.get(),
+        "with no composer open, Esc returns to the list",
+    );
+}
+
+/// The "Add a comment…" composer is always on screen, so `Esc` in it only drops the
+/// field's focus — it must not fall through and leave the review (pull-requests.md §11).
+#[test]
+fn esc_in_the_add_comment_field_does_not_leave_the_review() {
+    let (mut harness, cap) = conversation_harness();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+        .click();
+    harness.run();
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        !cap.back.get(),
+        "Esc out of the comment field must not leave the review",
+    );
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        cap.back.get(),
+        "with the field no longer focused, Esc returns to the list",
+    );
+}
+
 #[test]
 fn inline_comment_card_resolve_emits_resolve_thread() {
     use helm::pull_requests::model::{PrComment, PrDetail};
@@ -1444,6 +2222,8 @@ fn inline_comment_card_resolve_emits_resolve_thread() {
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1465,9 +2245,10 @@ fn inline_comment_card_resolve_emits_resolve_thread() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1534,6 +2315,8 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
     };
     let files = vec![changed_file("src/lib.rs"), changed_file("src/main.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1553,9 +2336,10 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1581,12 +2365,15 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
             );
         });
     harness.run();
-    // Collapsed by default: the summary row is shown, the snippet (card body) is not.
-    assert!(harness.query_by_label("Resolved · 1 comment").is_some());
+    // Folded into the resolved block: its header tallies what is put away, the thread is a
+    // one-line row, and the body (its clickable snippet) is not drawn.
+    assert!(harness
+        .query_by_label("Resolved · 1 thread · 1 comment · 1 file")
+        .is_some());
     assert!(harness.query_by_label("Open src/main.rs line 2").is_none());
-    harness.get_by_label("Resolved · 1 comment").click();
+    harness.get_by_label("src/main.rs:2 · 1 comment").click();
     harness.run();
-    // Re-opened: the card body (its clickable snippet) is back.
+    // Opened in place: the body is back.
     assert!(harness.query_by_label("Open src/main.rs line 2").is_some());
 }
 
@@ -1603,6 +2390,8 @@ fn conversation_composer_emits_post_conversation_comment() {
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1624,9 +2413,10 @@ fn conversation_composer_emits_post_conversation_comment() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1701,6 +2491,8 @@ fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1722,9 +2514,10 @@ fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1798,6 +2591,8 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1819,9 +2614,10 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,
@@ -1869,6 +2665,71 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
     );
 }
 
+/// The surface header's Merge asks the app to merge the *open* PR — distinct from a
+/// list row's Merge, which names its row (pull-requests.md §5).
+#[test]
+fn review_header_merge_emits_the_open_pr_intent() {
+    let (mut harness, cap) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    harness.get_by_label("Merge").click();
+    harness.step();
+    assert!(cap.merge_open.get());
+}
+
+/// The verdict group lives in the Finish-review popover, right above the Submit whose
+/// label follows the chosen verdict.
+#[test]
+fn the_verdict_group_drives_the_submit_label() {
+    let (mut harness, _) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    assert!(
+        harness.query_by_label("Nothing to submit").is_none(),
+        "the composer only exists once the popover is open",
+    );
+    harness.get_by_label("Finish review").click();
+    harness.run();
+    // A comment-only review with nothing drafted has nothing to send.
+    harness.get_by_label("Nothing to submit");
+    harness.get_by_label("Approve").click();
+    harness.run();
+    // Two now: the verdict button and the submit, which named itself after the
+    // chosen verdict.
+    assert_eq!(harness.get_all_by_label("Approve").count(), 2);
+    assert!(
+        harness.query_by_label("Nothing to submit").is_none(),
+        "an approval is submittable on its own",
+    );
+}
+
+/// **Hide tests** drops test scaffolding from the rail's file list (§11).
+#[test]
+fn hide_tests_filters_test_files_from_the_rail() {
+    let (mut harness, _) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        vec![
+            changed_file("src/lib.rs"),
+            changed_file("tests/lib_spec.rs"),
+        ],
+        460.0,
+    );
+    open_files(&mut harness);
+    assert_eq!(harness.query_all_by_label("tests/lib_spec.rs").count(), 2);
+    harness.get_by_label("Hide tests").click();
+    harness.run();
+    assert_eq!(harness.query_all_by_label("tests/lib_spec.rs").count(), 0);
+    assert_eq!(
+        harness.query_all_by_label("src/lib.rs").count(),
+        2,
+        "only the test scaffolding is filtered out",
+    );
+}
+
 #[test]
 fn conversation_reply_nests_under_its_parent() {
     use helm::pull_requests::model::PrComment;
@@ -1899,6 +2760,8 @@ fn conversation_reply_nests_under_its_parent() {
     };
     let files = vec![changed_file("src/lib.rs")];
     let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
     let existing = ForgeThreads::new();
     let draft = FileComments::new();
     let agent_notes = FileComments::new();
@@ -1918,9 +2781,10 @@ fn conversation_reply_nests_under_its_parent() {
                 selected_file: None,
                 commits: &[],
                 selected_commit: None,
-                diff: None,
-                diff_loading: false,
-                diff_error: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
                 comment_diffs: Vec::new(),
                 diff_view: &mut diff_view,
                 existing: &existing,

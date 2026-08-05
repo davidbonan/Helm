@@ -2907,6 +2907,8 @@ fn github_pr(repo: &str, number: u64) -> crate::pull_requests::model::PullReques
         review: Review::Pending,
         reviewers: Vec::new(),
         labels: Vec::new(),
+        diffstat: None,
+        comment_count: None,
     }
 }
 
@@ -2932,9 +2934,10 @@ fn seed_review(
         files_error: None,
         selected_file: None,
         diffs: std::collections::HashMap::new(),
-        comment_diff_requests: std::collections::HashSet::new(),
-        diff_loading: false,
-        diff_error: None,
+        diff_requests: std::collections::HashSet::new(),
+        diff_errors: std::collections::HashMap::new(),
+        scroll_to_file: None,
+        file_views: std::collections::HashMap::new(),
         diff_view: crate::ui::diff_view::DiffViewState::default(),
         existing: crate::review::ForgeThreads::new(),
         draft: crate::review::FileComments::new(),
@@ -3096,7 +3099,7 @@ fn app_with_diff_cache(
 }
 
 #[test]
-fn switching_between_cached_pr_diffs_does_not_refetch() {
+fn navigating_a_fully_cached_column_never_refetches() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("web");
     let (base, head) = repo_with_two_file_diff(&root);
@@ -3110,37 +3113,35 @@ fn switching_between_cached_pr_diffs_does_not_refetch() {
 
     assert!(
         app.pr_review_runner.is_none(),
-        "navigating between cached file diffs never fires a fetch"
-    );
-    assert!(
-        !app.active_review().unwrap().diff_loading,
-        "a cached file shows no diff spinner"
+        "jumping between cached bands never fires a fetch"
     );
 }
 
+/// The column diffs **every** changed file, so the missing ones are fetched
+/// whatever the selection — once each (pull-requests.md §11).
 #[test]
-fn selecting_an_uncached_pr_diff_fetches_it_once() {
+fn the_files_column_fetches_every_missing_diff_once() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("web");
     let (base, head) = repo_with_two_file_diff(&root);
     // Only the first file is cached.
-    let (mut app, _files) = app_with_diff_cache(&root, base, head, &[0]);
+    let (mut app, files) = app_with_diff_cache(&root, base, head, &[0]);
 
     let ctx = egui::Context::default();
     app.select_pr_file(0, &ctx);
-    assert!(
-        app.pr_review_runner.is_none(),
-        "the cached file is served without a fetch"
+    let requested = app.active_review().unwrap().diff_requests.clone();
+    assert_eq!(
+        requested,
+        std::collections::HashSet::from([(base, head, files[1].path.clone())]),
+        "only the uncached file is fetched"
     );
+    assert!(app.pr_review_runner.is_some(), "the fetch was fired");
 
     app.select_pr_file(1, &ctx);
-    assert!(
-        app.pr_review_runner.is_some(),
-        "a cache miss fires exactly one diff fetch"
-    );
-    assert!(
-        app.active_review().unwrap().diff_loading,
-        "the selected uncached file shows its loading state"
+    assert_eq!(
+        app.active_review().unwrap().diff_requests,
+        requested,
+        "a second pass asks for nothing new"
     );
 }
 

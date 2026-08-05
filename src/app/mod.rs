@@ -195,16 +195,24 @@ struct PrReview {
     files_error: Option<String>,
     selected_file: Option<usize>,
     /// Diffs already loaded for this PR, keyed by `(base, head, path)` so switching
-    /// between files — or commits (T5) — serves from the cache and fetches on miss
-    /// only (pull-requests.md §11). `diff_loading`/`diff_error` track the in-flight
-    /// fetch for the *selected* file.
+    /// commits (T5) serves from the cache and fetches on miss only
+    /// (pull-requests.md §11).
     diffs: HashMap<(git2::Oid, git2::Oid, String), crate::git::diff::FileDiff>,
-    /// Files whose local diff has already been requested to back an inline comment's
-    /// code preview (keyed like `diffs`), so the per-frame prefetch fires once per
-    /// (range, file) even while the fetch is still in flight.
-    comment_diff_requests: HashSet<(git2::Oid, git2::Oid, String)>,
-    diff_loading: bool,
-    diff_error: Option<String>,
+    /// Files whose local diff has already been requested (keyed like `diffs`), so the
+    /// per-frame prefetch fires once per (range, file) even while the fetch is still
+    /// in flight.
+    diff_requests: HashSet<(git2::Oid, git2::Oid, String)>,
+    /// Per-file fetch failures for the current range, so one band can report its own
+    /// error while the rest of the column renders.
+    diff_errors: HashMap<(git2::Oid, git2::Oid, String), String>,
+    /// One-shot: the file the column must scroll to (a rail click, or opening an
+    /// inline comment). Consumed by the view on the frame it reaches that band.
+    scroll_to_file: Option<usize>,
+    /// Render state **per file**: the column diffs every changed file at once, and a
+    /// `DiffViewState` holds a single file's syntax + width caches and its open
+    /// editors (pull-requests.md §11).
+    file_views: HashMap<String, crate::ui::diff_view::DiffViewState>,
+    /// The conversation tab's own state (its reply / comment composers).
     diff_view: crate::ui::diff_view::DiffViewState,
     /// Inline comments already posted on the PR, grouped per file/line (read-only),
     /// rebuilt from `detail.comments` when the detail lands.
@@ -222,6 +230,28 @@ struct PrReview {
     summary: String,
     posting: bool,
     post_error: Option<String>,
+}
+
+/// Writes one embedded image's state into the cache the markdown renderer reads
+/// (`pull_requests_view::md_image_cache_id`).
+fn set_md_image(ctx: &egui::Context, url: &str, slot: crate::ui::pull_requests_view::MdImage) {
+    ctx.data_mut(|d| {
+        let images: &mut HashMap<String, crate::ui::pull_requests_view::MdImage> =
+            d.get_temp_mut_or_default(crate::ui::pull_requests_view::md_image_cache_id());
+        images.insert(url.to_owned(), slot);
+    });
+}
+
+/// Decodes fetched image bytes into an egui image, naming what went wrong when it is
+/// not a picture helm can read (`image` carries the pure-Rust decoders only).
+fn decode_md_image(bytes: &[u8]) -> Result<egui::ColorImage, String> {
+    let decoded = image::load_from_memory(bytes).map_err(|_| "unsupported format".to_owned())?;
+    let rgba = decoded.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        rgba.as_raw(),
+    ))
 }
 
 /// Target of a pending Delete worktree: what's needed to re-run with force after the
@@ -384,6 +414,9 @@ enum Modal {
     /// Release notes shown once after an update (update.md §9): renders the
     /// bundled `release-notes.md`; carries no data.
     WhatsNew,
+    /// Merge of a PR on its forge (pull-requests.md §5): outward-facing and not
+    /// undoable from helm, so it is confirmed before `PrMergeRunner` posts.
+    MergePr(Box<crate::pull_requests::model::PullRequest>),
 }
 
 impl Modal {
@@ -407,6 +440,7 @@ impl Modal {
             | Modal::RenameWorktree(_)
             | Modal::CreateWorktree(_)
             | Modal::Feedback(_)
+            | Modal::MergePr(_)
             | Modal::WhatsNew => false,
         }
     }
@@ -608,6 +642,9 @@ pub struct HelmApp {
     pr_active: Option<crate::pull_requests::runner::PrReviewKey>,
     /// Most-recently-used order bounding `pr_reviews` to `PR_REVIEW_CACHE_CAP`.
     pr_review_lru: crate::lru::LruOrder<crate::pull_requests::runner::PrReviewKey>,
+    /// Images embedded in a PR body / comment already asked for, by URL: the fetch
+    /// fires once per asset however many bodies link it (pull-requests.md §11).
+    md_image_requests: HashSet<String>,
     /// Off-thread review fetch (changed files + per-file diffs, §5).
     pr_review_runner: Option<crate::pull_requests::runner::PrReviewRunner>,
     /// Off-thread per-PR detail fetch (body / comments / checks, §5).
@@ -780,6 +817,7 @@ impl HelmApp {
             pr_reviews: HashMap::new(),
             pr_active: None,
             pr_review_lru: crate::lru::LruOrder::new(PR_REVIEW_CACHE_CAP),
+            md_image_requests: HashSet::new(),
             pr_review_runner: None,
             pr_detail_runner: None,
             pr_post_runner: None,
@@ -1852,9 +1890,10 @@ impl HelmApp {
                         files_error: None,
                         selected_file: None,
                         diffs: HashMap::new(),
-                        comment_diff_requests: HashSet::new(),
-                        diff_loading: false,
-                        diff_error: None,
+                        diff_requests: HashSet::new(),
+                        diff_errors: HashMap::new(),
+                        scroll_to_file: None,
+                        file_views: HashMap::new(),
                         diff_view: crate::ui::diff_view::DiffViewState::default(),
                         existing: crate::review::ForgeThreads::new(),
                         draft: crate::review::FileComments::new(),
@@ -1902,19 +1941,15 @@ impl HelmApp {
             ));
     }
 
-    /// Select a changed file in the open review and clear the stale diff so the
-    /// loader shows; `ensure_selected_diff` then fetches it.
+    /// Select a changed file in the open review: the column scrolls to that file's
+    /// band on the next frame (the diffs themselves are fetched for the whole range
+    /// by `ensure_range_diffs`).
     fn select_pr_file(&mut self, idx: usize, ctx: &egui::Context) {
         if let Some(review) = self.active_review_mut() {
-            if review.selected_file != Some(idx) {
-                review.selected_file = Some(idx);
-                review.diff_error = None;
-                // Reset the in-flight flag so `ensure_selected_diff` decides afresh
-                // for the new file; the cached diffs map is kept intact.
-                review.diff_loading = false;
-            }
+            review.selected_file = Some(idx);
+            review.scroll_to_file = Some(idx);
         }
-        self.ensure_selected_diff(ctx);
+        self.ensure_range_diffs(ctx);
     }
 
     /// Open the file an inline comment was left on (from the center's inline-comments
@@ -1923,7 +1958,10 @@ impl HelmApp {
     fn open_pr_inline_comment(&mut self, idx: usize, line: Option<u32>, ctx: &egui::Context) {
         self.select_pr_file(idx, ctx);
         if let (Some(review), Some(line)) = (self.active_review_mut(), line) {
-            review.diff_view.reveal_line(line);
+            let Some(path) = review.files.get(idx).map(|f| f.path.clone()) else {
+                return;
+            };
+            review.file_views.entry(path).or_default().reveal_line(line);
         }
     }
 
@@ -1960,8 +1998,6 @@ impl HelmApp {
         if let Some(review) = self.active_review_mut() {
             review.selected_commit = new_selected.clone();
             review.selected_file = None;
-            review.diff_error = None;
-            review.diff_loading = false;
             review.files_loading = true;
             review.files_error = None;
         }
@@ -1975,52 +2011,56 @@ impl HelmApp {
         );
     }
 
-    /// Close the open file in the review surface: drop the selection so the surface
-    /// falls back to the "select a file" placeholder. The cached diffs and the draft
-    /// review pools are left untouched — reopening a file is instant, and closing
-    /// never discards notes.
+    /// Drop the file selection: the column stays on screen (it diffs every file), so
+    /// this only clears which row the rail highlights. The cached diffs and the draft
+    /// review pools are left untouched — closing never discards notes.
     fn close_pr_file(&mut self) {
         if let Some(review) = self.active_review_mut() {
             review.selected_file = None;
-            review.diff_error = None;
-            review.diff_loading = false;
-            review.diff_view.clear();
+            review.scroll_to_file = None;
         }
     }
 
-    /// Request the selected file's diff if it isn't loaded/in flight yet. Drives
-    /// every selection; idempotent per frame.
-    fn ensure_selected_diff(&mut self, ctx: &egui::Context) {
+    /// Request the diff of **every** file of the current range that isn't loaded or in
+    /// flight: the Files tab stacks them all in one column (pull-requests.md §11).
+    /// Idempotent per frame — `diff_requests` remembers what has been asked for.
+    fn ensure_range_diffs(&mut self, ctx: &egui::Context) {
         let Some(review) = self.active_review() else {
             return;
         };
         let (Some(base), Some(head)) = (review.base, review.head) else {
             return;
         };
-        let Some(path) = review
-            .selected_file
-            .and_then(|i| review.files.get(i))
+        let wanted: Vec<String> = review
+            .files
+            .iter()
             .map(|f| f.path.clone())
-        else {
-            return;
-        };
-        if review.diff_loading || review.diffs.contains_key(&(base, head, path.clone())) {
+            .filter(|path| {
+                let key = (base, head, path.clone());
+                !review.diffs.contains_key(&key) && !review.diff_requests.contains(&key)
+            })
+            .collect();
+        if wanted.is_empty() {
             return;
         }
         let key = review.key.clone();
         let root = review.root.clone();
         if let Some(review) = self.active_review_mut() {
-            review.diff_loading = true;
+            for path in &wanted {
+                review.diff_requests.insert((base, head, path.clone()));
+            }
         }
-        self.pr_review_runner(ctx).request(
-            crate::pull_requests::runner::PrReviewRequest::FileDiff {
-                key,
-                root,
-                base,
-                head,
-                path,
-            },
-        );
+        for path in wanted {
+            self.pr_review_runner(ctx).request(
+                crate::pull_requests::runner::PrReviewRequest::FileDiff {
+                    key: key.clone(),
+                    root: root.clone(),
+                    base,
+                    head,
+                    path,
+                },
+            );
+        }
     }
 
     /// Prefetch the local diff of every file in the current range that carries an
@@ -2047,7 +2087,7 @@ impl HelmApp {
             }
             let cache_key = (base, head, path.to_owned());
             if review.diffs.contains_key(&cache_key)
-                || review.comment_diff_requests.contains(&cache_key)
+                || review.diff_requests.contains(&cache_key)
                 || wanted.iter().any(|p| p == path)
             {
                 continue;
@@ -2061,9 +2101,7 @@ impl HelmApp {
         let root = review.root.clone();
         if let Some(review) = self.active_review_mut() {
             for path in &wanted {
-                review
-                    .comment_diff_requests
-                    .insert((base, head, path.clone()));
+                review.diff_requests.insert((base, head, path.clone()));
             }
         }
         for path in wanted {
@@ -2162,39 +2200,110 @@ impl HelmApp {
                 }
                 PrReviewReply::FileDiff { key, path, result } => {
                     if let Some(review) = self.pr_reviews.get_mut(&key) {
-                        let still_selected = review
-                            .selected_file
-                            .and_then(|i| review.files.get(i))
-                            .map(|f| f.path.as_str())
-                            == Some(path.as_str());
+                        // Adopt into the cache even if the user has switched away, so
+                        // returning to this PR is instant. base/head are the review's
+                        // current refs (commit switching is T5).
+                        let (Some(base), Some(head)) = (review.base, review.head) else {
+                            continue;
+                        };
                         match result {
                             Ok(diff) => {
-                                // Warm the cache even if the user has switched away,
-                                // so returning to this file is instant. base/head are
-                                // the review's current refs (commit switching is T5).
-                                if let (Some(base), Some(head)) = (review.base, review.head) {
-                                    review.diffs.insert((base, head, path), diff);
-                                }
-                                if still_selected {
-                                    review.diff_loading = false;
-                                    review.diff_error = None;
-                                }
+                                review.diff_errors.remove(&(base, head, path.clone()));
+                                review.diffs.insert((base, head, path), diff);
                             }
+                            // Per file: one failed fetch leaves the rest of the column
+                            // rendering, and its own band reports the reason.
                             Err(message) => {
-                                // A failed fetch only affects the selected file's slot;
-                                // an in-flight fetch for another file keeps its state.
-                                if still_selected {
-                                    review.diff_loading = false;
-                                    review.diff_error = Some(message);
-                                }
+                                review.diff_errors.insert((base, head, path), message);
                             }
                         }
                     }
                 }
+                PrReviewReply::Image { url, result } => self.adopt_pr_image(ctx, url, result),
             }
         }
-        self.ensure_selected_diff(ctx);
+        self.ensure_range_diffs(ctx);
         self.ensure_comment_diffs(ctx);
+        self.ensure_markdown_images(ctx);
+        self.open_markdown_links(ctx);
+    }
+
+    /// Open the links clicked in a PR body / comment on the last frame: the renderer
+    /// names the URL, the app is what reaches outside (pull-requests.md §11).
+    fn open_markdown_links(&mut self, ctx: &egui::Context) {
+        let clicked: Vec<String> = ctx.data_mut(|d| {
+            d.get_temp_mut_or_default::<Vec<String>>(
+                crate::ui::pull_requests_view::md_link_clicked_id(),
+            )
+            .drain(..)
+            .collect()
+        });
+        let now = ctx.input(|i| i.time);
+        for url in clicked {
+            match crate::terminal::links::open_url(&url) {
+                Ok(()) => self.toasts.success("Opening link…", now),
+                Err(err) => self
+                    .toasts
+                    .error(format!("Couldn't open the link — {}", err.message()), now),
+            }
+        }
+    }
+
+    /// Fire the fetches the markdown renderer asked for on the last frame: an embedded
+    /// image is requested once per URL, whichever body or comment referenced it
+    /// (pull-requests.md §11).
+    fn ensure_markdown_images(&mut self, ctx: &egui::Context) {
+        // The forge decides which credentials the fetch may carry, so the queue is
+        // only drained while a review — the only surface that renders bodies — is open.
+        let Some(review) = self.active_review() else {
+            return;
+        };
+        let forge_kind = review.pr.forge_kind;
+        let wanted: Vec<String> = ctx.data_mut(|d| {
+            d.get_temp_mut_or_default::<Vec<String>>(
+                crate::ui::pull_requests_view::md_image_wanted_id(),
+            )
+            .drain(..)
+            .collect()
+        });
+        if wanted.is_empty() {
+            return;
+        }
+        let bitbucket_email = self.prefs.bitbucket_email.clone();
+        for url in wanted {
+            if !self.md_image_requests.insert(url.clone()) {
+                continue;
+            }
+            set_md_image(ctx, &url, crate::ui::pull_requests_view::MdImage::Loading);
+            self.pr_review_runner(ctx).request(
+                crate::pull_requests::runner::PrReviewRequest::Image {
+                    url,
+                    forge_kind,
+                    bitbucket_email: bitbucket_email.clone(),
+                },
+            );
+        }
+    }
+
+    /// Decode a fetched image into a texture the renderer can draw. Decoding is the
+    /// app's job, not the worker's: a `TextureHandle` needs the egui context.
+    fn adopt_pr_image(
+        &mut self,
+        ctx: &egui::Context,
+        url: String,
+        result: Result<Vec<u8>, String>,
+    ) {
+        use crate::ui::pull_requests_view::MdImage;
+        let slot = match result.and_then(|bytes| decode_md_image(&bytes)) {
+            Ok(image) => MdImage::Ready(ctx.load_texture(
+                format!("md-image:{url}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            )),
+            Err(message) => MdImage::Failed(message),
+        };
+        set_md_image(ctx, &url, slot);
+        ctx.request_repaint();
     }
 
     /// Submit the open PR's review (pull-requests.md §11): flatten the draft line
@@ -2246,13 +2355,37 @@ impl HelmApp {
             }
         }
         let now = ctx.input(|i| i.time);
+        use crate::pull_requests::runner::PrPostKind;
         for reply in replies {
+            // A merge can be raised from a *list* row, where no review is open — so it
+            // is settled before the active-review guard below (pull-requests.md §5).
+            if reply.kind == PrPostKind::Merge {
+                match reply.result {
+                    Ok(()) => {
+                        // The PR has left the open set: drop its cached review and
+                        // leave the surface if it was the one on screen.
+                        self.pr_reviews.remove(&reply.key);
+                        if self.pr_active.as_ref() == Some(&reply.key) {
+                            self.pr_active = None;
+                        }
+                        self.toasts.success("Pull request merged", now);
+                        self.refresh_pull_requests(ctx);
+                    }
+                    Err(message) => {
+                        if let Some(review) = self.pr_reviews.get_mut(&reply.key) {
+                            review.posting = false;
+                            review.post_error = Some(message.clone());
+                        }
+                        self.toasts.error(message, now);
+                    }
+                }
+                continue;
+            }
             if self.active_review().map(|r| &r.key) != Some(&reply.key) {
                 continue;
             }
             match reply.result {
                 Ok(()) => {
-                    use crate::pull_requests::runner::PrPostKind;
                     if let Some(review) = self.active_review_mut() {
                         review.posting = false;
                         review.post_error = None;
@@ -2269,6 +2402,8 @@ impl HelmApp {
                         PrPostKind::Reply => "Reply posted",
                         PrPostKind::Conversation => "Comment posted",
                         PrPostKind::Resolve => "Thread updated",
+                        // Settled above, before the active-review guard.
+                        PrPostKind::Merge => "Pull request merged",
                     };
                     self.toasts.success(message, now);
                     self.refresh_pr_detail(ctx);
@@ -2282,6 +2417,34 @@ impl HelmApp {
                 }
             }
         }
+    }
+
+    /// Merge `pr` on its forge (pull-requests.md §5), off-thread on the gated post
+    /// runner. Confirmed by `Modal::MergePr` before it gets here; the outcome toast
+    /// and the list refresh land in `poll_pr_post`.
+    fn request_pr_merge(
+        &mut self,
+        ctx: &egui::Context,
+        pr: crate::pull_requests::model::PullRequest,
+    ) {
+        let key = crate::pull_requests::runner::PrReviewKey {
+            forge_kind: pr.forge_kind,
+            repo_label: pr.repo_label.clone(),
+            number: pr.number,
+        };
+        if let Some(review) = self.pr_reviews.get_mut(&key) {
+            review.posting = true;
+            review.post_error = None;
+        }
+        let bitbucket_email = self.prefs.bitbucket_email.clone();
+        self.pr_post_runner(ctx)
+            .request_merge(crate::pull_requests::runner::PrMergeRequest {
+                key,
+                forge_kind: pr.forge_kind,
+                repo_label: pr.repo_label,
+                number: pr.number,
+                bitbucket_email,
+            });
     }
 
     /// Re-fetch the open PR's detail (after a successful submit) so freshly-posted

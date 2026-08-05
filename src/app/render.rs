@@ -12,10 +12,23 @@ fn pr_review_view<'a>(
     agent: &'a str,
     current_user: Option<&'a str>,
 ) -> crate::ui::pull_requests_view::PrReviewView<'a> {
-    let diff = match (r.base, r.head, r.selected_file.and_then(|i| r.files.get(i))) {
-        (Some(base), Some(head), Some(file)) => r.diffs.get(&(base, head, file.path.clone())),
-        _ => None,
-    };
+    // One slot per changed file, in list order: the Files tab stacks every diff in
+    // one column, so it reads them by index rather than through a single open file.
+    let (diffs, diff_errors): (Vec<Option<&crate::git::diff::FileDiff>>, Vec<Option<&str>>) =
+        match (r.base, r.head) {
+            (Some(base), Some(head)) => r
+                .files
+                .iter()
+                .map(|file| {
+                    let key = (base, head, file.path.clone());
+                    (
+                        r.diffs.get(&key),
+                        r.diff_errors.get(&key).map(String::as_str),
+                    )
+                })
+                .unzip(),
+            _ => (Vec::new(), Vec::new()),
+        };
     let comment_diffs: Vec<&crate::git::diff::FileDiff> = match (r.base, r.head) {
         (Some(base), Some(head)) => r
             .diffs
@@ -41,10 +54,11 @@ fn pr_review_view<'a>(
         selected_file: r.selected_file,
         commits,
         selected_commit: r.selected_commit.as_deref(),
-        diff,
+        diffs,
+        diff_errors,
         comment_diffs,
-        diff_loading: r.diff_loading,
-        diff_error: r.diff_error.as_deref(),
+        scroll_to_file: &mut r.scroll_to_file,
+        file_views: &mut r.file_views,
         diff_view: &mut r.diff_view,
         existing: &r.existing,
         draft: &r.draft,
@@ -965,6 +979,9 @@ impl HelmApp {
             .pr_active
             .clone()
             .and_then(|key| self.pr_reviews.remove(&key));
+        // The review surface runs its own `Esc` cascade (composer → file → list), so the
+        // cockpit only leaves on `Esc` from the browse list.
+        let pr_review_open = pr_review_local.is_some();
         let mut pr_select = None;
         let mut pr_open_url: Option<String> = None;
         let mut pr_checkout = false;
@@ -978,6 +995,9 @@ impl HelmApp {
         let mut pr_review_intents: Vec<crate::review::ReviewIntent> = Vec::new();
         let mut pr_submit_review = false;
         let mut pr_refresh = false;
+        let mut pr_merge: Option<crate::pull_requests::model::PullRequest> = None;
+        // The open PR, for the review header's Merge (the list rows resolve by index).
+        let review_pr = pr_review_local.as_ref().map(|r| r.pr.clone());
         let pr_agent = self.review_agent_command.clone();
         // The composer avatar shows the current user of the open PR's forge (§11).
         let pr_current_user = pr_review_local
@@ -1279,6 +1299,12 @@ impl HelmApp {
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                             pr_refresh = pr_refresh || action.refresh;
+                            if pr_merge.is_none() {
+                                pr_merge =
+                                    action.merge.and_then(|i| pr_list.get(i).cloned()).or_else(
+                                        || action.merge_open.then(|| review_pr.clone()).flatten(),
+                                    );
+                            }
                         }
                         // A loaded working-tree file overlays the central area for
                         // Terminal/Graph only — the Agents/PR cockpits above already won.
@@ -2153,6 +2179,12 @@ impl HelmApp {
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                             pr_refresh = pr_refresh || action.refresh;
+                            if pr_merge.is_none() {
+                                pr_merge =
+                                    action.merge.and_then(|i| pr_list.get(i).cloned()).or_else(
+                                        || action.merge_open.then(|| review_pr.clone()).flatten(),
+                                    );
+                            }
                         } else {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             open_dialog_requested = central_empty_state(ui, &palette, keymap);
@@ -2454,6 +2486,11 @@ impl HelmApp {
         if pr_refresh {
             self.refresh_pull_requests(ctx);
         }
+        // Merging is outward-facing and helm cannot undo it: arm the confirmation
+        // rather than posting straight away (pull-requests.md §5).
+        if let Some(pr) = pr_merge {
+            self.modal = Some(Modal::MergePr(Box::new(pr)));
+        }
         if pr_back {
             // Leave the cockpit's browse list; keep the surface cached so reopening
             // the PR is instant (drafts + loaded diff retained).
@@ -2516,8 +2553,10 @@ impl HelmApp {
             self.central_mode = CentralMode::Terminal;
             ctx.request_repaint();
         }
-        // `Esc` leaves the PR cockpit (no mirrored terminal to compete for the key).
-        if pr_active && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // `Esc` leaves the PR cockpit (no mirrored terminal to compete for the key) —
+        // from the browse list only: inside a review the surface owns the key, and
+        // stepping out of it lands on that list rather than on the terminal.
+        if pr_active && !pr_review_open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.central_mode = CentralMode::Terminal;
             ctx.request_repaint();
         }
@@ -2818,6 +2857,9 @@ impl HelmApp {
                     reset_hard_modal(ui, &palette, branch, short, &mut modal_action)
                 }
                 Modal::AbortOp => abort_op_modal(ui, &palette, &mut modal_action),
+                Modal::MergePr(pr) => {
+                    crate::ui::pull_requests_view::merge_modal(ui, &palette, pr, &mut modal_action)
+                }
                 Modal::ForcePush { branch, remote, .. } => {
                     force_push_modal(ui, &palette, branch, remote, &mut modal_action)
                 }
@@ -2894,6 +2936,12 @@ impl HelmApp {
                             });
                             ctx.request_repaint();
                         }
+                    }
+                    // Merge confirmed (pull-requests.md §5): off-thread on the post
+                    // runner; the success toast and the list refresh land in
+                    // `poll_pr_post`, which also drops the merged PR's review.
+                    Some(Modal::MergePr(pr)) => {
+                        self.request_pr_merge(ctx, *pr);
                     }
                     // Abort confirmed (banner, git.md §10): to the sync runner —
                     // one op at a time, outcome toast + refresh via drain_sync.

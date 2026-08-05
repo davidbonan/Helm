@@ -16,7 +16,7 @@ use crate::pull_requests::model::{
     PullRequest, Review, ReviewVerdict, Reviewer,
 };
 
-const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,labels";
+const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,labels,additions,deletions";
 const DETAIL_FIELDS: &str = "body,comments,commits,statusCheckRollup,createdAt";
 
 /// `gh auth status` — exit 0 ⇒ the GitHub source is usable (pull-requests.md §3).
@@ -274,6 +274,21 @@ pub fn issue_comment_args(repo: &str, number: u64) -> Vec<String> {
 }
 
 /// `gh pr checkout <number>` (the plain-checkout path; PR7 prefers a worktree).
+/// `gh pr merge <n> --merge` (pull-requests.md §5). `--merge` keeps the forge's
+/// plain merge commit — the strategy the app never has to choose for the user — and
+/// `--delete-branch` is deliberately absent: helm may hold a worktree on that branch
+/// (§7), and deleting it out from under one is not a merge's job.
+pub fn merge_args(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "pr".into(),
+        "merge".into(),
+        number.to_string(),
+        "-R".into(),
+        repo.into(),
+        "--merge".into(),
+    ]
+}
+
 pub fn checkout_args(repo: &str, number: u64) -> Vec<String> {
     vec![
         "pr".into(),
@@ -445,6 +460,13 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
         review: map_review_decision(o["reviewDecision"].as_str().unwrap_or_default()),
         reviewers,
         labels,
+        // `gh pr list` returns these as scalars; Bitbucket has no equivalent (model §4).
+        diffstat: Some((
+            o["additions"].as_u64().unwrap_or_default() as u32,
+            o["deletions"].as_u64().unwrap_or_default() as u32,
+        )),
+        // Would cost every comment body of every PR through `--json comments` (model §4).
+        comment_count: None,
     })
 }
 
@@ -900,5 +922,15 @@ mod tests {
         assert!(resolve[5].contains("resolveReviewThread"));
         let unresolve = resolve_thread_args("PRRT_9", false);
         assert!(unresolve[5].contains("unresolveReviewThread"));
+    }
+    #[test]
+    fn merge_args_use_a_merge_commit_and_keep_the_branch() {
+        let args = merge_args("acme/web", 1284);
+        assert_eq!(
+            args,
+            vec!["pr", "merge", "1284", "-R", "acme/web", "--merge"]
+        );
+        // helm may hold a worktree on the source branch (pull-requests.md §7).
+        assert!(!args.iter().any(|a| a == "--delete-branch"));
     }
 }

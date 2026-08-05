@@ -169,6 +169,15 @@ impl DiffViewState {
         self.diverged = None;
     }
 
+    /// Whether some editor of this file is open — the diff owns `Esc` while one is,
+    /// so a column of bands knows not to consume it itself (pull-requests.md §11).
+    pub fn has_open_editor(&self) -> bool {
+        self.inline_edit.is_some()
+            || self.active_comment.is_some()
+            || self.popover_edit.is_some()
+            || self.active_reply.is_some()
+    }
+
     /// The open inline editor, if any (git.md §4) — the app reads it to write the
     /// buffer back to the working tree.
     pub fn inline_edit(&self) -> Option<&InlineEdit> {
@@ -525,7 +534,6 @@ impl DiffViewState {
 /// 16 ms frame intact.
 const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 const LINE_SIZE: f32 = 12.0;
-const HUNK_HEADER_SIZE: f32 = 11.0;
 const LINE_PAD_X: f32 = 8.0;
 /// Breathing room kept after the longest line so it isn't flush against the
 /// right edge once scrolled fully right.
@@ -550,6 +558,13 @@ const FILE_ICON_BOX: f32 = 24.0;
 const FILE_ICON_SIZE: f32 = 14.0;
 const HUNK_BAND_PAD_X: i8 = 8;
 const HUNK_BAND_PAD_Y: i8 = 4;
+/// Air either side of the rule that stands in for a bandless hunk header.
+const HUNK_RULE_GAP: f32 = 7.0;
+/// Band chrome (pull-requests.md §11): the strip's padding and the air around the
+/// rows under it. Kept tight — a file header is a seam, not a section.
+const BAND_PAD_X: i8 = 12;
+const BAND_HEADER_PAD_Y: i8 = 6;
+const BAND_BODY_PAD_Y: i8 = 8;
 const TEXT_DRAG_THRESHOLD: f32 = 2.0;
 const TEXT_SELECTION_ALPHA: u8 = 70;
 /// Above this many working-tree lines a hunk does not open an inline editor
@@ -980,6 +995,37 @@ impl DiffSurface {
     }
 }
 
+/// How the diff draws its own chrome. **Card**: the standalone overlay — own
+/// frame, Close, and a vertical scroll of its own. **Band**: one file of a
+/// caller's continuous column (pull-requests.md §11) — a collapse chevron in
+/// place of Close, and **horizontal** scrolling only, so the column owns the
+/// vertical axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffChrome {
+    Card,
+    Band { collapsed: bool },
+}
+
+impl DiffChrome {
+    fn band(self) -> bool {
+        matches!(self, DiffChrome::Band { .. })
+    }
+}
+
+/// What a rendered diff asks its caller for.
+#[derive(Debug, Default)]
+pub struct DiffOutcome {
+    /// Close requested (Close button or `Esc`) — card chrome only.
+    pub close: bool,
+    /// The band's chevron was clicked: collapse or expand this file.
+    pub toggled: bool,
+    /// Screen rect of the row a `reveal_line` asked for, in a band: the band's own
+    /// scroll area only owns the horizontal axis, and egui lets a scroll target
+    /// reach **no** enclosing area (`scroll_area.rs`: both targets are taken
+    /// whatever the enabled axes), so the column scrolls to it instead.
+    pub reveal: Option<egui::Rect>,
+}
+
 /// Overlay diff view (central zone, design-system §4 card). Renders the file's
 /// `FileDiff`, a Stage/Unstage button per hunk, and a line selection for partial
 /// staging. Returns `true` if the user requested closing (Close button or `Esc`)
@@ -995,6 +1041,53 @@ pub fn diff_view(
     intents: &mut Vec<GitIntent>,
     review: Option<&mut DiffReview<'_>>,
 ) -> bool {
+    diff_render(
+        ui,
+        palette,
+        diff,
+        surface,
+        DiffChrome::Card,
+        state,
+        intents,
+        review,
+    )
+    .close
+}
+
+/// One file of a continuous column (pull-requests.md §11): the same renderer
+/// under band chrome.
+pub fn diff_view_band(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff: &FileDiff,
+    state: &mut DiffViewState,
+    collapsed: bool,
+    review: Option<&mut DiffReview<'_>>,
+) -> DiffOutcome {
+    let mut throwaway = Vec::new();
+    diff_render(
+        ui,
+        palette,
+        diff,
+        DiffSurface::PrReview,
+        DiffChrome::Band { collapsed },
+        state,
+        &mut throwaway,
+        review,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diff_render(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff: &FileDiff,
+    surface: DiffSurface,
+    chrome: DiffChrome,
+    state: &mut DiffViewState,
+    intents: &mut Vec<GitIntent>,
+    review: Option<&mut DiffReview<'_>>,
+) -> DiffOutcome {
     let staged = surface.staged();
     let read_only = surface.read_only();
     let edit_staged = surface.edit_section_staged();
@@ -1028,8 +1121,9 @@ pub fn diff_view(
 
     // `Esc` cascade (keybindings.md §3): the inline editor first — where it **rolls the
     // buffer back** (git.md §4) — then an open note editor (inline or popover), then the
-    // diff itself.
-    let mut close = false;
+    // diff itself. A band never escalates to closing: the column, not one of its files,
+    // owns what `Esc` does once no editor is open.
+    let mut out = DiffOutcome::default();
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         if state.inline_edit.is_some() {
             state.cancel_inline_edit();
@@ -1038,8 +1132,8 @@ pub fn diff_view(
             state.comment_buffer.clear();
             state.popover_edit = None;
             state.popover_buffer.clear();
-        } else {
-            close = true;
+        } else if !chrome.band() {
+            out.close = true;
         }
     }
     // `Cmd+S` is the keyboard's click-elsewhere (keybindings.md §3): it writes the buffer
@@ -1049,8 +1143,9 @@ pub fn diff_view(
     }
     // `Cmd+E` where no caret can open (git.md §4): the click stays silent, but the
     // keyboard ask deserves an answer — the app names the reason and offers the
-    // external editor.
-    if !editable && editor_requested(ui) {
+    // external editor. One answer per key press: a column of bands would raise the
+    // same refusal once per file on screen.
+    if !editable && !chrome.band() && editor_requested(ui) {
         intents.push(GitIntent::EditRefused {
             path: diff.path.clone(),
             reason: EditRefusal::File,
@@ -1062,273 +1157,363 @@ pub fn diff_view(
         }
     }
 
-    let frame = egui::Frame::new()
-        .fill(palette.bg_canvas)
-        .inner_margin(egui::Margin::same(12))
-        .corner_radius(egui::CornerRadius::same(RADIUS_CARD));
+    // A band is **flat**: no card, no outline, no corners. What tells two files apart
+    // is a full-bleed header strip — a filled bar with a hairline over and under it,
+    // running edge to edge. A rounded outlined card around a wall of code reads as a
+    // heavy object; a bar is just a seam.
+    let frame = match chrome {
+        DiffChrome::Card => egui::Frame::new()
+            .fill(palette.bg_canvas)
+            .inner_margin(egui::Margin::same(12))
+            .corner_radius(egui::CornerRadius::same(RADIUS_CARD)),
+        DiffChrome::Band { .. } => egui::Frame::NONE,
+    };
+    let header_frame = match chrome {
+        DiffChrome::Card => egui::Frame::NONE,
+        // `bg_surface` is a hair off `bg_canvas` — on a page of stacked bands that is
+        // not a header, it is a slightly different nothing. The strip takes the
+        // hover step up, the quietest fill that actually reads as a header.
+        DiffChrome::Band { .. } => egui::Frame::new()
+            .fill(palette.bg_surface_hover)
+            .inner_margin(egui::Margin::symmetric(BAND_PAD_X, BAND_HEADER_PAD_Y)),
+    };
 
     frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            let (icon_rect, _) = ui.allocate_exact_size(
-                egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
-                egui::Sense::hover(),
-            );
-            ui.painter()
-                .rect_filled(icon_rect, egui::CornerRadius::same(6), palette.bg_surface);
-            crate::ui::paint_icon(
-                ui.painter(),
-                icon_rect.center(),
-                FILE_ICON_SIZE,
-                lucide_icons::Icon::FileText,
-                palette.text_secondary,
-            );
-            ui.label(
-                egui::RichText::new(&diff.path)
-                    .size(TITLE_SIZE)
-                    .color(palette.text_primary),
-            );
-            let (additions, deletions) = diff_line_stats(diff);
-            if additions + deletions > 0 {
-                ui.label(
-                    egui::RichText::new(format!("+{additions}"))
-                        .size(PILL_SIZE)
-                        .monospace()
-                        .color(palette.git_added),
+        let mut collapsed = false;
+        let header = header_frame.show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (icon_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
+                    egui::Sense::hover(),
                 );
-                ui.label(
-                    egui::RichText::new(format!("−{deletions}"))
-                        .size(PILL_SIZE)
-                        .monospace()
-                        .color(palette.git_deleted),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if close_button(ui, palette) {
-                    close = true;
-                }
-                let n = count(review_comments);
-                if review_available && n > 0 {
-                    let chip = review_chip(ui, palette, n);
-                    egui::Popup::from_toggle_button_response(&chip)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .show(|ui| {
-                            review_popover(
-                                ui,
-                                palette,
-                                review_agent,
-                                review_comments,
-                                state,
-                                &mut review_out,
-                            );
-                        });
-                }
-            });
-        });
-        ui.add_space(8.0);
-
-        if state.is_stale() {
-            ui.label(
-                egui::RichText::new("File changed on disk — selection no longer applies")
-                    .size(LINE_SIZE)
-                    .color(palette.git_modified),
-            );
-            ui.add_space(8.0);
-        }
-
-        divergence_notice(ui, palette, state, intents);
-
-        if diff.binary {
-            match &diff.image {
-                Some(blob) => image_preview(ui, palette, blob, &diff.path, state),
-                None => {
-                    ui.label(
-                        egui::RichText::new("Binary file — no line diff")
-                            .size(LINE_SIZE)
-                            .color(palette.text_muted),
+                // The card gives its icon a tile; a band's strip is already a fill, so
+                // a rounded tile on it is one shape too many.
+                if !chrome.band() {
+                    ui.painter().rect_filled(
+                        icon_rect,
+                        egui::CornerRadius::same(6),
+                        palette.bg_surface,
                     );
                 }
-            }
-            return;
-        }
-        if diff.oversize {
-            ui.label(
-                egui::RichText::new("Large diff — file-level staging only")
-                    .size(LINE_SIZE)
-                    .color(palette.text_muted),
-            );
-            return;
-        }
-        if diff.hunks.is_empty() {
-            ui.label(
-                egui::RichText::new("No changes")
-                    .size(LINE_SIZE)
-                    .color(palette.text_muted),
-            );
-            return;
-        }
-
-        state.ensure_syntax_cache(ui, diff, palette.syntax);
-        let char_w = ui.ctx().fonts_mut(|fonts| {
-            fonts
-                .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')
-                .max(1.0)
-        });
-        let layout = RowLayout::for_diff(diff, char_w);
-        let extensions = context_extensions(diff, &state.extensions);
-        // Width of the widest displayed line: rows are allocated at this width
-        // (not the viewport's) so egui exposes a horizontal scrollbar for lines
-        // longer than the preview.
-        let max_chars = state.content_chars(diff);
-        let content_width =
-            layout.content_left(0.0) + max_chars as f32 * char_w + CONTENT_TRAILING_PAD;
-        let mut extend_requests = Vec::new();
-        egui::ScrollArea::both()
-            // Without a salt the offset is keyed on the position in the Ui tree
-            // alone, so the next file opened here inherits the scroll of the
-            // previous one.
-            .id_salt((surface.scroll_key(), diff.path.as_str()))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let row_w = content_width.max(ui.available_width());
-                let mut text_rows = Vec::new();
-                let mut text_row = 0;
-                for (hunk_idx, hunk) in diff.hunks.iter().enumerate() {
-                    if hunk_header(
-                        ui,
-                        palette,
-                        &hunk.header,
-                        staged,
-                        read_only,
-                        hunk_idx,
-                        state,
-                        can_extend(diff, &state.extensions, &extensions, hunk_idx),
-                        intents,
-                    ) {
-                        extend_requests.push(hunk_idx);
-                    }
-                    ui.add_space(4.0);
-                    let previous_spacing_y = ui.spacing().item_spacing.y;
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    // The edited hunk shows its buffer in place of its rows: the buffer
-                    // holds the working tree's own lines, so the deletions — which have
-                    // no counterpart there — step aside with them (git.md §4).
-                    if let Some(edit) = state
-                        .inline_edit
-                        .as_mut()
-                        .filter(|edit| edit.hunk == hunk_idx)
-                    {
-                        if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
-                            state.leave_inline_edit(edit_staged, intents);
-                        }
-                        ui.spacing_mut().item_spacing.y = previous_spacing_y;
-                        ui.add_space(12.0);
-                        continue;
-                    }
-                    let ext = extensions[hunk_idx].clone();
-                    let caret = caret_offer(editable, diff, hunk, &extensions[hunk_idx]);
-                    for new_no in ext.above {
-                        let action = extension_line(
-                            ui,
-                            ExtensionRow {
-                                diff,
-                                old_no: above_old_lineno(hunk, new_no),
-                                new_no,
-                                staged,
-                                read_only,
-                                caret,
-                                text_row,
-                                char_w,
-                                layout,
-                                row_w,
-                            },
-                            palette,
-                            state,
-                            &mut text_rows,
-                        );
-                        text_row += 1;
-                        match action {
-                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
-                                state,
-                                diff,
-                                &extensions[hunk_idx],
-                                hunk_idx,
-                                Some(new_no),
-                                col,
-                                edit_staged,
-                                intents,
-                            ),
-                            other => apply_line_action(state, diff, intents, other),
-                        }
-                    }
-                    // New-side line the caret lands on for a click on a row that has
-                    // none of its own: a deletion is gone from the buffer, so the caret
-                    // goes to the working-tree line just above it.
-                    let mut last_new = None;
-                    for (line_idx, line) in hunk.lines.iter().enumerate() {
-                        let text = display_text(&line.content);
-                        if state.reveal_line.is_some() && line.new_lineno == state.reveal_line {
-                            ui.scroll_to_cursor(Some(egui::Align::Center));
-                            state.reveal_line = None;
-                        }
-                        let action = {
-                            let row = RowData {
-                                origin: line.origin,
-                                text,
-                                old_lineno: line.old_lineno,
-                                new_lineno: line.new_lineno,
-                            };
-                            let line_ctx = DiffLineCtx {
-                                palette,
-                                staged,
-                                read_only,
-                                review: review_available,
-                                forge: review_forge,
-                                selected: state.selected(hunk_idx, line_idx),
-                                caret,
-                                highlighted: state.syntax_line(hunk_idx, line_idx),
-                                text_range: state.text_range_for_row(text_row, text),
-                                text_row,
-                                char_w,
-                                layout,
-                                row_w,
-                            };
-                            diff_line(ui, &row, hunk_idx, line_idx, &line_ctx, &mut text_rows)
-                        };
-                        text_row += 1;
-                        match action {
-                            Some(DiffLineAction::OpenComment { pool, old, new }) => {
-                                let store = match pool {
-                                    ReviewPool::Forge => review_forge_store,
-                                    ReviewPool::Agent => review_comments,
-                                };
-                                open_inline_editor(state, pool, store, &diff.path, old, new);
+                crate::ui::paint_icon(
+                    ui.painter(),
+                    icon_rect.center(),
+                    FILE_ICON_SIZE,
+                    lucide_icons::Icon::FileText,
+                    palette.text_secondary,
+                );
+                ui.label(
+                    egui::RichText::new(&diff.path)
+                        .size(TITLE_SIZE)
+                        .color(palette.text_primary),
+                );
+                let (additions, deletions) = diff_line_stats(diff);
+                if additions + deletions > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("+{additions}"))
+                            .size(PILL_SIZE)
+                            .monospace()
+                            .color(palette.git_added),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("−{deletions}"))
+                            .size(PILL_SIZE)
+                            .monospace()
+                            .color(palette.git_deleted),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match chrome {
+                        DiffChrome::Card => {
+                            if close_button(ui, palette) {
+                                out.close = true;
                             }
-                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
-                                state,
-                                diff,
-                                &extensions[hunk_idx],
-                                hunk_idx,
-                                line.new_lineno.or(last_new),
-                                col,
-                                edit_staged,
-                                intents,
-                            ),
-                            other => apply_line_action(state, diff, intents, other),
                         }
-                        last_new = line.new_lineno.or(last_new);
-                        existing_block(
+                        DiffChrome::Band { collapsed: folded } => {
+                            collapsed = folded;
+                            if collapse_chevron(ui, palette, folded) {
+                                out.toggled = true;
+                            }
+                        }
+                    }
+                    let n = count(review_comments);
+                    if review_available && n > 0 {
+                        let chip = review_chip(ui, palette, n);
+                        egui::Popup::from_toggle_button_response(&chip)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                review_popover(
+                                    ui,
+                                    palette,
+                                    review_agent,
+                                    review_comments,
+                                    state,
+                                    &mut review_out,
+                                );
+                            });
+                    }
+                });
+            });
+        });
+        // The strip is closed top and bottom by a hairline: on a page of code the fill
+        // alone is not a boundary, and two rules cost nothing where an outline would
+        // have boxed the whole file in.
+        if chrome.band() {
+            let rule = egui::Stroke::new(1.0_f32, palette.border_subtle);
+            let x = header.response.rect.x_range();
+            ui.painter().hline(x, header.response.rect.top(), rule);
+            ui.painter().hline(x, header.response.rect.bottom(), rule);
+        }
+        // A folded band is its header and nothing else — the rows, and the syntax
+        // highlighting they would ask for, are never built.
+        if collapsed {
+            return;
+        }
+        let body_frame = match chrome {
+            DiffChrome::Card => egui::Frame::NONE.inner_margin(egui::Margin {
+                top: 8,
+                ..egui::Margin::ZERO
+            }),
+            DiffChrome::Band { .. } => egui::Frame::NONE.inner_margin(egui::Margin {
+                left: BAND_PAD_X,
+                right: BAND_PAD_X,
+                top: BAND_BODY_PAD_Y,
+                bottom: BAND_BODY_PAD_Y,
+            }),
+        };
+        body_frame.show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+
+            if state.is_stale() {
+                ui.label(
+                    egui::RichText::new("File changed on disk — selection no longer applies")
+                        .size(LINE_SIZE)
+                        .color(palette.git_modified),
+                );
+                ui.add_space(8.0);
+            }
+
+            divergence_notice(ui, palette, state, intents);
+
+            if diff.binary {
+                match &diff.image {
+                    Some(blob) => image_preview(ui, palette, blob, &diff.path, state),
+                    None => {
+                        ui.label(
+                            egui::RichText::new("Binary file — no line diff")
+                                .size(LINE_SIZE)
+                                .color(palette.text_muted),
+                        );
+                    }
+                }
+                return;
+            }
+            if diff.oversize {
+                ui.label(
+                    egui::RichText::new("Large diff — file-level staging only")
+                        .size(LINE_SIZE)
+                        .color(palette.text_muted),
+                );
+                return;
+            }
+            if diff.hunks.is_empty() {
+                ui.label(
+                    egui::RichText::new("No changes")
+                        .size(LINE_SIZE)
+                        .color(palette.text_muted),
+                );
+                return;
+            }
+
+            state.ensure_syntax_cache(ui, diff, palette.syntax);
+            let char_w = ui.ctx().fonts_mut(|fonts| {
+                fonts
+                    .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')
+                    .max(1.0)
+            });
+            let layout = RowLayout::for_diff(diff, char_w);
+            let extensions = context_extensions(diff, &state.extensions);
+            // Width of the widest displayed line: rows are allocated at this width
+            // (not the viewport's) so egui exposes a horizontal scrollbar for lines
+            // longer than the preview.
+            let max_chars = state.content_chars(diff);
+            let content_width =
+                layout.content_left(0.0) + max_chars as f32 * char_w + CONTENT_TRAILING_PAD;
+            let mut extend_requests = Vec::new();
+            let mut reveal = None;
+            // A band scrolls **horizontally only**: the column it stacks in owns the
+            // vertical axis, and a vertical scroll of its own would trap the rows in a
+            // fixed-height box.
+            let axes = if chrome.band() {
+                [true, false]
+            } else {
+                [true, true]
+            };
+            egui::ScrollArea::new(axes)
+                .auto_shrink([false, !axes[1]])
+                // Without a salt the offset is keyed on the position in the Ui tree
+                // alone, so the next file opened here inherits the scroll of the
+                // previous one.
+                .id_salt((surface.scroll_key(), diff.path.as_str()))
+                .show(ui, |ui| {
+                    let row_w = content_width.max(ui.available_width());
+                    let mut text_rows = Vec::new();
+                    let mut text_row = 0;
+                    for (hunk_idx, hunk) in diff.hunks.iter().enumerate() {
+                        if hunk_header(
                             ui,
                             palette,
-                            &diff.path,
-                            line.old_lineno,
-                            line.new_lineno,
-                            review_existing,
-                            review_agent,
+                            staged,
+                            read_only,
+                            hunk_idx,
                             state,
-                            &mut review_out,
-                            0.0,
-                        );
-                        if review_forge {
+                            can_extend(diff, &state.extensions, &extensions, hunk_idx),
+                            intents,
+                        ) {
+                            extend_requests.push(hunk_idx);
+                        }
+                        ui.add_space(4.0);
+                        let previous_spacing_y = ui.spacing().item_spacing.y;
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        // The edited hunk shows its buffer in place of its rows: the buffer
+                        // holds the working tree's own lines, so the deletions — which have
+                        // no counterpart there — step aside with them (git.md §4).
+                        if let Some(edit) = state
+                            .inline_edit
+                            .as_mut()
+                            .filter(|edit| edit.hunk == hunk_idx)
+                        {
+                            if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
+                                state.leave_inline_edit(edit_staged, intents);
+                            }
+                            ui.spacing_mut().item_spacing.y = previous_spacing_y;
+                            ui.add_space(12.0);
+                            continue;
+                        }
+                        let ext = extensions[hunk_idx].clone();
+                        let caret = caret_offer(editable, diff, hunk, &extensions[hunk_idx]);
+                        for new_no in ext.above {
+                            let action = extension_line(
+                                ui,
+                                ExtensionRow {
+                                    diff,
+                                    old_no: above_old_lineno(hunk, new_no),
+                                    new_no,
+                                    staged,
+                                    read_only,
+                                    caret,
+                                    text_row,
+                                    char_w,
+                                    layout,
+                                    row_w,
+                                },
+                                palette,
+                                state,
+                                &mut text_rows,
+                            );
+                            text_row += 1;
+                            match action {
+                                Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                    state,
+                                    diff,
+                                    &extensions[hunk_idx],
+                                    hunk_idx,
+                                    Some(new_no),
+                                    col,
+                                    edit_staged,
+                                    intents,
+                                ),
+                                other => apply_line_action(state, diff, intents, other),
+                            }
+                        }
+                        // New-side line the caret lands on for a click on a row that has
+                        // none of its own: a deletion is gone from the buffer, so the caret
+                        // goes to the working-tree line just above it.
+                        let mut last_new = None;
+                        for (line_idx, line) in hunk.lines.iter().enumerate() {
+                            let text = display_text(&line.content);
+                            if state.reveal_line.is_some() && line.new_lineno == state.reveal_line {
+                                if chrome.band() {
+                                    reveal = Some(ui.cursor().min);
+                                } else {
+                                    ui.scroll_to_cursor(Some(egui::Align::Center));
+                                }
+                                state.reveal_line = None;
+                            }
+                            let action = {
+                                let row = RowData {
+                                    origin: line.origin,
+                                    text,
+                                    old_lineno: line.old_lineno,
+                                    new_lineno: line.new_lineno,
+                                };
+                                let line_ctx = DiffLineCtx {
+                                    palette,
+                                    staged,
+                                    read_only,
+                                    review: review_available,
+                                    forge: review_forge,
+                                    selected: state.selected(hunk_idx, line_idx),
+                                    caret,
+                                    highlighted: state.syntax_line(hunk_idx, line_idx),
+                                    text_range: state.text_range_for_row(text_row, text),
+                                    text_row,
+                                    char_w,
+                                    layout,
+                                    row_w,
+                                };
+                                diff_line(ui, &row, hunk_idx, line_idx, &line_ctx, &mut text_rows)
+                            };
+                            text_row += 1;
+                            match action {
+                                Some(DiffLineAction::OpenComment { pool, old, new }) => {
+                                    let store = match pool {
+                                        ReviewPool::Forge => review_forge_store,
+                                        ReviewPool::Agent => review_comments,
+                                    };
+                                    open_inline_editor(state, pool, store, &diff.path, old, new);
+                                }
+                                Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                    state,
+                                    diff,
+                                    &extensions[hunk_idx],
+                                    hunk_idx,
+                                    line.new_lineno.or(last_new),
+                                    col,
+                                    edit_staged,
+                                    intents,
+                                ),
+                                other => apply_line_action(state, diff, intents, other),
+                            }
+                            last_new = line.new_lineno.or(last_new);
+                            existing_block(
+                                ui,
+                                palette,
+                                &diff.path,
+                                line.old_lineno,
+                                line.new_lineno,
+                                review_existing,
+                                review_agent,
+                                state,
+                                &mut review_out,
+                                0.0,
+                            );
+                            if review_forge {
+                                comment_block(
+                                    ui,
+                                    palette,
+                                    &diff.path,
+                                    line.old_lineno,
+                                    line.new_lineno,
+                                    text,
+                                    ReviewPool::Forge,
+                                    review_forge_store,
+                                    state,
+                                    &mut review_out,
+                                    0.0,
+                                );
+                            }
                             comment_block(
                                 ui,
                                 palette,
@@ -1336,76 +1521,122 @@ pub fn diff_view(
                                 line.old_lineno,
                                 line.new_lineno,
                                 text,
-                                ReviewPool::Forge,
-                                review_forge_store,
+                                ReviewPool::Agent,
+                                review_comments,
                                 state,
                                 &mut review_out,
                                 0.0,
                             );
                         }
-                        comment_block(
-                            ui,
-                            palette,
-                            &diff.path,
-                            line.old_lineno,
-                            line.new_lineno,
-                            text,
-                            ReviewPool::Agent,
-                            review_comments,
-                            state,
-                            &mut review_out,
-                            0.0,
-                        );
-                    }
-                    for new_no in ext.below {
-                        let action = extension_line(
-                            ui,
-                            ExtensionRow {
-                                diff,
-                                old_no: below_old_lineno(hunk, new_no),
-                                new_no,
-                                staged,
-                                read_only,
-                                caret,
-                                text_row,
-                                char_w,
-                                layout,
-                                row_w,
-                            },
-                            palette,
-                            state,
-                            &mut text_rows,
-                        );
-                        text_row += 1;
-                        match action {
-                            Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                        for new_no in ext.below {
+                            let action = extension_line(
+                                ui,
+                                ExtensionRow {
+                                    diff,
+                                    old_no: below_old_lineno(hunk, new_no),
+                                    new_no,
+                                    staged,
+                                    read_only,
+                                    caret,
+                                    text_row,
+                                    char_w,
+                                    layout,
+                                    row_w,
+                                },
+                                palette,
                                 state,
-                                diff,
-                                &extensions[hunk_idx],
-                                hunk_idx,
-                                Some(new_no),
-                                col,
-                                edit_staged,
-                                intents,
-                            ),
-                            other => apply_line_action(state, diff, intents, other),
+                                &mut text_rows,
+                            );
+                            text_row += 1;
+                            match action {
+                                Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
+                                    state,
+                                    diff,
+                                    &extensions[hunk_idx],
+                                    hunk_idx,
+                                    Some(new_no),
+                                    col,
+                                    edit_staged,
+                                    intents,
+                                ),
+                                other => apply_line_action(state, diff, intents, other),
+                            }
                         }
+                        ui.spacing_mut().item_spacing.y = previous_spacing_y;
+                        ui.add_space(12.0);
                     }
-                    ui.spacing_mut().item_spacing.y = previous_spacing_y;
-                    ui.add_space(12.0);
-                }
-                update_text_selection(ui, state, &text_rows);
-            });
-        for hunk in extend_requests {
-            state.extend(hunk);
-            ui.ctx().request_repaint();
-        }
+                    update_text_selection(ui, state, &text_rows);
+                });
+            out.reveal =
+                reveal.map(|pos| egui::Rect::from_min_size(pos, egui::vec2(1.0, LINE_HEIGHT)));
+            for hunk in extend_requests {
+                state.extend(hunk);
+                ui.ctx().request_repaint();
+            }
+        });
     });
 
     if let Some(r) = review {
         r.intents.append(&mut review_out);
     }
-    close
+    out
+}
+
+/// The hairline that separates two hunks (git.md §4).
+fn hunk_rule(ui: &mut egui::Ui, palette: &Palette) {
+    ui.painter().hline(
+        ui.available_rect_before_wrap().x_range(),
+        ui.cursor().top(),
+        egui::Stroke::new(1.0_f32, with_alpha(palette.border_subtle, 140)),
+    );
+}
+
+/// **Extend context**, as a quiet inline control rather than an outlined pill: it
+/// sits over every hunk of every diff, and a bordered button there is a row of
+/// furniture between two rows of code (git.md §4).
+fn extend_link(ui: &mut egui::Ui, palette: &Palette) -> bool {
+    let font = egui::FontId::proportional(PILL_SIZE);
+    let galley = ui.painter().layout_no_wrap(
+        "Extend context".to_owned(),
+        font,
+        egui::Color32::PLACEHOLDER,
+    );
+    // Wider and taller than the text it draws: a 12pt label is a 12pt hit area
+    // otherwise, and this one is clicked repeatedly while reading.
+    let size = galley.size() + egui::vec2(12.0, 12.0);
+    let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
+    let color = if hovered {
+        palette.accent
+    } else {
+        palette.text_muted
+    };
+    let pos = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(pos, galley, color);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Extend context")
+    });
+    response.clicked()
+}
+
+/// The band's fold control: a chevron pointing down when the diff is open, right
+/// when it is folded away (pull-requests.md §11).
+fn collapse_chevron(ui: &mut egui::Ui, palette: &Palette, collapsed: bool) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(PILL_HEIGHT, PILL_HEIGHT), egui::Sense::click());
+    let icon = if collapsed {
+        lucide_icons::Icon::ChevronRight
+    } else {
+        lucide_icons::Icon::ChevronDown
+    };
+    let color = if response.hovered() {
+        palette.text_primary
+    } else {
+        palette.text_secondary
+    };
+    crate::ui::paint_icon(ui.painter(), rect.center(), 16.0, icon, color);
+    let label = if collapsed { "Expand" } else { "Collapse" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.on_hover_text(label).clicked()
 }
 
 /// Stored note anchored at the `(old, new)` row of `path`, if any. Matches the full
@@ -1585,6 +1816,19 @@ pub(crate) enum ReplyEdit {
     Cancel,
 }
 
+/// Geometry of the reply editor (pull-requests.md §11): **one framed object** — a padded
+/// field over a hairline and an action bar — the same shape as the conversation composer.
+/// The radius is deliberately below the cards it nests in (10 there, 6 here): a nested
+/// surface wearing its parent's radius is what makes an interface read as "unstyled".
+const EDITOR_RADIUS: u8 = 6;
+const EDITOR_PAD_X: f32 = 12.0;
+const EDITOR_PAD_Y: f32 = 10.0;
+const EDITOR_TEXT_SIZE: f32 = 13.5;
+const EDITOR_HINT_SIZE: f32 = 12.0;
+const EDITOR_BAR_HEIGHT: f32 = 40.0;
+const EDITOR_BUTTON_SIZE: f32 = 12.0;
+const EDITOR_BUTTON_HEIGHT: f32 = 28.0;
+
 /// The hint and button captions for a `reply_editor`, so the same field reads as a
 /// reply or a new comment depending on where it is opened (pull-requests.md §11).
 pub(crate) struct EditorLabels {
@@ -1630,62 +1874,138 @@ pub(crate) fn reply_editor(
         });
         submit
     });
-    let response = ui
-        .scope(|ui| {
-            let radius = egui::CornerRadius::same(RADIUS_BUTTON);
-            let w = &mut ui.visuals_mut().widgets;
-            w.inactive.corner_radius = radius;
-            w.hovered.corner_radius = radius;
-            w.active.corner_radius = radius;
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
-            ui.add(
-                egui::TextEdit::multiline(buffer)
-                    .desired_rows(2)
-                    .desired_width(width)
-                    .hint_text(labels.hint),
-            )
+    // `Esc` closes the field and stops there — the key is consumed so the surface's own
+    // cascade (drop the file, leave the review) never fires on the same press: an open
+    // composer is what the user is aiming at (pull-requests.md §11).
+    let cancel_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let mut edit = if submit_key {
+        ReplyEdit::Send
+    } else if cancel_key {
+        ReplyEdit::Cancel
+    } else {
+        ReplyEdit::Idle
+    };
+    // The focus ring is read *before* the field is added, so the frame around it can
+    // carry the ring — egui's own widget stroke sits inside the frame and is invisible
+    // once the field is frameless.
+    let field_id = ui.id().with("reply_editor_field");
+    let ring = if ui.memory(|m| m.has_focus(field_id)) {
+        egui::Stroke::new(1.5_f32, palette.accent)
+    } else {
+        egui::Stroke::new(1.0_f32, palette.border_input)
+    };
+    let response = egui::Frame::new()
+        .fill(palette.bg_surface)
+        .stroke(ring)
+        .corner_radius(egui::CornerRadius::same(EDITOR_RADIUS))
+        .show(ui, |ui| {
+            // The callers place the editor inside horizontal layouts too, where the field
+            // and its action bar would sit side by side: stack them explicitly.
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
+                let response = ui.add(
+                    egui::TextEdit::multiline(buffer)
+                        .id(field_id)
+                        // `TextEdit::margin` is ignored once a custom frame is given
+                        // (egui builds `Frame::new().inner_margin(margin)` only when it
+                        // owns the frame), so the padding rides on the frame itself.
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+                            EDITOR_PAD_X as i8,
+                            EDITOR_PAD_Y as i8,
+                        )))
+                        .desired_rows(2)
+                        .desired_width(ui.available_width())
+                        .font(egui::FontId::proportional(EDITOR_TEXT_SIZE))
+                        .hint_text(labels.hint),
+                );
+                editor_hairline(ui, palette);
+                // Pin the bar to its own height: a bare `right_to_left` layout inherits the
+                // parent's full remaining height and would center the buttons far below the
+                // field when the editor sits high in a tall scroll area (the center card),
+                // pulling them out of clicking range.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), EDITOR_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(EDITOR_PAD_X);
+                        ui.label(
+                            egui::RichText::new("Enter to send")
+                                .size(EDITOR_HINT_SIZE)
+                                .color(palette.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if bar_button(ui, palette, labels.send, true, !buffer.trim().is_empty())
+                            {
+                                edit = ReplyEdit::Send;
+                            }
+                            if bar_button(ui, palette, labels.cancel, false, true) {
+                                edit = ReplyEdit::Cancel;
+                            }
+                        });
+                    },
+                );
+                response
+            })
+            .inner
         })
         .inner;
     if *focus {
         response.request_focus();
         *focus = false;
     }
-    let mut edit = if submit_key {
-        ReplyEdit::Send
-    } else {
-        ReplyEdit::Idle
-    };
-    ui.add_space(4.0);
-    // Pin the footer to its own line height: a bare `right_to_left` layout inherits
-    // the parent's full remaining height and would vertically center the buttons far
-    // below the field when the editor sits high in a tall scroll area (the center
-    // inline card), pulling them out of clicking range.
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), LINE_HEIGHT),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            if icon_button(
-                ui,
-                palette,
-                lucide_icons::Icon::Check,
-                palette.accent,
-                labels.send,
-            ) {
-                edit = ReplyEdit::Send;
-            }
-            ui.add_space(2.0);
-            if icon_button(
-                ui,
-                palette,
-                lucide_icons::Icon::X,
-                palette.text_muted,
-                labels.cancel,
-            ) {
-                edit = ReplyEdit::Cancel;
-            }
-        },
-    );
     edit
+}
+
+/// A full-strength 1px rule between an editor's field and its action bar. The list's
+/// `row_separator` is alpha'd down for dense rows and disappears inside a framed input.
+fn editor_hairline(ui: &mut egui::Ui, palette: &Palette) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+}
+
+/// One button of an editor's action bar: `filled` paints the accent primary (greyed while
+/// `enabled` is false, since an empty reply has nothing to send), otherwise a quiet ghost.
+/// Sized to the app's dense-desktop hit area rather than to its glyph.
+fn bar_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    label: &str,
+    filled: bool,
+    enabled: bool,
+) -> bool {
+    let label = label.to_owned();
+    let font = egui::FontId::new(EDITOR_BUTTON_SIZE, crate::theme::medium_family(ui.ctx()));
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
+    let size = egui::vec2(galley.size().x + 24.0, EDITOR_BUTTON_HEIGHT);
+    let (rect, response, hovered) = crate::ui::clickable(ui, size, enabled);
+    let (fill, ink) = match (filled, enabled, hovered) {
+        (true, false, _) => (palette.bg_surface_hover, palette.state_disabled),
+        (true, _, true) => (palette.accent_hover, palette.lane_node_text),
+        (true, _, false) => (palette.accent, palette.lane_node_text),
+        (false, _, true) => (palette.bg_surface_hover, palette.text_primary),
+        (false, _, false) => (egui::Color32::TRANSPARENT, palette.text_secondary),
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+    }
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, ink);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.clone())
+    });
+    response.clicked()
 }
 
 /// Either the open inline editor (when this line is active) or the saved note as
@@ -2267,10 +2587,19 @@ fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
     )
 }
 
-/// A pill button: a leading glyph and `label` in a rounded rect, neutral at rest
-/// (bg.surface + subtle border, secondary ink) and washed to `hover_accent` on
-/// hover. `radius` picks stadium (`RADIUS_PILL`) vs button corners. Returns `true`
-/// on click.
+/// Metrics of the thread pills (Reply / Resolve / Ask): the **outlined** button the
+/// app already uses for its secondary actions — the review header's *Finish review* and
+/// *Checkout* wear the same shape — at the size the design canvas draws them.
+const PILL_LABEL_SIZE: f32 = 12.0;
+const PILL_ICON_SIZE: f32 = 14.0;
+const PILL_HEIGHT: f32 = 28.0;
+const PILL_PAD_X: f32 = 10.0;
+
+/// A pill button: a leading glyph and `label` in a rounded rect, **outlined** at rest
+/// (no fill, `border.input` stroke, primary ink) and washed to `hover_accent` on hover.
+/// The rest state carries no fill on purpose: these pills sit on cards *and* on raised
+/// blocks, and a `bg.surface` fill disappeared against the latter. `radius` picks
+/// stadium (`RADIUS_PILL`) vs button corners. Returns `true` on click.
 fn pill_button(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -2280,34 +2609,42 @@ fn pill_button(
     radius: u8,
 ) -> bool {
     let label = label.to_owned();
-    let font = egui::FontId::proportional(PILL_SIZE);
+    let font = egui::FontId::new(PILL_LABEL_SIZE, crate::theme::medium_family(ui.ctx()));
     let galley =
         ui.painter()
             .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
-    let icon_w = LINE_SIZE;
-    let size = egui::vec2(icon_w + 6.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
+    let size = egui::vec2(
+        PILL_ICON_SIZE + 6.0 + galley.size().x + PILL_PAD_X * 2.0,
+        PILL_HEIGHT,
+    );
     let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
     let (fill, content) = if hovered {
         (with_alpha(hover_accent, 36), hover_accent)
     } else {
-        (palette.bg_surface, palette.text_secondary)
+        (egui::Color32::TRANSPARENT, palette.text_primary)
     };
     ui.painter().rect(
         rect,
         egui::CornerRadius::same(radius),
         fill,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::Stroke::new(1.0_f32, palette.border_input),
         egui::StrokeKind::Inside,
     );
     crate::ui::paint_icon(
         ui.painter(),
-        egui::pos2(rect.left() + 8.0 + icon_w / 2.0, rect.center().y),
-        icon_w,
+        egui::pos2(
+            rect.left() + PILL_PAD_X + PILL_ICON_SIZE / 2.0,
+            rect.center().y,
+        ),
+        PILL_ICON_SIZE,
         icon,
         content,
     );
     ui.painter().text(
-        egui::pos2(rect.left() + 8.0 + icon_w + 6.0, rect.center().y),
+        egui::pos2(
+            rect.left() + PILL_PAD_X + PILL_ICON_SIZE + 6.0,
+            rect.center().y,
+        ),
         egui::Align2::LEFT_CENTER,
         label.clone(),
         font,
@@ -2935,7 +3272,6 @@ fn editor_galley(
 fn hunk_header(
     ui: &mut egui::Ui,
     palette: &Palette,
-    header: &str,
     staged: bool,
     read_only: bool,
     hunk_idx: usize,
@@ -2943,20 +3279,38 @@ fn hunk_header(
     can_extend: bool,
     intents: &mut Vec<GitIntent>,
 ) -> bool {
+    // What separates two hunks is a **hairline**, not a filled band: the
+    // `@@ -19,7 +20,6 @@` line restated numbers every row's gutter already carries,
+    // and once it is gone a band is a box drawn around a couple of controls.
+    let seam = hunk_idx > 0;
+    if read_only && !can_extend {
+        // The first hunk has the file header right above it; a rule there would be the
+        // second line in a row.
+        if !seam {
+            return false;
+        }
+        ui.add_space(HUNK_RULE_GAP);
+        hunk_rule(ui, palette);
+        ui.add_space(HUNK_RULE_GAP);
+        return false;
+    }
+    if seam {
+        ui.add_space(HUNK_RULE_GAP);
+        hunk_rule(ui, palette);
+    }
     let mut extend = false;
-    egui::Frame::new()
-        .fill(palette.bg_surface)
-        .corner_radius(egui::CornerRadius::same(6))
+    egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(HUNK_BAND_PAD_X, HUNK_BAND_PAD_Y))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(header.trim_end())
-                        .size(HUNK_HEADER_SIZE)
-                        .monospace()
-                        .color(palette.text_muted),
-                );
+                // Extend context reads **left**, where the hunk's own rows begin: it
+                // widens what is on screen rather than acting on the change, unlike the
+                // staging pills it used to sit beside. Quiet, too — it is offered on
+                // every hunk of every diff, so it must not read as loudly as staging.
+                if can_extend && extend_link(ui, palette) {
+                    extend = true;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !read_only {
                         let selected = state.selected_lines(hunk_idx);
@@ -3000,11 +3354,6 @@ fn hunk_header(
                         {
                             intents.push(GitIntent::DiscardHunk(hunk_idx));
                         }
-                    }
-                    if can_extend
-                        && intent_pill(ui, palette, "Extend context", palette.accent, true)
-                    {
-                        extend = true;
                     }
                 });
             });

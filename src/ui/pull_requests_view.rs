@@ -15,18 +15,17 @@ use crate::git::commit_detail::CommitFile;
 use crate::git::diff::{FileDiff, LineOrigin};
 use crate::git::file_tree::{self, TreeRow};
 use crate::pull_requests::model::{
-    hunk_snippet, Checks, PrComment, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review,
+    hunk_snippet, ActionGroup, Checks, PrComment, PrCommit, PrDetail, PrState, PullRequest, Review,
     ReviewVerdict, SnippetKind, SnippetLine, StackRow,
 };
 use crate::review::{FileComments, ForgeThreads, ReviewIntent};
-use crate::theme::{Palette, RADIUS_BUTTON, SECTION_TITLE_SIZE};
+use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
 use crate::ui::detail::{author_avatar, author_avatar_small, code_snippet, count_chip};
 use crate::ui::diff_view::{
-    reply_editor, reply_pill, resolve_pill, ConversationEdit, DiffReview, DiffSurface,
-    DiffViewState, ReplyEdit, REPLY_LABELS,
+    reply_editor, reply_pill, resolve_pill, ConversationEdit, DiffReview, DiffViewState, ReplyEdit,
+    REPLY_LABELS,
 };
 use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
-use crate::ui::git_panel::ratio_bar;
 use crate::ui::spinner::Spinner;
 use crate::ui::{clickable, paint_icon, with_alpha, SECTION_TOP_MARGIN, TITLEBAR_HEIGHT};
 
@@ -38,8 +37,8 @@ const DIFF_MIN_WIDTH: f32 = 420.0;
 /// Markdown reading tweaks for the in-house renderer (`markdown`): the body reads
 /// smaller than the egui_commonmark default but with looser line-height and a touch
 /// of letter-spacing, so long prose blocks don't read as a dense wall.
-const MD_TEXT_SIZE: f32 = 13.5;
-const MD_CODE_SIZE: f32 = 12.5;
+const MD_TEXT_SIZE: f32 = 14.0;
+const MD_CODE_SIZE: f32 = 13.0;
 const MD_LINE_HEIGHT: f32 = MD_TEXT_SIZE * 1.55;
 const MD_LETTER_SPACING: f32 = 0.4;
 const MD_PARAGRAPH_GAP: f32 = 7.0;
@@ -47,21 +46,53 @@ const MD_LIST_INDENT: f32 = 18.0;
 const MD_QUOTE_INDENT: f32 = 12.0;
 const DETAIL_HEADER_TITLE_SIZE: f32 = 16.0;
 const DETAIL_HEADER_SUBTITLE_SIZE: f32 = 12.5;
-const DETAIL_HEADER_BACK_SIZE: f32 = 38.0;
-const DETAIL_HEADER_WIDE_HEIGHT: f32 = 58.0;
-const DETAIL_HEADER_STACKED_HEIGHT: f32 = 96.0;
 const DETAIL_ACTION_HEIGHT: f32 = 30.0;
-const DETAIL_ACTION_OPEN_WIDTH: f32 = 152.0;
-const DETAIL_ACTION_CHECKOUT_WIDTH: f32 = 112.0;
-const DETAIL_HEADER_GAP: f32 = 8.0;
 
-const ROW_HEIGHT: f32 = 60.0;
+/// The review surface's full-width header (pull-requests.md §11): identity + actions,
+/// the branch/author line, then the tab bar.
+const REVIEW_HEADER_ROW1: f32 = 44.0;
+const REVIEW_HEADER_ROW2: f32 = 28.0;
+const REVIEW_HEADER_ROW3: f32 = 36.0;
+const REVIEW_HEADER_HEIGHT: f32 = REVIEW_HEADER_ROW1 + REVIEW_HEADER_ROW2 + REVIEW_HEADER_ROW3;
+const MERGE_HEADER_W: f32 = 98.0;
+const FINISH_BTN_W: f32 = 116.0;
+const VERDICT_ICON_W: f32 = 34.0;
+const SUB_AVATAR: f32 = 18.0;
+/// Width the Finish-review popover asks for, so the summary field has room.
+const COMPOSER_POPOVER_W: f32 = 300.0;
+
+/// Files-tab geometry (pull-requests.md §11): the toolbar strip over the diff and
+/// the widths of its two controls.
+const DIFF_TOOLBAR_HEIGHT: f32 = 42.0;
+const COMMIT_SCOPE_W: f32 = 240.0;
+const THREAD_NAV_W: f32 = 168.0;
+
+const ROW_HEIGHT: f32 = 56.0;
 const GROUP_HEADER_HEIGHT: f32 = 34.0;
 const PAD_X: f32 = 16.0;
 /// Per-level inset of a stacked-PR row, wide enough to seat the `├`/`└` elbow.
 const STACK_INDENT: f32 = 20.0;
 const PANEL_PAD_X: f32 = 18.0;
 const PANEL_PAD_Y: f32 = 14.0;
+/// Reading measure of the Conversation tab's **prose** (pull-requests.md §11). The
+/// cards themselves span the area's full width — only the text inside them wraps at
+/// this measure, so a wide window leaves breathing room *inside* a surface rather than
+/// a hole between two floating blocks.
+const CONV_PROSE_MEASURE: f32 = 900.0;
+/// Bound of the Conversation tab's **cards** (§11) — a step and a half past the prose
+/// measure, so a surface never dwarfs the text it holds.
+const CONV_COLUMN_MAX: f32 = 1200.0;
+/// The metadata rail of the Conversation tab (§11): it trails the conversation column
+/// across the gutter rather than clinging to the pane's right edge, so the two stay one
+/// block instead of drifting into two islands on a wide window. It stands down when the
+/// conversation would be left below `CONV_COLUMN_MIN`.
+const CONV_RAIL_WIDTH: f32 = 300.0;
+const CONV_RAIL_GUTTER: f32 = 32.0;
+const CONV_COLUMN_MIN: f32 = 520.0;
+/// How far into the gutter the conversation's scroll area reaches, so the bar egui
+/// floats against its right edge sits clear of the cards — wide enough that the bar
+/// expanded on hover (10px, 4px off the edge) still clears them.
+const SCROLL_LANE: f32 = 16.0;
 
 const TITLE_SIZE: f32 = 14.0;
 const META_SIZE: f32 = 12.0;
@@ -71,22 +102,30 @@ const STATE_ICON: f32 = 16.0;
 const STATUS_ICON: f32 = 15.0;
 const COUNT_BADGE_SIZE: f32 = 11.0;
 
-/// Browse-list page header (the `Pull Requests` title + Refresh).
-const PAGE_HEADER_HEIGHT: f32 = 48.0;
+/// Browse-list page header (pull-requests.md §5): the title + search + controls
+/// strip, then the tab bar beneath it.
+const PAGE_HEADER_HEIGHT: f32 = 52.0;
+const LIST_TABS_HEIGHT: f32 = 38.0;
 const PAGE_TITLE_SIZE: f32 = 20.0;
+/// Height of the header's outlined controls (search, Filters, Priority, Refresh).
+const CTRL_HEIGHT: f32 = 30.0;
+const FILTER_BTN_W: f32 = 104.0;
+const SORT_BTN_W: f32 = 154.0;
+const REFRESH_BTN_W: f32 = 96.0;
+const SEARCH_MAX_W: f32 = 340.0;
+const TAB_PAD_X: f32 = 12.0;
 
-/// Column-table geometry for the browse list (pull-requests.md §5). Fixed columns
-/// are laid out from the right edge; the Title column fills the remaining width.
-const COL_GAP: f32 = 12.0;
-const COL_PROJECT_W: f32 = 172.0;
-const COL_AUTHOR_W: f32 = 130.0;
-const COL_REVIEWERS_W: f32 = 92.0;
-const COL_STATUS_W: f32 = 136.0;
-const COL_UPDATED_W: f32 = 96.0;
-const COL_CHEVRON_W: f32 = 16.0;
-const TITLE_MIN_W: f32 = 240.0;
-const TITLE_MAX_W: f32 = 620.0;
-const COL_HEADER_HEIGHT: f32 = 26.0;
+/// Row geometry for the browse list (pull-requests.md §5). The right-hand data
+/// cluster is laid out from the right edge; the title column takes what is left.
+const ROW_AVATAR: f32 = 24.0;
+const COL_CI_W: f32 = 100.0;
+const COL_COMMENTS_W: f32 = 46.0;
+const COL_ADD_W: f32 = 52.0;
+const COL_DEL_W: f32 = 52.0;
+const MERGE_BTN_W: f32 = 86.0;
+const MERGE_BTN_H: f32 = 26.0;
+/// Room reserved beside a title for its **Blocks N** flag.
+const BLOCKS_FLAG_W: f32 = 84.0;
 const CARD_RADIUS: u8 = 10;
 const REVIEWER_AVATAR: f32 = 22.0;
 const REVIEWER_OVERLAP: f32 = 8.0;
@@ -97,20 +136,45 @@ const INLINE_SNIPPET_LINES: usize = 8;
 /// Extra indent a reply nests under its thread root in the center cards — sized so the
 /// thread rail falls on the root avatar's centre, reading as a spine descending from it (§11).
 const INLINE_REPLY_INDENT: f32 = 26.0;
-/// Height of a resolved thread's collapsed summary row (§11).
-const RESOLVED_ROW_HEIGHT: f32 = 34.0;
+/// Conversation-card geometry (pull-requests.md §11, drawn to the `PR Conversation`
+/// canvas): the card's own padding, its title, and the composer's action bar.
+const CONV_CARD_PAD: i8 = 18;
+const COMPOSER_BAR_HEIGHT: f32 = 40.0;
+const COMPOSER_PAD_X: f32 = 12.0;
+const COMPOSER_PAD_Y: f32 = 10.0;
+/// Radius of a block nested inside the conversation card. Concentric with it rather than
+/// equal to it: the card is `CARD_RADIUS` with `CONV_CARD_PAD` of padding, so a surface
+/// sitting in that padding has to read a step tighter, and an input nested in *that*
+/// tighter again (`diff_view::EDITOR_RADIUS`).
+const BLOCK_RADIUS: u8 = 8;
+/// Text scale of the conversation card: the canvas's own 15 / 13.5 / 12.5 steps, a
+/// notch above the browse list's metrics — a thread is prose to read, not a table to
+/// scan, and the list's 11–12pt ink was not legible at arm's length.
+const CONV_TITLE_SIZE: f32 = 15.0;
+const CONV_AUTHOR_SIZE: f32 = 13.5;
+const CONV_META_SIZE: f32 = 12.5;
+const CONV_MONO_SIZE: f32 = 12.5;
+/// The resolved block: its summary header, one folded row per thread, the indent those
+/// rows and their opened bodies share, and the participants' avatar stack.
+const RESOLVED_HEADER_HEIGHT: f32 = 42.0;
+const RESOLVED_ROW_HEIGHT: f32 = 62.0;
+const RESOLVED_ROW_INDENT: f32 = 36.0;
+const RESOLVED_AVATAR: f32 = 20.0;
+const RESOLVED_AVATAR_MAX: usize = 3;
 
 /// Vertical rhythm for the comment cards (pull-requests.md §11): one small scale so the
 /// conversation and inline threads breathe on the same beat instead of ad-hoc gaps.
 const GAP_XS: f32 = 4.0;
 const GAP_SM: f32 = 8.0;
+/// Air between two file bands in the Files column. The header strip's own rules do
+/// the separating, so this is breathing room, not a boundary (pull-requests.md §11).
+const BAND_GAP: f32 = 10.0;
 const GAP_MD: f32 = 12.0;
+const GAP_LG: f32 = 18.0;
 /// Gap between a comment's avatar gutter and its text column (§11).
 const AVATAR_GUTTER_GAP: f32 = 10.0;
 
 const AVATAR_GAP: f32 = 9.0;
-const AUTHOR_NAME_SIZE: f32 = 13.0;
-const TOTALS_SIZE: f32 = 13.0;
 
 /// Which commit band row a click in the review rail targeted (per-commit diff: T5).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +226,11 @@ pub struct PullRequestsPageAction {
     pub submit_review: bool,
     /// The list header's **Refresh** button was clicked: re-fetch the workspace PRs.
     pub refresh: bool,
+    /// **Merge** was clicked on a ready-to-merge list row: the app merges that PR on
+    /// the forge after confirmation (pull-requests.md §5).
+    pub merge: Option<usize>,
+    /// **Merge** was clicked in the review surface header — the open PR (§11).
+    pub merge_open: bool,
 }
 
 /// Per-source banners for the browse list (pull-requests.md §5): each forge's
@@ -196,13 +265,23 @@ pub struct PrReviewView<'a> {
     /// cumulative "All commits" range (per-commit diff: T5).
     pub commits: &'a [PrCommit],
     pub selected_commit: Option<&'a str>,
-    pub diff: Option<&'a FileDiff>,
+    /// The diff of each changed file, in `files` order — `None` while it is still in
+    /// flight. The Files tab stacks them all in one column (pull-requests.md §11).
+    pub diffs: Vec<Option<&'a FileDiff>>,
+    /// Per-file fetch failures, in `files` order: one band reports its own error
+    /// while the rest of the column renders.
+    pub diff_errors: Vec<Option<&'a str>>,
     /// Local diffs for the current range's files that carry an inline comment, so the
     /// center inline cards render a code preview even when the file isn't open — the
     /// Bitbucket case, which has no forge `diff_hunk` (pull-requests.md §5).
     pub comment_diffs: Vec<&'a FileDiff>,
-    pub diff_loading: bool,
-    pub diff_error: Option<&'a str>,
+    /// One-shot file the column must bring into view (a rail click, or opening an
+    /// inline comment). Cleared by the view once it has scrolled to that band.
+    pub scroll_to_file: &'a mut Option<usize>,
+    /// Render state **per file** — a `DiffViewState` caches one file's highlighting
+    /// and holds its open editors, and the column draws every file at once.
+    pub file_views: &'a mut HashMap<String, DiffViewState>,
+    /// The conversation tab's own state (its reply / comment composers).
     pub diff_view: &'a mut DiffViewState,
     /// Comments already posted on the PR, anchored per line (read-only).
     pub existing: &'a ForgeThreads,
@@ -288,16 +367,10 @@ fn render_review(
     file_view: FileViewMode,
     action: &mut PullRequestsPageAction,
 ) {
-    // An open diff owns `Esc` itself — it cancels an in-progress note first, then
-    // escalates to closing the file (mapped below). With no diff drawn, `Esc`
-    // closes a still-selected (loading) file, else returns to the list.
-    if review.diff.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if review.selected_file.is_some() {
-            action.close_file = true;
-        } else {
-            action.back = true;
-        }
-    }
+    // An open editor in the column owns `Esc` itself — it rolls that editor back
+    // (`diff_view_band`). Read *before* the body renders: by the end of the frame the
+    // editor it cancelled is gone, and the same press must not escalate.
+    let editing = review.file_views.values().any(|s| s.has_open_editor());
 
     // A non-finite persisted width (hand-edited prefs) would poison the layout math.
     let rail_width = if rail_width.is_finite() {
@@ -306,38 +379,131 @@ fn render_review(
         RAIL_MIN_WIDTH
     };
 
-    // The rail frame (its divider + background) spans the full height so it reaches
-    // the title strip like the real side panels; the center content insets past it.
-    let center = egui::Rect::from_x_y_ranges(
+    // The surface header spans the full width above both panes, so Back, the PR
+    // identity, the review verdict cluster and the tabs stay put whatever the tab
+    // shows underneath (pull-requests.md §11).
+    let content_top = rect.top() + f32::from(TITLEBAR_HEIGHT);
+    let header_rect = egui::Rect::from_x_y_ranges(
         rect.x_range(),
-        egui::Rangef::new(rect.top() + f32::from(TITLEBAR_HEIGHT), rect.bottom()),
+        egui::Rangef::new(content_top, content_top + REVIEW_HEADER_HEIGHT),
+    );
+    let tab = review_header(ui, palette, review, header_rect, action);
+    let body = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(header_rect.bottom(), rect.bottom()),
     );
 
-    if rail_collapsed {
-        review_diff(ui, palette, review, center, action);
-        return;
+    // The rail *is* the Files tab's list — Conversation gets the full width rather
+    // than a file list it has no use for (pull-requests.md §11).
+    if rail_collapsed || tab != PrTab::Files {
+        review_body(ui, palette, review, body, tab, action);
+    } else {
+        let rail_w = rail_width.clamp(
+            RAIL_MIN_WIDTH,
+            (rect.width() - DIFF_MIN_WIDTH).max(RAIL_MIN_WIDTH),
+        );
+        let split_x = rect.left() + rail_w;
+        let rail_rect =
+            egui::Rect::from_x_y_ranges(egui::Rangef::new(rect.left(), split_x), body.y_range());
+        review_rail(ui, palette, review, rail_rect, file_view, action);
+
+        let center =
+            egui::Rect::from_x_y_ranges(egui::Rangef::new(split_x, rect.right()), body.y_range());
+        review_body(ui, palette, review, center, tab, action);
+
+        rail_resize_handle(ui, palette, split_x, body, rail_width, action);
     }
 
-    let rail_w = rail_width.clamp(
-        RAIL_MIN_WIDTH,
-        (rect.width() - DIFF_MIN_WIDTH).max(RAIL_MIN_WIDTH),
-    );
-    let split_x = rect.right() - rail_w;
-    let diff_rect =
-        egui::Rect::from_x_y_ranges(egui::Rangef::new(rect.left(), split_x), center.y_range());
-    review_diff(ui, palette, review, diff_rect, action);
+    // Over everything the surface just drew, and *before* the `Esc` cascade below: the
+    // viewer owns that key while it is up (§11).
+    md_image_viewer(ui, palette, rect);
 
-    let rail_rect =
-        egui::Rect::from_x_y_ranges(egui::Rangef::new(split_x, rect.right()), rect.y_range());
-    review_rail(ui, palette, review, rail_rect, file_view, action);
-
-    rail_resize_handle(ui, palette, split_x, rect, rail_width, action);
+    // Read *after* the body: a composer takes `Esc` for itself and consumes the key
+    // (`reply_editor`), so the press that closes a comment field never also drops the
+    // file or leaves the review. With nothing to close, `Esc` clears the file
+    // selection, then returns to the list (pull-requests.md §11).
+    if !editing && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if review.selected_file.is_some() {
+            action.close_file = true;
+        } else {
+            action.back = true;
+        }
+    }
 }
 
-/// Right rail of the review surface (git.md §9 visual language): a **Files
-/// changed** band (count chip, ±totals, ratio bar) and the file list, with the
-/// review composer pinned to the foot. The Back control, PR-level actions, title
-/// and detail live in the center area when no file is open.
+/// Which face of the review surface the center shows (pull-requests.md §11).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrTab {
+    /// The PR detail: description, checks, conversation and inline comments.
+    #[default]
+    Conversation,
+    /// The changed files: the rail lists them, the center diffs the selected one.
+    Files,
+}
+
+impl PrTab {
+    const ALL: [PrTab; 2] = [PrTab::Conversation, PrTab::Files];
+
+    fn label(self) -> &'static str {
+        match self {
+            PrTab::Conversation => "Conversation",
+            PrTab::Files => "Files",
+        }
+    }
+}
+
+/// The center pane, dispatched on the open tab.
+fn review_body(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &mut PrReviewView<'_>,
+    rect: egui::Rect,
+    tab: PrTab,
+    action: &mut PullRequestsPageAction,
+) {
+    match tab {
+        PrTab::Conversation => {
+            ui.painter().rect_filled(rect, 0, palette.bg_canvas);
+            // Conversation and rail form one block, **centered in the pane** the way a
+            // forge centers its review page: the cards stop a little past the prose
+            // measure (a surface three times wider than the text it holds reads as a
+            // rendering slip), the rail follows one gutter later, and what a wide window
+            // has left over is split between the two sides instead of pooling into a
+            // hole between them (§11).
+            let column = (rect.width() - CONV_RAIL_GUTTER - CONV_RAIL_WIDTH).min(CONV_COLUMN_MAX);
+            let rail = column >= CONV_COLUMN_MIN;
+            let block = if rail {
+                column + CONV_RAIL_GUTTER + CONV_RAIL_WIDTH
+            } else {
+                rect.width()
+            };
+            let left = rect.left() + (rect.width() - block) / 2.0;
+            let right = left + if rail { column } else { rect.width() };
+            let content =
+                egui::Rect::from_x_y_ranges(egui::Rangef::new(left, right), rect.y_range());
+            let mut area = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(content)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            review_detail(&mut area, palette, review, content, rail, action);
+            if rail {
+                let split_x = right + CONV_RAIL_GUTTER;
+                let rail_rect = egui::Rect::from_x_y_ranges(
+                    egui::Rangef::new(split_x, split_x + CONV_RAIL_WIDTH),
+                    rect.y_range(),
+                );
+                conversation_rail(ui, palette, review, rail_rect);
+            }
+        }
+        PrTab::Files => review_diff(ui, palette, review, rect, action),
+    }
+}
+
+/// Left rail of the **Files** tab (git.md §9 visual language): a *Files changed*
+/// band (count chip, filters, ±totals, ratio bar) over the file list. It is the
+/// review's only list of changed files — the center diffs whichever row is
+/// selected, and the other tabs don't draw the rail at all.
 fn review_rail(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -347,21 +513,9 @@ fn review_rail(
     action: &mut PullRequestsPageAction,
 ) {
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
-    let footer_h = composer_height(review);
-    // Content starts below the floating title strip (the rail frame itself reaches
-    // the window top); the composer stays pinned to the foot.
-    let content_top = rect.top() + f32::from(TITLEBAR_HEIGHT);
-    let scroll_rect = egui::Rect::from_x_y_ranges(
-        rect.x_range(),
-        egui::Rangef::new(content_top, (rect.bottom() - footer_h).max(content_top)),
-    );
-    let footer_rect = egui::Rect::from_x_y_ranges(rect.x_range(), {
-        let top = (rect.bottom() - footer_h).max(content_top);
-        egui::Rangef::new(top, rect.bottom())
-    });
     let inner = egui::Rect::from_x_y_ranges(
-        egui::Rangef::new(scroll_rect.left() + PANEL_PAD_X, scroll_rect.right() - 6.0),
-        scroll_rect.y_range(),
+        egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() - 6.0),
+        rect.y_range(),
     );
     let mut panel = ui.new_child(
         egui::UiBuilder::new()
@@ -373,10 +527,6 @@ fn review_rail(
         .show(&mut panel, |ui| {
             ui.set_width(ui.available_width());
             ui.add_space(PANEL_PAD_Y);
-            if !review.commits.is_empty() {
-                commits_band(ui, palette, review, action);
-                ui.add_space(10.0);
-            }
             let collapse_id = egui::Id::new(("pr_review_dirs", review.pr.url.as_str()));
             let mut collapsed: HashSet<String> =
                 ui.data(|d| d.get_temp(collapse_id).unwrap_or_default());
@@ -397,13 +547,24 @@ fn review_rail(
                 .iter()
                 .filter(|file| !viewed.contains(&file.path))
                 .count();
+            let hide_tests_id = egui::Id::new(("pr_review_hide_tests", review.pr.url.as_str()));
+            let mut hide_tests: bool = ui.data(|d| d.get_temp(hide_tests_id).unwrap_or(false));
+            let test_count = review
+                .files
+                .iter()
+                .filter(|file| is_test_path(&file.path))
+                .count();
             if let Some(target) = files_band(
                 ui,
                 palette,
                 review.files,
                 file_view,
-                unread_count,
-                &mut unread_only,
+                FileFilters {
+                    unread_count,
+                    unread_only: &mut unread_only,
+                    test_count,
+                    hide_tests: &mut hide_tests,
+                },
             ) {
                 action.set_file_view = Some(target);
             }
@@ -415,16 +576,16 @@ fn review_rail(
                 file_view,
                 &viewed,
                 unread_only,
+                hide_tests,
                 &mut collapsed,
                 action,
             );
             ui.data_mut(|d| d.insert_temp(collapse_id, collapsed));
             ui.data_mut(|d| d.insert_temp(viewed_id, viewed));
             ui.data_mut(|d| d.insert_temp(unread_only_id, unread_only));
+            ui.data_mut(|d| d.insert_temp(hide_tests_id, hide_tests));
             ui.add_space(PANEL_PAD_Y);
         });
-
-    review_composer(ui, palette, review, footer_rect, action);
 }
 
 /// The PR detail in the **center** area when no file is open (pull-requests.md
@@ -432,15 +593,24 @@ fn review_rail(
 /// Checks and the conversation-level comments. The PR-level actions live here so
 /// a selected file swaps the center to its diff and leaves the rail focused on
 /// changed files + review submission.
+/// `rail` says the metadata rail is up beside it, so the reviewers, the labels and the
+/// checks are named there instead of inside the conversation.
 fn review_detail(
     ui: &mut egui::Ui,
     palette: &Palette,
     review: &mut PrReviewView<'_>,
     rect: egui::Rect,
+    rail: bool,
     action: &mut PullRequestsPageAction,
 ) {
+    // The scroll area reaches *past* the column, into the gutter before the rail: egui
+    // floats the bar against its right edge, so a scroll area that stops where the cards
+    // stop puts the bar on their border — and expanding it on hover then lands it on the
+    // card itself. Carried into the gutter, the bar clears the cards entirely and they
+    // keep an even margin on both sides (§11).
+    let lane = if rail { SCROLL_LANE } else { 0.0 };
     let inner = egui::Rect::from_x_y_ranges(
-        egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() - PANEL_PAD_X),
+        egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() + lane),
         rect.y_range(),
     );
     let mut panel = ui.new_child(
@@ -450,13 +620,14 @@ fn review_detail(
     );
     egui::ScrollArea::vertical()
         .id_salt("pr_review_detail")
+        // Without this the area shrinks to the width of its content, which drags the
+        // floating bar back onto the cards' border however far the rect reaches.
+        .auto_shrink([false, true])
         .show(&mut panel, |ui| {
-            ui.set_width(ui.available_width());
+            // `markdown` is what holds the prose to its measure (§11).
+            ui.set_width(ui.available_width() - PANEL_PAD_X - lane);
             ui.add_space(PANEL_PAD_Y);
-            review_detail_header(ui, palette, review, action);
-            ui.add_space(SECTION_TOP_MARGIN);
-            review_meta(ui, palette, review);
-            let pr = review.pr;
+            review_meta(ui, palette, review, rail);
 
             // While the forge detail is in flight, a spinner stands in for the
             // body/checks/conversation rather than their empty shells, which read as
@@ -472,30 +643,139 @@ fn review_detail(
                 ui.label(muted(palette, error));
             }
 
-            let checks = review
-                .detail
-                .map(|d| d.check_runs.as_slice())
-                .unwrap_or(&[]);
-            if !checks.is_empty() || pr.checks != Checks::None {
-                band_title(ui, palette, "Checks");
-                if checks.is_empty() {
-                    status_line(
-                        ui,
-                        palette,
-                        checks_status(palette, pr.checks),
-                        checks_label(pr.checks),
-                    );
-                } else {
-                    for run in checks {
-                        status_line(ui, palette, checks_status(palette, run.status), &run.name);
-                    }
-                }
+            if !rail {
+                checks_section(ui, palette, review);
             }
 
-            conversation_section(ui, palette, review, action);
-            inline_comments_section(ui, palette, review, action);
+            conversation_card(ui, palette, review, action);
             ui.add_space(PANEL_PAD_Y);
         });
+}
+
+/// The Conversation tab's metadata rail (pull-requests.md §11): everything *about* the
+/// PR — who owes a review, what CI says, its labels — beside the conversation column,
+/// so the conversation itself stays one column of cards. No rule between the two: the
+/// gutter and the cards' own edges already say where one ends and the other starts.
+fn conversation_rail(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    rect: egui::Rect,
+) {
+    let inner = egui::Rect::from_x_y_ranges(
+        egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() - PANEL_PAD_X),
+        rect.y_range(),
+    );
+    let mut panel = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    egui::ScrollArea::vertical()
+        .id_salt("pr_conversation_rail")
+        .show(&mut panel, |ui| {
+            ui.set_width(ui.available_width());
+            reviewers_section(ui, palette, review.pr);
+            checks_section(ui, palette, review);
+            if !review.pr.labels.is_empty() {
+                band_title(ui, palette, "Labels");
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                    for label in &review.pr.labels {
+                        neutral_pill(ui, palette, label);
+                    }
+                });
+            }
+            ui.add_space(PANEL_PAD_Y);
+        });
+}
+
+/// The **Checks** section — the forge's check runs, or the PR's rolled-up status while
+/// the detail carries no runs. Drawn in the rail, or inline when there is no rail.
+fn checks_section(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) {
+    let pr = review.pr;
+    let checks = review
+        .detail
+        .map(|d| d.check_runs.as_slice())
+        .unwrap_or(&[]);
+    if checks.is_empty() && pr.checks == Checks::None {
+        return;
+    }
+    band_title(ui, palette, "Checks");
+    if checks.is_empty() {
+        status_line(
+            ui,
+            palette,
+            checks_status(palette, pr.checks),
+            checks_label(pr.checks),
+        );
+    } else {
+        for run in checks {
+            status_line(ui, palette, checks_status(palette, run.status), &run.name);
+        }
+    }
+}
+
+/// The rail's **Reviewers** section (pull-requests.md §11): who was asked to review and
+/// where each one stands — a tick once they approved, a cross when they asked for
+/// changes, and *Awaiting review* while the review is still owed.
+fn reviewers_section(ui: &mut egui::Ui, palette: &Palette, pr: &PullRequest) {
+    if pr.reviewers.is_empty() {
+        return;
+    }
+    band_title(ui, palette, "Reviewers");
+    for reviewer in &pr.reviewers {
+        ui.add_space(GAP_SM);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            author_avatar_small(ui, palette, &reviewer.name);
+            ui.add_space(AVATAR_GAP);
+            ui.label(
+                egui::RichText::new(&reviewer.name)
+                    .size(CONV_AUTHOR_SIZE)
+                    .color(palette.text_primary),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                match reviewer_verdict(palette, reviewer.state) {
+                    Some((icon, color, label)) => {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(STATUS_ICON, STATUS_ICON),
+                            egui::Sense::hover(),
+                        );
+                        paint_icon(ui.painter(), rect.center(), STATUS_ICON, icon, color);
+                        // The verdict is a glyph: name it, so it is readable to
+                        // the accessibility tree and not only on hover.
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label)
+                        });
+                        response.on_hover_text(label);
+                    }
+                    // Nobody has ruled yet: say so, rather than leave the row
+                    // reading as a bare name with an unexplained gap.
+                    None => {
+                        ui.label(
+                            egui::RichText::new("Awaiting review")
+                                .size(CONV_META_SIZE)
+                                .color(palette.text_muted),
+                        );
+                    }
+                }
+            });
+        });
+    }
+}
+
+/// The glyph a rail row carries for a reviewer's verdict — `None` while nothing has
+/// been given yet, where the row falls back to naming the wait.
+fn reviewer_verdict(
+    palette: &Palette,
+    state: Review,
+) -> Option<(Icon, egui::Color32, &'static str)> {
+    match state {
+        Review::Approved => Some((Icon::CheckCircle, palette.git_added, "Approved")),
+        Review::ChangesRequested => Some((Icon::CircleX, palette.git_deleted, "Changes requested")),
+        Review::Pending | Review::None => None,
+    }
 }
 
 /// Center placeholder while the forge detail is in flight (pull-requests.md §5): a
@@ -509,101 +789,243 @@ fn detail_loading(ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-/// **Conversation** band in the center detail (pull-requests.md §11): the PR's
-/// top-level comments (no diff anchor), each with a Reply affordance when the forge
-/// threads them (Bitbucket carries a comment id; GitHub issue comments are flat), and
-/// a standalone composer that always lets the user start a new comment.
-fn conversation_section(
+/// One conversation thread: the root comment first, then its replies. Either
+/// **PR-level** (no diff anchor) or **line-anchored** (`path` + the new-side line).
+/// `index` is the root's position in the fetched comment list — the opaque key the
+/// PR-level reply editor is stored under, stable across the Oldest/Newest reversal.
+struct ConvThread<'a> {
+    index: usize,
+    path: Option<&'a str>,
+    line: Option<u32>,
+    comments: Vec<&'a PrComment>,
+}
+
+impl<'a> ConvThread<'a> {
+    /// Whether the forge marks the thread resolved — carried on every comment, read
+    /// off the root (pull-requests.md §11).
+    fn resolved(&self) -> bool {
+        self.comments.first().is_some_and(|c| c.resolved)
+    }
+
+    /// The thread's forge comment id: the reply target and Bitbucket's resolve handle.
+    fn root_id(&self) -> Option<u64> {
+        self.comments.iter().find_map(|c| c.id)
+    }
+
+    /// GitHub's review-thread node id, the handle `resolveReviewThread` needs.
+    fn thread_id(&self) -> Option<String> {
+        self.comments.iter().find_map(|c| c.thread_id.clone())
+    }
+
+    /// `path:line` for an anchored thread, `None` for a PR-level one.
+    fn anchor_label(&self) -> Option<String> {
+        let path = self.path?;
+        Some(match self.line {
+            Some(line) => format!("{path}:{line}"),
+            None => path.to_owned(),
+        })
+    }
+
+    /// Distinct participants, in the order they first spoke — the avatar stack of a
+    /// folded row.
+    fn participants(&self) -> Vec<&'a str> {
+        let mut out: Vec<&str> = Vec::new();
+        for c in &self.comments {
+            if !out.contains(&c.author.as_str()) {
+                out.push(c.author.as_str());
+            }
+        }
+        out
+    }
+
+    /// The first non-blank line of the root's body: the folded row's excerpt.
+    fn excerpt(&self) -> &'a str {
+        self.comments.first().map_or("", |c| {
+            c.body
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("")
+        })
+    }
+
+    fn last_age(&self, now: i64) -> String {
+        self.comments
+            .last()
+            .map(|c| crate::pull_requests::model::relative_age(&c.created_at, now))
+            .unwrap_or_default()
+    }
+}
+
+/// Groups a PR's fetched comments into threads, oldest-first: first the **PR-level**
+/// comments nested by `parent_id` (Bitbucket threads them; GitHub issue comments are
+/// flat — id and parent both `None` — so each stays its own single-comment thread),
+/// then the **line-anchored** threads, one per (file, anchor) in the order they were
+/// first commented on.
+fn conversation_threads(detail: Option<&PrDetail>) -> Vec<ConvThread<'_>> {
+    let Some(detail) = detail else {
+        return Vec::new();
+    };
+    let mut threads: Vec<ConvThread> = Vec::new();
+    let level: Vec<(usize, &PrComment)> = detail
+        .comments
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.path.is_none())
+        .collect();
+    let by_id: HashMap<u64, (usize, &PrComment)> = level
+        .iter()
+        .filter_map(|&(i, c)| c.id.map(|id| (id, (i, c))))
+        .collect();
+    let root_of = |start: (usize, &'_ PrComment)| -> usize {
+        let mut cur = start;
+        for _ in 0..level.len() {
+            let Some(pid) = cur.1.parent_id else {
+                break;
+            };
+            match by_id.get(&pid) {
+                Some(&parent) if parent.0 != cur.0 => cur = parent,
+                _ => break,
+            }
+        }
+        cur.0
+    };
+    let mut roots: Vec<(usize, Vec<(usize, &PrComment)>)> = Vec::new();
+    for &(i, c) in &level {
+        let root = root_of((i, c));
+        match roots.iter_mut().find(|(r, _)| *r == root) {
+            Some((_, members)) => members.push((i, c)),
+            None => roots.push((root, vec![(i, c)])),
+        }
+    }
+    for (root, members) in &mut roots {
+        members.sort_by_key(|(i, _)| (*i != *root, *i));
+    }
+    threads.extend(roots.into_iter().map(|(root, members)| ConvThread {
+        index: root,
+        path: None,
+        line: None,
+        comments: members.into_iter().map(|(_, c)| c).collect(),
+    }));
+
+    let inline: Vec<(usize, &PrComment)> = detail
+        .comments
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.path.is_some() && (c.old_lineno.is_some() || c.new_lineno.is_some()))
+        .collect();
+    let mut anchors: Vec<(&str, Option<u32>, Option<u32>)> = Vec::new();
+    for (_, c) in &inline {
+        let anchor = (
+            c.path.as_deref().unwrap_or_default(),
+            c.old_lineno,
+            c.new_lineno,
+        );
+        if !anchors.contains(&anchor) {
+            anchors.push(anchor);
+        }
+    }
+    for (path, old, new) in anchors {
+        let members: Vec<(usize, &PrComment)> = inline
+            .iter()
+            .copied()
+            .filter(|(_, c)| {
+                c.path.as_deref() == Some(path) && (c.old_lineno, c.new_lineno) == (old, new)
+            })
+            .collect();
+        threads.push(ConvThread {
+            index: members.first().map_or(0, |(i, _)| *i),
+            path: Some(path),
+            line: new,
+            comments: members.into_iter().map(|(_, c)| c).collect(),
+        });
+    }
+    threads
+}
+
+/// The **Conversation** card in the center detail (pull-requests.md §11, drawn to the
+/// `PR Conversation.dc.html` canvas): **one** object carrying the header (comment
+/// tally + Oldest|Newest order), the threads that still **need attention**, the
+/// resolved ones **folded into a single block**, and the composer at its foot.
+/// PR-level comments and line-anchored threads share the card — the review reads
+/// "what is still open" once, instead of twice across a Conversation and an Inline
+/// comments band.
+fn conversation_card(
     ui: &mut egui::Ui,
     palette: &Palette,
     review: &mut PrReviewView<'_>,
     action: &mut PullRequestsPageAction,
 ) {
-    // `detail` is a copied-out `'a` reference, so it no longer borrows `review` — the
-    // composer state under `review.diff_view` can then lend mutably (as in the inline
-    // section).
+    // `detail` is a copied-out `'a` reference, so the threads built from it no longer
+    // borrow `review` — the reply/composer state under `review.diff_view` can then lend
+    // mutably alongside the `comment_diffs` / `files` field borrows.
     let pr = review.pr;
-    let detail = review.detail;
     let current_user = review.current_user;
+    let threads = conversation_threads(review.detail);
+    let comment_diffs: &[&FileDiff] = &review.comment_diffs;
+    let files = review.files;
     let diff_view = &mut *review.diff_view;
-    // The index is the comment's position in the oldest-first conversation, stable
-    // across the Newest/Oldest display reversal — so an open reply editor stays
-    // anchored to its thread when the order toggles.
-    let flat: Vec<(usize, &PrComment)> = detail
-        .map(|d| {
-            d.comments
-                .iter()
-                .filter(|c| c.path.is_none())
-                .enumerate()
-                .collect()
-        })
-        .unwrap_or_default();
-    // Nest each reply under the comment it answers: Bitbucket threads conversation
-    // comments via `parent_id`; GitHub issue comments are flat (id/parent both None),
-    // so each stays its own single-comment thread.
-    let index_by_id: HashMap<u64, usize> = flat
-        .iter()
-        .filter_map(|(i, c)| c.id.map(|id| (id, *i)))
-        .collect();
-    let root_index = |start: usize| -> usize {
-        let mut idx = start;
-        for _ in 0..flat.len() {
-            let Some(pid) = flat[idx].1.parent_id else {
-                break;
-            };
-            match index_by_id.get(&pid) {
-                Some(&p) if p != idx => idx = p,
-                _ => break,
-            }
-        }
-        idx
-    };
-    let mut threads: Vec<(usize, Vec<(usize, &PrComment)>)> = Vec::new();
-    for &(i, c) in &flat {
-        let root = root_index(i);
-        match threads.iter_mut().find(|(r, _)| *r == root) {
-            Some((_, members)) => members.push((i, c)),
-            None => threads.push((root, vec![(i, c)])),
-        }
-    }
-    for (root, members) in &mut threads {
-        members.sort_by_key(|(i, _)| (*i != *root, *i));
-    }
-    let newest_first = conversation_header(ui, palette, pr.url.as_str(), flat.len());
-    if newest_first {
-        threads.reverse();
-    }
+    let total: usize = threads.iter().map(|t| t.comments.len()).sum();
     let now = now_epoch_secs();
-    for (root, members) in &threads {
-        let collapse_key = members
-            .first()
-            .filter(|(_, c)| c.resolved)
-            .and_then(|(_, c)| c.id);
-        if let Some(id) = collapse_key {
-            let expanded = diff_view.is_resolved_expanded(id);
-            if resolved_header_row(ui, palette, members.len(), expanded) {
-                diff_view.toggle_resolved(id);
-            }
-            ui.add_space(GAP_SM);
-            if !expanded {
-                continue;
-            }
-        }
-        // One card per thread: the root and its replies stack inside under a left rail,
-        // and the reply affordance sits in the card's foot. A threaded forge (Bitbucket)
-        // carries the root's id; a flat one (GitHub) has None and posts a new top-level
-        // comment.
-        let comments: Vec<&PrComment> = members.iter().map(|(_, c)| *c).collect();
-        let root_id = members.first().and_then(|(_, c)| c.id);
-        comment_frame(palette).show(ui, |ui| {
+    ui.add_space(SECTION_TOP_MARGIN);
+    comment_frame(palette)
+        .inner_margin(egui::Margin::same(CONV_CARD_PAD))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            thread_members(ui, palette, pr, &comments, now);
-            ui.add_space(GAP_SM);
-            conversation_reply_block(ui, palette, diff_view, *root, root_id, action);
+            let newest_first = conversation_header(ui, palette, pr.url.as_str(), total);
+            let (mut open, mut resolved): (Vec<&ConvThread>, Vec<&ConvThread>) =
+                threads.iter().partition(|t| !t.resolved());
+            if newest_first {
+                open.reverse();
+                resolved.reverse();
+            }
+            if !open.is_empty() {
+                section_label(ui, palette, &format!("Needs attention · {}", open.len()));
+                for thread in &open {
+                    open_thread_block(
+                        ui,
+                        palette,
+                        diff_view,
+                        comment_diffs,
+                        files,
+                        pr,
+                        thread,
+                        now,
+                        action,
+                    );
+                }
+            }
+            if !resolved.is_empty() {
+                resolved_group(
+                    ui,
+                    palette,
+                    diff_view,
+                    comment_diffs,
+                    files,
+                    pr,
+                    &resolved,
+                    now,
+                    action,
+                );
+            }
+            conversation_add_block(ui, palette, diff_view, current_user, action);
         });
-        ui.add_space(GAP_MD);
-    }
-    conversation_add_block(ui, palette, diff_view, current_user, action);
+}
+
+/// A section head inside the conversation card (*NEEDS ATTENTION · 1*): the list
+/// band grammar of the browse list — uppercase, letter-spaced, quiet.
+fn section_label(ui: &mut egui::Ui, palette: &Palette, text: &str) {
+    ui.add_space(GAP_MD);
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .font(egui::FontId::new(
+                HEADER_SIZE,
+                crate::theme::medium_family(ui.ctx()),
+            ))
+            .extra_letter_spacing(0.8)
+            .color(palette.text_muted),
+    );
+    ui.add_space(GAP_SM);
 }
 
 /// The shared comment-card surface for the conversation and inline center sections
@@ -633,7 +1055,7 @@ fn comment_meta_line(
         ui.spacing_mut().item_spacing.x = GAP_SM;
         ui.label(
             egui::RichText::new(author)
-                .size(META_SIZE)
+                .size(CONV_AUTHOR_SIZE)
                 .strong()
                 .color(palette.text_primary),
         );
@@ -645,7 +1067,7 @@ fn comment_meta_line(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(age)
-                        .size(META_SIZE)
+                        .size(CONV_META_SIZE)
                         .color(palette.text_secondary),
                 );
             });
@@ -717,35 +1139,44 @@ fn thread_members(
     );
 }
 
-/// The Conversation band header: the title plus an Oldest|Newest order toggle
-/// (persisted per PR, shown only with more than one comment). Returns whether to
-/// render newest-first.
+/// The conversation card's head: the title, the comment tally as plain text, and the
+/// Oldest|Newest order toggle boxed as one segmented control (persisted per PR, shown
+/// only with more than one comment), closed by a hairline. Returns whether to render
+/// newest-first.
 fn conversation_header(ui: &mut egui::Ui, palette: &Palette, pr_url: &str, count: usize) -> bool {
     let id = egui::Id::new(("pr_conversation_newest", pr_url));
     let mut newest_first: bool = ui.data(|d| d.get_temp(id).unwrap_or(false));
-    ui.add_space(SECTION_TOP_MARGIN);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = GAP_SM;
         ui.label(
             egui::RichText::new("Conversation")
-                .size(SECTION_TITLE_SIZE)
+                .size(CONV_TITLE_SIZE)
                 .strong()
                 .color(palette.text_primary),
         );
-        count_chip(ui, palette, count);
+        ui.label(conv_muted(palette, &plural(count, "comment")));
         if count > 1 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if order_segment(ui, palette, "Newest", newest_first) {
-                    newest_first = true;
-                }
-                if order_segment(ui, palette, "Oldest", !newest_first) {
-                    newest_first = false;
-                }
+                egui::Frame::new()
+                    .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+                    .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON + 1))
+                    .inner_margin(egui::Margin::same(2))
+                    .show(ui, |ui| {
+                        // Right-to-left inside the frame: Newest is added first so that
+                        // Oldest reads on the left, as everywhere else.
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if order_segment(ui, palette, "Newest", newest_first) {
+                            newest_first = true;
+                        }
+                        if order_segment(ui, palette, "Oldest", !newest_first) {
+                            newest_first = false;
+                        }
+                    });
             });
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(GAP_MD);
+    row_separator(ui, palette);
     ui.data_mut(|d| d.insert_temp(id, newest_first));
     newest_first
 }
@@ -754,7 +1185,7 @@ fn conversation_header(ui: &mut egui::Ui, palette: &Palette, pr_url: &str, count
 /// with `accent` ink when active, so the live order reads as a selected segment rather
 /// than a faint colour shift (design-system segmented control).
 fn order_segment(ui: &mut egui::Ui, palette: &Palette, label: &str, active: bool) -> bool {
-    let font = egui::FontId::proportional(META_SIZE);
+    let font = egui::FontId::proportional(CONV_META_SIZE);
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), font, egui::Color32::PLACEHOLDER);
@@ -828,11 +1259,11 @@ fn conversation_reply_block(
     }
 }
 
-/// The standalone conversation composer (pull-requests.md §11): an always-visible bar
-/// at the foot of the band — avatar, an input field, and a filled-accent **Comment**
-/// button — raising `PostConversationComment` with no parent, a new top-level comment
-/// on either forge. The button reads solid accent throughout but only submits once the
-/// draft holds non-blank text.
+/// The conversation composer at the card's foot (pull-requests.md §11): **one object**
+/// — the field and its action bar inside a single frame beside the user's avatar —
+/// raising `PostConversationComment` with no parent, a new top-level comment on either
+/// forge. The **Comment** button only fills with accent once the draft holds non-blank
+/// text; blank, it reads as the inert control it is.
 fn conversation_add_block(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -840,318 +1271,608 @@ fn conversation_add_block(
     current_user: Option<&str>,
     action: &mut PullRequestsPageAction,
 ) {
-    const BUTTON_HEIGHT: f32 = 32.0;
-    ui.add_space(GAP_MD);
+    ui.add_space(GAP_LG);
+    row_separator(ui, palette);
+    ui.add_space(GAP_LG);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         author_avatar(ui, palette, current_user.unwrap_or(""));
         ui.add_space(AVATAR_GUTTER_GAP);
-        ui.vertical(|ui| {
-            ui.set_width(ui.available_width());
-            // The field grows from a single line as the draft fills, so an empty composer
-            // reads as a quiet prompt rather than a tall well; its surface matches the
-            // comment cards (egui paints a TextEdit from `extreme_bg_color`, not widget fill).
-            ui.visuals_mut().extreme_bg_color = palette.bg_surface;
-            let radius = egui::CornerRadius::same(CARD_RADIUS);
-            let w = &mut ui.visuals_mut().widgets;
-            for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
-                s.corner_radius = radius;
-            }
-            w.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border_subtle);
-            w.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.border_input);
-            w.active.bg_stroke = egui::Stroke::new(1.5_f32, palette.accent);
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
-            ui.add(
-                egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
-                    .desired_rows(1)
-                    .desired_width(ui.available_width())
-                    .font(egui::FontId::proportional(13.5))
-                    .margin(egui::Margin::symmetric(12, 9))
-                    .hint_text("Add a comment…"),
-            );
-            ui.add_space(GAP_SM);
-            // A fixed-height row so the right-to-left layout can't claim the scroll area's
-            // full remaining height and strand the button at the panel foot.
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), BUTTON_HEIGHT),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    let enabled = !diff_view.conversation_add_buffer_mut().trim().is_empty();
-                    let font = egui::FontId::proportional(13.0);
-                    let galley = ui.painter().layout_no_wrap(
-                        "Comment".to_owned(),
-                        font.clone(),
-                        egui::Color32::PLACEHOLDER,
-                    );
-                    let button_size = egui::vec2(galley.size().x + 28.0, BUTTON_HEIGHT);
-                    let (rect, response, hovered) = clickable(ui, button_size, enabled);
-                    let fill = if hovered {
-                        palette.accent_hover
-                    } else {
-                        palette.accent
-                    };
-                    ui.painter()
-                        .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Comment",
-                        font,
-                        palette.lane_node_text,
-                    );
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Comment")
-                    });
-                    if response.clicked() {
-                        let body = diff_view.conversation_add_buffer_mut().trim().to_owned();
-                        if !body.is_empty() {
-                            action
-                                .review_intents
-                                .push(ReviewIntent::PostConversationComment { parent: None, body });
-                            diff_view.conversation_add_buffer_mut().clear();
-                        }
+        raised_frame(palette)
+            .inner_margin(egui::Margin::ZERO)
+            .show(ui, |ui| {
+                // The frame inherits the surrounding horizontal layout, in which the field
+                // and its action bar would sit side by side: stack them explicitly.
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    let field_id = ui.id().with("pr_conversation_add");
+                    // This composer is always on screen, so its `Esc` can't read as
+                    // "close the editor": egui drops the field's focus, and the key is
+                    // swallowed there rather than falling through to the surface's
+                    // cascade and closing the review (pull-requests.md §11).
+                    if ui.memory(|m| m.had_focus_last_frame(field_id)) {
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
                     }
-                },
-            );
-        });
+                    ui.add(
+                        egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
+                            .id(field_id)
+                            // The box around field *and* action bar is the outer frame, so the
+                            // field brings none of its own — but `TextEdit::margin` is only
+                            // honoured on a frame egui builds itself, so the padding has to
+                            // ride on this one or the text lands flush against the border.
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+                                COMPOSER_PAD_X as i8,
+                                COMPOSER_PAD_Y as i8,
+                            )))
+                            .desired_rows(3)
+                            .desired_width(ui.available_width())
+                            .font(egui::FontId::proportional(MD_TEXT_SIZE))
+                            .hint_text("Add a comment…"),
+                    );
+                    hairline(ui, palette);
+                    // A fixed-height bar so the right-to-left layout can't claim the scroll
+                    // area's full remaining height and strand the button at the panel foot.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), COMPOSER_BAR_HEIGHT),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add_space(COMPOSER_PAD_X);
+                            ui.label(conv_muted(palette, "Markdown supported"));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add_space(COMPOSER_PAD_X);
+                                    if comment_button(ui, palette, diff_view) {
+                                        let body = diff_view
+                                            .conversation_add_buffer_mut()
+                                            .trim()
+                                            .to_owned();
+                                        if !body.is_empty() {
+                                            action.review_intents.push(
+                                                ReviewIntent::PostConversationComment {
+                                                    parent: None,
+                                                    body,
+                                                },
+                                            );
+                                            diff_view.conversation_add_buffer_mut().clear();
+                                        }
+                                    }
+                                },
+                            );
+                        },
+                    );
+                });
+            });
     });
 }
 
-/// **Inline comments** band in the center detail (pull-requests.md §5): the PR's
-/// inline review threads, grouped per file, each over a small monochrome snippet of
-/// the code they were left on. The thread itself still renders anchored on the diff
-/// rows (the overlay); this is the navigable summary — clicking a card opens the file
-/// and scrolls the diff to the line.
-fn inline_comments_section(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    review: &mut PrReviewView<'_>,
-    action: &mut PullRequestsPageAction,
-) {
-    let Some(detail) = review.detail else {
-        return;
+/// The composer's submit button: solid accent while the draft holds text, a quiet
+/// disabled chip while it is blank. Returns whether it was clicked.
+fn comment_button(ui: &mut egui::Ui, palette: &Palette, diff_view: &mut DiffViewState) -> bool {
+    const HEIGHT: f32 = 30.0;
+    let enabled = !diff_view.conversation_add_buffer_mut().trim().is_empty();
+    let font = egui::FontId::proportional(13.0);
+    let galley = ui.painter().layout_no_wrap(
+        "Comment".to_owned(),
+        font.clone(),
+        egui::Color32::PLACEHOLDER,
+    );
+    let (rect, response, hovered) =
+        clickable(ui, egui::vec2(galley.size().x + 28.0, HEIGHT), enabled);
+    let (fill, ink) = match (enabled, hovered) {
+        (false, _) => (palette.bg_surface, palette.text_muted),
+        (true, true) => (palette.accent_hover, palette.lane_node_text),
+        (true, false) => (palette.accent, palette.lane_node_text),
     };
-    let inline: Vec<&PrComment> = detail
-        .comments
-        .iter()
-        .filter(|c| c.path.is_some() && (c.old_lineno.is_some() || c.new_lineno.is_some()))
-        .collect();
-    if inline.is_empty() {
-        return;
-    }
-    // `comment_diffs` and `changed_files` are field borrows disjoint from
-    // `review.diff_view`, so the latter is still free to lend mutably to each card's
-    // reply editor.
-    let comment_diffs: &[&FileDiff] = &review.comment_diffs;
-    let changed_files = review.files;
-    let pr = review.pr;
-    let diff_view = &mut *review.diff_view;
-    ui.add_space(SECTION_TOP_MARGIN);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = GAP_SM;
-        ui.label(
-            egui::RichText::new("Inline comments")
-                .size(SECTION_TITLE_SIZE)
-                .strong()
-                .color(palette.text_primary),
-        );
-        count_chip(ui, palette, inline.len());
-    });
-    ui.add_space(6.0);
-    let mut files: Vec<&str> = Vec::new();
-    for c in &inline {
-        if let Some(path) = c.path.as_deref() {
-            if !files.contains(&path) {
-                files.push(path);
-            }
-        }
-    }
-    for path in files {
-        ui.add_space(GAP_SM);
-        ui.label(
-            egui::RichText::new(path)
-                .size(META_SIZE)
-                .monospace()
-                .strong()
-                .color(palette.text_secondary),
-        );
-        let mut anchors: Vec<(Option<u32>, Option<u32>)> = Vec::new();
-        for c in inline.iter().filter(|c| c.path.as_deref() == Some(path)) {
-            let anchor = (c.old_lineno, c.new_lineno);
-            if !anchors.contains(&anchor) {
-                anchors.push(anchor);
-            }
-        }
-        for (old, new) in anchors {
-            let thread: Vec<&PrComment> = inline
-                .iter()
-                .copied()
-                .filter(|c| {
-                    c.path.as_deref() == Some(path) && (c.old_lineno, c.new_lineno) == (old, new)
-                })
-                .collect();
-            inline_comment_card(
-                ui,
-                palette,
-                diff_view,
-                comment_diffs,
-                changed_files,
-                pr,
-                path,
-                new,
-                &thread,
-                action,
-            );
-        }
-    }
-}
-
-/// The collapsed summary of a resolved thread (pull-requests.md §11): a tick,
-/// "Resolved · N comment(s)" and a chevron that points down once expanded. The whole
-/// row is the click target; returns whether it was clicked (the caller toggles).
-fn resolved_header_row(ui: &mut egui::Ui, palette: &Palette, count: usize, expanded: bool) -> bool {
-    let label = if count == 1 {
-        "Resolved · 1 comment".to_owned()
-    } else {
-        format!("Resolved · {count} comments")
-    };
-    let (rect, response, hovered) = clickable(
-        ui,
-        egui::vec2(ui.available_width(), RESOLVED_ROW_HEIGHT),
-        true,
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Comment",
+        font,
+        ink,
     );
-    let fill = if hovered {
-        palette.bg_surface_hover
-    } else {
-        palette.bg_surface
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(CARD_RADIUS),
-        fill,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    let cy = rect.center().y;
-    let tick_x = rect.left() + 16.0;
-    paint_icon(
-        painter,
-        egui::pos2(tick_x, cy),
-        14.0,
-        Icon::Check,
-        palette.git_added,
-    );
-    painter.text(
-        egui::pos2(tick_x + 14.0, cy),
-        egui::Align2::LEFT_CENTER,
-        &label,
-        egui::FontId::proportional(META_SIZE),
-        palette.text_secondary,
-    );
-    let chevron = if expanded {
-        Icon::ChevronDown
-    } else {
-        Icon::ChevronRight
-    };
-    paint_icon(
-        painter,
-        egui::pos2(rect.right() - 16.0, cy),
-        14.0,
-        chevron,
-        palette.text_muted,
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Comment"));
     response.clicked()
 }
 
-/// One inline thread as a clickable card: the code snippet (GitHub's `diff_hunk`,
-/// else a window of the loaded diff for the selected file), then the comments, then
-/// a Reply affordance that mirrors the diff overlay's (pull-requests.md §11). The
-/// reply state lives in the shared `diff_view`, so opening a reply here also opens
-/// it on the overlay.
+/// A full-strength 1px rule across the available width. The file list's `row_separator`
+/// is alpha'd down for dense rows, which makes it vanish inside a framed input — the bar
+/// under a field has to read as a real edge.
+fn hairline(ui: &mut egui::Ui, palette: &Palette) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+}
+
+/// A block raised one step above the card it sits in (the canvas's `surf2`/`border2`):
+/// the open-thread blocks and the composer inside the conversation card.
+fn raised_frame(palette: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(palette.bg_surface_hover)
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_input))
+        .corner_radius(egui::CornerRadius::same(BLOCK_RADIUS))
+        .inner_margin(egui::Margin::same(14))
+}
+
+/// `1 comment` / `3 comments` — the tally grammar of the conversation card.
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// A thread that still needs attention (pull-requests.md §11): a raised block inside the
+/// conversation card — its `path:line` and the code it hangs on when it is line-anchored,
+/// the comments, then the Reply / Resolve controls.
 #[allow(clippy::too_many_arguments)]
-fn inline_comment_card(
+fn open_thread_block(
     ui: &mut egui::Ui,
     palette: &Palette,
     diff_view: &mut DiffViewState,
     diffs: &[&FileDiff],
     files: &[CommitFile],
     pr: &PullRequest,
-    path: &str,
-    new: Option<u32>,
-    thread: &[&PrComment],
+    thread: &ConvThread<'_>,
+    now: i64,
     action: &mut PullRequestsPageAction,
 ) {
-    ui.add_space(GAP_SM);
-    let collapse_key = thread
-        .first()
-        .filter(|c| c.resolved)
-        .and_then(|_| thread.iter().find_map(|c| c.id));
-    if let Some(id) = collapse_key {
-        let expanded = diff_view.is_resolved_expanded(id);
-        if resolved_header_row(ui, palette, thread.len(), expanded) {
-            diff_view.toggle_resolved(id);
-        }
-        if !expanded {
-            return;
-        }
+    raised_frame(palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        thread_anchor_label(ui, palette, thread);
+        thread_snippet(ui, palette, diffs, files, thread, action);
+        thread_members(ui, palette, pr, &thread.comments, now);
         ui.add_space(GAP_SM);
-    }
-    let now = now_epoch_secs();
-    let snippet = inline_snippet(diffs, path, new, thread);
-    let open_label = match new {
+        match thread.root_id() {
+            // Line-anchored and posted: the shared Reply + Resolve pair, whose handles are
+            // the root's comment id and (GitHub) its review-thread node id.
+            Some(root_id) if thread.path.is_some() => center_reply_block(
+                ui,
+                palette,
+                diff_view,
+                root_id,
+                thread.resolved(),
+                thread.thread_id(),
+                action,
+            ),
+            // PR-level: Reply only — a conversation comment carries no resolve handle.
+            _ => conversation_reply_block(
+                ui,
+                palette,
+                diff_view,
+                thread.index,
+                thread.root_id(),
+                action,
+            ),
+        }
+    });
+    ui.add_space(GAP_MD);
+}
+
+/// The `path:line` a thread hangs on, in the monospace file grammar. Nothing for a
+/// PR-level thread, which hangs on the PR itself.
+fn thread_anchor_label(ui: &mut egui::Ui, palette: &Palette, thread: &ConvThread<'_>) {
+    let Some(label) = thread.anchor_label() else {
+        return;
+    };
+    ui.label(
+        egui::RichText::new(label)
+            .size(CONV_MONO_SIZE)
+            .monospace()
+            .color(palette.text_secondary),
+    );
+    ui.add_space(GAP_SM);
+}
+
+/// The few lines of code a line-anchored thread was left on, and the click that opens
+/// the file there (GitHub's own hunk, else a window of the loaded diff). With no snippet
+/// to click — Bitbucket, file not loaded — the affordance degrades to a text link.
+fn thread_snippet(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diffs: &[&FileDiff],
+    files: &[CommitFile],
+    thread: &ConvThread<'_>,
+    action: &mut PullRequestsPageAction,
+) {
+    let Some(path) = thread.path else {
+        return;
+    };
+    let open_label = match thread.line {
         Some(line) => format!("Open {path} line {line}"),
         None => format!("Open {path}"),
     };
-    let mut open_clicked = false;
-    comment_frame(palette).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        // The code preview is the "open in diff" target, so the comment text below
-        // stays selectable (not buried under a whole-card click sense).
-        if !snippet.is_empty() {
-            let snippet_response = code_snippet(ui, palette, path, &snippet)
-                .interact(egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            snippet_response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &open_label)
-            });
-            open_clicked |= snippet_response.clicked();
-            ui.add_space(GAP_SM);
-        }
-        thread_members(ui, palette, pr, thread, now);
-        // No hunk and no open diff to window (Bitbucket): keep the file reachable with a
-        // slim text affordance, since there's no snippet to click.
-        if snippet.is_empty() {
-            ui.add_space(GAP_XS);
-            let resp = ui
-                .add(
-                    egui::Label::new(
-                        egui::RichText::new(&open_label)
-                            .size(META_SIZE)
-                            .color(palette.accent),
-                    )
-                    .sense(egui::Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            open_clicked |= resp.clicked();
-        }
-        // The reply / resolve controls sit in the card's foot. The reply target and the
-        // Bitbucket resolve handle are both the thread root's forge id.
-        if let Some(reply_id) = thread.iter().find_map(|c| c.id) {
-            let resolved = thread.first().is_some_and(|c| c.resolved);
-            let thread_id = thread.iter().find_map(|c| c.thread_id.clone());
-            ui.add_space(GAP_SM);
-            center_reply_block(
-                ui, palette, diff_view, reply_id, resolved, thread_id, action,
-            );
-        }
-    });
+    let snippet = inline_snippet(diffs, path, thread.line, &thread.comments);
+    let open_clicked = if snippet.is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&open_label)
+                    .size(CONV_META_SIZE)
+                    .color(palette.accent),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    } else {
+        // The code preview is the "open in diff" target, so the comment text below stays
+        // selectable (not buried under a whole-block click sense).
+        let response = code_snippet(ui, palette, path, &snippet)
+            .interact(egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &open_label));
+        response.clicked()
+    };
+    ui.add_space(GAP_SM);
     if open_clicked {
         if let Some(idx) = files.iter().position(|f| f.path == path) {
-            action.open_inline_comment = Some((idx, new));
+            action.open_inline_comment = Some((idx, thread.line));
         }
     }
+}
+
+/// The resolved threads folded into **one** block (pull-requests.md §11): a summary
+/// header (*N threads · M comments · K files*) over one row per thread — its file and
+/// line, an excerpt, its participants and its last activity — each expanding in place to
+/// the code, the comments and the Reply / Reopen controls. Resolved work is history: it
+/// stays reachable without being what the review reads first.
+#[allow(clippy::too_many_arguments)]
+fn resolved_group(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff_view: &mut DiffViewState,
+    diffs: &[&FileDiff],
+    files: &[CommitFile],
+    pr: &PullRequest,
+    threads: &[&ConvThread<'_>],
+    now: i64,
+    action: &mut PullRequestsPageAction,
+) {
+    ui.add_space(GAP_MD);
+    let comments: usize = threads.iter().map(|t| t.comments.len()).sum();
+    let mut paths: Vec<&str> = Vec::new();
+    for thread in threads {
+        if let Some(path) = thread.path {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    let mut summary = format!(
+        "{} · {}",
+        plural(threads.len(), "thread"),
+        plural(comments, "comment")
+    );
+    if !paths.is_empty() {
+        summary.push_str(&format!(" · {}", plural(paths.len(), "file")));
+    }
+    let open_id = egui::Id::new(("pr_resolved_group", pr.url.as_str()));
+    let mut open: bool = ui.data(|d| d.get_temp(open_id).unwrap_or(true));
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+        .corner_radius(egui::CornerRadius::same(BLOCK_RADIUS))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            if resolved_group_header(ui, palette, &summary, open) {
+                open = !open;
+            }
+            if !open {
+                return;
+            }
+            let last = threads.len().saturating_sub(1);
+            for (i, thread) in threads.iter().enumerate() {
+                row_separator(ui, palette);
+                let key = thread.root_id();
+                let expanded = key.is_some_and(|id| diff_view.is_resolved_expanded(id));
+                if resolved_thread_row(ui, palette, thread, now, expanded, i == last) {
+                    if let Some(id) = key {
+                        diff_view.toggle_resolved(id);
+                    }
+                }
+                if expanded {
+                    resolved_thread_body(
+                        ui, palette, diff_view, diffs, files, pr, thread, now, action,
+                    );
+                }
+            }
+        });
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+}
+
+/// The resolved block's head: a tick, *Resolved*, the tally of what is folded away, and
+/// a Show / Hide chevron. The whole row is the click target; returns whether it was
+/// clicked (the caller toggles).
+fn resolved_group_header(ui: &mut egui::Ui, palette: &Palette, summary: &str, open: bool) -> bool {
+    let (rect, response, hovered) = clickable(
+        ui,
+        egui::vec2(ui.available_width(), RESOLVED_HEADER_HEIGHT),
+        true,
+    );
+    // Rounded to match the block it heads: all four corners while it *is* the block
+    // (folded), only the top two once the rows show below it.
+    let radius = if open {
+        egui::CornerRadius {
+            nw: BLOCK_RADIUS,
+            ne: BLOCK_RADIUS,
+            sw: 0,
+            se: 0,
+        }
+    } else {
+        egui::CornerRadius::same(BLOCK_RADIUS)
+    };
+    let title_font = egui::FontId::new(CONV_AUTHOR_SIZE, crate::theme::medium_family(ui.ctx()));
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, radius, palette.bg_surface_hover);
+    }
+    let cy = rect.center().y;
+    let mut x = rect.left() + PAD_X;
+    paint_icon(
+        painter,
+        egui::pos2(x + STATUS_ICON / 2.0, cy),
+        STATUS_ICON,
+        Icon::CheckCircle,
+        palette.git_added,
+    );
+    x += STATUS_ICON + GAP_MD;
+    let title = painter.layout_no_wrap("Resolved".to_owned(), title_font, palette.text_primary);
+    painter.galley(
+        egui::pos2(x, cy - title.size().y / 2.0),
+        title.clone(),
+        palette.text_primary,
+    );
+    x += title.size().x + GAP_MD;
+    painter.text(
+        egui::pos2(x, cy),
+        egui::Align2::LEFT_CENTER,
+        summary,
+        egui::FontId::proportional(CONV_META_SIZE),
+        palette.text_muted,
+    );
+    let chevron_x = rect.right() - PAD_X - STATUS_ICON / 2.0;
+    paint_icon(
+        painter,
+        egui::pos2(chevron_x, cy),
+        STATUS_ICON,
+        if open {
+            Icon::ChevronUp
+        } else {
+            Icon::ChevronDown
+        },
+        palette.text_muted,
+    );
+    painter.text(
+        egui::pos2(chevron_x - STATUS_ICON / 2.0 - GAP_SM, cy),
+        egui::Align2::RIGHT_CENTER,
+        if open { "Hide" } else { "Show" },
+        egui::FontId::proportional(CONV_META_SIZE),
+        palette.text_muted,
+    );
+    let label = format!("Resolved · {summary}");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.clicked()
+}
+
+/// One folded thread inside the resolved block: `path:line` and its comment tally over a
+/// one-line excerpt, with the participants' avatars, the last activity and a chevron on
+/// the right. The whole row toggles it open; returns whether it was clicked.
+fn resolved_thread_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    thread: &ConvThread<'_>,
+    now: i64,
+    expanded: bool,
+    last: bool,
+) -> bool {
+    let (rect, response, hovered) = clickable(
+        ui,
+        egui::vec2(ui.available_width(), RESOLVED_ROW_HEIGHT),
+        true,
+    );
+    // The bottom corners are the block's own, so a hovered last row must not paint over
+    // them — unless its body follows below.
+    let radius = if last && !expanded {
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: BLOCK_RADIUS,
+            se: BLOCK_RADIUS,
+        }
+    } else {
+        egui::CornerRadius::ZERO
+    };
+    let anchor = thread
+        .anchor_label()
+        .unwrap_or_else(|| "Conversation".to_owned());
+    let count = plural(thread.comments.len(), "comment");
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, radius, palette.bg_surface_hover);
+    }
+    // The right-hand cluster is laid out from the right edge; the text column takes what
+    // is left, its excerpt elided rather than run under the avatars.
+    let chevron_x = rect.right() - PAD_X - STATUS_ICON / 2.0;
+    paint_icon(
+        painter,
+        egui::pos2(chevron_x, rect.center().y),
+        STATUS_ICON,
+        if expanded {
+            Icon::ChevronUp
+        } else {
+            Icon::ChevronDown
+        },
+        palette.text_muted,
+    );
+    let mut right = chevron_x - STATUS_ICON / 2.0 - GAP_SM;
+    let age = thread.last_age(now);
+    if !age.is_empty() {
+        let galley = painter.layout_no_wrap(
+            age,
+            egui::FontId::proportional(CONV_META_SIZE),
+            palette.text_muted,
+        );
+        painter.galley(
+            egui::pos2(
+                right - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley.clone(),
+            palette.text_muted,
+        );
+        right -= galley.size().x + GAP_MD;
+    }
+    for who in thread.participants().iter().take(RESOLVED_AVATAR_MAX).rev() {
+        right -= RESOLVED_AVATAR / 2.0;
+        crate::ui::detail::paint_author_avatar(
+            painter,
+            palette,
+            who,
+            egui::pos2(right, rect.center().y),
+            RESOLVED_AVATAR,
+        );
+        right -= RESOLVED_AVATAR / 2.0 + GAP_XS;
+    }
+    let left = rect.left() + RESOLVED_ROW_INDENT;
+    let anchor_galley = painter.layout_no_wrap(
+        anchor.clone(),
+        egui::FontId::monospace(CONV_MONO_SIZE),
+        palette.text_primary,
+    );
+    let top_y = rect.top() + 11.0 + anchor_galley.size().y / 2.0;
+    painter.galley(
+        egui::pos2(left, top_y - anchor_galley.size().y / 2.0),
+        anchor_galley.clone(),
+        palette.text_primary,
+    );
+    painter.text(
+        egui::pos2(left + anchor_galley.size().x + GAP_SM, top_y),
+        egui::Align2::LEFT_CENTER,
+        &count,
+        egui::FontId::proportional(CONV_META_SIZE),
+        palette.text_muted,
+    );
+    let excerpt = thread.excerpt();
+    if !excerpt.is_empty() {
+        let job = elided_job(
+            excerpt,
+            egui::FontId::proportional(MD_CODE_SIZE),
+            palette.text_secondary,
+            (right - GAP_MD - left).max(40.0),
+        );
+        let galley = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(left, rect.bottom() - 11.0 - galley.size().y),
+            galley,
+            palette.text_secondary,
+        );
+    }
+    let label = format!("{anchor} · {count}");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.clicked()
+}
+
+/// A single line of text elided with an ellipsis rather than wrapped — the excerpt of a
+/// folded thread, whose whole point is to stay one row tall.
+fn elided_job(
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::text::TextFormat {
+            font_id: font,
+            color,
+            ..Default::default()
+        },
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width,
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    job
+}
+
+/// A folded thread opened in place: the code it hangs on, its comments, the note that it
+/// is resolved, and the Reply / Reopen controls — indented under its row so the block
+/// still reads as one list (pull-requests.md §11).
+#[allow(clippy::too_many_arguments)]
+fn resolved_thread_body(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    diff_view: &mut DiffViewState,
+    diffs: &[&FileDiff],
+    files: &[CommitFile],
+    pr: &PullRequest,
+    thread: &ConvThread<'_>,
+    now: i64,
+    action: &mut PullRequestsPageAction,
+) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: RESOLVED_ROW_INDENT as i8,
+            right: PAD_X as i8,
+            top: 0,
+            bottom: 14,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            thread_snippet(ui, palette, diffs, files, thread, action);
+            thread_members(ui, palette, pr, &thread.comments, now);
+            ui.add_space(GAP_SM);
+            resolved_note(ui, palette, thread, now);
+            if let Some(root_id) = thread.root_id() {
+                center_reply_block(
+                    ui,
+                    palette,
+                    diff_view,
+                    root_id,
+                    true,
+                    thread.thread_id(),
+                    action,
+                );
+            }
+        });
+}
+
+/// The note closing an opened resolved thread. The forges do not tell us **who**
+/// resolved it (neither `reviewThread.isResolved` nor Bitbucket's `resolution` reaches
+/// the model), so the row states what is known: that it is resolved, and when it was
+/// last spoken on.
+fn resolved_note(ui: &mut egui::Ui, palette: &Palette, thread: &ConvThread<'_>, now: i64) {
+    let age = thread.last_age(now);
+    let text = if age.is_empty() {
+        "Resolved".to_owned()
+    } else {
+        format!("Resolved · last reply {age}")
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (icon, _) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+        paint_icon(
+            ui.painter(),
+            icon.center(),
+            13.0,
+            Icon::Check,
+            palette.git_added,
+        );
+        ui.label(conv_muted(palette, &text));
+    });
 }
 
 /// The center card's Reply affordance: a "Reply" pill that swaps to the shared
@@ -1274,168 +1995,582 @@ fn source_window_snippet(diff: &FileDiff, anchor: u32) -> Vec<SnippetLine> {
         .collect()
 }
 
-/// Full-width header for the center PR detail. It mirrors the accepted mockup:
-/// Back on the left, title + context, compact PR-level actions on the right, then
-/// a subtle divider before the existing detail content.
-fn review_detail_header(
+/// Full-width header of the review surface (pull-requests.md §11), three stacked
+/// rows: Back + title + `#number` + the health cluster + the verdict icon group +
+/// **Merge**; then the identity line (state chip, author, branch flow, age); then
+/// the Conversation / Files / Commits tabs. Returns the open tab.
+fn review_header(
     ui: &mut egui::Ui,
     palette: &Palette,
-    review: &PrReviewView<'_>,
+    review: &mut PrReviewView<'_>,
+    rect: egui::Rect,
     action: &mut PullRequestsPageAction,
-) {
+) -> PrTab {
     let pr = review.pr;
-    let width = ui.available_width();
-    let number = format!("#{}", pr.number);
-    let number_galley = ui.painter().layout_no_wrap(
-        number.clone(),
-        egui::FontId::proportional(CHIP_SIZE),
-        palette.text_secondary,
+    ui.painter().rect_filled(rect, 0, palette.bg_surface);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
-    let number_w = number_galley.size().x + 18.0;
-    let actions_w = DETAIL_ACTION_OPEN_WIDTH
-        + DETAIL_HEADER_GAP
-        + DETAIL_ACTION_CHECKOUT_WIDTH
-        + DETAIL_HEADER_GAP
-        + number_w;
-    let wide = width >= 560.0;
-    let height = if wide {
-        DETAIL_HEADER_WIDE_HEIGHT
-    } else {
-        DETAIL_HEADER_STACKED_HEIGHT
-    };
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
 
-    let back_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.left(), rect.top() + 4.0),
-        egui::vec2(DETAIL_HEADER_BACK_SIZE, DETAIL_HEADER_BACK_SIZE),
+    // ── row 1: identity + actions ────────────────────────────────────────────
+    let row1 = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(rect.top(), rect.top() + REVIEW_HEADER_ROW1),
+    );
+    let center_y = row1.center().y;
+    let back_rect = egui::Rect::from_center_size(
+        egui::pos2(
+            row1.left() + PANEL_PAD_X + DETAIL_ACTION_HEIGHT / 2.0,
+            center_y,
+        ),
+        egui::vec2(DETAIL_ACTION_HEIGHT, DETAIL_ACTION_HEIGHT),
     );
     if detail_back_button(ui, palette, back_rect) {
         action.back = true;
     }
 
-    let title_left = back_rect.right() + 12.0;
-    let actions_left = if wide {
-        (rect.right() - actions_w).max(title_left + 180.0)
-    } else {
-        rect.right() - number_w
-    };
-    let title_right = (actions_left - 14.0).max(title_left + 40.0);
-    let title_clip = egui::Rect::from_min_max(
-        egui::pos2(title_left, rect.top()),
-        egui::pos2(title_right, rect.bottom()),
+    // Right-hand cluster, laid out from the right edge.
+    let mut x = row1.right() - PANEL_PAD_X;
+    x -= MERGE_HEADER_W;
+    let merge_rect = egui::Rect::from_min_size(
+        egui::pos2(x, center_y - DETAIL_ACTION_HEIGHT / 2.0),
+        egui::vec2(MERGE_HEADER_W, DETAIL_ACTION_HEIGHT),
     );
-    let title_painter = ui.painter().with_clip_rect(title_clip);
-    let title_galley = ui.painter().layout_no_wrap(
-        pr.title.clone(),
+    if merge_button(ui, palette, merge_rect, "pr_header_merge") {
+        action.merge_open = true;
+    }
+    x -= GAP_SM;
+
+    // Finish review: verdict, summary and Submit together in one popover, so the
+    // choice and the button that acts on it are never on opposite screen edges.
+    x -= FINISH_BTN_W;
+    let finish_rect = egui::Rect::from_min_size(
+        egui::pos2(x, center_y - DETAIL_ACTION_HEIGHT / 2.0),
+        egui::vec2(FINISH_BTN_W, DETAIL_ACTION_HEIGHT),
+    );
+    finish_review_button(ui, palette, review, finish_rect, action);
+    // A wider gap keeps the two action buttons apart from the navigation icons.
+    x -= GAP_MD + GAP_SM;
+
+    // PR-level actions, icon-only at this size.
+    for (icon, label, id) in [
+        (Icon::GitBranch, "Checkout", "pr_detail_checkout"),
+        (
+            Icon::ExternalLink,
+            "Open in browser",
+            "pr_detail_open_browser",
+        ),
+    ] {
+        x -= DETAIL_ACTION_HEIGHT;
+        let r = egui::Rect::from_min_size(
+            egui::pos2(x, center_y - DETAIL_ACTION_HEIGHT / 2.0),
+            egui::vec2(DETAIL_ACTION_HEIGHT, DETAIL_ACTION_HEIGHT),
+        );
+        if icon_action(ui, palette, r, icon, label, id) {
+            match label {
+                "Checkout" => action.checkout = true,
+                _ => action.open_url = Some(pr.url.clone()),
+            }
+        }
+        x -= GAP_XS;
+    }
+
+    // Health cluster: passing checks, unresolved threads, mergeability. A hairline
+    // marks it off from the actions — it is read-only, and its icons would otherwise
+    // read as three more buttons.
+    x -= GAP_MD;
+    ui.painter().vline(
+        x,
+        egui::Rangef::new(center_y - 9.0, center_y + 9.0),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+    x -= GAP_MD;
+    x = health_cluster(ui, palette, review, x, center_y);
+    x -= GAP_MD;
+
+    let number = format!("#{}", pr.number);
+    let number_galley = ui.painter().layout_no_wrap(
+        number.clone(),
+        egui::FontId::monospace(CHIP_SIZE),
+        palette.text_muted,
+    );
+    x -= number_galley.size().x;
+    let number_rect = egui::Rect::from_min_size(
+        egui::pos2(x, center_y - number_galley.size().y / 2.0),
+        number_galley.size(),
+    );
+    ui.painter()
+        .galley(number_rect.min, number_galley, palette.text_muted);
+    detail_label_accessibility(ui, number_rect, "pr_detail_number", number);
+    x -= GAP_MD;
+
+    let title_left = back_rect.right() + GAP_MD;
+    let title_clip = egui::Rect::from_min_max(
+        egui::pos2(title_left, row1.top()),
+        egui::pos2(x.max(title_left + 40.0), row1.bottom()),
+    );
+    cell_text(
+        ui,
+        &pr.title,
         egui::FontId::new(
             DETAIL_HEADER_TITLE_SIZE,
             crate::theme::medium_family(ui.ctx()),
         ),
         palette.text_primary,
-    );
-    title_painter.galley(
-        egui::pos2(title_left, rect.top() + 8.0),
-        title_galley,
-        palette.text_primary,
-    );
-    let subtitle = format!("{} · {} → {}", pr.author, pr.source_branch, pr.dest_branch);
-    let subtitle_galley = ui.painter().layout_no_wrap(
-        subtitle.clone(),
-        egui::FontId::proportional(DETAIL_HEADER_SUBTITLE_SIZE),
-        palette.text_secondary,
-    );
-    title_painter.galley(
-        egui::pos2(title_left, rect.top() + 30.0),
-        subtitle_galley,
-        palette.text_secondary,
+        title_left,
+        center_y,
+        title_clip.width(),
     );
     detail_label_accessibility(ui, title_clip, "pr_detail_header_title", pr.title.clone());
+
+    // ── row 2: state chip, author, branch flow, age ──────────────────────────
+    let row2 = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(row1.bottom(), row1.bottom() + REVIEW_HEADER_ROW2),
+    );
+    let sub_y = row2.center().y;
+    let (state_label, state_color) = match pr.state {
+        PrState::Open => ("Open", palette.git_added),
+        PrState::Draft => ("Draft", palette.text_muted),
+    };
+    let mut sx = state_chip(ui, state_label, state_color, title_left, sub_y);
+    sx += GAP_MD;
+    paint_avatar(
+        ui.painter(),
+        palette,
+        &pr.author,
+        egui::pos2(sx + SUB_AVATAR / 2.0, sub_y),
+        SUB_AVATAR,
+        None,
+    );
+    sx += SUB_AVATAR + GAP_XS + 2.0;
+    let created = review
+        .detail
+        .map(|d| crate::pull_requests::model::relative_age(&d.created_at, now_epoch_secs()))
+        .filter(|age| !age.is_empty())
+        .map(|age| format!(" · {age}"))
+        .unwrap_or_default();
+    let subtitle = format!(
+        "{} · {} → {}{}",
+        pr.author, pr.source_branch, pr.dest_branch, created
+    );
+    cell_text(
+        ui,
+        &subtitle,
+        egui::FontId::proportional(DETAIL_HEADER_SUBTITLE_SIZE),
+        palette.text_secondary,
+        sx,
+        sub_y,
+        (row2.right() - PANEL_PAD_X - sx).max(0.0),
+    );
     detail_label_accessibility(
         ui,
         egui::Rect::from_min_max(
-            egui::pos2(title_left, rect.top() + 28.0),
-            egui::pos2(title_right, rect.top() + 46.0),
+            egui::pos2(sx, row2.top()),
+            egui::pos2(row2.right(), row2.bottom()),
         ),
         "pr_detail_header_subtitle",
         subtitle,
     );
 
-    if wide {
-        let y = rect.top() + (DETAIL_HEADER_WIDE_HEIGHT - DETAIL_ACTION_HEIGHT) / 2.0;
-        let mut x = rect.right() - actions_w;
-        if detail_action_button(
-            ui,
-            palette,
-            egui::Rect::from_min_size(
-                egui::pos2(x, y),
-                egui::vec2(DETAIL_ACTION_OPEN_WIDTH, DETAIL_ACTION_HEIGHT),
-            ),
-            Icon::ExternalLink,
-            "Open in browser",
-            "pr_detail_open_browser",
-        ) {
-            action.open_url = Some(pr.url.clone());
-        }
-        x += DETAIL_ACTION_OPEN_WIDTH + DETAIL_HEADER_GAP;
-        if detail_action_button(
-            ui,
-            palette,
-            egui::Rect::from_min_size(
-                egui::pos2(x, y),
-                egui::vec2(DETAIL_ACTION_CHECKOUT_WIDTH, DETAIL_ACTION_HEIGHT),
-            ),
-            Icon::GitBranch,
-            "Checkout",
-            "pr_detail_checkout",
-        ) {
-            action.checkout = true;
-        }
-        x += DETAIL_ACTION_CHECKOUT_WIDTH + DETAIL_HEADER_GAP;
-        detail_number_chip(ui, palette, egui::pos2(x, y + 2.0), number, number_galley);
-    } else {
-        detail_number_chip(
-            ui,
-            palette,
-            egui::pos2(rect.right() - number_w, rect.top() + 9.0),
-            number,
-            number_galley,
+    // ── row 3: tabs ──────────────────────────────────────────────────────────
+    let row3 = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(row2.bottom(), rect.bottom()),
+    );
+    review_tabs(ui, palette, review, row3, action)
+}
+
+/// Small filled state chip ("Open" / "Draft"). Returns its right edge.
+fn state_chip(ui: &egui::Ui, label: &str, color: egui::Color32, left: f32, center_y: f32) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(CHIP_SIZE, crate::theme::medium_family(ui.ctx())),
+        color,
+    );
+    let h = CHIP_SIZE + 9.0;
+    let chip = egui::Rect::from_min_size(
+        egui::pos2(left, center_y - h / 2.0),
+        egui::vec2(galley.size().x + 16.0, h),
+    );
+    ui.painter()
+        .rect_filled(chip, h / 2.0, with_alpha(color, 36));
+    ui.painter()
+        .galley(chip.center() - galley.size() / 2.0, galley, color);
+    chip.right()
+}
+
+/// Passing checks · unresolved threads · mergeability, right-to-left from `right`.
+/// Returns the left edge it reached.
+fn health_cluster(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    right: f32,
+    center_y: f32,
+) -> f32 {
+    let passing = review
+        .detail
+        .map(|d| {
+            d.check_runs
+                .iter()
+                .filter(|r| r.status == Checks::Passing)
+                .count()
+        })
+        .unwrap_or(0);
+    let unresolved = review
+        .existing
+        .values()
+        .flat_map(|anchors| anchors.values())
+        .filter(|thread| thread.first().is_some_and(|root| !root.resolved))
+        .count();
+
+    let mut items: Vec<(Icon, String, egui::Color32, &'static str)> = Vec::new();
+    if passing > 0 {
+        items.push((
+            Icon::CheckCircle2,
+            passing.to_string(),
+            palette.git_added,
+            "checks passing",
+        ));
+    }
+    if unresolved > 0 {
+        items.push((
+            Icon::MessageSquare,
+            unresolved.to_string(),
+            palette.git_modified,
+            "unresolved threads",
+        ));
+    }
+    items.push(match review.pr.checks {
+        Checks::Failing => (
+            Icon::GitMerge,
+            String::new(),
+            palette.git_deleted,
+            "not mergeable",
+        ),
+        _ => (
+            Icon::GitMerge,
+            String::new(),
+            palette.git_added,
+            "mergeable",
+        ),
+    });
+
+    let mut x = right;
+    for (icon, text, color, hint) in items.into_iter().rev() {
+        let galley = (!text.is_empty()).then(|| {
+            ui.painter()
+                .layout_no_wrap(text.clone(), egui::FontId::proportional(META_SIZE), color)
+        });
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x + 4.0);
+        x -= STATUS_ICON + text_w;
+        paint_icon(
+            ui.painter(),
+            egui::pos2(x + STATUS_ICON / 2.0, center_y),
+            STATUS_ICON,
+            icon,
+            color,
         );
-        let y = rect.top() + 58.0;
-        if detail_action_button(
-            ui,
-            palette,
-            egui::Rect::from_min_size(
-                egui::pos2(title_left, y),
-                egui::vec2(DETAIL_ACTION_OPEN_WIDTH, DETAIL_ACTION_HEIGHT),
-            ),
-            Icon::ExternalLink,
-            "Open in browser",
-            "pr_detail_open_browser",
-        ) {
-            action.open_url = Some(pr.url.clone());
+        if let Some(galley) = galley {
+            ui.painter().galley(
+                egui::pos2(x + STATUS_ICON + 4.0, center_y - galley.size().y / 2.0),
+                galley,
+                color,
+            );
         }
-        if detail_action_button(
-            ui,
-            palette,
-            egui::Rect::from_min_size(
-                egui::pos2(title_left + DETAIL_ACTION_OPEN_WIDTH + DETAIL_HEADER_GAP, y),
-                egui::vec2(DETAIL_ACTION_CHECKOUT_WIDTH, DETAIL_ACTION_HEIGHT),
-            ),
-            Icon::GitBranch,
-            "Checkout",
-            "pr_detail_checkout",
-        ) {
-            action.checkout = true;
+        let hit = egui::Rect::from_min_size(
+            egui::pos2(x, center_y - STATUS_ICON / 2.0),
+            egui::vec2(STATUS_ICON + text_w, STATUS_ICON),
+        );
+        let label = if text.is_empty() {
+            hint.to_owned()
+        } else {
+            format!("{text} {hint}")
+        };
+        ui.interact(hit, ui.id().with(("pr_health", hint)), egui::Sense::hover())
+            .on_hover_text(label.clone())
+            .widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone())
+            });
+        x -= GAP_SM;
+    }
+    x
+}
+
+/// **Finish review** in the header: an outlined button badged with the pending draft
+/// count, opening the composer as a popover (pull-requests.md §11). Verdict, summary
+/// and Submit sit together there — the header no longer carries a verdict selector a
+/// screen away from the button that acts on it.
+fn finish_review_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &mut PrReviewView<'_>,
+    rect: egui::Rect,
+    action: &mut PullRequestsPageAction,
+) {
+    let drafts = crate::review::count(review.draft);
+    let response = ui.interact(rect, ui.id().with("pr_finish_review"), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, RADIUS_BUTTON, palette.bg_surface_hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let center_y = rect.center().y;
+    let badge = (drafts > 0).then(|| drafts.to_string());
+    let badge_w = badge.as_ref().map_or(0.0, |t| 6.0 + t.len() as f32 * 7.0);
+    cell_text(
+        ui,
+        "Finish review",
+        egui::FontId::new(CHIP_SIZE, crate::theme::medium_family(ui.ctx())),
+        palette.text_primary,
+        rect.left() + 10.0,
+        center_y,
+        (rect.width() - 20.0 - badge_w).max(0.0),
+    );
+    if let Some(text) = &badge {
+        ui.painter().text(
+            egui::pos2(rect.right() - 10.0, center_y),
+            egui::Align2::RIGHT_CENTER,
+            text,
+            egui::FontId::proportional(META_SIZE),
+            palette.accent,
+        );
+    }
+    let label = match drafts {
+        0 => "Finish review".to_owned(),
+        n => format!("Finish review, {n} pending"),
+    };
+    response.widget_info(move || {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+    });
+
+    let shown = egui::Popup::from_toggle_button_response(&response)
+        .align(egui::RectAlign::BOTTOM_END)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(COMPOSER_POPOVER_W);
+            review_composer(ui, palette, review, action);
+        });
+    // The popover reads `Esc` itself (egui closes it): swallow the key so the press
+    // that folded the composer away doesn't also step out of the review (§11).
+    if shown.is_some() {
+        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    }
+}
+
+/// The composer's verdict group (Comment · Request changes · Approve). It selects
+/// what Submit will send, right above the button itself.
+fn verdict_icon_group(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    verdict: &mut ReviewVerdict,
+) {
+    ui.painter().rect_stroke(
+        rect,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let options = [
+        (
+            ReviewVerdict::Comment,
+            Icon::MessageSquarePlus,
+            "Comment-only review",
+        ),
+        (
+            ReviewVerdict::RequestChanges,
+            Icon::FileX,
+            "Request changes",
+        ),
+        (ReviewVerdict::Approve, Icon::Check, "Approve"),
+    ];
+    for (i, (option, icon, label)) in options.into_iter().enumerate() {
+        let cell = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + i as f32 * VERDICT_ICON_W, rect.top()),
+            egui::vec2(VERDICT_ICON_W, rect.height()),
+        );
+        let selected = *verdict == option;
+        let response = ui.interact(
+            cell,
+            ui.id().with(("pr_verdict", label)),
+            egui::Sense::click(),
+        );
+        let tint = match option {
+            ReviewVerdict::Approve => palette.git_added,
+            ReviewVerdict::RequestChanges => palette.git_deleted,
+            ReviewVerdict::Comment => palette.text_secondary,
+        };
+        if selected {
+            ui.painter()
+                .rect_filled(cell, RADIUS_BUTTON, with_alpha(tint, 36));
+        } else if response.hovered() {
+            ui.painter()
+                .rect_filled(cell, RADIUS_BUTTON, palette.bg_surface_hover);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if i > 0 {
+            ui.painter().vline(
+                cell.left(),
+                egui::Rangef::new(cell.top() + 4.0, cell.bottom() - 4.0),
+                egui::Stroke::new(1.0_f32, palette.border_subtle),
+            );
+        }
+        paint_icon(
+            ui.painter(),
+            cell.center(),
+            STATUS_ICON,
+            icon,
+            if selected {
+                tint
+            } else {
+                palette.text_secondary
+            },
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
+        });
+        if response.clicked() {
+            *verdict = option;
         }
     }
+}
 
-    ui.painter().line_segment(
-        [
-            egui::pos2(rect.left(), rect.bottom()),
-            egui::pos2(rect.right(), rect.bottom()),
-        ],
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
+/// A square icon-only header action.
+fn icon_action(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    icon: Icon,
+    label: &str,
+    id: &str,
+) -> bool {
+    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, RADIUS_BUTTON, palette.bg_surface_hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    paint_icon(
+        ui.painter(),
+        rect.center(),
+        STATUS_ICON,
+        icon,
+        palette.text_secondary,
     );
+    let owned = label.to_owned();
+    response
+        .clone()
+        .on_hover_text(owned.clone())
+        .widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, owned.clone())
+        });
+    response.clicked()
+}
+
+/// Conversation / Files / Commits, each with its count. Persisted per PR url in
+/// `ui.data`, so switching PRs starts on the conversation again.
+fn review_tabs(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    rect: egui::Rect,
+    action: &mut PullRequestsPageAction,
+) -> PrTab {
+    let id = egui::Id::new(("pr_review_tab", review.pr.url.as_str()));
+    let mut tab: PrTab = ui.data(|d| d.get_temp(id).unwrap_or_default());
+    // An open file *is* the Files tab — a rail row click drives the center directly,
+    // so the two can never disagree about what the center shows.
+    if review.selected_file.is_some() {
+        tab = PrTab::Files;
+    }
+    let counts = |t: PrTab| match t {
+        PrTab::Conversation => review
+            .detail
+            .map(|d| d.comments.iter().filter(|c| c.path.is_none()).count())
+            .unwrap_or(0),
+        PrTab::Files => review.files.len(),
+    };
+
+    let mut x = rect.left() + PANEL_PAD_X;
+    for candidate in PrTab::ALL {
+        let label = candidate.label();
+        let active = tab == candidate;
+        let galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::new(
+                SECTION_TITLE_SIZE,
+                if active {
+                    crate::theme::medium_family(ui.ctx())
+                } else {
+                    egui::FontFamily::Proportional
+                },
+            ),
+            if active {
+                palette.text_primary
+            } else {
+                palette.text_secondary
+            },
+        );
+        let count = counts(candidate);
+        let count_w = if count > 0 { 22.0 } else { 0.0 };
+        let w = galley.size().x + count_w + 2.0 * TAB_PAD_X;
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, rect.height()));
+        let response = ui.interact(
+            cell,
+            ui.id().with(("pr_review_tab", label)),
+            egui::Sense::click(),
+        );
+        if response.hovered() && !active {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let center_y = cell.center().y;
+        ui.painter().galley(
+            egui::pos2(cell.left() + TAB_PAD_X, center_y - galley.size().y / 2.0),
+            galley,
+            palette.text_primary,
+        );
+        if count > 0 {
+            ui.painter().text(
+                egui::pos2(cell.right() - TAB_PAD_X, center_y),
+                egui::Align2::RIGHT_CENTER,
+                count.to_string(),
+                egui::FontId::proportional(META_SIZE),
+                palette.text_muted,
+            );
+        }
+        if active {
+            ui.painter().hline(
+                egui::Rangef::new(cell.left() + 4.0, cell.right() - 4.0),
+                cell.bottom() - 1.5,
+                egui::Stroke::new(2.0_f32, palette.accent),
+            );
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label.to_owned())
+        });
+        if response.clicked() {
+            tab = candidate;
+            // Leaving Files drops the open file, so coming back to the diff is an
+            // explicit choice rather than a stale selection (pull-requests.md §11).
+            if candidate != PrTab::Files && review.selected_file.is_some() {
+                action.close_file = true;
+            }
+        }
+        x += w;
+    }
+    ui.data_mut(|d| d.insert_temp(id, tab));
+    tab
 }
 
 fn detail_back_button(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect) -> bool {
@@ -1460,82 +2595,6 @@ fn detail_back_button(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect) ->
     response.clicked()
 }
 
-fn detail_action_button(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    rect: egui::Rect,
-    icon: Icon,
-    label: &'static str,
-    id: &'static str,
-) -> bool {
-    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
-    let fill = if response.hovered() {
-        palette.bg_surface_hover
-    } else {
-        palette.bg_surface
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_BUTTON),
-        fill,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    let icon_center = egui::pos2(rect.left() + 13.0, rect.center().y);
-    paint_icon(
-        painter,
-        icon_center,
-        STATUS_ICON,
-        icon,
-        palette.text_secondary,
-    );
-    let label_left = rect.left() + 26.0;
-    let label_clip = egui::Rect::from_min_max(
-        egui::pos2(label_left, rect.top()),
-        egui::pos2(rect.right() - 8.0, rect.bottom()),
-    );
-    let label_painter = painter.with_clip_rect(label_clip);
-    let galley = painter.layout_no_wrap(
-        label.to_owned(),
-        egui::FontId::proportional(12.5),
-        palette.text_primary,
-    );
-    label_painter.galley(
-        egui::pos2(label_left, rect.center().y - galley.size().y / 2.0),
-        galley,
-        palette.text_primary,
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.to_owned())
-    });
-    response.clicked()
-}
-
-fn detail_number_chip(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    pos: egui::Pos2,
-    label: String,
-    galley: std::sync::Arc<egui::Galley>,
-) {
-    let size = galley.size() + egui::vec2(18.0, 8.0);
-    let rect = egui::Rect::from_min_size(pos, size);
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(crate::theme::RADIUS_PILL),
-        palette.bg_canvas,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().galley(
-        rect.center() - galley.size() / 2.0,
-        galley,
-        palette.text_secondary,
-    );
-    detail_label_accessibility(ui, rect, "pr_detail_number", label);
-}
-
 fn detail_label_accessibility(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -1555,6 +2614,7 @@ fn review_file_list(
     view: FileViewMode,
     viewed: &HashSet<String>,
     unread_only: bool,
+    hide_tests: bool,
     collapsed: &mut HashSet<String>,
     action: &mut PullRequestsPageAction,
 ) {
@@ -1574,10 +2634,17 @@ fn review_file_list(
         .files
         .iter()
         .enumerate()
-        .filter_map(|(idx, file)| (!unread_only || !viewed.contains(&file.path)).then_some(idx))
+        .filter(|(_, file)| !unread_only || !viewed.contains(&file.path))
+        .filter(|(_, file)| !hide_tests || !is_test_path(&file.path))
+        .map(|(idx, _)| idx)
         .collect();
     if visible.is_empty() {
-        ui.label(muted(palette, "All files viewed"));
+        let message = if hide_tests && !unread_only {
+            "Only test files changed"
+        } else {
+            "All files viewed"
+        };
+        ui.label(muted(palette, message));
         return;
     }
     // Rows abut with hairline separators, matching the commit-detail file list;
@@ -1873,12 +2940,18 @@ struct MdInline {
 pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
     use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-    let max_width = ui.available_width();
+    // The card around the prose spans its area; the *text* stops at its measure, so a
+    // wide window leaves margin inside the surface instead of 150-character lines (§11).
+    let max_width = ui.available_width().min(CONV_PROSE_MEASURE);
     let new_job = |indent: f32| {
         let mut job = egui::text::LayoutJob::default();
         job.wrap.max_width = (max_width - indent).max(80.0);
         job
     };
+    // Emphasis is carried by the medium face rather than by a brighter ink: prose that
+    // only reaches full contrast where it is bold leaves the rest reading as disabled,
+    // which is what greys a whole description in dark mode (§11).
+    let medium = crate::theme::medium_family(ui.ctx());
     let append = |job: &mut egui::text::LayoutJob,
                   run: &str,
                   s: MdInline,
@@ -1891,14 +2964,12 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
         };
         let family = if s.code {
             egui::FontFamily::Monospace
+        } else if s.strong || heading.is_some() {
+            medium.clone()
         } else {
             egui::FontFamily::Proportional
         };
-        let mut color = if s.strong || heading.is_some() {
-            palette.text_primary
-        } else {
-            palette.text_secondary
-        };
+        let mut color = palette.text_primary;
         if quote {
             color = palette.text_muted;
         }
@@ -1934,22 +3005,24 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
         };
         job.append(run, 0.0, format);
     };
-    let flush = |ui: &mut egui::Ui, job: &mut egui::text::LayoutJob, indent: f32| {
+    let flush = |ui: &mut egui::Ui,
+                 job: &mut egui::text::LayoutJob,
+                 links: &mut Vec<MdLink>,
+                 indent: f32| {
         if job.text.trim().is_empty() {
             *job = new_job(indent);
+            links.clear();
             return;
         }
         let done = std::mem::replace(job, new_job(indent));
+        let runs = std::mem::take(links);
         if indent > 0.0 {
-            // A horizontal layout defaults its labels to no-wrap (Extend), so a long
-            // list item would run off the column and drag the parent's width with it;
-            // force Wrap so the item folds within the reading column.
             ui.horizontal_top(|ui| {
                 ui.add_space(indent);
-                ui.add(egui::Label::new(done).wrap());
+                prose(ui, done, &runs);
             });
         } else {
-            ui.label(done);
+            prose(ui, done, &runs);
         }
         ui.add_space(MD_PARAGRAPH_GAP);
     };
@@ -1961,18 +3034,40 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
     let mut quote_depth: usize = 0;
     let mut in_code_block = false;
     let mut code_block = String::new();
+    let mut table: Option<MdTable> = None;
+    let mut cell: Option<MdCell> = None;
+    let mut in_head = false;
+    // The image being described: its alt text arrives as ordinary text events between
+    // the tags, and belongs to the image, not to the paragraph around it.
+    let mut image: Option<(String, String)> = None;
+    // The link runs of the block being built: where each one sits in the text, so the
+    // laid-out galley can be hit-tested (a `LayoutJob` carries no link of its own).
+    let mut links: Vec<MdLink> = Vec::new();
+    let mut link: Option<(usize, String)> = None;
+    // Bitbucket writes a smart link as `[text](url){: data-inline-card='' }`: without
+    // the attribute-list extension the brace run lands in the text right after the
+    // link, and reads as garbage in the middle of a sentence.
+    let mut after_link = false;
 
     let indent_now = |list: &[Option<u64>], quote: usize| {
         list.len() as f32 * MD_LIST_INDENT + quote as f32 * MD_QUOTE_INDENT
     };
 
-    for event in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH) {
+    // GFM tables and task lists: a PR description that carries a result table is a
+    // table, not a paragraph of pipes.
+    let options =
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    for event in Parser::new_ext(text, options) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => heading = Some(level),
             Event::Start(Tag::Strong) => style.strong = true,
             Event::Start(Tag::Emphasis) => style.emphasis = true,
             Event::Start(Tag::Strikethrough) => style.strike = true,
-            Event::Start(Tag::Link { .. }) => style.link = true,
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                style.link = true;
+                let target = cell.as_ref().map_or(&job, |c| &c.job);
+                link = Some((target.text.chars().count(), dest_url.to_string()));
+            }
             Event::Start(Tag::List(start)) => list_stack.push(start),
             Event::Start(Tag::Item) => {
                 let prefix = match list_stack.last_mut() {
@@ -1991,16 +3086,104 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
                 in_code_block = true;
                 code_block.clear();
             }
+            Event::Start(Tag::Table(aligns)) => {
+                flush(
+                    ui,
+                    &mut job,
+                    &mut links,
+                    indent_now(&list_stack, quote_depth),
+                );
+                table = Some(MdTable {
+                    aligns,
+                    head: Vec::new(),
+                    rows: Vec::new(),
+                });
+            }
+            Event::Start(Tag::TableHead) => in_head = true,
+            Event::Start(Tag::TableRow) => {
+                if let Some(t) = table.as_mut() {
+                    t.rows.push(Vec::new());
+                }
+            }
+            Event::Start(Tag::TableCell) => cell = Some(MdCell::new(new_job(0.0))),
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                image = Some((dest_url.to_string(), String::new()));
+            }
+            Event::End(TagEnd::Image) => {
+                if let Some((url, alt)) = image.take() {
+                    // A cell hangs its pictures under its text — a smoke-test table
+                    // carries its evidence in the Evidence column, and naming the file
+                    // there is not the evidence (§11).
+                    if let Some(cell) = cell.as_mut() {
+                        cell.images.push((url, alt));
+                    } else {
+                        flush(
+                            ui,
+                            &mut job,
+                            &mut links,
+                            indent_now(&list_stack, quote_depth),
+                        );
+                        md_image(ui, palette, &url, &alt);
+                    }
+                }
+            }
+            // A pasted screenshot often arrives as raw `<img src="…">` rather than
+            // markdown; the tag names an image all the same.
+            Event::Html(html) | Event::InlineHtml(html) => {
+                if let Some((url, alt)) = html_img(&html) {
+                    if let Some(cell) = cell.as_mut() {
+                        cell.images.push((url, alt));
+                    } else {
+                        flush(
+                            ui,
+                            &mut job,
+                            &mut links,
+                            indent_now(&list_stack, quote_depth),
+                        );
+                        md_image(ui, palette, &url, &alt);
+                    }
+                }
+            }
+            Event::End(TagEnd::TableCell) => {
+                if let (Some(t), Some(done)) = (table.as_mut(), cell.take()) {
+                    if in_head {
+                        t.head.push(done);
+                    } else if let Some(row) = t.rows.last_mut() {
+                        row.push(done);
+                    }
+                }
+            }
+            Event::End(TagEnd::TableHead) => in_head = false,
+            Event::End(TagEnd::Table) => {
+                if let Some(t) = table.take() {
+                    md_table(ui, palette, t);
+                }
+            }
             Event::End(TagEnd::Heading(_)) => {
-                flush(ui, &mut job, indent_now(&list_stack, quote_depth));
+                flush(
+                    ui,
+                    &mut job,
+                    &mut links,
+                    indent_now(&list_stack, quote_depth),
+                );
                 heading = None;
             }
             Event::End(TagEnd::Paragraph) => {
                 if list_stack.is_empty() {
-                    flush(ui, &mut job, quote_depth as f32 * MD_QUOTE_INDENT);
+                    flush(
+                        ui,
+                        &mut job,
+                        &mut links,
+                        quote_depth as f32 * MD_QUOTE_INDENT,
+                    );
                 }
             }
-            Event::End(TagEnd::Item) => flush(ui, &mut job, indent_now(&list_stack, quote_depth)),
+            Event::End(TagEnd::Item) => flush(
+                ui,
+                &mut job,
+                &mut links,
+                indent_now(&list_stack, quote_depth),
+            ),
             Event::End(TagEnd::List(_)) => {
                 list_stack.pop();
             }
@@ -2012,25 +3195,619 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
             Event::End(TagEnd::Strong) => style.strong = false,
             Event::End(TagEnd::Emphasis) => style.emphasis = false,
             Event::End(TagEnd::Strikethrough) => style.strike = false,
-            Event::End(TagEnd::Link) => style.link = false,
+            Event::End(TagEnd::Link) => {
+                style.link = false;
+                after_link = true;
+                if let Some((start, url)) = link.take() {
+                    let target = cell.as_ref().map_or(&job, |c| &c.job);
+                    let end = target.text.chars().count();
+                    let run = MdLink {
+                        range: start..end,
+                        url,
+                    };
+                    match cell.as_mut() {
+                        Some(cell) => cell.links.push(run),
+                        None => links.push(run),
+                    }
+                }
+            }
             Event::Text(t) => {
+                let attribute_run = after_link;
+                after_link = false;
                 if in_code_block {
                     code_block.push_str(&t);
+                } else if let Some((_, alt)) = image.as_mut() {
+                    alt.push_str(&t);
                 } else {
-                    append(&mut job, &t, style, heading, quote_depth > 0);
+                    // Header cells carry no `Strong` of their own — the grammar makes
+                    // them headers, so the weight is ours to add.
+                    let mut s = style;
+                    s.strong |= in_head;
+                    let target = cell.as_mut().map_or(&mut job, |c| &mut c.job);
+                    let text = if attribute_run {
+                        strip_link_attributes(&t)
+                    } else {
+                        &t
+                    };
+                    append(target, text, s, heading, quote_depth > 0);
                 }
             }
             Event::Code(t) => {
                 let mut s = style;
                 s.code = true;
-                append(&mut job, &t, s, heading, quote_depth > 0);
+                s.strong |= in_head;
+                let target = cell.as_mut().map_or(&mut job, |c| &mut c.job);
+                append(target, &t, s, heading, quote_depth > 0);
             }
-            Event::SoftBreak => append(&mut job, " ", style, heading, quote_depth > 0),
-            Event::HardBreak => append(&mut job, "\n", style, heading, quote_depth > 0),
+            Event::SoftBreak => {
+                let target = cell.as_mut().map_or(&mut job, |c| &mut c.job);
+                append(target, " ", style, heading, quote_depth > 0);
+            }
+            Event::HardBreak => {
+                let target = cell.as_mut().map_or(&mut job, |c| &mut c.job);
+                append(target, "\n", style, heading, quote_depth > 0);
+            }
             _ => {}
         }
     }
-    flush(ui, &mut job, quote_depth as f32 * MD_QUOTE_INDENT);
+    flush(
+        ui,
+        &mut job,
+        &mut links,
+        quote_depth as f32 * MD_QUOTE_INDENT,
+    );
+}
+
+/// An embedded image, as far as the renderer is concerned: fetched off-thread by the
+/// app (`PrReviewRequest::Image`) and decoded into a texture it hands back here.
+#[derive(Clone)]
+pub enum MdImage {
+    Loading,
+    Ready(egui::TextureHandle),
+    Failed(String),
+}
+
+/// Cache of embedded images, by URL. Lives in egui's temp memory rather than in the
+/// view struct: `markdown` is called from three surfaces (body, conversation card,
+/// diff overlay), and threading a media borrow through all of them — the diff view
+/// included — would buy nothing the URL key does not already give.
+pub fn md_image_cache_id() -> egui::Id {
+    egui::Id::new("pr_md_images")
+}
+
+/// Links clicked in a body this frame: the view has no business opening a browser, so
+/// it names the URL here and the app drains it.
+pub fn md_link_clicked_id() -> egui::Id {
+    egui::Id::new("pr_md_links_clicked")
+}
+
+/// Images a body asked for this frame but has no bytes for yet — the app drains it,
+/// fetches, and writes the result back into `md_image_cache_id`.
+pub fn md_image_wanted_id() -> egui::Id {
+    egui::Id::new("pr_md_images_wanted")
+}
+
+/// The reading width an embedded image is allowed: wide enough for a screenshot to be
+/// legible, capped so a full-page capture does not push everything else off screen.
+const MD_IMAGE_MAX_H: f32 = 420.0;
+
+/// The open image viewer: which picture, and how the user has moved it since (§11).
+#[derive(Clone)]
+struct MdViewer {
+    url: String,
+    /// Multiplier over the fit-to-screen size — 1.0 is "the whole picture on screen".
+    zoom: f32,
+    /// Pan, in screen points, from the centred position.
+    offset: egui::Vec2,
+}
+
+impl MdViewer {
+    fn new(url: &str) -> Self {
+        Self {
+            url: url.to_owned(),
+            zoom: 1.0,
+            offset: egui::Vec2::ZERO,
+        }
+    }
+}
+
+/// Zoom bounds of the viewer: out to the fit size, in to 8× — past that a screenshot is
+/// a grid of texels, not a detail.
+const MD_VIEWER_MIN_ZOOM: f32 = 1.0;
+const MD_VIEWER_MAX_ZOOM: f32 = 8.0;
+
+fn md_viewer_id() -> egui::Id {
+    egui::Id::new("pr_md_image_viewer")
+}
+
+/// Whether the image viewer is up — the surfaces around it read this rather than the
+/// state itself (which is the viewer's own business).
+pub fn md_viewer_open(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<MdViewer>(md_viewer_id()).is_some())
+}
+
+/// The clicked picture, full surface: scroll (or pinch) zooms, drag moves it, double
+/// click resets, `Esc` / a click on the backdrop / the ✕ closes. Drawn over the review
+/// and owning `Esc` while it is up, so the press that closes it never also drops the
+/// file or leaves the review (pull-requests.md §11).
+fn md_image_viewer(ui: &mut egui::Ui, palette: &Palette, screen: egui::Rect) {
+    let Some(mut state) = ui.data(|d| d.get_temp::<MdViewer>(md_viewer_id())) else {
+        return;
+    };
+    let texture = ui.data(|d| {
+        d.get_temp::<HashMap<String, MdImage>>(md_image_cache_id())
+            .and_then(|images| match images.get(&state.url) {
+                Some(MdImage::Ready(texture)) => Some(texture.clone()),
+                _ => None,
+            })
+    });
+    // The bytes went away (a reload dropped the cache): nothing to look at.
+    let Some(texture) = texture else {
+        ui.data_mut(|d| d.remove::<MdViewer>(md_viewer_id()));
+        return;
+    };
+
+    let mut close = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    egui::Area::new(md_viewer_id().with("area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ui.ctx(), |ui| {
+            ui.set_clip_rect(screen);
+            let backdrop = ui.interact(
+                screen,
+                md_viewer_id().with("backdrop"),
+                egui::Sense::click_and_drag(),
+            );
+            ui.painter()
+                .rect_filled(screen, 0, with_alpha(palette.bg_canvas, 235));
+
+            // Fit first, then the user's own zoom on top of it.
+            let size = texture.size_vec2();
+            let fit = (screen.width() * 0.9 / size.x)
+                .min(screen.height() * 0.9 / size.y)
+                .min(1.0);
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let factor = pinch * (1.0 + scroll * 0.002);
+            if (factor - 1.0).abs() > f32::EPSILON {
+                let before = state.zoom;
+                state.zoom = (state.zoom * factor).clamp(MD_VIEWER_MIN_ZOOM, MD_VIEWER_MAX_ZOOM);
+                // Zoom about the pointer, so the detail under it stays under it.
+                if let Some(pointer) = pointer {
+                    let anchor = pointer - screen.center() - state.offset;
+                    state.offset -= anchor * (state.zoom / before - 1.0);
+                }
+            }
+            if backdrop.dragged() {
+                state.offset += backdrop.drag_delta();
+            }
+            if backdrop.double_clicked() {
+                state = MdViewer::new(&state.url);
+            } else if backdrop.clicked() {
+                close = true;
+            }
+            if state.zoom <= MD_VIEWER_MIN_ZOOM {
+                state.offset = egui::Vec2::ZERO;
+            }
+            let shown = size * fit * state.zoom;
+            let rect = egui::Rect::from_center_size(screen.center() + state.offset, shown);
+            ui.painter().image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            if backdrop.hovered() {
+                ui.ctx()
+                    .set_cursor_icon(if state.zoom > MD_VIEWER_MIN_ZOOM {
+                        egui::CursorIcon::Grab
+                    } else {
+                        egui::CursorIcon::ZoomIn
+                    });
+            }
+            md_viewer_bar(ui, palette, screen, &state, &mut close);
+        });
+
+    if close {
+        ui.data_mut(|d| d.remove::<MdViewer>(md_viewer_id()));
+    } else {
+        ui.data_mut(|d| d.insert_temp(md_viewer_id(), state));
+    }
+}
+
+/// The viewer's chrome: the zoom level and a ✕, in a strip at the top.
+fn md_viewer_bar(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    screen: egui::Rect,
+    state: &MdViewer,
+    close: &mut bool,
+) {
+    let bar = egui::Rect::from_min_size(
+        egui::pos2(screen.left(), screen.top()),
+        egui::vec2(screen.width(), 44.0),
+    );
+    ui.painter().text(
+        egui::pos2(bar.left() + PANEL_PAD_X, bar.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!(
+            "{:.0}%  ·  scroll to zoom, drag to move",
+            state.zoom * 100.0
+        ),
+        egui::FontId::proportional(CONV_META_SIZE),
+        palette.text_muted,
+    );
+    let hit = egui::Rect::from_center_size(
+        egui::pos2(bar.right() - PANEL_PAD_X - 12.0, bar.center().y),
+        egui::vec2(28.0, 28.0),
+    );
+    let response = ui.interact(hit, md_viewer_id().with("close"), egui::Sense::click());
+    let ink = if response.hovered() {
+        palette.text_primary
+    } else {
+        palette.text_muted
+    };
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    paint_icon(ui.painter(), hit.center(), STATUS_ICON, Icon::X, ink);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+    *close |= response.clicked();
+}
+
+/// One embedded image: the texture once it has landed, else a muted placeholder line
+/// carrying its alt text (and, on failure, why).
+fn md_image(ui: &mut egui::Ui, palette: &Palette, url: &str, alt: &str) {
+    let slot: Option<MdImage> = ui.data(|d| {
+        d.get_temp::<HashMap<String, MdImage>>(md_image_cache_id())
+            .and_then(|images| images.get(url).cloned())
+    });
+    match slot {
+        Some(MdImage::Ready(texture)) => {
+            let size = texture.size_vec2();
+            let scale = (ui.available_width() / size.x)
+                .min(MD_IMAGE_MAX_H / size.y.max(1.0))
+                .min(1.0);
+            // In the flow a screenshot is a thumbnail — the detail lives in the viewer,
+            // one click away (§11).
+            let response = ui
+                .add(
+                    egui::Image::new(&texture)
+                        .fit_to_exact_size(size * scale)
+                        .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON))
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_text(format!("{url}\n\nClick to open"));
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.clicked() {
+                ui.data_mut(|d| d.insert_temp(md_viewer_id(), MdViewer::new(url)));
+            }
+            ui.add_space(MD_PARAGRAPH_GAP);
+        }
+        Some(MdImage::Failed(reason)) => {
+            md_image_placeholder(
+                ui,
+                palette,
+                url,
+                alt,
+                &format!("image unavailable — {reason}"),
+            );
+        }
+        Some(MdImage::Loading) => md_image_placeholder(ui, palette, url, alt, "loading image…"),
+        None => {
+            // First sight: ask the app for it, and stand in until it lands.
+            ui.data_mut(|d| {
+                let wanted: &mut Vec<String> = d.get_temp_mut_or_default(md_image_wanted_id());
+                if !wanted.iter().any(|u| u == url) {
+                    wanted.push(url.to_owned());
+                }
+            });
+            md_image_placeholder(ui, palette, url, alt, "loading image…");
+        }
+    }
+}
+
+fn md_image_placeholder(ui: &mut egui::Ui, palette: &Palette, url: &str, alt: &str, status: &str) {
+    ui.horizontal(|ui| {
+        paint_icon_at_cursor(ui, palette, Icon::Image);
+        let label = format!("{} — {status}", image_label(url, alt));
+        ui.label(
+            egui::RichText::new(label)
+                .size(MD_CODE_SIZE)
+                .color(palette.text_muted),
+        );
+    });
+    ui.add_space(MD_PARAGRAPH_GAP);
+}
+
+fn paint_icon_at_cursor(ui: &mut egui::Ui, palette: &Palette, icon: Icon) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+    paint_icon(ui.painter(), rect.center(), 14.0, icon, palette.text_muted);
+}
+
+/// How an image names itself while it is not on screen (loading, or unavailable): its
+/// alt text, else the file name the URL ends on.
+fn image_label(url: &str, alt: &str) -> String {
+    if !alt.trim().is_empty() {
+        return alt.to_owned();
+    }
+    url.rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(url)
+        .to_owned()
+}
+
+/// `src` and `alt` of an `<img …>` tag in a raw-HTML chunk, if it is one. A body's
+/// HTML is not parsed beyond this: the one tag that carries a picture is worth
+/// reading, a general HTML renderer is not.
+fn html_img(html: &str) -> Option<(String, String)> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<img")?;
+    let end = lower[start..].find('>').map(|i| start + i)?;
+    let attr = |name: &str| {
+        let at = lower[start..end].find(&format!("{name}="))? + start + name.len() + 1;
+        let rest = html.get(at..end)?;
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        rest[1..].split(quote).next().map(str::to_owned)
+    };
+    let src = attr("src")?;
+    Some((src, attr("alt").unwrap_or_default()))
+}
+
+/// A GFM table collected while parsing: the header cells, then one job per cell per
+/// row, with the column alignments the delimiter row declared.
+struct MdTable {
+    aligns: Vec<pulldown_cmark::Alignment>,
+    head: Vec<MdCell>,
+    rows: Vec<Vec<MdCell>>,
+}
+
+/// A link run inside a laid-out block: where it sits in the text, and where it points.
+struct MdLink {
+    range: std::ops::Range<usize>,
+    url: String,
+}
+
+/// Draws a prose block from its job and makes its link runs clickable.
+///
+/// Laid out **here** rather than handed to `Label` as a job: `Label` relayouts a bare
+/// `LayoutJob` at the width of the `Ui` it lands in (egui `label.rs`), which would drop
+/// the reading measure — and the galley is what the link hit-boxes are measured on. A
+/// clicked URL goes to the app through `md_link_clicked_id`, which owns the opening.
+fn prose(ui: &mut egui::Ui, job: egui::text::LayoutJob, links: &[MdLink]) {
+    let galley = ui.painter().layout_job(job);
+    let response = ui.add(egui::Label::new(galley.clone()));
+    let origin = response.rect.min.to_vec2();
+    for (i, link) in links.iter().enumerate() {
+        for (j, rect) in link_rects(&galley, &link.range).into_iter().enumerate() {
+            let hit = ui.interact(
+                rect.translate(origin),
+                response.id.with(("md_link", i, j)),
+                egui::Sense::click(),
+            );
+            if hit.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if hit.clicked() {
+                ui.data_mut(|d| {
+                    let clicked: &mut Vec<String> = d.get_temp_mut_or_default(md_link_clicked_id());
+                    clicked.push(link.url.clone());
+                });
+            }
+            // A run of a paragraph is a widget of its own here: name it, or the link is
+            // invisible to the accessibility tree (and to the tests driving it).
+            let url = link.url.clone();
+            hit.widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Link, true, url.clone())
+            });
+            hit.on_hover_text(&link.url);
+        }
+    }
+}
+
+/// The boxes a link run occupies in its galley — one per row it spans, since a link
+/// that wraps is two boxes on two lines, not one rectangle across the paragraph.
+fn link_rects(galley: &egui::Galley, range: &std::ops::Range<usize>) -> Vec<egui::Rect> {
+    let start = galley.pos_from_cursor(egui::text::CCursor::new(range.start));
+    let end = galley.pos_from_cursor(egui::text::CCursor::new(range.end));
+    if (start.top() - end.top()).abs() < 0.5 {
+        return vec![egui::Rect::from_min_max(start.min, end.max)];
+    }
+    galley
+        .rows
+        .iter()
+        .filter(|row| row.max_y() > start.top() && row.min_y() < end.bottom())
+        .map(|row| {
+            let first = row.min_y() <= start.top() && start.top() < row.max_y();
+            let last = row.min_y() <= end.top() && end.top() < row.max_y();
+            let left = if first {
+                start.left()
+            } else {
+                row.rect().left()
+            };
+            let right = if last {
+                end.right()
+            } else {
+                row.rect().right()
+            };
+            egui::Rect::from_min_max(
+                egui::pos2(left, row.min_y()),
+                egui::pos2(right, row.max_y()),
+            )
+        })
+        .collect()
+}
+
+/// Bitbucket's smart-link attribute run — `{: data-inline-card='' }` right after a
+/// link — dropped: without the attribute-list extension it lands in the prose, and it
+/// is markup, not something the author wrote to be read.
+fn strip_link_attributes(text: &str) -> &str {
+    let rest = text.strip_prefix("{:").unwrap_or(text);
+    if std::ptr::eq(rest, text) {
+        return text;
+    }
+    match rest.find('}') {
+        Some(end) if !rest[..end].contains('\n') => &rest[end + 1..],
+        _ => text,
+    }
+}
+
+/// One table cell: its text, plus the pictures it embeds — drawn under that text
+/// inside the column, so a table can carry a screenshot as evidence (§11).
+struct MdCell {
+    job: egui::text::LayoutJob,
+    images: Vec<(String, String)>,
+    links: Vec<MdLink>,
+}
+
+impl MdCell {
+    fn new(job: egui::text::LayoutJob) -> Self {
+        Self {
+            job,
+            images: Vec::new(),
+            links: Vec::new(),
+        }
+    }
+}
+
+/// What a cell would take on a single unwrapped line — the width its column asks for.
+fn md_cell_natural_width(ui: &egui::Ui, cell: &MdCell) -> f32 {
+    let text = if cell.job.text.trim().is_empty() {
+        0.0
+    } else {
+        let mut job = cell.job.clone();
+        job.wrap.max_width = f32::INFINITY;
+        ui.painter().layout_job(job).rect.width()
+    };
+    if cell.images.is_empty() {
+        text
+    } else {
+        text.max(MD_CELL_IMAGE_W)
+    }
+}
+
+const MD_CELL_PAD_X: f32 = 8.0;
+const MD_CELL_PAD_Y: f32 = 5.0;
+const MD_CELL_MIN_W: f32 = 72.0;
+/// Ceiling on what a column may *ask* for: without it a single long line (a URL, a
+/// stack trace) would claim the whole table and squeeze its neighbours to the floor.
+const MD_CELL_MAX_W: f32 = 420.0;
+/// What a cell holding an image asks for, since its text ("same screenshot") says
+/// nothing about the thumbnail below it — and the thumbnail scales to the column.
+const MD_CELL_IMAGE_W: f32 = 220.0;
+/// The frame's horizontal inner margin, subtracted from the width the columns divide.
+const MD_TABLE_MARGIN_X: f32 = 10.0;
+
+/// A markdown table: fixed-width columns over the reading width, each cell wrapping
+/// inside its own column. Columns are sized on what their content asks for — a *Step*
+/// column of single digits next to a sentence should not take the same quarter — then
+/// scaled to the width available, so the table fills the card without ever pushing past
+/// it and taking the horizontal scroll with it.
+fn md_table(ui: &mut egui::Ui, palette: &Palette, mut table: MdTable) {
+    let columns = table
+        .rows
+        .iter()
+        .map(Vec::len)
+        .chain(std::iter::once(table.head.len()))
+        .max()
+        .unwrap_or(0);
+    if columns == 0 {
+        return;
+    }
+    let natural: Vec<f32> = (0..columns)
+        .map(|i| {
+            table
+                .rows
+                .iter()
+                .chain(std::iter::once(&table.head))
+                .filter_map(|row| row.get(i))
+                .map(|cell| md_cell_natural_width(ui, cell))
+                .fold(0.0_f32, f32::max)
+                .clamp(MD_CELL_MIN_W, MD_CELL_MAX_W)
+        })
+        .collect();
+    let asked: f32 = natural.iter().sum();
+    let free =
+        (ui.available_width() - 2.0 * MD_TABLE_MARGIN_X - (columns as f32 - 1.0) * MD_CELL_PAD_X)
+            .max(MD_CELL_MIN_W);
+    let widths: Vec<f32> = natural
+        .iter()
+        .map(|w| (w / asked * free).max(MD_CELL_MIN_W))
+        .collect();
+    let align = |i: usize| match table.aligns.get(i) {
+        Some(pulldown_cmark::Alignment::Center) => egui::Align::Center,
+        Some(pulldown_cmark::Alignment::Right) => egui::Align::Max,
+        _ => egui::Align::Min,
+    };
+    let row_ui = |ui: &mut egui::Ui, cells: &mut Vec<MdCell>| {
+        ui.horizontal_top(|ui| {
+            let last = cells.len().saturating_sub(1);
+            for (i, cell) in cells.iter_mut().enumerate() {
+                let col_w = widths[i];
+                cell.job.wrap.max_width = col_w;
+                let done = std::mem::take(&mut cell.job);
+                let images = std::mem::take(&mut cell.images);
+                let links = std::mem::take(&mut cell.links);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(col_w, 0.0),
+                    egui::Layout::top_down(align(i)),
+                    |ui| {
+                        // Without a floor the cell shrinks to its text and the next
+                        // column starts wherever this one happened to end — the rows
+                        // would stop lining up under their headers.
+                        ui.set_min_width(col_w);
+                        if !done.text.trim().is_empty() {
+                            prose(ui, done, &links);
+                        }
+                        for (url, alt) in &images {
+                            md_image(ui, palette, url, alt);
+                        }
+                    },
+                );
+                if i != last {
+                    ui.add_space(MD_CELL_PAD_X);
+                }
+            }
+        });
+    };
+
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+        .corner_radius(egui::CornerRadius::same(RADIUS_BUTTON))
+        .inner_margin(egui::Margin::symmetric(MD_TABLE_MARGIN_X as i8, 8))
+        .show(ui, |ui| {
+            if !table.head.is_empty() {
+                row_ui(ui, &mut table.head);
+                ui.add_space(MD_CELL_PAD_Y);
+                let line = ui.min_rect().x_range();
+                ui.painter().hline(
+                    line,
+                    ui.cursor().top(),
+                    egui::Stroke::new(1.0_f32, palette.border_subtle),
+                );
+                ui.add_space(MD_CELL_PAD_Y);
+            }
+            let last = table.rows.len().saturating_sub(1);
+            for (index, row) in table.rows.iter_mut().enumerate() {
+                row_ui(ui, row);
+                if index != last {
+                    ui.add_space(MD_CELL_PAD_Y);
+                    ui.painter().hline(
+                        ui.min_rect().x_range(),
+                        ui.cursor().top(),
+                        egui::Stroke::new(1.0_f32, with_alpha(palette.border_subtle, 120)),
+                    );
+                    ui.add_space(MD_CELL_PAD_Y);
+                }
+            }
+        });
+    ui.add_space(MD_PARAGRAPH_GAP);
 }
 
 /// Per-level heading size for `markdown`, scaling down from the body size.
@@ -2068,41 +3845,14 @@ fn md_code_block(ui: &mut egui::Ui, palette: &Palette, code: &str) {
 /// Author block of the detail (pull-requests.md §11): avatar + name, the
 /// `source → dest` branch flow and a right-aligned "Created" age, then a reviewers +
 /// labels meta-row and the PR body in a card.
-fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) {
+/// `aside` tells it the reviewers already have a card of their own beside the column,
+/// so the meta-row drops its cluster rather than naming them twice.
+fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>, aside: bool) {
     let pr = review.pr;
-    let created = review
-        .detail
-        .map(|d| crate::pull_requests::model::relative_age(&d.created_at, now_epoch_secs()))
-        .unwrap_or_default();
-    ui.horizontal(|ui| {
-        author_avatar(ui, palette, &pr.author);
-        ui.add_space(AVATAR_GAP);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(
-                egui::RichText::new(&pr.author)
-                    .size(AUTHOR_NAME_SIZE)
-                    .strong()
-                    .color(palette.text_primary),
-            );
-            ui.label(
-                egui::RichText::new(format!("{} → {}", pr.source_branch, pr.dest_branch))
-                    .size(META_SIZE)
-                    .color(palette.text_secondary),
-            );
-        });
-        if !created.is_empty() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("Created {created}"))
-                        .size(META_SIZE)
-                        .color(palette.text_muted),
-                );
-            });
-        }
-    });
-
-    meta_row(ui, palette, pr);
+    // No author block over the body: author, branches and age are already the surface
+    // header's second line, and repeating them under the tabs reads as a rendering slip
+    // rather than as context (§11).
+    meta_row(ui, palette, pr, aside);
 
     let body = review.detail.map(|d| d.body.trim()).unwrap_or("");
     if !body.is_empty() {
@@ -2121,30 +3871,37 @@ fn review_meta(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) 
 
 /// Reviewers cluster + labels under the author block (pull-requests.md §11). Hidden
 /// when the PR carries neither.
-fn meta_row(ui: &mut egui::Ui, palette: &Palette, pr: &PullRequest) {
-    if pr.reviewers.is_empty() && pr.labels.is_empty() {
+fn meta_row(ui: &mut egui::Ui, palette: &Palette, pr: &PullRequest, rail: bool) {
+    // With the rail up, both the reviewers and the labels are named there: the row
+    // would only repeat it under the author block.
+    let (reviewers, labels) = if rail {
+        (&[][..], &[][..])
+    } else {
+        (&pr.reviewers[..], &pr.labels[..])
+    };
+    if reviewers.is_empty() && labels.is_empty() {
         return;
     }
     ui.add_space(10.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-        if !pr.reviewers.is_empty() {
+        if !reviewers.is_empty() {
             ui.label(
                 egui::RichText::new("Reviewers")
                     .size(META_SIZE)
                     .color(palette.text_muted),
             );
-            let shown = pr.reviewers.len().min(REVIEWER_MAX);
+            let shown = reviewers.len().min(REVIEWER_MAX);
             let step = REVIEWER_AVATAR - REVIEWER_OVERLAP;
             let mut width = REVIEWER_AVATAR + step * shown.saturating_sub(1) as f32;
-            if pr.reviewers.len() > shown {
+            if reviewers.len() > shown {
                 width += 22.0;
             }
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(width, REVIEWER_AVATAR), egui::Sense::hover());
-            reviewer_stack(ui, palette, &pr.reviewers, rect.x_range(), rect.center().y);
+            reviewer_stack(ui, palette, reviewers, rect.x_range(), rect.center().y);
         }
-        for label in &pr.labels {
+        for label in labels {
             neutral_pill(ui, palette, label);
         }
     });
@@ -2187,107 +3944,111 @@ pub(crate) fn now_epoch_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// The commit band atop the review rail (per-commit diff: T5): an "All commits" row —
-/// the cumulative three-dot diff — then one row per commit. The selected row drives the
-/// rail's files and the center diff over `commit^..commit`.
-fn commits_band(
+/// The Files toolbar's commit scope (per-commit diff: T5). Picking a commit narrows
+/// the rail's files and the diff to `commit^..commit`; **All commits** restores the
+/// cumulative three-dot range. It is the only place the PR's commits are listed.
+fn commits_dropdown(
     ui: &mut egui::Ui,
     palette: &Palette,
     review: &PrReviewView<'_>,
+    rect: egui::Rect,
     action: &mut PullRequestsPageAction,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Commits")
-                .size(SECTION_TITLE_SIZE)
-                .strong()
-                .color(palette.text_primary),
-        );
-        ui.add_space(2.0);
-        count_chip(ui, palette, review.commits.len());
-    });
-    ui.add_space(6.0);
-    if commit_row(
-        ui,
-        palette,
-        "All commits",
-        None,
-        review.selected_commit.is_none(),
-    ) {
-        action.select_commit = Some(CommitSelection::All);
-    }
-    for commit in review.commits {
-        let selected = review.selected_commit == Some(commit.sha.as_str());
-        if commit_row(ui, palette, &commit.subject, Some(&commit.short), selected) {
-            action.select_commit = Some(CommitSelection::Commit(commit.sha.clone()));
-        }
-    }
-}
-
-/// One commit band row: a full-width clickable line with the hover/selection fill of
-/// the file rows, an optional monospace short sha, then the (elided) subject.
-fn commit_row(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    subject: &str,
-    short: Option<&str>,
-    selected: bool,
-) -> bool {
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
-    if let Some(fill) = file_list::file_row_fill(palette, response.hovered(), selected) {
+    let current = review
+        .selected_commit
+        .and_then(|sha| review.commits.iter().find(|c| c.sha == sha))
+        .map(|c| c.subject.as_str())
+        .unwrap_or("All commits");
+    let response = ui.interact(rect, ui.id().with("pr_commit_scope"), egui::Sense::click());
+    if response.hovered() {
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
+            .rect_filled(rect, RADIUS_BUTTON, palette.bg_surface_hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    ui.painter().rect_stroke(
+        rect,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
     let center_y = rect.center().y;
-    let mut text_left = rect.left() + 8.0;
-    if let Some(short) = short {
-        let galley = ui.painter().layout_no_wrap(
-            short.to_owned(),
-            egui::FontId::monospace(11.5),
-            palette.text_secondary,
-        );
-        let advance = galley.size().x;
-        ui.painter().galley(
-            egui::pos2(text_left, center_y - galley.size().y / 2.0),
-            galley,
-            palette.text_secondary,
-        );
-        text_left += advance + 8.0;
-    }
-    let color = if selected {
-        palette.text_primary
-    } else {
-        palette.text_secondary
-    };
-    let subject_max = (rect.right() - 8.0 - text_left).max(8.0);
-    let mut job = egui::text::LayoutJob::single_section(
-        subject.to_owned(),
-        egui::text::TextFormat::simple(egui::FontId::proportional(12.5), color),
+    paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + 10.0 + CHIP_SIZE / 2.0, center_y),
+        CHIP_SIZE,
+        Icon::GitCommit,
+        palette.text_muted,
     );
-    job.wrap = egui::text::TextWrapping::truncate_at_width(subject_max);
-    let galley = ui.painter().layout_job(job);
-    ui.painter().galley(
-        egui::pos2(text_left, center_y - galley.size().y / 2.0),
-        galley,
-        color,
+    let count = review.commits.len().to_string();
+    let count_w = 10.0 + count.len() as f32 * 7.0 + STATUS_ICON;
+    cell_text(
+        ui,
+        current,
+        egui::FontId::proportional(META_SIZE),
+        palette.text_secondary,
+        rect.left() + 10.0 + CHIP_SIZE + 6.0,
+        center_y,
+        (rect.width() - 26.0 - CHIP_SIZE - count_w).max(0.0),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, subject));
-    response.clicked()
+    ui.painter().text(
+        egui::pos2(rect.right() - 10.0 - STATUS_ICON, center_y),
+        egui::Align2::RIGHT_CENTER,
+        count,
+        egui::FontId::proportional(META_SIZE),
+        palette.text_muted,
+    );
+    paint_icon(
+        ui.painter(),
+        egui::pos2(rect.right() - 10.0 - STATUS_ICON / 2.0, center_y),
+        STATUS_ICON,
+        Icon::ChevronDown,
+        palette.text_muted,
+    );
+    let label = current.to_owned();
+    response.widget_info(move || {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+    });
+
+    egui::Popup::menu(&response)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            ui.set_min_width(240.0);
+            if ui
+                .radio(review.selected_commit.is_none(), "All commits")
+                .clicked()
+            {
+                action.select_commit = Some(CommitSelection::All);
+            }
+            for commit in review.commits {
+                let selected = review.selected_commit == Some(commit.sha.as_str());
+                if ui
+                    .radio(selected, format!("{}  {}", commit.short, commit.subject))
+                    .clicked()
+                {
+                    action.select_commit = Some(CommitSelection::Commit(commit.sha.clone()));
+                }
+            }
+        });
 }
 
-/// "Files changed" band (commit-detail's `files_header`, sans the flat/tree
-/// toggle): the title + a count chip, with the ±totals and ratio bar pinned right.
+/// The two file-list filters the rail band owns: unread-only and hide-tests.
+struct FileFilters<'a> {
+    unread_count: usize,
+    unread_only: &'a mut bool,
+    test_count: usize,
+    hide_tests: &'a mut bool,
+}
+
+/// "Files changed" band (commit-detail's `files_header`): the title + a count chip
+/// and the list filters, with the ±totals and ratio bar pinned right. Filtering the
+/// list sits next to the list it filters, not in the diff pane across the split.
 fn files_band(
     ui: &mut egui::Ui,
     palette: &Palette,
     files: &[CommitFile],
     view: FileViewMode,
-    unread_count: usize,
-    unread_only: &mut bool,
+    filters: FileFilters<'_>,
 ) -> Option<FileViewMode> {
-    let additions: usize = files.iter().map(|f| f.additions).sum();
-    let deletions: usize = files.iter().map(|f| f.deletions).sum();
     let mut set_view = None;
     ui.horizontal(|ui| {
         ui.label(
@@ -2299,45 +4060,52 @@ fn files_band(
         ui.add_space(2.0);
         count_chip(ui, palette, files.len());
         ui.add_space(6.0);
-        unread_filter_chip(ui, palette, unread_count, unread_only);
+        filter_chip(
+            ui,
+            palette,
+            Icon::EyeOff,
+            filters.unread_count,
+            filters.unread_only,
+            "Unread only",
+        );
+        ui.add_space(4.0);
+        filter_chip(
+            ui,
+            palette,
+            Icon::FlaskConical,
+            filters.test_count,
+            filters.hide_tests,
+            "Hide tests",
+        );
+        // The ± totals sit in the Files toolbar, which always has the room for them —
+        // a rail narrow enough to be useful never does, past the chips.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             set_view = file_list::view_toggle(ui, palette, view);
-            ui.add_space(8.0);
-            ratio_bar(ui, palette, additions, deletions);
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(format!("−{deletions}"))
-                    .size(TOTALS_SIZE)
-                    .color(palette.git_deleted),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(format!("+{additions}"))
-                    .size(TOTALS_SIZE)
-                    .color(palette.git_added),
-            );
         });
     });
     set_view
 }
 
-fn unread_filter_chip(
+/// A toggling icon + count chip filtering the rail's file list.
+fn filter_chip(
     ui: &mut egui::Ui,
     palette: &Palette,
-    unread_count: usize,
-    unread_only: &mut bool,
+    icon: Icon,
+    count: usize,
+    on: &mut bool,
+    label: &'static str,
 ) {
     let count_font = egui::FontId::proportional(11.0);
-    let count_text = unread_count.to_string();
+    let count_text = count.to_string();
     let count_galley =
         ui.painter()
             .layout_no_wrap(count_text.clone(), count_font, egui::Color32::PLACEHOLDER);
     let icon_w = 12.0;
     let gap = 5.0;
     let size = egui::vec2(9.0 + icon_w + gap + count_galley.size().x + 9.0, 24.0);
-    let enabled = unread_count > 0 || *unread_only;
+    let enabled = count > 0 || *on;
     let (rect, response, hovered) = clickable(ui, size, enabled);
-    let selected = *unread_only;
+    let selected = *on;
     let fill = if selected {
         palette.accent_subtle
     } else if hovered {
@@ -2366,7 +4134,7 @@ fn unread_filter_chip(
     };
     let center_y = rect.center().y;
     let icon_center = egui::pos2(rect.left() + 9.0 + icon_w / 2.0, center_y);
-    paint_icon(ui.painter(), icon_center, icon_w, Icon::EyeOff, content);
+    paint_icon(ui.painter(), icon_center, icon_w, icon, content);
     ui.painter().galley(
         egui::pos2(
             icon_center.x + icon_w / 2.0 + gap,
@@ -2375,11 +4143,11 @@ fn unread_filter_chip(
         count_galley,
         content,
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, "Unread only")
+    response.clone().on_hover_text(label).widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
     });
     if response.clicked() {
-        *unread_only = !*unread_only;
+        *on = !*on;
     }
 }
 
@@ -2396,68 +4164,60 @@ fn band_title(ui: &mut egui::Ui, palette: &Palette, title: &str) {
     ui.add_space(6.0);
 }
 
-/// Fixed height the review composer reserves at the foot of the rail; an extra
-/// row when a post error needs surfacing.
-fn composer_height(review: &PrReviewView<'_>) -> f32 {
-    let base = 184.0;
-    if review.post_error.is_some() {
-        base + 22.0
-    } else {
-        base
-    }
-}
-
-/// The "Finish review" composer pinned to the foot of the rail (pull-requests.md
-/// §11): a verdict selector, a summary field and the Submit button. Posts the
-/// accumulated draft line comments together with the chosen verdict + summary.
+/// The review composer, drawn inside the header's **Finish review** popover: the
+/// verdict group, a summary field and the Submit button. Posts the accumulated draft
+/// line comments together with the chosen verdict + summary.
 fn review_composer(
     ui: &mut egui::Ui,
     palette: &Palette,
     review: &mut PrReviewView<'_>,
-    rect: egui::Rect,
     action: &mut PullRequestsPageAction,
 ) {
-    ui.painter().rect_filled(rect, 0, palette.bg_canvas);
-    ui.painter().hline(
-        rect.x_range(),
-        rect.top(),
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-    );
-    let inner = egui::Rect::from_x_y_ranges(
-        egui::Rangef::new(rect.left() + PANEL_PAD_X, rect.right() - PANEL_PAD_X),
-        egui::Rangef::new(rect.top() + PANEL_PAD_Y, rect.bottom() - PANEL_PAD_Y),
-    );
-    let mut panel = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(inner)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    panel.set_width(inner.width());
-    panel.label(
-        egui::RichText::new("FINISH REVIEW")
-            .size(HEADER_SIZE)
-            .color(palette.text_muted),
-    );
-    panel.add_space(6.0);
+    let width = ui.available_width();
+    ui.horizontal(|ui| {
+        let (group, _) = ui.allocate_exact_size(
+            egui::vec2(VERDICT_ICON_W * 3.0, DETAIL_ACTION_HEIGHT),
+            egui::Sense::hover(),
+        );
+        verdict_icon_group(ui, palette, group, review.verdict);
+        ui.add_space(GAP_SM);
+        // Caption of the selected segment, painted rather than added: the segments
+        // themselves carry the accessible labels, and a second node named after the
+        // verdict would only make the tree ambiguous.
+        let caption = match *review.verdict {
+            ReviewVerdict::Comment => "Comment-only review",
+            ReviewVerdict::RequestChanges => "Request changes",
+            ReviewVerdict::Approve => "Approve",
+        };
+        let (caption_rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), DETAIL_ACTION_HEIGHT),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(caption_rect.left(), caption_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            caption,
+            egui::FontId::proportional(META_SIZE),
+            palette.text_secondary,
+        );
+    });
+    ui.add_space(GAP_SM);
 
-    segmented_verdict(&mut panel, palette, review.verdict, inner.width());
-    panel.add_space(6.0);
-
-    panel.add(
+    ui.add(
         egui::TextEdit::multiline(&mut *review.summary)
-            .desired_rows(2)
+            .desired_rows(3)
             .desired_width(f32::INFINITY)
             .hint_text("Summary (optional)"),
     );
-    panel.add_space(6.0);
+    ui.add_space(6.0);
 
     if let Some(error) = review.post_error {
-        panel.label(
+        ui.label(
             egui::RichText::new(error)
                 .size(12.0)
                 .color(palette.git_deleted),
         );
-        panel.add_space(4.0);
+        ui.add_space(4.0);
     }
 
     let count = crate::review::count(review.draft);
@@ -2465,7 +4225,7 @@ fn review_composer(
         *review.verdict == ReviewVerdict::Comment && count == 0 && review.summary.trim().is_empty();
     let label = submit_review_label(*review.verdict, count, review.posting, empty_comment_review);
     let enabled = !review.posting && !empty_comment_review;
-    let (rect, response, hovered) = clickable(&mut panel, egui::vec2(inner.width(), 32.0), enabled);
+    let (rect, response, hovered) = clickable(ui, egui::vec2(width, 32.0), enabled);
     let fill = if !enabled {
         palette.state_disabled
     } else if hovered {
@@ -2473,10 +4233,9 @@ fn review_composer(
     } else {
         palette.accent
     };
-    panel
-        .painter()
+    ui.painter()
         .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
-    panel.painter().text(
+    ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         &label,
@@ -2521,101 +4280,10 @@ fn submit_review_label(
     }
 }
 
-/// Single framed segmented control for the review verdict. Active segments use a
-/// subtle tint and colored label; only Request changes goes red when active.
-fn segmented_verdict(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    verdict: &mut ReviewVerdict,
-    width: f32,
-) {
-    let height = 28.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_BUTTON),
-        palette.bg_surface,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    let segment_w = rect.width() / 3.0;
-    let items = [
-        (ReviewVerdict::Comment, "Comment", palette.accent),
-        (ReviewVerdict::Approve, "Approve", palette.git_added),
-        (
-            ReviewVerdict::RequestChanges,
-            "Request changes",
-            palette.git_deleted,
-        ),
-    ];
-    for (idx, (target, label, color)) in items.into_iter().enumerate() {
-        let left = rect.left() + segment_w * idx as f32;
-        let right = if idx == 2 {
-            rect.right()
-        } else {
-            left + segment_w
-        };
-        let segment = egui::Rect::from_min_max(
-            egui::pos2(left, rect.top()),
-            egui::pos2(right, rect.bottom()),
-        )
-        .shrink(1.0);
-        if verdict_segment(ui, palette, segment, label, *verdict == target, color) {
-            *verdict = target;
-        }
-        if idx > 0 {
-            ui.painter().vline(
-                left,
-                egui::Rangef::new(rect.top() + 5.0, rect.bottom() - 5.0),
-                egui::Stroke::new(1.0_f32, palette.border_subtle),
-            );
-        }
-    }
-}
-
-fn verdict_segment(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    rect: egui::Rect,
-    label: &str,
-    selected: bool,
-    color: egui::Color32,
-) -> bool {
-    let response = ui
-        .interact(
-            rect,
-            ui.id().with(("review_verdict", label)),
-            egui::Sense::click(),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let hovered = response.hovered();
-    if selected || hovered {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(RADIUS_BUTTON),
-            if selected {
-                with_alpha(color, 36)
-            } else {
-                palette.bg_surface_hover
-            },
-        );
-    };
-    let text_color = if selected {
-        color
-    } else {
-        palette.text_secondary
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(12.0),
-        text_color,
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    response.clicked()
-}
-
+/// The **Files** tab (pull-requests.md §11): every changed file diffed in **one
+/// continuous column**, one band per file, in the rail's order. The rail is the
+/// column's table of contents — picking a row scrolls to that band. A slim toolbar
+/// above it carries the commit scope and the thread navigator.
 fn review_diff(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -2624,51 +4292,424 @@ fn review_diff(
     action: &mut PullRequestsPageAction,
 ) {
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
+    let toolbar_rect = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(rect.top(), rect.top() + DIFF_TOOLBAR_HEIGHT),
+    );
+    diff_toolbar(ui, palette, review, toolbar_rect, action);
+
+    let body = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(toolbar_rect.bottom(), rect.bottom()),
+    );
     let mut area = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect)
+            .max_rect(body)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    if let Some(diff) = review.diff {
-        let mut throwaway: Vec<crate::ui::git_panel::GitIntent> = Vec::new();
-        let mut review_out: Vec<ReviewIntent> = Vec::new();
-        let closed = crate::ui::diff_view::diff_view(
-            &mut area,
-            palette,
-            diff,
-            DiffSurface::PrReview,
-            review.diff_view,
-            &mut throwaway,
-            Some(&mut DiffReview {
-                comments: review.agent_notes,
-                forge: Some(review.draft),
-                existing: review.existing,
-                agent: review.agent,
-                intents: &mut review_out,
-            }),
-        );
-        action.review_intents.append(&mut review_out);
-        if closed {
-            action.close_file = true;
-        }
+
+    let shown = column_files(&area, review);
+    if shown.is_empty() {
+        diff_placeholder(&mut area, palette, review);
         return;
     }
-    // No file selected: the center hosts the PR detail rather than a placeholder.
-    if review.selected_file.is_none() {
-        review_detail(&mut area, palette, review, rect, action);
-        return;
-    }
-    let message = if let Some(error) = review.diff_error {
-        error
-    } else if review.diff_loading {
-        "Loading diff…"
+    diff_column(&mut area, palette, review, &shown, action);
+}
+
+/// The changed files the column draws, in rail order: the rail's own filters
+/// (unread only / hide tests) gate both lists, so the table of contents and the
+/// column can never disagree on what the review covers.
+fn column_files(ui: &egui::Ui, review: &PrReviewView<'_>) -> Vec<usize> {
+    let url = review.pr.url.as_str();
+    let unread_only: bool = ui.data(|d| {
+        d.get_temp(egui::Id::new(("pr_review_unread_only", url)))
+            .unwrap_or(false)
+    });
+    let hide_tests: bool = ui.data(|d| {
+        d.get_temp(egui::Id::new(("pr_review_hide_tests", url)))
+            .unwrap_or(false)
+    });
+    let viewed: HashSet<String> = ui.data(|d| {
+        d.get_temp(egui::Id::new(("pr_review_viewed_files", url)))
+            .unwrap_or_default()
+    });
+    review
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| !(hide_tests && is_test_path(&file.path)))
+        .filter(|(_, file)| !(unread_only && viewed.contains(&file.path)))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// The column itself: one band per file inside a single vertical scroll.
+///
+/// Bands whose height is already known and that sit well outside the viewport are
+/// **not drawn** — their space is reserved instead. A PR is dozens of files and
+/// thousands of rows; laying every one of them out on every frame is what made a
+/// continuous view unaffordable before. The measured height is kept per (file,
+/// width) so a resize re-measures rather than reserving a stale height.
+fn diff_column(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &mut PrReviewView<'_>,
+    shown: &[usize],
+    action: &mut PullRequestsPageAction,
+) {
+    let url = review.pr.url.to_owned();
+    let folded_id = egui::Id::new(("pr_review_folded", url.as_str()));
+    let sizes_id = egui::Id::new(("pr_review_band_sizes", url.as_str()));
+    let mut folded: HashSet<String> = ui.data(|d| d.get_temp(folded_id).unwrap_or_default());
+    let mut sizes: HashMap<String, (f32, f32)> =
+        ui.data(|d| d.get_temp(sizes_id).unwrap_or_default());
+    let mut review_out: Vec<ReviewIntent> = Vec::new();
+
+    egui::ScrollArea::vertical()
+        .id_salt(("pr_review_column", url.as_str()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add_space(PANEL_PAD_Y);
+            let width = ui.available_width();
+            // Culling margin: a screenful either side, so scrolling never lands on a
+            // band that has not been laid out yet.
+            let visible = ui
+                .clip_rect()
+                .expand2(egui::vec2(0.0, ui.clip_rect().height()));
+            for (position, &idx) in shown.iter().enumerate() {
+                let Some(file) = review.files.get(idx) else {
+                    continue;
+                };
+                let path = file.path.clone();
+                let top = ui.cursor().top();
+                let known = sizes
+                    .get(&path)
+                    .filter(|(w, _)| (*w - width).abs() < 0.5)
+                    .map(|(_, h)| *h);
+                let offscreen =
+                    known.is_some_and(|h| top > visible.bottom() || top + h < visible.top());
+                let band = if offscreen {
+                    let height = known.unwrap_or_default();
+                    ui.allocate_space(egui::vec2(width, height));
+                    egui::Rect::from_min_size(
+                        egui::pos2(ui.min_rect().left(), top),
+                        egui::vec2(width, height),
+                    )
+                } else {
+                    let mut reveal = None;
+                    match (
+                        review.diffs.get(idx).copied().flatten(),
+                        review.diff_errors.get(idx).copied().flatten(),
+                    ) {
+                        (Some(diff), _) => {
+                            let state = review.file_views.entry(path.clone()).or_default();
+                            let out = crate::ui::diff_view::diff_view_band(
+                                ui,
+                                palette,
+                                diff,
+                                state,
+                                folded.contains(&path),
+                                Some(&mut DiffReview {
+                                    comments: review.agent_notes,
+                                    forge: Some(review.draft),
+                                    existing: review.existing,
+                                    agent: review.agent,
+                                    intents: &mut review_out,
+                                }),
+                            );
+                            if out.toggled {
+                                if !folded.remove(&path) {
+                                    folded.insert(path.clone());
+                                }
+                                sizes.remove(&path);
+                            }
+                            reveal = out.reveal;
+                        }
+                        (None, error) => pending_band(ui, palette, file, error),
+                    }
+                    let height = ui.cursor().top() - top;
+                    sizes.insert(path.clone(), (width, height));
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(ui.min_rect().left(), top),
+                        egui::vec2(width, height),
+                    );
+                    // A line the conversation asked to reveal: the band's own scroll
+                    // area owns the horizontal axis only, so the scroll is ours.
+                    if let Some(row) = reveal {
+                        ui.scroll_to_rect(row, Some(egui::Align::Center));
+                        *review.scroll_to_file = None;
+                    }
+                    rect
+                };
+                if *review.scroll_to_file == Some(idx) {
+                    ui.scroll_to_rect(band, Some(egui::Align::TOP));
+                    *review.scroll_to_file = None;
+                }
+                // Each band is an outlined card of its own, so what separates two files
+                // is air, not a rule: a hairline against a card's own outline reads as
+                // a double border.
+                if position + 1 < shown.len() {
+                    ui.add_space(BAND_GAP);
+                }
+            }
+            // A file the filters keep out of the column can never be scrolled to:
+            // dropping the request beats holding it against a band that will not come.
+            if review
+                .scroll_to_file
+                .is_some_and(|target| !shown.contains(&target))
+            {
+                *review.scroll_to_file = None;
+            }
+            ui.add_space(PANEL_PAD_Y);
+        });
+
+    action.review_intents.append(&mut review_out);
+    ui.data_mut(|d| d.insert_temp(folded_id, folded));
+    ui.data_mut(|d| d.insert_temp(sizes_id, sizes));
+}
+
+/// A band whose diff has not landed yet (or failed): the file's own header line
+/// over the reason, so the column keeps its shape while the fetches trickle in.
+fn pending_band(ui: &mut egui::Ui, palette: &Palette, file: &CommitFile, error: Option<&str>) {
+    // The same flat header strip a loaded band wears, so a half-loaded column does not
+    // read as two kinds of object; only the rows are missing.
+    let strip = egui::Frame::new()
+        .fill(palette.bg_surface_hover)
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                paint_icon(
+                    ui.painter(),
+                    icon_rect.center(),
+                    15.0,
+                    Icon::FileText,
+                    palette.text_secondary,
+                );
+                ui.label(
+                    egui::RichText::new(&file.path)
+                        .size(TITLE_SIZE)
+                        .color(palette.text_primary),
+                );
+                ui.label(
+                    egui::RichText::new(format!("+{}", file.additions))
+                        .size(PILL_SIZE)
+                        .monospace()
+                        .color(palette.git_added),
+                );
+                ui.label(
+                    egui::RichText::new(format!("−{}", file.deletions))
+                        .size(PILL_SIZE)
+                        .monospace()
+                        .color(palette.git_deleted),
+                );
+                // A muted line, not a spinner: a column can hold dozens of pending
+                // bands, and dozens of animations would repaint the whole app for
+                // as long as the fetches trickle in.
+                ui.label(muted(palette, error.unwrap_or("Loading diff…")));
+            });
+        });
+    let rule = egui::Stroke::new(1.0_f32, palette.border_subtle);
+    let x = strip.response.rect.x_range();
+    ui.painter().hline(x, strip.response.rect.top(), rule);
+    ui.painter().hline(x, strip.response.rect.bottom(), rule);
+}
+
+/// Centered message where the column would be: no changed files at all, or the
+/// list itself still loading / failed.
+fn diff_placeholder(ui: &mut egui::Ui, palette: &Palette, review: &PrReviewView<'_>) {
+    let (message, spinner) = if review.files_loading && review.files.is_empty() {
+        ("Loading changed files…", true)
+    } else if let Some(error) = review.files_error {
+        (error, false)
+    } else if review.files.is_empty() {
+        ("No file changes", false)
     } else {
-        "No textual changes"
+        ("No file matches the filters", false)
     };
-    area.add_space(rect.height() / 2.0 - 20.0);
-    area.vertical_centered(|ui| {
+    ui.add_space(SECTION_TOP_MARGIN * 2.0);
+    ui.vertical_centered(|ui| {
+        if spinner {
+            ui.add(Spinner::new().size(16.0).color(palette.text_muted));
+            ui.add_space(GAP_SM);
+        }
         ui.label(muted(palette, message));
     });
+}
+
+/// Toolbar above the diff (pull-requests.md §11): the PR's file and ± tally, then
+/// the commit scope, with the unresolved-thread navigator pinned right. The list
+/// *filters* stay in the rail, next to the list they filter.
+fn diff_toolbar(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    review: &PrReviewView<'_>,
+    rect: egui::Rect,
+    action: &mut PullRequestsPageAction,
+) {
+    ui.painter().rect_filled(rect, 0, palette.bg_surface);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+    let center_y = rect.center().y;
+
+    let additions: usize = review.files.iter().map(|f| f.additions).sum();
+    let deletions: usize = review.files.iter().map(|f| f.deletions).sum();
+    let mut x = rect.left() + PANEL_PAD_X;
+    x = cell_text(
+        ui,
+        &format!("{} files", review.files.len()),
+        egui::FontId::proportional(META_SIZE),
+        palette.text_secondary,
+        x,
+        center_y,
+        110.0,
+    );
+    x += GAP_SM;
+    x = cell_text(
+        ui,
+        &format!("+{additions}"),
+        egui::FontId::monospace(META_SIZE),
+        palette.git_added,
+        x,
+        center_y,
+        70.0,
+    );
+    x += GAP_SM;
+    x = cell_text(
+        ui,
+        &format!("−{deletions}"),
+        egui::FontId::monospace(META_SIZE),
+        palette.git_deleted,
+        x,
+        center_y,
+        70.0,
+    );
+
+    if !review.commits.is_empty() {
+        let scope = egui::Rect::from_min_size(
+            egui::pos2(x + GAP_MD, center_y - CTRL_HEIGHT / 2.0),
+            egui::vec2(COMMIT_SCOPE_W, CTRL_HEIGHT),
+        );
+        commits_dropdown(ui, palette, review, scope, action);
+    }
+
+    // Thread navigator: steps the selection through the files carrying unresolved
+    // threads. One thread needs no navigator — its file row already flags it.
+    let threads: Vec<&String> = review.existing.keys().collect();
+    if threads.len() < 2 {
+        return;
+    }
+    let nav_id = egui::Id::new(("pr_thread_nav", review.pr.url.as_str()));
+    let mut cursor: usize = ui.data(|d| d.get_temp(nav_id).unwrap_or(0));
+    cursor = cursor.min(threads.len() - 1);
+    let nav = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - PANEL_PAD_X - THREAD_NAV_W,
+            center_y - CTRL_HEIGHT / 2.0,
+        ),
+        egui::vec2(THREAD_NAV_W, CTRL_HEIGHT),
+    );
+    ui.painter().rect_stroke(
+        nav,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        egui::pos2(nav.left() + 10.0 + CHIP_SIZE / 2.0, center_y),
+        CHIP_SIZE,
+        Icon::MessageSquare,
+        palette.git_modified,
+    );
+    let label = format!("Thread {} / {}", cursor + 1, threads.len());
+    cell_text(
+        ui,
+        &label,
+        egui::FontId::proportional(META_SIZE),
+        palette.text_secondary,
+        nav.left() + 10.0 + CHIP_SIZE + 6.0,
+        center_y,
+        THREAD_NAV_W - 70.0,
+    );
+    let step = |ui: &mut egui::Ui, right: f32, icon, id, delta: isize| -> bool {
+        let r = egui::Rect::from_center_size(
+            egui::pos2(right, center_y),
+            egui::vec2(20.0, CTRL_HEIGHT),
+        );
+        let hit = ui.interact(r, ui.id().with(id), egui::Sense::click());
+        if hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        paint_icon(
+            ui.painter(),
+            r.center(),
+            STATUS_ICON,
+            icon,
+            palette.text_secondary,
+        );
+        let name = if delta < 0 {
+            "Previous thread"
+        } else {
+            "Next thread"
+        };
+        hit.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+        hit.clicked()
+    };
+    let n = threads.len();
+    let mut jumped = false;
+    if step(
+        ui,
+        nav.right() - 34.0,
+        Icon::ChevronUp,
+        "pr_thread_prev",
+        -1,
+    ) {
+        cursor = (cursor + n - 1) % n;
+        jumped = true;
+    }
+    if step(
+        ui,
+        nav.right() - 14.0,
+        Icon::ChevronDown,
+        "pr_thread_next",
+        1,
+    ) {
+        cursor = (cursor + 1) % n;
+        jumped = true;
+    }
+    if jumped {
+        if let Some(idx) = review
+            .files
+            .iter()
+            .position(|file| &file.path == threads[cursor])
+        {
+            action.select_file = Some(idx);
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(nav_id, cursor));
+}
+
+/// Whether a changed path is test scaffolding — what **Hide tests** filters out.
+fn is_test_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let name = leaf_name(&lower);
+    lower.starts_with("test/")
+        || lower.starts_with("tests/")
+        || lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("__tests__/")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+        || name.starts_with("test_")
+        || name.ends_with("_test.rs")
+        || name.ends_with("_spec.rb")
 }
 
 fn rail_resize_handle(
@@ -2702,11 +4743,11 @@ fn rail_resize_handle(
         ),
     );
     if resp.dragged() {
-        // The rail sits on the right, so dragging the split left (negative delta)
+        // The rail sits on the left, so dragging the split right (positive delta)
         // widens it.
         let max = (rect.width() - DIFF_MIN_WIDTH).max(RAIL_MIN_WIDTH);
         action.set_detail_width =
-            Some((rail_width - resp.drag_delta().x).clamp(RAIL_MIN_WIDTH, max));
+            Some((rail_width + resp.drag_delta().x).clamp(RAIL_MIN_WIDTH, max));
     }
 }
 
@@ -2719,23 +4760,26 @@ fn render_list(
     rect: egui::Rect,
     action: &mut PullRequestsPageAction,
 ) {
-    let indices = |role: PrRole| -> Vec<usize> {
-        prs.iter()
-            .enumerate()
-            .filter(|(_, p)| p.role == role)
-            .map(|(i, _)| i)
-            .collect()
-    };
-    let to_review = indices(PrRole::ToReview);
-    let mine = indices(PrRole::Mine);
+    let state_id = egui::Id::new("pr_list_state");
+    let mut state: ListState = ui.data(|d| d.get_temp(state_id).unwrap_or_default());
 
-    let header_rect =
-        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), PAGE_HEADER_HEIGHT));
-    page_header(ui, palette, header_rect, hints.loading, action);
+    let header_h = PAGE_HEADER_HEIGHT + LIST_TABS_HEIGHT;
+    let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), header_h));
+    list_header(ui, palette, header_rect, prs, hints, &mut state, action);
+
+    // Tab first (it drives the group counts), then the project filter and the query.
+    let visible: Vec<usize> = prs
+        .iter()
+        .enumerate()
+        .filter(|(_, pr)| state.tab.accepts(pr))
+        .filter(|(_, pr)| !state.hidden_projects.contains(&pr.repo_label))
+        .filter(|(_, pr)| crate::pull_requests::model::matches_search(pr, &state.query))
+        .map(|(i, _)| i)
+        .collect();
 
     let body_rect = egui::Rect::from_x_y_ranges(
         rect.x_range(),
-        egui::Rangef::new(rect.top() + PAGE_HEADER_HEIGHT, rect.bottom()),
+        egui::Rangef::new(rect.top() + header_h, rect.bottom()),
     );
     let mut content = ui.new_child(
         egui::UiBuilder::new()
@@ -2747,7 +4791,7 @@ fn render_list(
         .show(&mut content, |ui| {
             ui.set_width(ui.available_width());
             egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(PANEL_PAD_X as i8, 8))
+                .inner_margin(egui::Margin::symmetric(0, 8))
                 .show(ui, |ui| {
                     if let Some(text) = hints.github {
                         hint_banner(ui, palette, "GitHub", text);
@@ -2763,102 +4807,428 @@ fn render_list(
                         }
                         return;
                     }
-                    group(
-                        ui,
-                        palette,
-                        "To review",
-                        PrRole::ToReview,
-                        &to_review,
-                        prs,
-                        selected,
-                        action,
-                    );
-                    group(
-                        ui,
-                        palette,
-                        "Mine",
-                        PrRole::Mine,
-                        &mine,
-                        prs,
-                        selected,
-                        action,
-                    );
+                    if visible.is_empty() {
+                        filtered_out_state(ui, palette);
+                        return;
+                    }
+                    for band in ActionGroup::ALL {
+                        let mut indices: Vec<usize> = visible
+                            .iter()
+                            .copied()
+                            .filter(|&i| ActionGroup::of(&prs[i]) == band)
+                            .collect();
+                        state.sort.apply(prs, &mut indices);
+                        group(ui, palette, band, &indices, prs, selected, action);
+                    }
                 });
         });
+
+    ui.data_mut(|d| d.insert_temp(state_id, state));
 }
 
-/// Browse-list header (pull-requests.md §5): the `Pull Requests` title and a
-/// **Refresh** button — no global search / notification / theme chrome.
-fn page_header(
+/// Ordering **within** an actionability band (pull-requests.md §5) — the bands
+/// themselves are always in `ActionGroup::ALL` order, which is the real priority.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ListSort {
+    /// Oldest touched first: a PR that has been sitting is the more urgent one.
+    #[default]
+    Priority,
+    /// Most recently touched first.
+    Recent,
+}
+
+impl ListSort {
+    fn label(self) -> &'static str {
+        match self {
+            ListSort::Priority => "Priority",
+            ListSort::Recent => "Recently updated",
+        }
+    }
+
+    fn apply(self, prs: &[PullRequest], indices: &mut [usize]) {
+        indices.sort_by(|&a, &b| {
+            let ord = prs[a].updated_at.cmp(&prs[b].updated_at);
+            match self {
+                ListSort::Priority => ord,
+                ListSort::Recent => ord.reverse(),
+            }
+        });
+    }
+}
+
+/// Session state of the browse list (pull-requests.md §5): the open tab, the search
+/// query, the projects hidden through the **Filters** menu and the in-band ordering.
+/// Not persisted — a cockpit reopened later starts on the default view.
+#[derive(Clone, Default)]
+struct ListState {
+    tab: crate::pull_requests::model::ListTab,
+    query: String,
+    hidden_projects: std::collections::BTreeSet<String>,
+    sort: ListSort,
+}
+
+/// The list header (pull-requests.md §5): a raised band carrying the title, the
+/// search field, the **Filters** / **Priority** / **Refresh** controls, and the
+/// tab bar beneath them.
+fn list_header(
     ui: &mut egui::Ui,
     palette: &Palette,
     rect: egui::Rect,
-    loading: bool,
+    prs: &[PullRequest],
+    hints: &PrSourceHints<'_>,
+    state: &mut ListState,
     action: &mut PullRequestsPageAction,
 ) {
-    let center_y = rect.center().y;
-    ui.painter().text(
-        egui::pos2(rect.left() + PANEL_PAD_X, center_y),
-        egui::Align2::LEFT_CENTER,
-        "Pull Requests",
+    ui.painter().rect_filled(rect, 0, palette.bg_surface);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+
+    let top = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), PAGE_HEADER_HEIGHT));
+    let center_y = top.center().y;
+    let title = ui.painter().layout_no_wrap(
+        "Pull Requests".to_owned(),
         egui::FontId::new(PAGE_TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
         palette.text_primary,
     );
+    let title_right = top.left() + PANEL_PAD_X + title.size().x;
+    ui.painter().galley(
+        egui::pos2(top.left() + PANEL_PAD_X, center_y - title.size().y / 2.0),
+        title,
+        palette.text_primary,
+    );
 
-    let label = "Refresh";
-    let galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
+    // Controls are laid out from the right edge; the search field takes what is left,
+    // capped so it never stretches across a wide window.
+    let mut x = top.right() - PANEL_PAD_X;
+    let mut control = |ui: &mut egui::Ui, w: f32| {
+        x -= w;
+        let r = egui::Rect::from_min_size(
+            egui::pos2(x, center_y - CTRL_HEIGHT / 2.0),
+            egui::vec2(w, CTRL_HEIGHT),
+        );
+        x -= GAP_SM;
+        let _ = ui;
+        r
+    };
+    let refresh_rect = control(ui, REFRESH_BTN_W);
+    let sort_rect = control(ui, SORT_BTN_W);
+    let filter_rect = control(ui, FILTER_BTN_W);
+
+    if refresh_button(ui, palette, refresh_rect, hints.loading) {
+        action.refresh = true;
+    }
+    sort_menu(ui, palette, sort_rect, state);
+    filter_menu(ui, palette, filter_rect, prs, state);
+
+    let search_left = title_right + GAP_MD * 2.0;
+    let search_right = (x + GAP_SM).min(search_left + SEARCH_MAX_W);
+    if search_right - search_left > 80.0 {
+        search_field(
+            ui,
+            palette,
+            egui::Rect::from_x_y_ranges(
+                egui::Rangef::new(search_left, search_right),
+                egui::Rangef::new(center_y - CTRL_HEIGHT / 2.0, center_y + CTRL_HEIGHT / 2.0),
+            ),
+            state,
+        );
+    }
+
+    let tabs = egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(rect.top() + PAGE_HEADER_HEIGHT, rect.bottom()),
+    );
+    tab_bar(ui, palette, tabs, prs, state);
+}
+
+/// What sits in a header control's leading slot. `Spinner` reserves the same slot
+/// as a glyph, so a button doesn't shift when a fetch starts.
+enum HeaderIcon {
+    Glyph(Icon),
+    Spinner,
+}
+
+/// An outlined header control: leading slot, label, optional trailing chevron.
+/// Paints itself into `rect` and reports the click.
+fn header_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    id: &str,
+    icon: HeaderIcon,
+    label: &str,
+    chevron: bool,
+) -> egui::Response {
+    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, RADIUS_BUTTON, palette.bg_surface_hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let center_y = rect.center().y;
+    let mut x = rect.left() + 10.0;
+    let icon_center = egui::pos2(x + STATUS_ICON / 2.0, center_y);
+    match icon {
+        HeaderIcon::Glyph(icon) => {
+            paint_icon(
+                ui.painter(),
+                icon_center,
+                STATUS_ICON,
+                icon,
+                palette.text_secondary,
+            );
+            x += STATUS_ICON + 6.0;
+        }
+        HeaderIcon::Spinner => {
+            Spinner::new()
+                .size(STATUS_ICON)
+                .color(palette.text_secondary)
+                .paint_at(
+                    ui,
+                    egui::Rect::from_center_size(icon_center, egui::vec2(STATUS_ICON, STATUS_ICON)),
+                );
+            x += STATUS_ICON + 6.0;
+        }
+    }
+    ui.painter().text(
+        egui::pos2(x, center_y),
+        egui::Align2::LEFT_CENTER,
+        label,
         egui::FontId::new(META_SIZE, crate::theme::medium_family(ui.ctx())),
         palette.text_secondary,
     );
-    let icon_w = STATUS_ICON;
-    let pad = 10.0;
-    let w = galley.size().x + icon_w + 6.0 + 2.0 * pad;
-    let h = DETAIL_ACTION_HEIGHT;
-    let btn = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - PANEL_PAD_X - w, center_y - h / 2.0),
-        egui::vec2(w, h),
-    );
-    let response = ui.interact(btn, ui.id().with("pr_refresh"), egui::Sense::click());
-    let hovered = response.hovered();
-    if hovered {
-        ui.painter()
-            .rect_filled(btn, RADIUS_BUTTON, palette.bg_surface_hover);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    } else {
-        ui.painter()
-            .rect_filled(btn, RADIUS_BUTTON, palette.bg_surface);
-    }
-    let icon_center = egui::pos2(btn.left() + pad + icon_w / 2.0, center_y);
-    if loading {
-        Spinner::new()
-            .size(icon_w)
-            .color(palette.text_secondary)
-            .paint_at(
-                ui,
-                egui::Rect::from_center_size(icon_center, egui::vec2(icon_w, icon_w)),
-            );
-    } else {
+    if chevron {
         paint_icon(
             ui.painter(),
-            icon_center,
-            icon_w,
-            Icon::RefreshCw,
-            palette.text_secondary,
+            egui::pos2(rect.right() - 12.0, center_y),
+            STATUS_ICON,
+            Icon::ChevronDown,
+            palette.text_muted,
         );
     }
-    ui.painter().galley(
-        egui::pos2(
-            btn.left() + pad + icon_w + 6.0,
-            center_y - galley.size().y / 2.0,
-        ),
-        galley,
-        palette.text_secondary,
-    );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    if response.clicked() {
-        action.refresh = true;
+    response
+}
+
+/// **Refresh** (pull-requests.md §6) — the icon becomes a spinner while a fetch is
+/// in flight.
+fn refresh_button(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, loading: bool) -> bool {
+    let icon = if loading {
+        HeaderIcon::Spinner
+    } else {
+        HeaderIcon::Glyph(Icon::RefreshCw)
+    };
+    header_button(ui, palette, rect, "pr_refresh", icon, "Refresh", false).clicked()
+}
+
+/// **Priority** (pull-requests.md §5): picks the ordering applied *inside* each
+/// actionability band.
+fn sort_menu(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, state: &mut ListState) {
+    let response = header_button(
+        ui,
+        palette,
+        rect,
+        "pr_sort",
+        HeaderIcon::Glyph(Icon::ArrowUpDown),
+        state.sort.label(),
+        true,
+    );
+    egui::Popup::menu(&response)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            for option in [ListSort::Priority, ListSort::Recent] {
+                if ui.radio(state.sort == option, option.label()).clicked() {
+                    state.sort = option;
+                }
+            }
+        });
+}
+
+/// **Filters** (pull-requests.md §5): one checkbox per workspace project in the
+/// list, so a noisy repo can be muted without leaving the cockpit.
+fn filter_menu(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    prs: &[PullRequest],
+    state: &mut ListState,
+) {
+    let hidden = state.hidden_projects.len();
+    let label = if hidden == 0 {
+        "Filters".to_owned()
+    } else {
+        format!("Filters ({hidden})")
+    };
+    let response = header_button(
+        ui,
+        palette,
+        rect,
+        "pr_filters",
+        HeaderIcon::Glyph(Icon::ListFilter),
+        &label,
+        true,
+    );
+    let mut projects: Vec<&str> = prs.iter().map(|p| p.repo_label.as_str()).collect();
+    projects.sort_unstable();
+    projects.dedup();
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            ui.label(muted(palette, "Projects"));
+            for project in projects {
+                let mut shown = !state.hidden_projects.contains(project);
+                if ui.checkbox(&mut shown, project).changed() {
+                    if shown {
+                        state.hidden_projects.remove(project);
+                    } else {
+                        state.hidden_projects.insert(project.to_owned());
+                    }
+                }
+            }
+        });
+}
+
+/// The header's search field (pull-requests.md §5) — matches title, number, author,
+/// branch, project through `model::matches_search`.
+fn search_field(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, state: &mut ListState) {
+    ui.painter()
+        .rect_filled(rect, RADIUS_BUTTON, palette.bg_canvas);
+    ui.painter().rect_stroke(
+        rect,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + 10.0 + STATUS_ICON / 2.0, rect.center().y),
+        STATUS_ICON,
+        Icon::Search,
+        palette.text_muted,
+    );
+    let field = egui::Rect::from_x_y_ranges(
+        egui::Rangef::new(rect.left() + 10.0 + STATUS_ICON + 6.0, rect.right() - 8.0),
+        rect.y_range(),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(field)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.visuals_mut().extreme_bg_color = egui::Color32::TRANSPARENT;
+    child.add(
+        egui::TextEdit::singleline(&mut state.query)
+            .id_salt("pr_search")
+            .frame(egui::Frame::NONE)
+            .desired_width(field.width())
+            .font(egui::FontId::proportional(META_SIZE))
+            .text_color(palette.text_primary)
+            .hint_text(
+                egui::RichText::new("Search a PR, an author, a branch…")
+                    .size(META_SIZE)
+                    .color(palette.text_muted),
+            ),
+    );
+}
+
+/// The list's tab bar (pull-requests.md §5): four views over the same cache, each
+/// carrying its count.
+fn tab_bar(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    prs: &[PullRequest],
+    state: &mut ListState,
+) {
+    let mut x = rect.left() + PANEL_PAD_X;
+    for tab in crate::pull_requests::model::ListTab::ALL {
+        let count = prs.iter().filter(|pr| tab.accepts(pr)).count();
+        let label = tab.label();
+        let active = state.tab == tab;
+        let font = egui::FontId::new(
+            SECTION_TITLE_SIZE,
+            if active {
+                crate::theme::medium_family(ui.ctx())
+            } else {
+                egui::FontFamily::Proportional
+            },
+        );
+        let galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            font,
+            if active {
+                palette.text_primary
+            } else {
+                palette.text_secondary
+            },
+        );
+        let count_w = if count > 0 { 22.0 } else { 0.0 };
+        let w = galley.size().x + count_w + 2.0 * TAB_PAD_X;
+        let tab_rect =
+            egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, rect.height()));
+        let response = ui.interact(
+            tab_rect,
+            ui.id().with(("pr_tab", label)),
+            egui::Sense::click(),
+        );
+        if response.hovered() && !active {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let center_y = tab_rect.center().y;
+        let text_left = tab_rect.left() + TAB_PAD_X;
+        ui.painter().galley(
+            egui::pos2(text_left, center_y - galley.size().y / 2.0),
+            galley,
+            palette.text_primary,
+        );
+        if count > 0 {
+            ui.painter().text(
+                egui::pos2(tab_rect.right() - TAB_PAD_X, center_y),
+                egui::Align2::RIGHT_CENTER,
+                count.to_string(),
+                egui::FontId::proportional(META_SIZE),
+                palette.text_muted,
+            );
+        }
+        if active {
+            ui.painter().hline(
+                egui::Rangef::new(tab_rect.left() + 4.0, tab_rect.right() - 4.0),
+                tab_rect.bottom() - 1.5,
+                egui::Stroke::new(2.0_f32, palette.accent),
+            );
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label.to_owned())
+        });
+        if response.clicked() {
+            state.tab = tab;
+        }
+        x += w;
     }
+}
+
+/// Shown when the tab / search / project filters leave nothing — distinct from an
+/// empty workspace, which `empty_state` covers.
+fn filtered_out_state(ui: &mut egui::Ui, palette: &Palette) {
+    ui.add_space(48.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new("No pull request matches these filters")
+                .size(13.0)
+                .color(palette.text_muted),
+        );
+    });
 }
 
 /// A full-width unavailability banner — a forge tag plus its one-line hint (§3).
@@ -2919,12 +5289,13 @@ fn loading_state(ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One actionability band of the list (pull-requests.md §5): a colored section
+/// header over full-bleed rows separated by hairlines. Stacked PRs still nest
+/// inside their band, so merging a base stays visibly ahead of its children.
 fn group(
     ui: &mut egui::Ui,
     palette: &Palette,
-    title: &str,
-    role: PrRole,
+    band: ActionGroup,
     indices: &[usize],
     prs: &[PullRequest],
     selected: Option<usize>,
@@ -2933,326 +5304,319 @@ fn group(
     if indices.is_empty() {
         return;
     }
-    group_header(ui, palette, title, indices.len());
-    let backdrop = ui.painter().add(egui::Shape::Noop);
-    let layout = crate::pull_requests::model::stacked_rows(prs, indices);
-    let card = ui
-        .scope(|ui| {
-            column_header(ui, palette, role);
-            for (row, stack) in layout.iter().enumerate() {
-                pr_row(
-                    ui,
-                    palette,
-                    &prs[stack.idx],
-                    stack.idx,
-                    role,
-                    selected == Some(stack.idx),
-                    row > 0 && stack.elbow_last.is_none(),
-                    stack,
-                    action,
-                );
-            }
-        })
-        .response
-        .rect;
-    ui.painter().set(
-        backdrop,
-        egui::Shape::rect_filled(
-            card,
-            egui::CornerRadius::same(CARD_RADIUS),
-            palette.bg_surface,
-        ),
-    );
-    ui.painter().rect_stroke(
-        card,
-        egui::CornerRadius::same(CARD_RADIUS),
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    ui.add_space(16.0);
-}
-
-/// The table's column-label row under a group header (pull-requests.md §5). The
-/// columns differ by role: **Mine** drops the Author column (every row is me).
-fn column_header(ui: &mut egui::Ui, palette: &Palette, role: PrRole) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), COL_HEADER_HEIGHT),
-        egui::Sense::hover(),
-    );
-    let cols = columns(rect, role);
-    let center_y = rect.center().y;
-    let font = egui::FontId::proportional(HEADER_SIZE);
-    let label = |left: f32, text: &str| {
-        ui.painter().text(
-            egui::pos2(left, center_y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            font.clone(),
-            palette.text_muted,
+    section_header(ui, palette, band, indices.len());
+    for stack in crate::pull_requests::model::stacked_rows(prs, indices) {
+        pr_row(
+            ui,
+            palette,
+            prs,
+            stack.idx,
+            band,
+            selected == Some(stack.idx),
+            &stack,
+            action,
         );
-    };
-    label(rect.left() + PAD_X, "Title");
-    label(cols.project.min, "Project");
-    if let Some(author) = cols.author {
-        label(author.min, "Author");
     }
-    label(
-        cols.reviewers.min,
-        if role == PrRole::Mine {
-            "Reviewers"
-        } else {
-            "Reviewer"
-        },
-    );
-    label(cols.status.min, "Status");
-    label(cols.updated.min, "Updated");
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-    );
+    ui.add_space(GAP_MD);
 }
 
-fn group_header(ui: &mut egui::Ui, palette: &Palette, title: &str, count: usize) {
+/// Icon + color a band wears in its section header.
+fn band_style(palette: &Palette, band: ActionGroup) -> (Icon, egui::Color32) {
+    match band {
+        ActionGroup::WaitingOnMyReview => (Icon::ClipboardCheck, palette.git_modified),
+        ActionGroup::ReadyToMerge => (Icon::CheckCircle2, palette.git_added),
+        ActionGroup::WaitingOnAuthor => (Icon::Hourglass, palette.text_muted),
+        ActionGroup::InReview => (Icon::MessageSquare, palette.text_muted),
+    }
+}
+
+/// A band's header: its glyph and uppercase label in the band color, then the count.
+fn section_header(ui: &mut egui::Ui, palette: &Palette, band: ActionGroup, count: usize) {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), GROUP_HEADER_HEIGHT),
         egui::Sense::hover(),
     );
+    let (icon, color) = band_style(palette, band);
     let center_y = rect.center().y;
-    let label = ui.painter().layout_no_wrap(
-        title.to_owned(),
-        egui::FontId::new(HEADER_SIZE, crate::theme::medium_family(ui.ctx())),
-        palette.text_secondary,
+    let left = rect.left() + PANEL_PAD_X;
+    paint_icon(
+        ui.painter(),
+        egui::pos2(left + STATUS_ICON / 2.0, center_y),
+        STATUS_ICON,
+        icon,
+        color,
     );
-    let label_right = rect.left() + PAD_X + label.size().x;
-    ui.painter().galley(
-        egui::pos2(rect.left() + PAD_X, center_y - label.size().y / 2.0),
-        label,
-        palette.text_secondary,
-    );
-    count_pill(ui, palette, count, label_right + 8.0, center_y);
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.to_owned()));
-}
-
-fn count_pill(ui: &egui::Ui, palette: &Palette, count: usize, left: f32, center_y: f32) {
+    let label = band.label().to_uppercase();
     let galley = ui.painter().layout_no_wrap(
-        count.to_string(),
-        egui::FontId::proportional(COUNT_BADGE_SIZE),
-        palette.lane_node_text,
+        label.clone(),
+        egui::FontId::new(HEADER_SIZE, crate::theme::medium_family(ui.ctx())),
+        color,
     );
-    let h = COUNT_BADGE_SIZE + 5.0;
-    let w = (galley.size().x + 10.0).max(h);
-    let pill = egui::Rect::from_min_size(egui::pos2(left, center_y - h / 2.0), egui::vec2(w, h));
-    ui.painter()
-        .rect_filled(pill, h / 2.0, palette.bg_surface_hover);
+    let text_left = left + STATUS_ICON + 8.0;
     ui.painter().galley(
-        pill.center() - galley.size() / 2.0,
-        galley,
-        palette.text_secondary,
+        egui::pos2(text_left, center_y - galley.size().y / 2.0),
+        galley.clone(),
+        color,
     );
+    ui.painter().text(
+        egui::pos2(text_left + galley.size().x + 8.0, center_y),
+        egui::Align2::LEFT_CENTER,
+        count.to_string(),
+        egui::FontId::proportional(HEADER_SIZE),
+        palette.text_muted,
+    );
+    response.widget_info(move || {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone())
+    });
 }
 
-/// Per-role column x-ranges for the table (pull-requests.md §5). Fixed columns are
-/// taken from the right edge; Title fills the rest. `author` is present only for the
-/// **To review** group (every **Mine** row's author is the user).
-struct Cols {
+/// x-ranges of a row's right-hand data cluster, laid out from the right edge. The
+/// **Ready to merge** band swaps the ± / comment tally for the inline Merge button
+/// (pull-requests.md §5).
+struct RowCols {
     title: egui::Rangef,
-    project: egui::Rangef,
-    author: Option<egui::Rangef>,
-    reviewers: egui::Rangef,
-    status: egui::Rangef,
-    updated: egui::Rangef,
-    chevron: egui::Rangef,
+    ci: egui::Rangef,
+    comments: Option<egui::Rangef>,
+    add: Option<egui::Rangef>,
+    del: Option<egui::Rangef>,
+    merge: Option<egui::Rect>,
+    avatar: f32,
 }
 
-fn columns(rect: egui::Rect, role: PrRole) -> Cols {
-    let title_left = rect.left() + PAD_X + STATE_ICON + 8.0;
-    let right_edge = rect.right() - PAD_X;
+fn row_columns(rect: egui::Rect, band: ActionGroup) -> RowCols {
+    let mut x = rect.right() - PANEL_PAD_X;
+    let center_y = rect.center().y;
+    let avatar = x - ROW_AVATAR / 2.0;
+    x -= ROW_AVATAR + GAP_MD;
 
-    let author_w = matches!(role, PrRole::ToReview).then_some(COL_AUTHOR_W);
-    let n_gaps = (5 + author_w.is_some() as usize) as f32;
-    let fixed_sum = COL_PROJECT_W
-        + author_w.unwrap_or(0.0)
-        + COL_REVIEWERS_W
-        + COL_STATUS_W
-        + COL_UPDATED_W
-        + COL_CHEVRON_W;
+    let mut merge = None;
+    let (mut comments, mut add, mut del) = (None, None, None);
+    if band == ActionGroup::ReadyToMerge {
+        x -= MERGE_BTN_W;
+        merge = Some(egui::Rect::from_min_size(
+            egui::pos2(x, center_y - MERGE_BTN_H / 2.0),
+            egui::vec2(MERGE_BTN_W, MERGE_BTN_H),
+        ));
+        x -= GAP_MD;
+    } else {
+        x -= COL_DEL_W;
+        del = Some(egui::Rangef::new(x, x + COL_DEL_W));
+        x -= GAP_SM + COL_ADD_W;
+        add = Some(egui::Rangef::new(x, x + COL_ADD_W));
+        x -= COL_COMMENTS_W;
+        comments = Some(egui::Rangef::new(x, x + COL_COMMENTS_W));
+        x -= GAP_SM;
+    }
+    x -= COL_CI_W;
+    let ci = egui::Rangef::new(x, x + COL_CI_W);
 
-    let avail = right_edge - title_left;
-    let title_w = (avail - fixed_sum - n_gaps * COL_GAP).clamp(TITLE_MIN_W, TITLE_MAX_W);
-    let gap = ((avail - title_w - fixed_sum) / n_gaps).max(COL_GAP);
-
-    let mut x = title_left + title_w;
-    let mut next = |w: f32| {
-        x += gap;
-        let range = egui::Rangef::new(x, x + w);
-        x += w;
-        range
-    };
-    let project = next(COL_PROJECT_W);
-    let author = author_w.map(&mut next);
-    let reviewers = next(COL_REVIEWERS_W);
-    let status = next(COL_STATUS_W);
-    let updated = next(COL_UPDATED_W);
-    let chevron = next(COL_CHEVRON_W);
-
-    Cols {
-        title: egui::Rangef::new(title_left, title_left + title_w),
-        project,
-        author,
-        reviewers,
-        status,
-        updated,
-        chevron,
+    RowCols {
+        title: egui::Rangef::new(rect.left() + PANEL_PAD_X + STATE_ICON + 8.0, x - GAP_MD),
+        ci,
+        comments,
+        add,
+        del,
+        merge,
+        avatar,
     }
 }
 
+/// One list row (pull-requests.md §5): the state glyph, the title with its optional
+/// **Blocks N** flag, a meta line, then the right-hand cluster — CI, tallies (or the
+/// inline **Merge**) and the author avatar.
 #[allow(clippy::too_many_arguments)]
 fn pr_row(
     ui: &mut egui::Ui,
     palette: &Palette,
-    pr: &PullRequest,
+    prs: &[PullRequest],
     idx: usize,
-    role: PrRole,
+    band: ActionGroup,
     selected: bool,
-    divider: bool,
     stack: &StackRow,
     action: &mut PullRequestsPageAction,
 ) {
+    let pr = &prs[idx];
     let (rect, response, hovered) =
         clickable(ui, egui::vec2(ui.available_width(), ROW_HEIGHT), true);
     if selected {
         ui.painter()
-            .rect_filled(rect, 0, crate::ui::with_alpha(palette.accent, 28));
+            .rect_filled(rect, 0, with_alpha(palette.accent, 28));
     } else if hovered {
         ui.painter().rect_filled(rect, 0, palette.bg_surface_hover);
     }
-    if divider && !selected {
-        ui.painter().hline(
-            rect.x_range(),
-            rect.top() - 0.5,
-            egui::Stroke::new(1.0_f32, palette.border_subtle),
-        );
-    }
-    let cols = columns(rect, role);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top() - 0.5,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+
+    let cols = row_columns(rect, band);
     let center_y = rect.center().y;
+    let title_y = rect.top() + ROW_HEIGHT * 0.36;
+    let meta_y = rect.top() + ROW_HEIGHT * 0.68;
+    // A band waiting on its author is informational — its rows read a notch quieter.
+    let quiet = band == ActionGroup::WaitingOnAuthor;
+    let title_color = if quiet {
+        palette.text_secondary
+    } else {
+        palette.text_primary
+    };
 
-    // Stacked-PR gutter: ancestor verticals plus this row's ├/└ elbow, then the whole
-    // title cell shifts right one notch per depth level (pull-requests.md §5).
     let indent = stack_connectors(ui.painter(), palette, rect, stack);
-
-    // Title cell: state icon, the title on the upper line, the branch beneath.
-    let title_y = rect.top() + ROW_HEIGHT * 0.38;
-    let branch_y = rect.top() + ROW_HEIGHT * 0.66;
-    let (state_icon, state_color) = match pr.state {
-        PrState::Open => (Icon::GitPullRequest, palette.git_added),
-        PrState::Draft => (Icon::GitPullRequestDraft, palette.text_muted),
+    let (state_icon, state_color) = match (pr.state, pr.review) {
+        (PrState::Draft, _) => (Icon::GitPullRequestDraft, palette.text_muted),
+        (PrState::Open, Review::ChangesRequested) => (Icon::GitPullRequest, palette.git_deleted),
+        (PrState::Open, _) => (Icon::GitPullRequest, palette.git_added),
     };
     paint_icon(
         ui.painter(),
-        egui::pos2(rect.left() + PAD_X + indent + STATE_ICON / 2.0, title_y),
+        egui::pos2(
+            rect.left() + PANEL_PAD_X + indent + STATE_ICON / 2.0,
+            title_y,
+        ),
         STATE_ICON,
         state_icon,
         state_color,
     );
-    cell_text(
+
+    // Title, then the Blocks flag when merging this PR unblocks a stack.
+    let title_left = cols.title.min + indent;
+    let blocks = crate::pull_requests::model::blocked_count(prs, idx);
+    let flag_w = if blocks > 0 { BLOCKS_FLAG_W } else { 0.0 };
+    let title_w = (cols.title.max - title_left - flag_w).max(0.0);
+    let title_end = cell_text(
         ui,
         &pr.title,
         egui::FontId::new(TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
-        palette.text_primary,
-        cols.title.min + indent,
+        title_color,
+        title_left,
         title_y,
-        cols.title.span() - indent,
+        title_w,
     );
-    paint_icon(
-        ui.painter(),
-        egui::pos2(cols.title.min + indent + CHIP_SIZE / 2.0, branch_y),
-        CHIP_SIZE,
-        Icon::GitBranch,
-        palette.text_muted,
-    );
-    cell_text(
-        ui,
-        &format!("{} → {}", pr.source_branch, pr.dest_branch),
-        egui::FontId::proportional(CHIP_SIZE),
-        palette.text_muted,
-        cols.title.min + indent + CHIP_SIZE + 5.0,
-        branch_y,
-        cols.title.span() - indent - CHIP_SIZE - 5.0,
-    );
-
-    // Project: a quiet repo glyph + label.
-    paint_icon(
-        ui.painter(),
-        egui::pos2(cols.project.min + CHIP_SIZE / 2.0, center_y),
-        CHIP_SIZE,
-        Icon::Folder,
-        palette.text_muted,
-    );
-    cell_text(
-        ui,
-        &pr.repo_label,
-        egui::FontId::proportional(CHIP_SIZE),
-        palette.text_secondary,
-        cols.project.min + CHIP_SIZE + 5.0,
-        center_y,
-        cols.project.span() - CHIP_SIZE - 5.0,
-    );
-
-    // Author (To review only): avatar + name.
-    if let Some(author) = cols.author {
-        paint_avatar(
-            ui.painter(),
-            palette,
-            &pr.author,
-            egui::pos2(author.min + REVIEWER_AVATAR / 2.0, center_y),
-            REVIEWER_AVATAR,
-            None,
-        );
-        cell_text(
+    if blocks > 0 {
+        flag_chip(
             ui,
-            &pr.author,
-            egui::FontId::proportional(META_SIZE),
-            palette.text_secondary,
-            author.min + REVIEWER_AVATAR + 7.0,
-            center_y,
-            author.span() - REVIEWER_AVATAR - 7.0,
+            palette,
+            &format!("Blocks {blocks}"),
+            title_end + GAP_SM,
+            title_y,
         );
     }
 
-    reviewer_stack(ui, palette, &pr.reviewers, cols.reviewers, center_y);
-
-    // Status: a plain colored label encoding the PR's state/review (CI checks
-    // live in the review detail, not the list — pull-requests.md §5).
-    let (label, color) = pr_status(palette, pr.state, pr.review);
-    cell_text(
-        ui,
-        label,
-        egui::FontId::new(CHIP_SIZE, crate::theme::medium_family(ui.ctx())),
-        color,
-        cols.status.min,
-        center_y,
-        cols.status.span(),
-    );
-
+    // Meta line: number, project, author, age, then either the branch flow or —
+    // in the waiting-on-author band — what the PR is actually blocked on.
     let age = crate::pull_requests::model::relative_age(&pr.updated_at, now_epoch_secs());
-    let updated = if age.is_empty() { &pr.updated_at } else { &age };
+    let age = if age.is_empty() {
+        pr.updated_at.clone()
+    } else {
+        age
+    };
+    let mut meta = format!(
+        "#{} · {} · {} · {}",
+        pr.number, pr.repo_label, pr.author, age
+    );
+    let (tail, tail_color) = if quiet {
+        let (label, color) = pr_status(palette, pr.state, pr.review, pr.checks);
+        (label.to_owned(), color)
+    } else {
+        (
+            format!("{} → {}", pr.source_branch, pr.dest_branch),
+            palette.text_muted,
+        )
+    };
+    meta.push_str(" · ");
+    let meta_end = cell_text(
+        ui,
+        &meta,
+        egui::FontId::proportional(CHIP_SIZE),
+        palette.text_muted,
+        title_left,
+        meta_y,
+        (cols.title.max - title_left).max(0.0),
+    );
     cell_text(
         ui,
-        updated,
-        egui::FontId::proportional(META_SIZE),
-        palette.text_muted,
-        cols.updated.min,
-        center_y,
-        cols.updated.span(),
+        &tail,
+        egui::FontId::proportional(CHIP_SIZE),
+        tail_color,
+        meta_end,
+        meta_y,
+        (cols.title.max - meta_end).max(0.0),
     );
-    paint_icon(
+
+    // CI status.
+    if let Some((icon, color)) = checks_status(palette, pr.checks) {
+        paint_icon(
+            ui.painter(),
+            egui::pos2(cols.ci.min + STATUS_ICON / 2.0, center_y),
+            STATUS_ICON,
+            icon,
+            color,
+        );
+        cell_text(
+            ui,
+            checks_short_label(pr.checks),
+            egui::FontId::proportional(META_SIZE),
+            color,
+            cols.ci.min + STATUS_ICON + 5.0,
+            center_y,
+            cols.ci.span() - STATUS_ICON - 5.0,
+        );
+    }
+
+    // Comment tally (Bitbucket-only) and ± tally (GitHub-only) — each column is
+    // simply left blank on the forge that can't supply it cheaply (model §4).
+    if let (Some(col), Some(count)) = (cols.comments, pr.comment_count) {
+        paint_icon(
+            ui.painter(),
+            egui::pos2(col.min + CHIP_SIZE / 2.0, center_y),
+            CHIP_SIZE,
+            Icon::MessageSquare,
+            palette.text_muted,
+        );
+        cell_text(
+            ui,
+            &count.to_string(),
+            egui::FontId::proportional(META_SIZE),
+            palette.text_muted,
+            col.min + CHIP_SIZE + 5.0,
+            center_y,
+            col.span() - CHIP_SIZE - 5.0,
+        );
+    }
+    if let (Some(add_col), Some(del_col), Some((added, deleted))) =
+        (cols.add, cols.del, pr.diffstat)
+    {
+        let mono = egui::FontId::monospace(META_SIZE);
+        ui.painter().text(
+            egui::pos2(add_col.max, center_y),
+            egui::Align2::RIGHT_CENTER,
+            format!("+{added}"),
+            mono.clone(),
+            palette.git_added,
+        );
+        ui.painter().text(
+            egui::pos2(del_col.min, center_y),
+            egui::Align2::LEFT_CENTER,
+            format!("−{deleted}"),
+            mono,
+            palette.git_deleted,
+        );
+    }
+
+    if let Some(btn) = cols.merge {
+        if merge_button(ui, palette, btn, ("pr_row_merge", idx)) {
+            action.merge = Some(idx);
+        }
+    }
+
+    paint_avatar(
         ui.painter(),
-        egui::pos2(cols.chevron.center(), center_y),
-        STATUS_ICON,
-        Icon::ChevronRight,
-        palette.text_muted,
+        palette,
+        &pr.author,
+        egui::pos2(cols.avatar, center_y),
+        ROW_AVATAR,
+        None,
     );
 
     response.widget_info(|| {
@@ -3261,6 +5625,111 @@ fn pr_row(
     if response.clicked() {
         action.select = Some(idx);
     }
+}
+
+/// Confirmation before merging on the forge (pull-requests.md §5). Merging is
+/// outward-facing and not undoable from helm, so it follows the modal contract:
+/// the primary action on the right, Cancel / `Esc` to dismiss.
+pub fn merge_modal(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    pr: &PullRequest,
+    out: &mut crate::ui::repo_sidebar::DeleteModalAction,
+) {
+    let modal = egui::Modal::new(egui::Id::new("pr_merge_modal"))
+        .frame(crate::ui::modal_frame(ui.style()))
+        .show(ui.ctx(), |ui| {
+            crate::ui::modal_controls_style(ui);
+            ui.set_width(320.0);
+            ui.label(egui::RichText::new(format!("Merge #{}?", pr.number)).strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} merges {} into {} on {}. The source branch is kept.",
+                    pr.repo_label,
+                    pr.source_branch,
+                    pr.dest_branch,
+                    match pr.forge_kind {
+                        crate::pull_requests::model::ForgeKind::GitHub => "GitHub",
+                        crate::pull_requests::model::ForgeKind::Bitbucket => "Bitbucket",
+                    },
+                ))
+                .color(palette.text_secondary),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    out.dismiss = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Merge").clicked() {
+                        out.confirm = true;
+                    }
+                });
+            });
+            if crate::ui::modal_confirm_pressed(ui) {
+                out.confirm = true;
+            }
+        });
+    if modal.should_close() {
+        out.dismiss = true;
+    }
+}
+
+/// A small amber flag beside a row title (**Blocks N**).
+fn flag_chip(ui: &egui::Ui, palette: &Palette, text: &str, left: f32, center_y: f32) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::new(COUNT_BADGE_SIZE, crate::theme::medium_family(ui.ctx())),
+        palette.git_modified,
+    );
+    let h = COUNT_BADGE_SIZE + 7.0;
+    let chip = egui::Rect::from_min_size(
+        egui::pos2(left, center_y - h / 2.0),
+        egui::vec2(galley.size().x + 14.0, h),
+    );
+    ui.painter()
+        .rect_filled(chip, h / 2.0, with_alpha(palette.git_modified, 36));
+    ui.painter().galley(
+        chip.center() - galley.size() / 2.0,
+        galley,
+        palette.git_modified,
+    );
+}
+
+/// The filled **Merge** button — inline on a ready-to-merge row, and in the review
+/// surface header (pull-requests.md §5/§11).
+fn merge_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    id: impl std::hash::Hash,
+) -> bool {
+    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    let fill = if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        palette.accent_hover
+    } else {
+        palette.accent
+    };
+    ui.painter().rect_filled(rect, RADIUS_BUTTON, fill);
+    let center_y = rect.center().y;
+    paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + 12.0 + CHIP_SIZE / 2.0, center_y),
+        CHIP_SIZE,
+        Icon::GitMerge,
+        egui::Color32::WHITE,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 12.0 + CHIP_SIZE + 5.0, center_y),
+        egui::Align2::LEFT_CENTER,
+        "Merge",
+        egui::FontId::new(CHIP_SIZE, crate::theme::medium_family(ui.ctx())),
+        egui::Color32::WHITE,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Merge"));
+    response.clicked()
 }
 
 /// Draw a stacked PR's gutter — vertical lines for the ancestor columns still in play
@@ -3295,7 +5764,8 @@ fn stack_connectors(
     stack.depth() as f32 * STACK_INDENT
 }
 
-/// Left-aligned, vertically-centered text truncated to a column width.
+/// Left-aligned, vertically-centered text truncated to a column width. Returns the
+/// x the text actually ended at, so a caller can butt the next run against it.
 fn cell_text(
     ui: &egui::Ui,
     text: &str,
@@ -3304,18 +5774,20 @@ fn cell_text(
     left: f32,
     center_y: f32,
     max_w: f32,
-) {
+) -> f32 {
     let mut job = egui::text::LayoutJob::single_section(
         text.to_owned(),
         egui::TextFormat::simple(font, color),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
     let galley = ui.painter().layout_job(job);
+    let width = galley.size().x;
     ui.painter().galley(
         egui::pos2(left, center_y - galley.size().y / 2.0),
         galley,
         color,
     );
+    left + width
 }
 
 /// A small initials avatar on a name-derived color, with a `bg_canvas` separator
@@ -3392,17 +5864,33 @@ fn reviewer_stack(
     }
 }
 
-/// Collapse `(state, review)` into one status label + color. The CI `checks` stay
-/// out of the list (shown only in the review detail), so nothing regresses (§5).
-fn pr_status(palette: &Palette, state: PrState, review: Review) -> (&'static str, egui::Color32) {
+/// Collapse `(state, review, checks)` into one status label + color — what a row in
+/// the **Waiting on the author** band is blocked on, named in its own color (§5).
+fn pr_status(
+    palette: &Palette,
+    state: PrState,
+    review: Review,
+    checks: Checks,
+) -> (&'static str, egui::Color32) {
     match state {
         PrState::Draft => ("Draft", palette.text_muted),
         PrState::Open => match review {
-            Review::Approved => ("Approved", palette.git_added),
             Review::ChangesRequested => ("Changes requested", palette.git_deleted),
+            _ if checks == Checks::Failing => ("Checks failing", palette.git_deleted),
+            Review::Approved => ("Approved", palette.git_added),
             Review::Pending => ("In review", palette.git_modified),
             Review::None => ("Open", palette.accent),
         },
+    }
+}
+
+/// The row-sized CI label beside `checks_status`'s glyph (§5).
+fn checks_short_label(checks: Checks) -> &'static str {
+    match checks {
+        Checks::Passing => "CI ok",
+        Checks::Failing => "CI failed",
+        Checks::Pending => "CI running",
+        Checks::None => "",
     }
 }
 
@@ -3441,6 +5929,14 @@ fn muted(palette: &Palette, text: &str) -> egui::RichText {
         .color(palette.text_muted)
 }
 
+/// `muted` at the conversation card's own scale — the card reads a notch larger than the
+/// browse list around it (§11).
+fn conv_muted(palette: &Palette, text: &str) -> egui::RichText {
+    egui::RichText::new(text)
+        .size(CONV_META_SIZE)
+        .color(palette.text_muted)
+}
+
 fn leaf_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, name)| name)
 }
@@ -3451,5 +5947,34 @@ fn checks_label(checks: Checks) -> &'static str {
         Checks::Failing => "Some checks failing",
         Checks::Pending => "Checks pending",
         Checks::None => "No checks",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_img_reads_src_and_alt() {
+        assert_eq!(
+            html_img(r#"<img width="600" alt="Step 1" src="https://x.test/a.png" />"#),
+            Some(("https://x.test/a.png".to_owned(), "Step 1".to_owned()))
+        );
+        assert_eq!(
+            html_img("<img src='https://x.test/b.png'>"),
+            Some(("https://x.test/b.png".to_owned(), String::new()))
+        );
+        assert_eq!(html_img("<p>no picture here</p>"), None);
+    }
+
+    /// In a table cell an image can only read as text: its alt, else the file name —
+    /// never the whole URL, which would blow the column open.
+    #[test]
+    fn image_label_falls_back_to_the_file_name() {
+        assert_eq!(image_label("https://x.test/a/step-1.png", ""), "step-1.png");
+        assert_eq!(
+            image_label("https://x.test/a/step-1.png", "Step 1"),
+            "Step 1"
+        );
     }
 }

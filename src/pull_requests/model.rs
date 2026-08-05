@@ -91,6 +91,15 @@ pub struct PullRequest {
     /// Labels on the PR. **GitHub only** — Bitbucket Cloud has no PR-label concept,
     /// so it always maps to an empty vector (pull-requests.md §10).
     pub labels: Vec<String>,
+    /// Lines added / removed by the PR, for the list row's ± stats. **GitHub only**:
+    /// `gh pr list` returns them as scalars, while Bitbucket would need one extra
+    /// `diffstat` request per PR — too costly for a list refresh, so it maps to
+    /// `None` and the row omits the column (pull-requests.md §5).
+    pub diffstat: Option<(u32, u32)>,
+    /// Number of comments on the PR, for the list row. **Bitbucket only**: its list
+    /// payload carries `comment_count` for free, whereas `gh pr list --json comments`
+    /// would pull every comment *body* of every PR. `None` ⇒ the row omits it (§5).
+    pub comment_count: Option<u32>,
 }
 
 /// A single comment in a PR's thread. Conversation comments leave `path` and both
@@ -515,6 +524,136 @@ pub fn stacked_rows(prs: &[PullRequest], indices: &[usize]) -> Vec<StackRow> {
     out
 }
 
+/// How many other listed PRs target this one's source branch — the **Blocks N**
+/// flag a list row wears when merging it unblocks a stack (pull-requests.md §5).
+/// Same forge + repo pairing as `stacked_rows`; self never counts.
+pub fn blocked_count(prs: &[PullRequest], idx: usize) -> usize {
+    let Some(base) = prs.get(idx) else {
+        return 0;
+    };
+    prs.iter()
+        .enumerate()
+        .filter(|&(pos, p)| {
+            pos != idx
+                && p.forge_kind == base.forge_kind
+                && p.repo_label == base.repo_label
+                && p.dest_branch == base.source_branch
+        })
+        .count()
+}
+
+/// Which actionability band a PR falls into in the browse list (pull-requests.md
+/// §5). The list groups by **what the PR is waiting on**, not by role or date, so
+/// the rows the user can act on lead the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionGroup {
+    /// I am a requested reviewer and the PR is not blocked back on its author.
+    WaitingOnMyReview,
+    /// Approved with no failing check — merging is all that is left.
+    ReadyToMerge,
+    /// The ball is in the author's court: draft, changes requested, or red CI.
+    WaitingOnAuthor,
+    /// Still moving: reviewers have not ruled yet, or CI is running.
+    InReview,
+}
+
+impl ActionGroup {
+    /// Display order of the list's sections.
+    pub const ALL: [ActionGroup; 4] = [
+        ActionGroup::WaitingOnMyReview,
+        ActionGroup::ReadyToMerge,
+        ActionGroup::WaitingOnAuthor,
+        ActionGroup::InReview,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ActionGroup::WaitingOnMyReview => "Waiting on your review",
+            ActionGroup::ReadyToMerge => "Ready to merge",
+            ActionGroup::WaitingOnAuthor => "Waiting on the author",
+            ActionGroup::InReview => "In review",
+        }
+    }
+
+    /// Band a PR belongs to. First match wins, so a PR blocked on its author never
+    /// masquerades as reviewable, and a review I still owe outranks an approval
+    /// someone else already gave.
+    pub fn of(pr: &PullRequest) -> ActionGroup {
+        if pr.state == PrState::Draft
+            || pr.review == Review::ChangesRequested
+            || pr.checks == Checks::Failing
+        {
+            ActionGroup::WaitingOnAuthor
+        } else if pr.role == PrRole::ToReview {
+            ActionGroup::WaitingOnMyReview
+        } else if pr.review == Review::Approved && pr.checks != Checks::Pending {
+            ActionGroup::ReadyToMerge
+        } else {
+            ActionGroup::InReview
+        }
+    }
+}
+
+/// The browse list's tab bar (pull-requests.md §5). Every fetched PR is open by
+/// construction (§1), so the tabs are views over the same cache — no extra query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListTab {
+    #[default]
+    Open,
+    ToReview,
+    Mine,
+    Drafts,
+}
+
+impl ListTab {
+    pub const ALL: [ListTab; 4] = [
+        ListTab::Open,
+        ListTab::ToReview,
+        ListTab::Mine,
+        ListTab::Drafts,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ListTab::Open => "Open",
+            ListTab::ToReview => "To review",
+            ListTab::Mine => "Mine",
+            ListTab::Drafts => "Drafts",
+        }
+    }
+
+    pub fn accepts(self, pr: &PullRequest) -> bool {
+        match self {
+            ListTab::Open => true,
+            ListTab::ToReview => pr.role == PrRole::ToReview,
+            ListTab::Mine => pr.role == PrRole::Mine,
+            ListTab::Drafts => pr.state == PrState::Draft,
+        }
+    }
+}
+
+/// Free-text match for the list's search field (pull-requests.md §5), over the
+/// fields the header offers to search: title, number, author, branches and repo.
+/// Case-insensitive; a blank query matches everything.
+pub fn matches_search(pr: &PullRequest, query: &str) -> bool {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    let needle = needle.strip_prefix('#').unwrap_or(&needle);
+    let haystacks = [
+        pr.title.as_str(),
+        pr.author.as_str(),
+        pr.source_branch.as_str(),
+        pr.dest_branch.as_str(),
+        pr.repo_label.as_str(),
+    ];
+    haystacks
+        .iter()
+        .any(|field| field.to_lowercase().contains(needle))
+        || pr.number.to_string().contains(needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +717,8 @@ mod tests {
             review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
+            diffstat: None,
+            comment_count: None,
         }
     }
 
@@ -592,6 +733,81 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].number, 1);
         assert_eq!(out[1].number, 2);
+    }
+
+    #[test]
+    fn a_draft_waits_on_its_author_whatever_its_role() {
+        let mut p = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::ToReview);
+        p.state = PrState::Draft;
+        assert_eq!(ActionGroup::of(&p), ActionGroup::WaitingOnAuthor);
+    }
+
+    #[test]
+    fn changes_requested_and_red_ci_wait_on_the_author() {
+        let mut changes = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
+        changes.review = Review::ChangesRequested;
+        assert_eq!(ActionGroup::of(&changes), ActionGroup::WaitingOnAuthor);
+
+        let mut failing = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
+        failing.checks = Checks::Failing;
+        assert_eq!(ActionGroup::of(&failing), ActionGroup::WaitingOnAuthor);
+    }
+
+    #[test]
+    fn a_review_i_owe_outranks_an_approval_someone_else_gave() {
+        let mut p = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::ToReview);
+        p.review = Review::Approved;
+        p.checks = Checks::Passing;
+        assert_eq!(ActionGroup::of(&p), ActionGroup::WaitingOnMyReview);
+    }
+
+    #[test]
+    fn approved_and_green_is_ready_to_merge_but_pending_ci_is_not() {
+        let mut ready = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
+        ready.review = Review::Approved;
+        ready.checks = Checks::Passing;
+        assert_eq!(ActionGroup::of(&ready), ActionGroup::ReadyToMerge);
+
+        let mut running = ready.clone();
+        running.checks = Checks::Pending;
+        assert_eq!(ActionGroup::of(&running), ActionGroup::InReview);
+    }
+
+    #[test]
+    fn my_pr_awaiting_a_verdict_is_in_review() {
+        let p = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
+        assert_eq!(ActionGroup::of(&p), ActionGroup::InReview);
+    }
+
+    #[test]
+    fn tabs_filter_by_role_and_draft_state() {
+        let mine = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
+        let to_review = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
+        let mut draft = pr(ForgeKind::GitHub, "acme/web", 3, PrRole::Mine);
+        draft.state = PrState::Draft;
+
+        assert!(ListTab::Open.accepts(&mine) && ListTab::Open.accepts(&to_review));
+        assert!(ListTab::Mine.accepts(&mine) && !ListTab::Mine.accepts(&to_review));
+        assert!(ListTab::ToReview.accepts(&to_review) && !ListTab::ToReview.accepts(&mine));
+        assert!(ListTab::Drafts.accepts(&draft) && !ListTab::Drafts.accepts(&mine));
+    }
+
+    #[test]
+    fn search_spans_title_author_branches_repo_and_number() {
+        let mut p = pr(ForgeKind::GitHub, "acme/web", 1284, PrRole::Mine);
+        p.title = "Dedupe webhook deliveries".to_owned();
+        p.author = "Thomas Lenoir".to_owned();
+        p.source_branch = "feat/webhook-dedupe".to_owned();
+
+        assert!(matches_search(&p, ""));
+        assert!(matches_search(&p, "  "));
+        assert!(matches_search(&p, "WEBHOOK"));
+        assert!(matches_search(&p, "lenoir"));
+        assert!(matches_search(&p, "feat/"));
+        assert!(matches_search(&p, "acme"));
+        assert!(matches_search(&p, "1284"));
+        assert!(matches_search(&p, "#1284"));
+        assert!(!matches_search(&p, "proration"));
     }
 
     fn branched(number: u64, source: &str, dest: &str) -> PullRequest {
