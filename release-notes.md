@@ -1,5 +1,23 @@
 # Release notes
 
+## 2.1.0
+
+- A pull request's Files tab is one continuous scroll now: every file's diff
+  stacks in a single column and the rail becomes its table of contents instead
+  of a second list. Each file opens on a full-bleed header strip, and a hunk's
+  actions sit on a hairline rather than inside a card.
+- Descriptions and comments render like the forge renders them: GFM tables come
+  out as tables, images are drawn in place — fetched off the UI thread, cached,
+  and openable full-surface with zoom and pan — and columns take the width their
+  content asks for.
+- The conversation reads as one page: prose held at its measure, the Reviewers /
+  Checks / Labels rail one gutter to the right, and body text at full contrast —
+  in dark mode everything not bold used to read as disabled.
+- `Esc` steps out one stage at a time — composer, file, list, then the cockpit —
+  instead of closing everything from anywhere.
+- Links open where you click them in the prose, and Bitbucket repo images load
+  instead of failing with a 401.
+
 ## 2.0.2
 
 - The Run panel's output can be selected and copied: drag over it, double-click
@@ -85,10 +103,4 @@
 - Agent completion banners now come from helm itself: they show up under *helm*
   in System Settings › Notifications and can be allowed through a Focus mode,
   which until now swallowed them silently.
-
-## 1.4.2
-
-- The sidebar count of pull requests awaiting your review now stays fresh from
-  anywhere in the app, and is already right on launch instead of only after a
-  first visit to the cockpit.
 
