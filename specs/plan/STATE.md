@@ -379,6 +379,17 @@ seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
   encoder reads; `specs/screenshots/agents-wall.gif` (1.5 MB) replaces
   `agents-terminals.png` in the README, `gen_agents_terminals` with it. Encoder command
   in `specs/screenshots/README.md`.
+- ☑ **Post-M-Wall — the chip strip groups by project.** One **cluster per project**
+  (`project_groups`, runs of rows sharing a repo): its title — the sidebar's hue-tinted
+  folder box + name — **over** the row of its chips, which drop the repeated project and
+  spend the room on **branch over tab**, one label per line. Identical
+  project/branch/tab agents take a `#n` in workspace order (`duplicate_ordinals` /
+  `tab_label`), worn by both the chip and its wall band. The strip is now **one row**
+  scrolling **sideways** (fixed height, `CHIP_STRIP_MAX_ROWS` gone): floating scrollbar,
+  scrolled edges fading into the canvas, and the title of the cluster scrolled into
+  **pins** at the strip's left edge. `specs/agents.md` §5 follows. *Tests*: 3 new
+  `tests/it/ui_agents_view.rs` (18 total) + 2 unit; gate green (`fmt`, `clippy
+  --all-targets -D warnings`, 2020 tests).
 
 ---
 

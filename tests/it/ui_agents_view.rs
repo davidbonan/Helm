@@ -241,6 +241,71 @@ fn the_header_carries_a_chip_per_running_agent() {
 }
 
 #[test]
+fn the_chips_of_one_project_share_a_single_header() {
+    // The project is named once, by its cluster's header, and the chips under it spend
+    // their room on the branch and the tab instead of repeating it.
+    let (harness, _) = wall_harness(
+        vec![
+            row("helm", "claude", "Tab 1", AgentBadge::Working),
+            Row {
+                branch: Some("agents"),
+                ..row("helm", "codex", "Tab 2", AgentBadge::Idle)
+            },
+            row("api", "aider", "Tab 1", AgentBadge::Idle),
+        ],
+        None,
+        &[],
+    );
+    assert_eq!(
+        harness.get_all_by_label("helm").count(),
+        1,
+        "two agents of one project, one header"
+    );
+    assert_eq!(harness.get_all_by_label("api").count(), 1);
+}
+
+#[test]
+fn identical_terminals_of_one_worktree_are_numbered() {
+    // Same project, same branch, same tab title: without a tie-break the two chips are
+    // one chip painted twice. The band must agree with the chip that put it up.
+    let (harness, _) = wall_harness(
+        vec![
+            row("helm", "claude", "Claude Code", AgentBadge::Idle),
+            row("helm", "claude", "Claude Code", AgentBadge::Idle),
+        ],
+        Some(0),
+        &[0],
+    );
+    harness.get_by_label("Claude · helm · main · Claude Code #1");
+    harness.get_by_label("Claude · helm · main · Claude Code #2");
+    harness.get_by_label("Claude in helm · main — Claude Code #1");
+}
+
+#[test]
+fn the_strip_keeps_its_height_however_many_agents_run() {
+    // The chips scroll sideways: a workspace full of agents must not push the wall down.
+    let (_, lone) = wall_harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Idle)],
+        Some(0),
+        &[0],
+    );
+    let crowd: Vec<Row> = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+        .into_iter()
+        .map(|tab| Row {
+            branch: Some("feature/a-fairly-long-branch-name"),
+            ..row("helm", "claude", tab, AgentBadge::Idle)
+        })
+        .collect();
+    let (_, many) = wall_harness(crowd, Some(0), &[0]);
+    assert!(
+        (lone.term_rect(0).top() - many.term_rect(0).top()).abs() < 1.0,
+        "the wall starts at the same y, got {} vs {}",
+        lone.term_rect(0).top(),
+        many.term_rect(0).top()
+    );
+}
+
+#[test]
 fn clicking_a_chip_puts_that_agent_on_the_wall() {
     let (mut harness, cap) = wall_harness(
         vec![

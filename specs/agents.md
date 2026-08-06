@@ -160,19 +160,38 @@ highlighted); the per-repo git panel is **hidden** (the view is cross-repo).
 The dashboard is a **wall of live terminals** — its only view, with no control of
 its own in the titlebar (the title row stays empty, clear of the traffic lights): a
 **header strip** listing every running agent as a **chip**, over the mirrored
-terminals of the ones picked from it. A chip carries the agent's **state indicator**
-(accent arc spinner / green dot + faint static halo / hollow grey ring) and **where it
-runs** — the **project leading**, in the chip's own weight, its branch trailing in
-quieter mono, because the dashboard is cross-repo and two agents on `main` must read
-apart. The agent's **name is not painted**: a strip of identical `Claude` labels drowns
-the one thing that identifies a terminal; it rides on the chip's **hover text** with the
-tab, and on the accessibility label. Clicking a chip **shows** that agent's terminal on the wall, or
+terminals of the ones picked from it.
+
+The strip is grouped into **one cluster per project**: a **title line** — the project's
+name behind the same hue-tinted folder box the sidebar's project header wears, so the two
+read as one project — **over the row of chips** it heads, one per agent running in it.
+Clusters follow workspace order, so a project and its worktrees stay adjacent, and they
+read apart by **proximity**: chips of one project sit tight, projects sit a hairline apart.
+Naming the project once, as a heading rather than as a first item in the row, is what buys
+the chips their room. Each carries the agent's **state
+indicator** (accent arc spinner / green dot + faint static halo / hollow grey ring) and
+then only what tells one of that project's agents from the next, **a line each**: its
+worktree's **branch** in mono over the **tab** of the terminal it runs in, quieter — side
+by side the two read as one long string, stacked they read as two facts. Where the
+project, the branch *and* the tab all match another agent's (a worktree running four
+`Claude Code` tabs), the tab takes a **`#n`** in workspace order: nothing else is left to
+tell those apart, and the chip and its wall band wear the same number so they cannot
+disagree. The agent's **name is not painted**: a strip of identical `Claude`
+labels drowns the one thing that identifies a terminal; it rides on the chip's **hover
+text** with the project, and on the accessibility label. Clicking a chip **shows** that
+agent's terminal on the wall, or
 **hides** it when it is already there; a chip whose agent is on the wall is filled
 in its project's hue. At most **`MAX_SHOWN` = 4** terminals are shown at once —
 past that the remaining chips read **disabled** and say so on hover, since a fifth
-pane would leave none of them watchable; hiding one is how room is made. The strip
-wraps onto further lines and scrolls past three of them, so a workspace full of
-agents never eats the wall.
+pane would leave none of them watchable; hiding one is how room is made.
+
+The strip is **one row of clusters** and scrolls **sideways** past the window's width, so
+its height is the same whether one agent runs or twenty and the wall keeps all the rest. The
+scrollbar is floating, so the strip says for itself where it continues: each scrolled edge
+**fades into the canvas** rather than cutting a chip flush. And a cluster scrolled past its
+own title does not leave its chips anonymous — the title **pins** at the strip's left edge,
+on its own line and so clear of the chips passing beneath, until the next cluster's title
+takes its place.
 
 The wall is laid out by the **terminal's own split tree**
 ([`terminal.md`](terminal.md) §5), not by a layout of its own, so it behaves
@@ -193,7 +212,8 @@ the rest of the visit, with a hint pointing back at the header.
 
 Each tile is a **status band** over its pane, flush and full-bleed — no card frame,
 no gap: the band carries the state indicator, `project · branch` (the project first
-and firmest, as on a chip), the tab, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
+and firmest — a tile stands alone, so unlike a chip it names its project itself), the tab
+with its `#n` where it has one, the state caption (*Working…* / *Finished Nm ago* / *Idle*) and a discreet
 **jump icon** (external-link, clear of the grip's corner), and it wears the
 project's hue — firmest on the tile the keyboard drives, lifting under the pointer.
 

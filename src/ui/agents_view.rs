@@ -32,20 +32,49 @@ const ROW_MIN_BRANCH_W: f32 = 48.0;
 const ON_GREEN_SOFT: u8 = 205;
 const ON_GREEN_FAINT: u8 = 165;
 
-/// Page header: one chip per running agent, wrapping onto further lines and scrolling
-/// past `CHIP_STRIP_MAX_ROWS` of them, so even a workspace full of agents leaves the
-/// wall its room.
-const CHIP_HEIGHT: f32 = 30.0;
-const CHIP_GAP: f32 = 8.0;
+/// Page header: **one cluster per project**, on a single line that scrolls sideways. A
+/// cluster titles its project once — the sidebar's own hue-tinted folder box, then the name
+/// — and ranges its agents under it as chips. Repeating `project · branch` on every chip
+/// spent the room on the part they all share and left a project's agents as
+/// near-identical pills; hoisted into the cluster's title, that room goes to what does
+/// tell them apart, one label per line: the worktree's **branch** over the terminal's
+/// **tab**.
+const CHIP_HEIGHT: f32 = 42.0;
+const CHIP_GAP: f32 = 6.0;
 const CHIP_PAD_X: f32 = 10.0;
 const CHIP_RADIUS: u8 = 8;
 const CHIP_ICON_GAP: f32 = 7.0;
-const CHIP_REPO_SIZE: f32 = 12.5;
-const CHIP_MAX_REPO_W: f32 = 190.0;
-const CHIP_MAX_BRANCH_W: f32 = 150.0;
+const CHIP_TAB_SIZE: f32 = 11.5;
+const CHIP_LINE_GAP: f32 = 2.0;
+const CHIP_MAX_BRANCH_W: f32 = 220.0;
+const CHIP_MAX_TAB_W: f32 = 220.0;
 const CHIP_STRIP_PAD_X: f32 = 12.0;
 const CHIP_STRIP_PAD_Y: f32 = 10.0;
-const CHIP_STRIP_MAX_ROWS: f32 = 3.0;
+
+/// A cluster's title, on its own line **over** the chips it heads — the project reads as
+/// what it is, the heading of a group, rather than as a first item in the same row. The
+/// icon box repeats the sidebar's project header (radius and hue), so the two read as the
+/// same project.
+const GROUP_ICON_BOX: f32 = 20.0;
+const GROUP_ICON_BOX_RADIUS: u8 = 6;
+const GROUP_ICON_SIZE: f32 = 12.5;
+const GROUP_NAME_SIZE: f32 = 12.5;
+const GROUP_MAX_NAME_W: f32 = 240.0;
+const GROUP_TITLE_H: f32 = 20.0;
+const GROUP_TITLE_GAP: f32 = 5.0;
+/// Clusters read apart by **proximity** — tight between the chips of one project, roomy
+/// between projects — with a hairline in that gap so the grouping still holds when the
+/// strip is scrolled with a project's header off screen.
+const GROUP_GAP: f32 = 20.0;
+/// The hairline runs alongside the **chips row** only, inset from its top and bottom edges:
+/// centred on the whole cluster instead, it straddled the title/chips boundary and read as
+/// a stray tick. The titles above it are held apart by the gap alone.
+const GROUP_DIVIDER_INSET: f32 = 5.0;
+/// The scrollbar is floating (it shows only under the pointer), so a chip cut flush at the
+/// strip's edge would read as a rendering bug rather than as more chips: both edges fade
+/// into the canvas while there is something past them.
+const STRIP_FADE_W: f32 = 28.0;
+const STRIP_FADE_STEPS: usize = 14;
 
 /// A wall tile's status band, over the mirrored pane flush under it. Also the height of
 /// the band's jump target (`CARD_JUMP_HIT` wide).
@@ -138,7 +167,8 @@ pub struct AgentsPageAction {
 }
 
 /// Cross-repo dashboard for the central area: a **header strip** listing every running
-/// agent — one chip apiece, carrying its live state indicator — over a **wall** of the
+/// agent — one chip apiece, carrying its live state indicator, grouped under its project —
+/// over a **wall** of the
 /// ones picked from it, at most [`MAX_SHOWN`]. A chip click shows or hides that agent's
 /// terminal; the shown ones are laid out by the **terminal's own split tree**, so the
 /// wall's seams resize and its panes rearrange exactly like a workspace tab's
@@ -173,7 +203,11 @@ pub fn agents_page(
         empty_state(&mut empty, palette);
         return action;
     }
-    let header_bottom = agent_chips(ui, palette, rows, rect, wall, &mut action);
+    // Two agents of one worktree running the same tool carry the same tab title, so the
+    // labels alone cannot tell them apart: the tie-break is computed once for the frame and
+    // worn by both the chip and the band, which must not disagree.
+    let ordinals = duplicate_ordinals(rows);
+    let header_bottom = agent_chips(ui, palette, rows, &ordinals, rect, wall, &mut action);
     ui.painter().hline(
         rect.x_range(),
         header_bottom,
@@ -187,6 +221,7 @@ pub fn agents_page(
         ui,
         palette,
         rows,
+        &ordinals,
         selected,
         body,
         wall,
@@ -218,49 +253,280 @@ impl WallView<'_> {
     }
 }
 
-/// The header strip, in workspace order (so a project's worktrees stay adjacent):
-/// a chip per running agent, wrapping onto further lines and scrolling past
-/// `CHIP_STRIP_MAX_ROWS` so a busy workspace never eats the wall. Returns the strip's
-/// bottom edge.
+/// The header strip: one cluster per project, in workspace order (so a project's worktrees
+/// stay adjacent) — its **title over** the row of its agents' chips — scrolling
+/// **sideways** past the strip's width, which keeps the strip's height fixed however many
+/// agents run and leaves the wall all the rest. Returns the strip's bottom edge.
 fn agent_chips(
     ui: &mut egui::Ui,
     palette: &Palette,
     rows: &[AgentRow],
+    ordinals: &[Option<usize>],
     rect: egui::Rect,
     wall: &WallView,
     action: &mut AgentsPageAction,
 ) -> f32 {
-    let max_height =
-        CHIP_STRIP_MAX_ROWS * (CHIP_HEIGHT + CHIP_GAP) - CHIP_GAP + 2.0 * CHIP_STRIP_PAD_Y;
-    let inner = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + CHIP_STRIP_PAD_X, rect.top()),
-        egui::pos2(rect.right() - CHIP_STRIP_PAD_X, rect.bottom()),
+    let strip = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.top() + strip_height()),
     );
-    let mut strip = ui.new_child(
+    let mut strip_ui = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(inner)
+            .max_rect(strip)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    let used = egui::ScrollArea::vertical()
+    // Where each cluster ended up, to pin the title of the one the strip is scrolled into.
+    let mut spans: Vec<ClusterSpan> = Vec::new();
+    let out = egui::ScrollArea::horizontal()
         .id_salt("agents_chips")
-        .max_height(max_height)
-        .show(&mut strip, |ui| {
-            ui.set_width(ui.available_width());
+        .show(&mut strip_ui, |ui| {
             ui.add_space(CHIP_STRIP_PAD_Y);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(CHIP_GAP, CHIP_GAP);
-                for (idx, row) in rows.iter().enumerate() {
-                    let shown = wall.shows(idx);
-                    if agent_chip(ui, palette, row, shown, !shown && wall.full) {
-                        action.toggle = Some(idx);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                ui.add_space(CHIP_STRIP_PAD_X);
+                for (nth, group) in project_groups(rows).into_iter().enumerate() {
+                    if nth > 0 {
+                        group_divider(ui, palette);
                     }
+                    let lead = &rows[group.start];
+                    let mut title = egui::Rect::NOTHING;
+                    let cluster = ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(CHIP_GAP, GROUP_TITLE_GAP);
+                        title = group_title(ui, palette, lead.repo, lead.lane);
+                        ui.horizontal(|ui| {
+                            for idx in group {
+                                let shown = wall.shows(idx);
+                                if agent_chip(
+                                    ui,
+                                    palette,
+                                    &rows[idx],
+                                    ordinals[idx],
+                                    shown,
+                                    !shown && wall.full,
+                                ) {
+                                    action.toggle = Some(idx);
+                                }
+                            }
+                        });
+                    });
+                    spans.push(ClusterSpan {
+                        repo: lead.repo,
+                        lane: lead.lane,
+                        title,
+                        right: cluster.response.rect.right(),
+                    });
                 }
+                ui.add_space(CHIP_STRIP_PAD_X);
             });
             ui.add_space(CHIP_STRIP_PAD_Y);
+        });
+    let scrolled = out.state.offset.x > 1.0;
+    if scrolled {
+        paint_edge_fade(ui.painter(), strip, true, palette.bg_canvas);
+    }
+    if out.content_size.x - out.state.offset.x - out.inner_rect.width() > 1.0 {
+        paint_edge_fade(ui.painter(), strip, false, palette.bg_canvas);
+    }
+    // Scrolled into a cluster, past its own title: its chips would be left saying which
+    // branch but not whose. The title follows them instead, pinned at the strip's edge on
+    // its own line — clear of the chips, which is what putting it above them buys. Spans do
+    // not overlap, so at most one pins.
+    let pin_x = strip.left() + CHIP_STRIP_PAD_X;
+    if let Some(span) = spans
+        .iter()
+        .filter(|_| scrolled)
+        .find(|span| span.title.left() < pin_x - 0.5 && span.right > pin_x)
+    {
+        pin_group_title(ui, palette, strip, span);
+    }
+    strip.bottom()
+}
+
+/// The strip's fixed height: a cluster's title line over one row of chips.
+fn strip_height() -> f32 {
+    2.0 * CHIP_STRIP_PAD_Y + GROUP_TITLE_H + GROUP_TITLE_GAP + CHIP_HEIGHT
+}
+
+/// Where a cluster landed on the strip this frame: its title's rect and the right edge of
+/// its last chip, in screen space, for the pinning test.
+struct ClusterSpan<'a> {
+    repo: &'a str,
+    lane: usize,
+    title: egui::Rect,
+    right: f32,
+}
+
+/// Repaints a scrolled-past cluster's title at the strip's left edge, over an opaque
+/// backdrop that fades out along the title's own line — the pinned copy is decoration, so
+/// it claims no accessibility node of its own.
+fn pin_group_title(ui: &mut egui::Ui, palette: &Palette, strip: egui::Rect, span: &ClusterSpan) {
+    let pin_x = strip.left() + CHIP_STRIP_PAD_X;
+    let width = group_title_width(ui, palette, span.repo);
+    let band = egui::Rect::from_min_max(
+        egui::pos2(strip.left(), strip.top()),
+        egui::pos2(pin_x + width + CHIP_GAP, span.title.bottom() + 1.0),
+    );
+    ui.painter().rect_filled(band, 0, palette.bg_canvas);
+    paint_edge_fade(
+        ui.painter(),
+        egui::Rect::from_min_max(
+            band.right_top(),
+            egui::pos2(band.right() + STRIP_FADE_W, band.bottom()),
+        ),
+        true,
+        palette.bg_canvas,
+    );
+    paint_group_title(
+        ui,
+        palette,
+        span.repo,
+        span.lane,
+        egui::Rect::from_min_size(
+            egui::pos2(pin_x, span.title.top()),
+            egui::vec2(width, span.title.height()),
+        ),
+    );
+}
+
+/// Consecutive rows sharing a project, one cluster apiece. The app orders agents by
+/// workspace position, where a root and its worktrees sit adjacent, so grouping runs of
+/// equal names is enough — and a project that somehow came in split simply gets two
+/// clusters rather than a chip filed under the wrong header.
+fn project_groups(rows: &[AgentRow]) -> Vec<std::ops::Range<usize>> {
+    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    for (idx, row) in rows.iter().enumerate() {
+        match groups.last_mut() {
+            Some(open) if rows[open.start].repo == row.repo => open.end = idx + 1,
+            _ => groups.push(idx..idx + 1),
+        }
+    }
+    groups
+}
+
+/// `#n` for each agent whose project, branch **and** tab all match another's — five
+/// `Claude Code` tabs of one worktree are otherwise one chip repeated five times, and the
+/// labels have nothing left to tell them apart with. `None` on a unique triple, which is
+/// the common case: the mark only shows where it is needed.
+fn duplicate_ordinals(rows: &[AgentRow]) -> Vec<Option<usize>> {
+    let same =
+        |a: &AgentRow, b: &AgentRow| a.repo == b.repo && a.branch == b.branch && a.tab == b.tab;
+    rows.iter()
+        .enumerate()
+        .map(|(idx, row)| {
+            let twins = rows.iter().filter(|other| same(row, other)).count();
+            (twins > 1).then(|| rows[..idx].iter().filter(|prev| same(row, prev)).count() + 1)
         })
-        .content_size
-        .y;
-    rect.top() + used.min(max_height)
+        .collect()
+}
+
+/// The terminal as a chip and a band name it: its tab, plus the `#n` tie-break when an
+/// identical tab of the same worktree runs elsewhere on the strip.
+fn tab_label(row: &AgentRow, ordinal: Option<usize>) -> String {
+    match ordinal {
+        Some(n) => format!("{} #{n}", row.tab),
+        None => row.tab.to_owned(),
+    }
+}
+
+/// A cluster's title: the project's name once, behind the sidebar's own hue-tinted folder
+/// box, over the chips it heads. It is a label, not a control — the chips are what clicks.
+/// Returns the rect it took, which is where the pinned copy comes from.
+fn group_title(ui: &mut egui::Ui, palette: &Palette, repo: &str, lane: usize) -> egui::Rect {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(group_title_width(ui, palette, repo), GROUP_TITLE_H),
+        egui::Sense::hover(),
+    );
+    paint_group_title(ui, palette, repo, lane, rect);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, repo));
+    rect
+}
+
+/// The room a cluster title takes: its icon box, then the project's name up to
+/// [`GROUP_MAX_NAME_W`].
+fn group_title_width(ui: &egui::Ui, palette: &Palette, repo: &str) -> f32 {
+    let name_w = ui
+        .painter()
+        .layout_no_wrap(
+            repo.to_owned(),
+            group_name_font(ui.ctx()),
+            palette.text_primary,
+        )
+        .size()
+        .x
+        .min(GROUP_MAX_NAME_W)
+        .ceil();
+    GROUP_ICON_BOX + CHIP_ICON_GAP + name_w
+}
+
+fn group_name_font(ctx: &egui::Context) -> egui::FontId {
+    egui::FontId::new(GROUP_NAME_SIZE, theme::medium_family(ctx))
+}
+
+fn paint_group_title(ui: &egui::Ui, palette: &Palette, repo: &str, lane: usize, rect: egui::Rect) {
+    let icon_box = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + GROUP_ICON_BOX / 2.0, rect.center().y),
+        egui::Vec2::splat(GROUP_ICON_BOX),
+    );
+    ui.painter().rect(
+        icon_box,
+        egui::CornerRadius::same(GROUP_ICON_BOX_RADIUS),
+        project_header_tint(palette, lane),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        icon_box.center(),
+        GROUP_ICON_SIZE,
+        lucide_icons::Icon::Folders,
+        palette.text_secondary,
+    );
+    paint_elided(
+        ui.painter(),
+        egui::pos2(icon_box.right() + CHIP_ICON_GAP, rect.center().y),
+        repo,
+        group_name_font(ui.ctx()),
+        palette.text_primary,
+        rect.right() - icon_box.right() - CHIP_ICON_GAP,
+    );
+}
+
+/// The hairline between two clusters, centred in the gap that already separates them and
+/// running the height of the chips it stands between.
+fn group_divider(ui: &mut egui::Ui, palette: &Palette) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(GROUP_GAP, GROUP_TITLE_H + GROUP_TITLE_GAP + CHIP_HEIGHT),
+        egui::Sense::hover(),
+    );
+    ui.painter().vline(
+        rect.center().x.round(),
+        rect.bottom() - CHIP_HEIGHT + GROUP_DIVIDER_INSET..=rect.bottom() - GROUP_DIVIDER_INSET,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+}
+
+/// Fades one edge of the strip into the canvas, hard at the edge and gone
+/// [`STRIP_FADE_W`] in — the cue that the strip scrolls that way.
+fn paint_edge_fade(painter: &egui::Painter, strip: egui::Rect, left: bool, bg: egui::Color32) {
+    let step = STRIP_FADE_W / STRIP_FADE_STEPS as f32;
+    for nth in 0..STRIP_FADE_STEPS {
+        let fade = 1.0 - nth as f32 / STRIP_FADE_STEPS as f32;
+        let x = if left {
+            strip.left() + nth as f32 * step
+        } else {
+            strip.right() - (nth + 1) as f32 * step
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(x, strip.top()),
+                // Overlapping by a hair: adjacent slices must not leave a seam of canvas
+                // showing through the gradient.
+                egui::vec2(step + 1.0, strip.height()),
+            ),
+            0,
+            with_alpha(bg, (fade * 255.0) as u8),
+        );
+    }
 }
 
 /// Where an agent runs: `project · branch`, or the project alone on a detached worktree.
@@ -283,40 +549,46 @@ fn branch_suffix(row: &AgentRow) -> String {
     }
 }
 
-/// One header chip: state indicator, then where the agent runs — the project leading,
-/// its branch trailing. The agent's own name is not painted (a wall of `Claude` chips
-/// says nothing); it rides on the hover text with the tab. Filled in the project's hue
-/// while the agent is **on the wall** (clicking takes it off), quiet otherwise. With
-/// every slot taken the remaining chips read **disabled** and say so on hover — hiding
-/// one is the way to make room (agents.md §5). Returns true when clicked.
+/// One chip of a project's cluster: state indicator, then the two things that tell one of
+/// that project's agents from the next, a line each — its worktree's **branch** in mono
+/// over the **tab** of the terminal it runs in, quieter, `#n` appended when an identical tab
+/// of the same worktree also runs. Two lines rather than one row of labels: a branch and a
+/// tab side by side read as one long string, stacked they read as two facts.
+/// The project is the cluster's title, and the agent's own name
+/// is not painted (a strip of `Claude` labels says nothing); both ride on the hover text.
+/// Filled in the project's hue while the agent is **on the wall** (clicking takes it off),
+/// quiet otherwise. With every slot taken the remaining chips read **disabled** and say so
+/// on hover — hiding one is the way to make room (agents.md §5). Returns true when clicked.
 fn agent_chip(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &AgentRow,
+    ordinal: Option<usize>,
     shown: bool,
     blocked: bool,
 ) -> bool {
     let name = crate::agent_watch::display_name(row.agent);
-    let repo_font = egui::FontId::new(CHIP_REPO_SIZE, theme::medium_family(ui.ctx()));
     let branch_font = egui::FontId::monospace(BRANCH_SIZE);
-    let branch = branch_suffix(row);
+    let tab_font = egui::FontId::proportional(CHIP_TAB_SIZE);
+    let branch = row.branch.filter(|b| !b.is_empty());
+    let tab = tab_label(row, ordinal);
     // A blocked chip is legible but visibly out of reach: the whole chip fades, ink and
     // indicator alike.
     let fade = |c: egui::Color32| if blocked { with_alpha(c, 110) } else { c };
+    // Rounded up: the measured width doubles as the width the label is then truncated at,
+    // and a fractional one lands on the edge case where the last glyph gets elided away.
     let measure = |text: &str, font: egui::FontId, max: f32| {
         ui.painter()
             .layout_no_wrap(text.to_owned(), font, palette.text_primary)
             .size()
             .x
             .min(max)
+            .ceil()
     };
-    let repo_w = measure(row.repo, repo_font.clone(), CHIP_MAX_REPO_W);
-    let branch_w = if branch.is_empty() {
-        0.0
-    } else {
-        CHIP_ICON_GAP + measure(&branch, branch_font.clone(), CHIP_MAX_BRANCH_W)
-    };
-    let width = 2.0 * CHIP_PAD_X + INDICATOR_SIZE + CHIP_ICON_GAP + repo_w + branch_w;
+    let branch_w = branch.map_or(0.0, |b| measure(b, branch_font.clone(), CHIP_MAX_BRANCH_W));
+    let tab_w = measure(&tab, tab_font.clone(), CHIP_MAX_TAB_W);
+    // As wide as its longer line.
+    let width = 2.0 * CHIP_PAD_X + INDICATOR_SIZE + CHIP_ICON_GAP + branch_w.max(tab_w);
     let (rect, response, hovered) = clickable(ui, egui::vec2(width, CHIP_HEIGHT), !blocked);
     let fill = if shown {
         project_header_tint(palette, row.lane)
@@ -347,31 +619,70 @@ fn agent_chip(
         egui::Vec2::splat(INDICATOR_SIZE),
     );
     paint_indicator(ui, palette, row.badge, row.done_ago_ms, indicator, fade);
+    // The two lines sit as one block centred against the indicator, so the chip reads as a
+    // single object rather than two rows that happen to share a surface. On a detached
+    // worktree there is no branch and the tab stands alone, centred.
+    let line_height = |text: &str, font: egui::FontId| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font, palette.text_primary)
+            .size()
+            .y
+    };
     let painter = ui.painter();
     let text_x = indicator.right() + CHIP_ICON_GAP;
-    let painted = paint_elided(
+    let tab_ink = fade(palette.text_muted);
+    let Some(branch) = branch else {
+        paint_elided(
+            painter,
+            egui::pos2(text_x, rect.center().y),
+            &tab,
+            tab_font,
+            tab_ink,
+            tab_w,
+        );
+        return chip_outcome(response, shown, blocked, &name, row, &tab);
+    };
+    let (top_h, bottom_h) = (
+        line_height(branch, branch_font.clone()),
+        line_height(&tab, tab_font.clone()),
+    );
+    let top_y = rect.center().y - (top_h + CHIP_LINE_GAP + bottom_h) / 2.0 + top_h / 2.0;
+    let bottom_y = top_y + top_h / 2.0 + CHIP_LINE_GAP + bottom_h / 2.0;
+    paint_elided(
         painter,
-        egui::pos2(text_x, rect.center().y),
-        row.repo,
-        repo_font,
+        egui::pos2(text_x, top_y),
+        branch,
+        branch_font,
         fade(if shown {
             palette.text_primary
         } else {
             palette.text_secondary
         }),
-        repo_w,
+        branch_w,
     );
-    if !branch.is_empty() {
-        paint_elided(
-            painter,
-            egui::pos2(text_x + painted + CHIP_ICON_GAP, rect.center().y),
-            &branch,
-            branch_font,
-            fade(palette.text_muted),
-            branch_w - CHIP_ICON_GAP,
-        );
-    }
-    let label = format!("{name} · {} · {}", origin(row), row.tab);
+    paint_elided(
+        painter,
+        egui::pos2(text_x, bottom_y),
+        &tab,
+        tab_font,
+        tab_ink,
+        tab_w,
+    );
+    chip_outcome(response, shown, blocked, &name, row, &tab)
+}
+
+/// A chip's accessibility label, tooltip and click, shared by its one- and two-line forms.
+/// The tooltip spells out what the chip leaves to its cluster: the agent's own name, and the
+/// project the chip sits under.
+fn chip_outcome(
+    response: egui::Response,
+    shown: bool,
+    blocked: bool,
+    name: &str,
+    row: &AgentRow,
+    tab: &str,
+) -> bool {
+    let label = format!("{name} · {} · {tab}", origin(row));
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, shown, &label));
     if blocked {
@@ -380,9 +691,7 @@ fn agent_chip(
         ));
         return false;
     }
-    response
-        .on_hover_text(format!("{name} · {}", row.tab))
-        .clicked()
+    response.on_hover_text(&label).clicked()
 }
 
 /// The wall itself: one mirrored terminal per shown agent, laid out by
@@ -395,6 +704,7 @@ fn render_wall(
     ui: &mut egui::Ui,
     palette: &Palette,
     rows: &[AgentRow],
+    ordinals: &[Option<usize>],
     selected: Option<usize>,
     rect: egui::Rect,
     wall: &WallView,
@@ -423,6 +733,7 @@ fn render_wall(
             tile,
             palette,
             row,
+            ordinals.get(idx).copied().flatten(),
             idx,
             selected == Some(idx),
             action,
@@ -444,10 +755,12 @@ fn render_wall(
 /// pane dims itself when it isn't the active one, as an unfocused split does), and lifts
 /// under the pointer. Clicking the band or the terminal makes the tile active; the jump
 /// icon focuses that pane in its workspace. Returns whether the tile was clicked.
+#[allow(clippy::too_many_arguments)]
 fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &AgentRow,
+    ordinal: Option<usize>,
     idx: usize,
     active: bool,
     action: &mut AgentsPageAction,
@@ -556,6 +869,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     let text_x = indicator.right() + 10.0;
     let name = crate::agent_watch::display_name(row.agent);
     let branch = branch_suffix(row);
+    let tab = tab_label(row, ordinal);
     // The project leads (the wall is cross-repo: it is what says which tile is whose),
     // then its branch, then the tab. A narrow tile elides from the right, so the least
     // identifying label is the first to go.
@@ -602,7 +916,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
     paint_elided(
         painter,
         egui::pos2(tab_x, band.center().y),
-        row.tab,
+        &tab,
         egui::FontId::proportional(TAB_SIZE),
         faint,
         (content_right - tab_x).max(0.0),
@@ -611,7 +925,7 @@ fn wall_tile<F: FnMut(usize, &mut egui::Ui) -> bool>(
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("{name} in {} — {}", origin(row), row.tab),
+            format!("{name} in {} — {tab}", origin(row)),
         )
     });
     let on_icon_click = response
@@ -790,5 +1104,49 @@ mod tests {
         assert_eq!(wall.row_of(PaneId(9)), None);
         assert!(wall.shows(0));
         assert!(!wall.shows(1));
+    }
+
+    fn row<'a>(repo: &'a str, branch: &'a str, tab: &'a str) -> AgentRow<'a> {
+        AgentRow {
+            repo,
+            branch: Some(branch),
+            tab,
+            agent: "claude",
+            badge: AgentBadge::Idle,
+            detail: String::new(),
+            done_ago_ms: None,
+            lane: 0,
+        }
+    }
+
+    #[test]
+    fn one_cluster_per_run_of_rows_sharing_a_project() {
+        let rows = [
+            row("helm", "main", "Tab 1"),
+            row("helm", "agents", "Tab 1"),
+            row("api", "main", "Tab 1"),
+            row("helm", "main", "Tab 2"),
+        ];
+        // The last row is a project that came back after another: it opens its own cluster
+        // rather than being filed under the earlier `helm` header, which is far away.
+        assert_eq!(project_groups(&rows), vec![0..2, 2..3, 3..4]);
+    }
+
+    #[test]
+    fn only_agents_no_label_can_tell_apart_get_an_ordinal() {
+        let rows = [
+            row("helm", "main", "Claude Code"),
+            row("helm", "main", "Claude Code"),
+            row("helm", "agents", "Claude Code"),
+            row("helm", "main", "Claude Code"),
+        ];
+        assert_eq!(
+            duplicate_ordinals(&rows),
+            vec![Some(1), Some(2), None, Some(3)],
+            "the three twins are numbered in workspace order; the other worktree's own \
+             tab is unique and stays unmarked"
+        );
+        assert_eq!(tab_label(&rows[1], Some(2)), "Claude Code #2");
+        assert_eq!(tab_label(&rows[2], None), "Claude Code");
     }
 }
