@@ -1,5 +1,18 @@
 # Release notes
 
+## 2.1.1
+
+- The Agents strip groups its chips by project: the project is named once, as a
+  header over the chips that belong to it, instead of being repeated on every
+  one of them. Each chip spends that room on what actually tells your agents
+  apart — its branch over the tab it runs in.
+- Two agents in the same worktree running the same tool are numbered (`#1`,
+  `#2`), on the chip and on its tile on the wall, so identical terminals can be
+  told apart.
+- The strip is one row that scrolls sideways now, so it keeps the same height
+  whether one agent runs or twenty and the wall keeps the rest of the window.
+  Scroll into a project and its header stays pinned on the left.
+
 ## 2.1.0
 
 - A pull request's Files tab is one continuous scroll now: every file's diff
@@ -97,10 +110,4 @@
   both land.
 - A collapsed card in the Agents *Columns* view previews a few more lines of
   its conversation.
-
-## 1.4.3
-
-- Agent completion banners now come from helm itself: they show up under *helm*
-  in System Settings › Notifications and can be allowed through a Focus mode,
-  which until now swallowed them silently.
 
