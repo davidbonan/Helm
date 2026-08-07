@@ -6,6 +6,73 @@
 
 ---
 
+## ☑ Milestone — M-CLI2 · `helm run` over a control socket
+
+Spec: [`specs/cli.md`](../cli.md) §9. Per the user: let an agent working in a
+worktree ask helm whether a server is already up there, list the runs, and start
+one — then read what that server printed. Counter: **3/3**.
+
+- ☑ **T1 — Control socket + `helm run` subcommands.** `helm://` cannot answer a
+  question, so the app binds `<support dir>/helm.sock` (after the instance lock) and
+  serves one JSON line per connection; the socket thread parks each request for the
+  UI thread, drained at the top of the frame beside the `helm://` target. CLI gains
+  `run status|list|start|stop|relaunch [path] [--json]`, resolving the path itself
+  (§3) and exiting **3** when helm is not running. Mutations go through
+  `apply_run_intent` — the strip's own path, no arbitrary command in the protocol;
+  `start` is a no-op on a live process (`relaunch` restarts).
+  *Files*: `src/ipc.rs` (new), `src/cli.rs`, `src/app/mod.rs`, `src/lib.rs`,
+  `specs/cli.md`. *Tests*: 5 unit `ipc::tests` (JSON contract, socket round-trip,
+  refusal, no listener), 4 unit `cli::tests` (argv, line format), 4 unit
+  `app::tests` (list resolution, start/stop of a real PTY, no-op start, refusals).
+  Gate green (fmt + clippy `-D warnings` + `cargo test`, the 4 failures in
+  `ui_pull_requests_view` predating this work).
+  *Unverified*: end to end against a bundled `.app` (checked against `cargo run`,
+  i.e. the `helm-dev` support dir).
+- ☑ **T2 — `helm run logs`.** The state alone does not say *why* a server died, so
+  the socket also serves the strip's viewer: `emu::tail_text` reads the pane's grid
+  (scrollback included, trailing blanks dropped, display offset irrelevant —
+  `Storage::compute_index` is absolute), and `Response::Logs` carries the entry
+  alongside the lines. CLI: `helm run logs [path] [-n N]`, default 40, captured
+  output on **stdout alone** so it pipes. A stopped strip answers an empty `lines`
+  rather than an error: `stop` drops the pane, and with it the buffer.
+  *Files*: `src/terminal/emu.rs`, `src/ipc.rs`, `src/cli.rs`, `src/app/mod.rs`,
+  `specs/cli.md`. *Tests*: 1 unit `emu::tests` (tail across the scrollback), 1 unit
+  `ipc::tests` (logs round-trip), 1 unit `cli::tests` (`-n`, refused elsewhere),
+  1 unit `app::tests` (output of a live PTY, empty buffer after stop).
+  Gate green (`cargo test --lib` 941).
+  *Verified*: end to end on a dev instance — a `vite`-like script's three lines
+  read back through `helm run logs`, `-n 2` truncating to the last two, `--json`
+  carrying entry + lines, `2>/dev/null | grep ERROR` clean.
+- ☑ **T3 — Review fixes.** Five anomalies found reviewing T1/T2. (a) `exited` threw
+  away the code `try_wait` already had: `Pane::exit_code` caches it, `RunEntry`
+  carries it, the CLI prints `exited 7`. (b) Log width followed the UI — a run pane
+  spawns at 80 columns and is only resized when the strip paints — so `tail_text`
+  now rejoins `WRAPLINE` rows and `-n` counts logical lines. (c) That same tail
+  allocated the whole 10 000-row scrollback to keep 40 lines; it walks up from the
+  bottom and stops. (d) A worktree created outside helm was refused until the
+  focus-gated sync noticed it: a miss now runs one `run_group_sync` before
+  refusing. (e) A hidden window stops macOS draws, so no frame runs and no answer
+  is written — measured; the socket now closes **unanswered** instead of faking a
+  refusal, the client's timeout is longer than the app's so the errno never
+  surfaces, and both silence and "not running" exit **3** ("do it yourself").
+  Also: the path lookup resolves the one worktree instead of building every
+  target (a `package.json` read per node project, on the UI thread).
+  *Files*: `src/terminal/{emu,pane}.rs`, `src/ipc.rs`, `src/cli.rs`,
+  `src/app/mod.rs`, `specs/cli.md`. *Tests*: +2 `emu::tests` (rejoin, inner
+  blanks), +1 `ipc::tests` (silence ⇒ `NotAnswering`), +1 `cli::tests` (exit code
+  in the line), +2 `app::tests` (code of a dead command, adoption of an outside
+  worktree). Gate green (2076).
+  *Verified*: dev instance — 121-char line whole out of an 80-column grid,
+  `exit_code` 7 in both output forms, hidden app ⇒ exit 3 with a message naming
+  the cause then 25 ms once unhidden, `git worktree add` behind helm's back
+  answered without touching the app.
+  *Known limit*: a hidden helm answers nothing at all (mutations included). The
+  real fix would be a shareable run registry (pid + `SharedTerm`) so read-only
+  requests never need a frame — not done, deliberately: it duplicates state the
+  workspace owns.
+
+---
+
 ## ☑ Milestone — M-PR9 · Browse list → the Rush design
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §5, from the

@@ -28,8 +28,28 @@ helm — native dev workspace (terminal + git)
 Usage:
   helm                 Launch the app
   helm <path>          Open the repository or worktree at <path>
+  helm run <command>   Drive the Run server of a worktree (see below)
   helm --help          Show this message
-  helm --version       Show the version";
+  helm --version       Show the version
+
+Run commands (they talk to the running helm; exit 3 when it cannot answer):
+  helm run status [path]      State of that worktree's Run server (default: .)
+  helm run list               Every worktree of the workspace
+  helm run start [path]       Start it — a running server is left alone
+  helm run stop [path]        Stop it (kills the process tree)
+  helm run relaunch [path]    Stop then start
+  helm run logs [path]        Tail of what the server printed
+  -n <lines>                  Lines to tail (logs only, default 40)
+  --json                      Machine-readable output";
+
+/// Lines `helm run logs` tails when `-n` is left out: a screenful, the size of a
+/// stack trace one wants to read without asking for the whole scrollback.
+const DEFAULT_LOG_LINES: usize = 40;
+
+/// Exit code when no answer can be had — helm is down, or up but silent. Distinct
+/// from a plain failure so a script can tell "ask someone else" from "helm said
+/// no" (that worktree has no run command): on 3, do the job yourself.
+pub const EXIT_UNREACHABLE: i32 = 3;
 
 /// What argv asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,15 +61,41 @@ pub enum Args {
         open_url: Option<String>,
     },
     Open(PathBuf),
+    /// `helm run …`: the Run strip, driven from outside the app (§9).
+    Run(RunArgs),
     Help,
     Version,
     /// Misuse: the message to print on stderr.
     Usage(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOp {
+    Status,
+    List,
+    Start,
+    Stop,
+    Relaunch,
+    Logs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArgs {
+    pub op: RunOp,
+    /// Worktree to act on, `None` for `list` alone. Left unresolved here: the
+    /// resolution belongs to `execute`, which reports its errors on stderr.
+    pub path: Option<PathBuf>,
+    /// `-n`, `logs` only; `None` ⇒ `DEFAULT_LOG_LINES`.
+    pub lines: Option<usize>,
+    pub json: bool,
+}
+
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Args {
     let args: Vec<OsString> = args.into_iter().collect();
     let first = args.first().map(|a| a.to_string_lossy().into_owned());
+    if first.as_deref() == Some("run") {
+        return parse_run(&args[1..]);
+    }
     match (args.len(), first.as_deref()) {
         (0, _) => Args::Gui { open_url: None },
         // Carbon-era process serial number: some LaunchServices launches still
@@ -64,6 +110,62 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Args {
         (1, _) => Args::Open(PathBuf::from(&args[0])),
         _ => Args::Usage("expected a single path".to_owned()),
     }
+}
+
+/// `helm run <op> [path] [-n <lines>] [--json]`. Options are accepted anywhere; a
+/// missing path means the current directory, which is what an agent sitting in a
+/// worktree types.
+fn parse_run(rest: &[OsString]) -> Args {
+    let mut json = false;
+    let mut lines: Option<usize> = None;
+    let mut words: Vec<String> = Vec::new();
+    let mut rest = rest.iter().map(|a| a.to_string_lossy().into_owned());
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-n" | "--lines" => {
+                let Some(value) = rest.next() else {
+                    return Args::Usage(format!("“{arg}” expects a number of lines"));
+                };
+                match value.parse::<usize>() {
+                    Ok(parsed) => lines = Some(parsed),
+                    Err(_) => return Args::Usage(format!("“{value}” is not a number of lines")),
+                }
+            }
+            other if other.starts_with('-') => {
+                return Args::Usage(format!("unknown option “{other}”"))
+            }
+            other => words.push(other.to_owned()),
+        }
+    }
+    let Some(op) = words.first() else {
+        return Args::Usage("run: expected status, list, start, stop, relaunch or logs".to_owned());
+    };
+    let op = match op.as_str() {
+        "status" => RunOp::Status,
+        "list" => RunOp::List,
+        "start" => RunOp::Start,
+        "stop" => RunOp::Stop,
+        "relaunch" => RunOp::Relaunch,
+        "logs" => RunOp::Logs,
+        other => return Args::Usage(format!("unknown run command “{other}”")),
+    };
+    if lines.is_some() && op != RunOp::Logs {
+        return Args::Usage("“-n” only applies to run logs".to_owned());
+    }
+    let path = match (op, words.len()) {
+        (RunOp::List, 1) => None,
+        (RunOp::List, _) => return Args::Usage("run list takes no path".to_owned()),
+        (_, 1) => Some(PathBuf::from(".")),
+        (_, 2) => Some(PathBuf::from(&words[1])),
+        _ => return Args::Usage("expected a single path".to_owned()),
+    };
+    Args::Run(RunArgs {
+        op,
+        path,
+        lines,
+        json,
+    })
 }
 
 /// Runs everything but `Args::Gui` and returns the process exit code.
@@ -89,7 +191,130 @@ pub fn execute(args: Args) -> i32 {
                 1
             }
         },
+        Args::Run(run) => execute_run(run),
     }
+}
+
+/// Asks the running app (§9). The worktree is resolved **here**, like `helm <path>`:
+/// a bad path is a terminal error, and the app is only reached with a canonical
+/// working tree.
+fn execute_run(args: RunArgs) -> i32 {
+    let request = match args.path {
+        None => crate::ipc::Request::List,
+        Some(path) => {
+            let target = match resolve_target(&path) {
+                Ok(target) => target,
+                Err(err) => {
+                    eprintln!("helm: {}", err.message(&path));
+                    return 1;
+                }
+            };
+            match args.op {
+                RunOp::Status => crate::ipc::Request::Status { path: target },
+                RunOp::Start => crate::ipc::Request::Start { path: target },
+                RunOp::Stop => crate::ipc::Request::Stop { path: target },
+                RunOp::Relaunch => crate::ipc::Request::Relaunch { path: target },
+                RunOp::Logs => crate::ipc::Request::Logs {
+                    path: target,
+                    lines: args.lines.unwrap_or(DEFAULT_LOG_LINES),
+                },
+                // `list` carries no path.
+                RunOp::List => crate::ipc::Request::List,
+            }
+        }
+    };
+    match crate::ipc::request(&request) {
+        Ok(crate::ipc::Response::Runs { runs }) => {
+            print_runs(&runs, args.json);
+            0
+        }
+        Ok(crate::ipc::Response::Logs { entry, lines }) => {
+            print_logs(&entry, &lines, args.json);
+            0
+        }
+        Ok(crate::ipc::Response::Error { message }) => {
+            eprintln!("helm: {message}");
+            1
+        }
+        Err(crate::ipc::ClientError::NotRunning) => {
+            eprintln!("helm: helm is not running — launch it first");
+            EXIT_UNREACHABLE
+        }
+        Err(crate::ipc::ClientError::NotAnswering) => {
+            eprintln!(
+                "helm: helm is running but not answering — unhide its window \
+                 (a hidden or minimized app stops drawing, and the answer is \
+                 written on a frame)"
+            );
+            EXIT_UNREACHABLE
+        }
+        Err(crate::ipc::ClientError::Failed(message)) => {
+            eprintln!("helm: {message}");
+            1
+        }
+    }
+}
+
+fn print_runs(runs: &[crate::ipc::RunEntry], json: bool) {
+    if json {
+        match serde_json::to_string_pretty(runs) {
+            Ok(text) => println!("{text}"),
+            Err(err) => eprintln!("helm: {err}"),
+        }
+        return;
+    }
+    if runs.is_empty() {
+        println!("no worktree open in helm");
+        return;
+    }
+    for entry in runs {
+        println!("{}", run_line(entry));
+        if let Some(error) = &entry.error {
+            println!("  {error}");
+        }
+    }
+}
+
+/// Captured output goes to **stdout alone** so `helm run logs | grep …` works;
+/// the state line and the empty-buffer note go to stderr.
+fn print_logs(entry: &crate::ipc::RunEntry, lines: &[String], json: bool) {
+    if json {
+        let payload = serde_json::json!({ "entry": entry, "lines": lines });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(text) => println!("{text}"),
+            Err(err) => eprintln!("helm: {err}"),
+        }
+        return;
+    }
+    eprintln!("{}", run_line(entry));
+    if lines.is_empty() {
+        eprintln!("  (no output — a stopped strip keeps no buffer)");
+        return;
+    }
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+/// One aligned line per worktree: state, where it is, its port, what it runs.
+/// An exited process carries its code — "the server is down" and "the server died
+/// with 1" are not the same news.
+fn run_line(entry: &crate::ipc::RunEntry) -> String {
+    let state = match entry.exit_code {
+        Some(code) => format!("{} {code}", entry.state.label()),
+        None => entry.state.label().to_owned(),
+    };
+    let label = match &entry.branch {
+        Some(branch) => format!("{}/{branch}", entry.project),
+        None => entry.project.clone(),
+    };
+    let port = entry.port.map(|p| format!(":{p}")).unwrap_or_default();
+    let command = if entry.launch_command.trim().is_empty() {
+        "(no run command)"
+    } else {
+        entry.launch_command.trim()
+    };
+    format!("{state:<8}  {label:<28}  {port:<7}  {command}")
 }
 
 /// Why a path cannot be opened.
@@ -379,6 +604,131 @@ mod tests {
     fn extra_arguments_and_unknown_options_are_refused() {
         assert!(matches!(args(&["/tmp/a", "/tmp/b"]), Args::Usage(_)));
         assert!(matches!(args(&["--nope"]), Args::Usage(_)));
+    }
+
+    #[test]
+    fn run_commands_default_to_the_current_directory() {
+        assert_eq!(
+            args(&["run", "status"]),
+            Args::Run(RunArgs {
+                op: RunOp::Status,
+                path: Some(PathBuf::from(".")),
+                lines: None,
+                json: false,
+            })
+        );
+        assert_eq!(
+            args(&["run", "relaunch", "/tmp/x"]),
+            Args::Run(RunArgs {
+                op: RunOp::Relaunch,
+                path: Some(PathBuf::from("/tmp/x")),
+                lines: None,
+                json: false,
+            })
+        );
+    }
+
+    #[test]
+    fn run_list_takes_no_path_and_json_is_positional_free() {
+        assert_eq!(
+            args(&["run", "--json", "list"]),
+            Args::Run(RunArgs {
+                op: RunOp::List,
+                path: None,
+                lines: None,
+                json: true,
+            })
+        );
+        assert!(matches!(args(&["run", "list", "/tmp/x"]), Args::Usage(_)));
+    }
+
+    #[test]
+    fn run_logs_takes_a_line_count_nobody_else_accepts() {
+        assert_eq!(
+            args(&["run", "logs", "-n", "200", "/tmp/x"]),
+            Args::Run(RunArgs {
+                op: RunOp::Logs,
+                path: Some(PathBuf::from("/tmp/x")),
+                lines: Some(200),
+                json: false,
+            })
+        );
+        assert_eq!(
+            args(&["run", "logs"]),
+            Args::Run(RunArgs {
+                op: RunOp::Logs,
+                path: Some(PathBuf::from(".")),
+                lines: None,
+                json: false,
+            }),
+            "without -n the default line count is applied at request time"
+        );
+        assert!(matches!(
+            args(&["run", "status", "-n", "10"]),
+            Args::Usage(_)
+        ));
+        assert!(matches!(args(&["run", "logs", "-n"]), Args::Usage(_)));
+        assert!(matches!(
+            args(&["run", "logs", "-n", "lots"]),
+            Args::Usage(_)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_run_command_or_option_is_refused() {
+        assert!(matches!(args(&["run"]), Args::Usage(_)));
+        assert!(matches!(args(&["run", "kill"]), Args::Usage(_)));
+        assert!(matches!(
+            args(&["run", "status", "--force"]),
+            Args::Usage(_)
+        ));
+        assert!(matches!(
+            args(&["run", "status", "/a", "/b"]),
+            Args::Usage(_)
+        ));
+    }
+
+    #[test]
+    fn a_run_line_states_where_what_and_on_which_port() {
+        let entry = crate::ipc::RunEntry {
+            worktree: PathBuf::from("/dev/api.worktrees/feat-x"),
+            project: "api".to_owned(),
+            branch: Some("feat-x".to_owned()),
+            state: crate::ipc::RunState::Running,
+            port: Some(3001),
+            command: "npm run dev -- --port $PORT".to_owned(),
+            launch_command: "npm run dev -- --port 3001".to_owned(),
+            error: None,
+            exit_code: None,
+        };
+        assert_eq!(
+            run_line(&entry),
+            "running   api/feat-x                    :3001    npm run dev -- --port 3001"
+        );
+
+        let idle = crate::ipc::RunEntry {
+            branch: None,
+            state: crate::ipc::RunState::Stopped,
+            port: None,
+            command: String::new(),
+            launch_command: String::new(),
+            ..entry
+        };
+        assert_eq!(
+            run_line(&idle),
+            "stopped   api                                    (no run command)"
+        );
+
+        let crashed = crate::ipc::RunEntry {
+            state: crate::ipc::RunState::Exited,
+            exit_code: Some(1),
+            ..idle
+        };
+        assert!(
+            run_line(&crashed).starts_with("exited 1 "),
+            "a process that died says with what: {}",
+            run_line(&crashed)
+        );
     }
 
     #[test]

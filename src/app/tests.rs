@@ -3488,3 +3488,234 @@ fn a_refused_cli_target_changes_nothing_but_the_toasts() {
         Some(repo)
     );
 }
+
+#[test]
+fn ipc_list_reports_every_worktree_with_its_resolved_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("Cargo.toml"), "[package]\n").unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+
+    let crate::ipc::Response::Runs { runs } = app.handle_ipc(crate::ipc::Request::List, &ctx)
+    else {
+        panic!("list answers with entries");
+    };
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].worktree, repo);
+    assert_eq!(runs[0].project, "api");
+    assert_eq!(runs[0].state, crate::ipc::RunState::Stopped);
+    assert_eq!(
+        runs[0].command, "cargo run",
+        "the manifest is what resolves the command when none is configured"
+    );
+    assert_eq!(runs[0].port, None, "a command without $PORT claims no port");
+}
+
+#[test]
+fn ipc_start_then_stop_drives_the_worktrees_run_process() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.prefs
+        .set_project_settings(repo.clone(), None, String::new(), "sleep 30".to_owned());
+    let ctx = egui::Context::default();
+    let key = RepoKey::of(&repo);
+
+    let started = app.handle_ipc(crate::ipc::Request::Start { path: repo.clone() }, &ctx);
+    let crate::ipc::Response::Runs { runs } = started else {
+        panic!("start answers with the entry");
+    };
+    assert_eq!(runs[0].state, crate::ipc::RunState::Running);
+    assert!(app.caches.run_panes.contains_key(&key), "the pane is live");
+
+    let stopped = app.handle_ipc(crate::ipc::Request::Stop { path: repo.clone() }, &ctx);
+    let crate::ipc::Response::Runs { runs } = stopped else {
+        panic!("stop answers with the entry");
+    };
+    assert_eq!(runs[0].state, crate::ipc::RunState::Stopped);
+    assert!(
+        !app.caches.run_panes.contains_key(&key),
+        "stop drops the pane, killing its process tree"
+    );
+}
+
+#[test]
+fn ipc_start_leaves_a_running_process_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.prefs
+        .set_project_settings(repo.clone(), None, String::new(), "sleep 30".to_owned());
+    let ctx = egui::Context::default();
+    let key = RepoKey::of(&repo);
+
+    app.handle_ipc(crate::ipc::Request::Start { path: repo.clone() }, &ctx);
+    let first = match app.caches.run_panes.get(&key) {
+        Some(TerminalState::Live(pane)) => pane.shell_pid(),
+        _ => panic!("the first start spawned a pane"),
+    };
+
+    app.handle_ipc(crate::ipc::Request::Start { path: repo.clone() }, &ctx);
+    let second = match app.caches.run_panes.get(&key) {
+        Some(TerminalState::Live(pane)) => pane.shell_pid(),
+        _ => panic!("the pane is still live"),
+    };
+
+    assert_eq!(
+        first, second,
+        "start on a running server is a no-op — relaunch is the restart"
+    );
+}
+
+#[test]
+fn ipc_refuses_an_unknown_worktree_and_a_missing_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+
+    let unknown = app.handle_ipc(crate::ipc::Request::Status { path: outside }, &ctx);
+    assert!(
+        matches!(&unknown, crate::ipc::Response::Error { message } if message.contains("not open in helm")),
+        "{unknown:?}"
+    );
+
+    // No manifest in the folder and no configured command ⇒ nothing to spawn.
+    let no_command = app.handle_ipc(crate::ipc::Request::Start { path: repo }, &ctx);
+    assert!(
+        matches!(&no_command, crate::ipc::Response::Error { message } if message.contains("no run command")),
+        "{no_command:?}"
+    );
+}
+
+#[test]
+fn ipc_logs_tail_what_the_run_process_printed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.prefs.set_project_settings(
+        repo.clone(),
+        None,
+        String::new(),
+        "echo helm-logs-marker; sleep 30".to_owned(),
+    );
+    let ctx = egui::Context::default();
+    let logs = crate::ipc::Request::Logs {
+        path: repo.clone(),
+        lines: 40,
+    };
+
+    app.handle_ipc(crate::ipc::Request::Start { path: repo.clone() }, &ctx);
+    // The PTY reader fills the grid on its own thread; poll rather than sleep once.
+    let mut captured = Vec::new();
+    for _ in 0..200 {
+        if let crate::ipc::Response::Logs { lines, .. } = app.handle_ipc(logs.clone(), &ctx) {
+            if lines.iter().any(|line| line.contains("helm-logs-marker")) {
+                captured = lines;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !captured.is_empty(),
+        "the strip's output is readable over the socket"
+    );
+
+    app.handle_ipc(crate::ipc::Request::Stop { path: repo }, &ctx);
+    let crate::ipc::Response::Logs { entry, lines } = app.handle_ipc(logs, &ctx) else {
+        panic!("logs answers even on a stopped strip");
+    };
+    assert_eq!(entry.state, crate::ipc::RunState::Stopped);
+    assert!(
+        lines.is_empty(),
+        "stop drops the pane, and with it the buffer"
+    );
+}
+
+#[test]
+fn ipc_reports_the_code_a_run_command_died_with() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    app.prefs
+        .set_project_settings(repo.clone(), None, String::new(), "exit 3".to_owned());
+    let ctx = egui::Context::default();
+    let status = crate::ipc::Request::Status { path: repo.clone() };
+
+    app.handle_ipc(crate::ipc::Request::Start { path: repo }, &ctx);
+    let mut entry = None;
+    for _ in 0..200 {
+        if let crate::ipc::Response::Runs { runs } = app.handle_ipc(status.clone(), &ctx) {
+            if runs[0].state == crate::ipc::RunState::Exited {
+                entry = Some(runs[0].clone());
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let entry = entry.expect("the command returns on its own");
+    assert_eq!(
+        entry.exit_code,
+        Some(3),
+        "a dead server says with what code, not just that it is gone"
+    );
+}
+
+#[test]
+fn ipc_adopts_a_worktree_created_outside_helm_before_refusing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("api");
+    std::fs::create_dir_all(&root).unwrap();
+    init_repo_with_commit(&root);
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(root.clone()));
+    let mut app = HelmApp::with_workspace(ws);
+    let ctx = egui::Context::default();
+
+    // Created behind helm's back: without a sync it is in no workspace, and the
+    // periodic one only ticks while the window is focused.
+    let worktree = tmp.path().join("api.worktrees/feat-x");
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    git2::Repository::open(&root)
+        .unwrap()
+        .worktree("feat-x", &worktree, None)
+        .unwrap();
+
+    let answer = app.handle_ipc(
+        crate::ipc::Request::Status {
+            path: worktree.clone(),
+        },
+        &ctx,
+    );
+
+    let crate::ipc::Response::Runs { runs } = answer else {
+        panic!("the worktree is adopted, not refused: {answer:?}");
+    };
+    assert_eq!(
+        runs[0].worktree.canonicalize().unwrap(),
+        worktree.canonicalize().unwrap()
+    );
+}

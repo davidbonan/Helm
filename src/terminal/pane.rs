@@ -38,6 +38,8 @@ pub struct Pane {
     rows: u16,
     cols: u16,
     reply_palette: TermPalette,
+    /// Exit code, kept from the reaping `try_wait` that first saw it.
+    exit_code: Option<u32>,
 }
 
 impl Pane {
@@ -100,6 +102,7 @@ impl Pane {
             rows,
             cols,
             reply_palette,
+            exit_code: None,
         })
     }
 
@@ -207,7 +210,18 @@ impl Pane {
     }
 
     pub fn has_exited(&mut self) -> bool {
-        matches!(self.pty.child().try_wait(), Ok(Some(_)))
+        self.exit_code().is_some()
+    }
+
+    /// Code the process returned, `None` while it runs. Cached on the first
+    /// observation: `try_wait` reaps, and the status is only reported once.
+    pub fn exit_code(&mut self) -> Option<u32> {
+        if self.exit_code.is_none() {
+            if let Ok(Some(status)) = self.pty.child().try_wait() {
+                self.exit_code = Some(status.exit_code());
+            }
+        }
+        self.exit_code
     }
 
     pub fn relaunch(&mut self) -> Result<()> {
@@ -228,6 +242,7 @@ impl Pane {
         self.pty = pty;
         self.emu = emu;
         self.writer = writer;
+        self.exit_code = None;
         (self.on_change)();
         Ok(())
     }

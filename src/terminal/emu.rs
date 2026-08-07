@@ -6,6 +6,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Rgb as VteRgb, StdSyncHandler};
 
@@ -509,6 +510,51 @@ pub fn scrollback_len(term: &Term<ReplyListener>) -> usize {
     grid.total_lines() - grid.screen_lines()
 }
 
+/// Last `lines` **logical** lines of output, scrollback included — the Run strip's
+/// viewer as text (specs/cli.md §9).
+///
+/// Rows the terminal wrapped are joined back (`WRAPLINE` on the last cell of a
+/// wrapped row), so what comes out does not depend on how wide the strip happens
+/// to be on screen. Walks upward from the bottom and stops at `lines`: the
+/// scrollback holds 10 000 rows, and a tail must not pay for all of them. Grid
+/// indexing is absolute (`Storage::compute_index` ignores the display offset), so
+/// a scrolled viewer reads the same thing.
+pub fn tail_text(term: &Term<ReplyListener>, lines: usize) -> Vec<String> {
+    let first = -(scrollback_len(term) as i32);
+    let last = term.grid().screen_lines() as i32 - 1;
+    let mut out: Vec<String> = Vec::new();
+    // Rows of the logical line being assembled, bottom-up.
+    let mut wrapped: Vec<String> = Vec::new();
+    for line in (first..=last).rev() {
+        wrapped.push(line_text(term, line));
+        // The row above continues into this one ⇒ the logical line is not complete.
+        if line > first && row_wraps(term, line - 1) {
+            continue;
+        }
+        wrapped.reverse();
+        let text = wrapped.concat().trim_end().to_owned();
+        wrapped.clear();
+        // The grid is a fixed rectangle: everything below the cursor is padding.
+        // Blank lines *inside* the output are kept — only the tail is dropped.
+        if text.is_empty() && out.is_empty() {
+            continue;
+        }
+        out.push(text);
+        if out.len() == lines {
+            break;
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// Whether the terminal wrapped this row into the next one.
+fn row_wraps(term: &Term<ReplyListener>, line: i32) -> bool {
+    let grid = term.grid();
+    let last = Column(grid.columns() - 1);
+    grid[Line(line)][last].flags.contains(Flags::WRAPLINE)
+}
+
 pub fn line_text(term: &Term<ReplyListener>, line: i32) -> String {
     let grid = term.grid();
     let cols = grid.columns();
@@ -549,6 +595,52 @@ mod tests {
         let mut parser = AnsiParser::new();
         parser.advance(&mut term, b"hi");
         assert_eq!(line_text(&term, 0).trim_end(), "hi");
+    }
+
+    #[test]
+    fn tail_text_reads_the_last_lines_across_the_scrollback() {
+        let term = shared_term(3, 10);
+        for line in 0..8 {
+            feed(&term, format!("line{line}\r\n").as_bytes());
+        }
+        let term = term.lock();
+        assert!(
+            scrollback_len(&term) > 0,
+            "the grid holds 3 rows for 8 lines"
+        );
+
+        assert_eq!(
+            tail_text(&term, 3),
+            vec!["line5".to_owned(), "line6".to_owned(), "line7".to_owned()],
+            "the tail crosses the viewport into the scrollback, blank padding dropped"
+        );
+        assert_eq!(tail_text(&term, 100).len(), 8, "asking for more yields all");
+    }
+
+    #[test]
+    fn tail_text_rejoins_lines_the_terminal_wrapped() {
+        // 10 columns: the line below is written over three rows.
+        let term = shared_term(4, 10);
+        feed(&term, b"0123456789abcdefghijklmno\r\nshort\r\n");
+        let term = term.lock();
+
+        assert_eq!(
+            tail_text(&term, 10),
+            vec!["0123456789abcdefghijklmno".to_owned(), "short".to_owned()],
+            "a wrapped line comes back whole — the strip's width is not the log's"
+        );
+    }
+
+    #[test]
+    fn tail_text_keeps_blank_lines_inside_the_output() {
+        let term = shared_term(4, 10);
+        feed(&term, b"top\r\n\r\nbottom\r\n");
+        let term = term.lock();
+
+        assert_eq!(
+            tail_text(&term, 10),
+            vec!["top".to_owned(), String::new(), "bottom".to_owned()]
+        );
     }
 
     #[test]

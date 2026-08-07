@@ -6,6 +6,7 @@ pub mod cli;
 pub mod feedback;
 pub mod frame_log;
 pub mod git;
+pub mod ipc;
 pub mod keybindings;
 pub mod lru;
 pub mod notify;

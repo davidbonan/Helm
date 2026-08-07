@@ -32,6 +32,7 @@ project/worktree argument pair to disambiguate.
 | `-psn_…` | **GUI** — Carbon-era process serial number some LaunchServices launches still append; it is a launch, not a CLI call |
 | `--open-url <url>` | **GUI**, with a startup target injected (§5) |
 | `<path>` | **CLI** — resolve, hand over, exit |
+| `run <verb> [path]` | **CLI** — ask the running app about the Run strip (§9) |
 | `-h`/`--help`, `-V`/`--version` | print, exit 0 |
 | anything else | usage on stderr, exit 2 |
 
@@ -173,3 +174,107 @@ path is never replaced: it belongs to something else.
   back in.
 - **Not installed as a bundle** — `open` reports no application for the scheme;
   the CLI passes its exit code through.
+
+## 9. Control socket — `helm run …`
+
+`helm://` only pushes: LaunchServices delivers a URL and nothing comes back. But
+"is a server already up on this worktree?" is a **question**, and the answer lives
+in the running app — the Run strip's process is a PTY owned by `HelmApp`
+([`git.md`](git.md) §3), not something on disk. The CLI therefore also speaks to
+the app over a **Unix socket**, `<support dir>/helm.sock`, beside the prefs and
+the instance lock. Same support dir ⇒ the same split for free: a `cargo run`
+build (`helm-dev`) never answers for the installed bundle.
+
+```sh
+helm run status [path]      # that worktree's Run server (path defaults to .)
+helm run list               # every worktree of the workspace
+helm run start [path]       # start it — a running server is left alone
+helm run stop [path]        # stop it (drops the pane, killing the process tree)
+helm run relaunch [path]    # stop then start
+helm run logs [path] [-n N] # tail of what the server printed (N default 40)
+--json                      # machine-readable output, on any of them
+```
+
+The point is an **agent working in a worktree**: before spawning `npm run dev`
+into its own shell it asks helm, and either finds the server already up (with the
+port helm assigned it, `$PORT` resolved per worktree) or has helm start it — in
+the Run strip, where the user can watch it, rather than in a shell nobody sees.
+
+- **Protocol**: one JSON line in, one JSON line out, connection closed.
+  Requests are `{"op":"status"|"list"|"start"|"stop"|"relaunch", "path":…}` and
+  `{"op":"logs","path":…,"lines":N}`; the answer is `{"result":"runs","runs":[…]}`,
+  `{"result":"logs","entry":{…},"lines":[…]}` or
+  `{"result":"error","message":…}`. Each entry carries `worktree`, `project`,
+  `branch`, `state` (`running` / `stopped` / `exited` / `failed`), `port`,
+  `command` (the template, `$PORT` unsubstituted), `launch_command` (what
+  actually spawns), `error` on a spawn failure and `exit_code` on `exited` — a
+  server that was asked to stop and one that died with 7 are not the same news,
+  and the code is right there in the `try_wait` that reaps the child.
+- **`logs` reads the strip's own viewer** — the pane's grid, scrollback included
+  (`emu::tail_text`), newest last, trailing blank rows dropped. Rows the terminal
+  **wrapped are joined back** (`WRAPLINE` on a row's last cell), so `-n` counts
+  logical lines and the output does not depend on how wide the strip happens to be
+  on screen — it would otherwise, since a run pane spawns at 80 columns and is only
+  resized once the strip actually paints. ANSI styling is already applied (the text
+  is plain) and the buffer is capped by the shared 10 000-line scrollback; the tail
+  walks up from the bottom and stops at `-n`, so it never pays for the whole
+  history. Grid indexing ignores the display offset, so a user scrolling the strip
+  does not move what the CLI reads. A **stopped** strip has no pane and therefore no
+  buffer: the answer is an empty `lines`, not an error — `stop` throws the output
+  away, `relaunch` starts a fresh buffer.
+  On the terminal side the captured output goes to **stdout alone** (the state
+  line and the empty-buffer note go to stderr), so `helm run logs | grep …` works.
+- **Resolution stays in the CLI** (§3): the path is canonicalized and validated
+  as a working tree before anything is sent, so a typo is a terminal error, and
+  the app only ever receives a canonical path.
+- **The app answers on the UI thread**. The socket thread owns no state: it parks
+  the request and blocks on the reply, exactly like the `helm://` handler parks a
+  target (§4). The drain sits at the top of the frame, ahead of the Preferences
+  gate — every worktree's Run pane lives on regardless of what is on screen, so
+  the answer never depends on which repo is active or which page is open.
+- **Mutations go through the strip's own path** (`apply_run_intent`): the same
+  spawn, the same kill-on-drop, the same panes the buttons drive. Nothing is
+  started outside helm's sight — and **no arbitrary command can be sent**: the
+  socket carries a *verb and a path*, never a command line. What runs is what the
+  project already resolves to (settings, else the manifest, §3 of `git.md`).
+- **`start` is "make sure it is up"**, not "restart": on a live process it is a
+  no-op that reports the running entry, so an agent cannot silently kill the
+  server the user is reading. `relaunch` is the explicit restart.
+- **The UI is left alone**: a socket-driven start does not reveal the sidebar,
+  expand the strip or switch the active repo (unlike `Cmd+R`, `git.md` §3) — a
+  background request must not steal the user's view.
+- **An unknown worktree is synced before being refused.** A worktree created
+  outside helm only joins its group on the next sync, and that tick is gated on the
+  window being **focused** ([`worktrees.md`](worktrees.md) §4) — an agent would be
+  turned away for as long as helm sits in the background. A miss therefore runs one
+  group sync and looks again; only then is it a refusal. (The branch label comes
+  from the off-thread group refresh, so the very first answer on a freshly adopted
+  worktree carries `branch: null`.)
+- **Exit codes**: `0` answered, `1` refused (unknown path, worktree not open in
+  helm, no run command resolved), `2` misuse, **`3` no answer to be had**. `3`
+  covers both "helm is not running" and "helm is running but silent": a **hidden or
+  minimized** app gets no draw callbacks from macOS, so `update` never runs and the
+  answer — written on a frame — never comes (measured: hidden ⇒ nothing, unhidden ⇒
+  25 ms). The socket thread then closes the connection **unanswered** rather than
+  dressing silence up as a refusal, and the client (whose own timeout is longer)
+  reports it as `3`. One rule for a caller: on `3`, do the job yourself. A stale
+  socket file left by a crash reads as `3` too (`ECONNREFUSED`), and the next launch
+  rebinds it: the instance lock has already proved no other helm is live.
+- **Trust**: the socket is user-only (`0600`) in the user's support dir, and its
+  whole vocabulary is five verbs over a path. A local process that could reach it
+  could already run the project's command itself; what it *cannot* do is make
+  helm run something the project has not configured.
+- **`helm run` shadows a folder named `run`**: `helm run` is the subcommand;
+  `helm ./run` opens the directory.
+
+Covered by tests: argv parsing of every subcommand, `-n` and the human line format
+including the exit code (unit, `cli::tests`); the socket round-trip — entries,
+captured output, refusal, silence, no listener — (unit, `ipc::tests`); the tail
+across the scrollback, the rejoining of wrapped rows and the blank lines kept
+inside the output (unit, `emu::tests`); and the app side against a real workspace:
+list resolution, start/stop of a real PTY, the no-op start on a live process, the
+output of a live process and the empty buffer of a stopped one, the code a dead
+command returns, the adoption of a worktree created outside helm, the refusals
+(unit, `app::tests`). Verified by hand on a dev instance: the hidden-window
+timeout, a 121-character line coming back whole out of an 80-column grid, and
+`exit_code` 7 surfacing in both output forms.

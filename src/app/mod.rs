@@ -1527,6 +1527,170 @@ impl HelmApp {
         }
     }
 
+    /// Every worktree's Run strip, resolved exactly as the render pass does
+    /// (command, group offset, `$PORT`) — the control socket answers about
+    /// worktrees that are not the active one (specs/cli.md §9).
+    fn run_targets(&self) -> Vec<RunTarget> {
+        (0..self.workspace.len())
+            .filter_map(|index| self.run_target_at(index))
+            .collect()
+    }
+
+    /// The one worktree a request names. Resolving it alone matters: the manifest
+    /// sniffing behind `resolved_run_command` costs a stat (and a `package.json`
+    /// read) per entry, and this runs on the UI thread.
+    fn run_target_for(&self, key: &RepoKey) -> Option<RunTarget> {
+        let index = self.caches.keys.iter().position(|k| k == key)?;
+        self.run_target_at(index)
+    }
+
+    fn run_target_at(&self, index: usize) -> Option<RunTarget> {
+        let repo = self.workspace.repo(index)?;
+        // A bare root owns no working tree, so it has no Run strip.
+        if repo.bare {
+            return None;
+        }
+        let key = self.caches.keys.get(index)?.clone();
+        let root = self
+            .workspace
+            .parent_root(index)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| repo.path.clone());
+        let command = Self::resolved_run_command(&self.prefs, &root, &repo.path);
+        let offset = self.workspace.group_offset(&root, &repo.path);
+        let port = Self::resolved_run_port(&self.prefs, &root, &repo.path, offset, &command);
+        let launch_command = match port {
+            Some(port) => crate::run::apply_port(&command, port),
+            None => command.clone(),
+        };
+        Some(RunTarget {
+            key,
+            project: self.workspace.project_name(index).unwrap_or_default(),
+            path: repo.path.clone(),
+            root,
+            command,
+            launch_command,
+            port,
+        })
+    }
+
+    /// `&mut` because reading the live status reaps an exited child (`exit_code`).
+    fn run_entry_of(&mut self, target: &RunTarget) -> crate::ipc::RunEntry {
+        use crate::ipc::RunState;
+        let (state, error, exit_code) = match self.caches.run_panes.get_mut(&target.key) {
+            None => (RunState::Stopped, None, None),
+            Some(TerminalState::Live(pane)) => match pane.exit_code() {
+                Some(code) => (RunState::Exited, None, Some(code)),
+                None => (RunState::Running, None, None),
+            },
+            Some(TerminalState::Failed(err)) => (RunState::Failed, Some(err.clone()), None),
+        };
+        crate::ipc::RunEntry {
+            worktree: target.path.clone(),
+            project: target.project.clone(),
+            branch: self.caches.branch_labels.get(&target.key).cloned(),
+            state,
+            port: target.port,
+            command: target.command.clone(),
+            launch_command: target.launch_command.clone(),
+            error,
+            exit_code,
+        }
+    }
+
+    /// Answers one control-socket request (specs/cli.md §9). Mutating requests go
+    /// through `apply_run_intent`, the very path the strip's buttons take.
+    fn handle_ipc(
+        &mut self,
+        request: crate::ipc::Request,
+        ctx: &egui::Context,
+    ) -> crate::ipc::Response {
+        use crate::ipc::{Request, Response};
+        if let Request::List = request {
+            let targets = self.run_targets();
+            let entries = targets.iter().map(|t| self.run_entry_of(t)).collect();
+            return Response::Runs { runs: entries };
+        }
+        let Some(path) = request.path().map(Path::to_path_buf) else {
+            return Response::Error {
+                message: "missing path".to_owned(),
+            };
+        };
+        let key = RepoKey::of(&path);
+        let target = self.run_target_for(&key).or_else(|| {
+            // A worktree created outside helm only joins its group on the next
+            // sync, and that tick is gated on the window being focused: an agent
+            // would be refused for as long as helm sits in the background. Sync
+            // once, on the miss alone, before saying no.
+            self.run_group_sync(ctx);
+            self.run_target_for(&key)
+        });
+        let Some(target) = target else {
+            return Response::Error {
+                message: format!(
+                    "“{}” is not open in helm — `helm {}` first",
+                    path.display(),
+                    path.display()
+                ),
+            };
+        };
+        if let Request::Logs { lines, .. } = request {
+            let entry = self.run_entry_of(&target);
+            // Only a live pane holds a grid: Stop drops it, and with it the buffer.
+            let captured = match self.caches.run_panes.get(&target.key) {
+                Some(TerminalState::Live(pane)) => {
+                    crate::terminal::emu::tail_text(&pane.grid().lock(), lines)
+                }
+                _ => Vec::new(),
+            };
+            return Response::Logs {
+                entry,
+                lines: captured,
+            };
+        }
+        let mut action = crate::ui::run_panel::RunPanelAction::default();
+        match request {
+            Request::Status { .. } => {}
+            // Start is "make sure it is up": a live process is left alone, so an
+            // agent cannot silently kill the server it is talking to. Relaunch is
+            // the explicit restart.
+            Request::Start { .. } => {
+                action.run = !matches!(
+                    run_status_of(self.caches.run_panes.get_mut(&target.key)),
+                    crate::ui::run_panel::RunStatus::Running
+                );
+            }
+            Request::Stop { .. } => action.stop = true,
+            Request::Relaunch { .. } => action.relaunch = true,
+            Request::List | Request::Logs { .. } => unreachable!("handled above"),
+        }
+        if (action.run || action.relaunch) && target.launch_command.trim().is_empty() {
+            return Response::Error {
+                message: format!(
+                    "no run command for “{}” — set one in the Run strip or in Preferences",
+                    target.project
+                ),
+            };
+        }
+        if action.any() {
+            self.apply_run_intent(
+                RunIntent {
+                    key: target.key.clone(),
+                    cwd: target.path.clone(),
+                    root: target.root.clone(),
+                    command: target.command.clone(),
+                    launch_command: target.launch_command.clone(),
+                    port: target.port,
+                    action,
+                },
+                ctx,
+            );
+        }
+        Response::Runs {
+            runs: vec![self.run_entry_of(&target)],
+        }
+    }
+
     fn active_repo_key(&self) -> Option<RepoKey> {
         let index = self.workspace.active()?;
         self.caches.keys.get(index).cloned()
@@ -3553,6 +3717,20 @@ struct RunIntent {
     action: crate::ui::run_panel::RunPanelAction,
 }
 
+/// A worktree's Run strip resolved off the render pass — what the control socket
+/// reads and drives (specs/cli.md §9).
+struct RunTarget {
+    key: RepoKey,
+    /// Working tree the process runs in.
+    path: PathBuf,
+    /// Group root: owns the shared command and the base port.
+    root: PathBuf,
+    project: String,
+    command: String,
+    launch_command: String,
+    port: Option<u16>,
+}
+
 /// Maps a worktree's run pane to the status the strip displays (git.md §3).
 /// Takes `&mut` because the live-vs-exited check reaps the child (`has_exited`).
 fn run_status_of(state: Option<&mut TerminalState>) -> crate::ui::run_panel::RunStatus {
@@ -3913,6 +4091,13 @@ impl eframe::App for HelmApp {
         // Before the Preferences gate too: a CLI target leaves the page (§4).
         if let Some(target) = url_scheme::take() {
             self.open_cli_target(&target, &ctx);
+        }
+
+        // Control-socket requests (specs/cli.md §9): answered from any page — the
+        // Run panes of every worktree live on regardless of what is on screen.
+        for (request, reply) in crate::ipc::take_pending() {
+            let response = self.handle_ipc(request, &ctx);
+            let _ = reply.send(response);
         }
 
         // Sync triggers on focus regain (M11-6) and on a periodic tick while focused
@@ -4309,6 +4494,9 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
     if let Some(url) = open_url.as_deref() {
         url_scheme::push_url(url);
     }
+    // Control socket (specs/cli.md §9): bound after the instance lock, which has
+    // just proved that any socket file left in the support dir is a leftover.
+    crate::ipc::serve();
     eframe::run_native(
         // Also names eframe's storage dir, so the dev build keeps its window
         // state out of the installed app's (same split as the prefs).
@@ -4321,6 +4509,7 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             // running app to attach to.
             crate::notify::install();
             url_scheme::arm(&cc.egui_ctx);
+            crate::ipc::arm(&cc.egui_ctx);
             theme::install_fonts(&cc.egui_ctx);
             let mut prefs = Prefs::load();
             if prefs.purge_missing_repos() {
