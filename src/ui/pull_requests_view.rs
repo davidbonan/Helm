@@ -67,11 +67,9 @@ const DIFF_TOOLBAR_HEIGHT: f32 = 42.0;
 const COMMIT_SCOPE_W: f32 = 240.0;
 const THREAD_NAV_W: f32 = 168.0;
 
-const ROW_HEIGHT: f32 = 56.0;
-const GROUP_HEADER_HEIGHT: f32 = 34.0;
+const ROW_HEIGHT: f32 = 62.0;
+const GROUP_HEADER_HEIGHT: f32 = 46.0;
 const PAD_X: f32 = 16.0;
-/// Per-level inset of a stacked-PR row, wide enough to seat the `├`/`└` elbow.
-const STACK_INDENT: f32 = 20.0;
 const PANEL_PAD_X: f32 = 18.0;
 const PANEL_PAD_Y: f32 = 14.0;
 /// Reading measure of the Conversation tab's **prose** (pull-requests.md §11). The
@@ -117,16 +115,43 @@ const TAB_PAD_X: f32 = 12.0;
 
 /// Row geometry for the browse list (pull-requests.md §5). The right-hand data
 /// cluster is laid out from the right edge; the title column takes what is left.
-const ROW_AVATAR: f32 = 24.0;
-const COL_CI_W: f32 = 100.0;
-const COL_COMMENTS_W: f32 = 46.0;
-const COL_ADD_W: f32 = 52.0;
-const COL_DEL_W: f32 = 52.0;
-const MERGE_BTN_W: f32 = 86.0;
-const MERGE_BTN_H: f32 = 26.0;
-/// Room reserved beside a title for its **Blocks N** flag.
-const BLOCKS_FLAG_W: f32 = 84.0;
+const ROW_AVATAR: f32 = 26.0;
+const COL_COMMENTS_W: f32 = 50.0;
+const MERGE_BTN_W: f32 = 90.0;
+const MERGE_BTN_H: f32 = 28.0;
 const CARD_RADIUS: u8 = 10;
+/// Pitch of the row's reviewer cluster. Its own, not the review detail's tighter
+/// `REVIEWER_OVERLAP`: here each avatar also carries a verdict badge on the slice its
+/// neighbour laps, so the discs need to stand further apart to stay legible.
+const ROW_REVIEWER_STEP: f32 = 16.0;
+/// Room the row reserves for the cluster: `REVIEWER_MAX` avatars plus the overflow
+/// disc. Fixed, so the clusters line up down the list however many reviewers a row has.
+const COL_REVIEWERS_W: f32 = REVIEWER_AVATAR + 3.0 * ROW_REVIEWER_STEP;
+/// Radius of the verdict badge riding a reviewer avatar's top-right corner.
+const VERDICT_BADGE_R: f32 = 5.0;
+/// Reading measure of the list column: past this the rows stop being scannable, the
+/// eye having to travel from a title on the far left to its avatar on the far right.
+const LIST_MAX_WIDTH: f32 = 1280.0;
+/// A band's rows sit in bordered blocks — one per stack, one for everything loose
+/// (pull-requests.md §5) — so a stack reads as a unit rather than as neighbours.
+const LIST_BLOCK_RADIUS: u8 = 8;
+const LIST_BLOCK_GAP: f32 = 14.0;
+const STACK_HEADER_HEIGHT: f32 = 42.0;
+/// The row's leading column: the state glyph for a loose PR, the spine and its
+/// numbered badge for a stacked one.
+const ROW_GUTTER: f32 = 34.0;
+const STACK_BADGE: f32 = 19.0;
+const ROW_COL_GAP: f32 = 12.0;
+const ROW_PAD_R: f32 = 16.0;
+const LIST_TITLE_SIZE: f32 = 14.5;
+const KEY_SIZE: f32 = 12.0;
+/// Half the pitch between a row's title and meta lines.
+const ROW_LINE_STEP: f32 = 9.5;
+/// Text scale of a row's second line and of the list's chips — its own step, half a
+/// point over the `CHIP_SIZE` / `COUNT_BADGE_SIZE` the review surface uses: the browse
+/// list is scanned at arm's length, not leant into like a diff.
+const LIST_META_SIZE: f32 = 12.5;
+const LIST_MONO_SIZE: f32 = 12.0;
 const REVIEWER_AVATAR: f32 = 22.0;
 const REVIEWER_OVERLAP: f32 = 8.0;
 const REVIEWER_MAX: usize = 3;
@@ -244,6 +269,9 @@ pub struct PrSourceHints<'a> {
     pub bitbucket: Option<&'a str>,
     pub no_repos: bool,
     pub loading: bool,
+    /// Unix seconds of the last landed fetch, for the header's age note beside
+    /// **Refresh**; `None` before the first one.
+    pub refreshed_at: Option<i64>,
 }
 
 /// Everything the review surface renders for the open PR. The app owns the state;
@@ -327,26 +355,130 @@ pub fn pull_requests_page(
         // The review surface spans to the window top so the rail reads as a
         // full-height side panel (its divider reaches the title strip, like the git
         // sidebar); `render_review` insets the diff and rail *content* past the strip.
-        Some(review) => render_review(
-            ui,
-            palette,
-            review,
-            rect,
-            rail_width,
-            rail_collapsed,
-            file_view,
-            &mut action,
-        ),
+        Some(review) => {
+            let slide = back_slide(ui);
+            // Mid-slide both surfaces are on their way somewhere: neither answers a
+            // click, and the review must not start a second slide out of the first.
+            let mut sink = PullRequestsPageAction::default();
+            if slide.is_some() {
+                // The list is already underneath, at rest: the review uncovers the page
+                // it is going home to rather than cutting to it.
+                render_list(
+                    ui,
+                    palette,
+                    prs,
+                    selected,
+                    hints,
+                    list_body_rect(rect),
+                    &mut PullRequestsPageAction::default(),
+                );
+            }
+            let shift = slide.map_or(0.0, |eased| eased * rect.width());
+            let surface = rect.translate(egui::vec2(shift, 0.0));
+            if shift > 0.0 {
+                // Both surfaces sit on `bg_canvas`, so without an edge of its own the
+                // review would slide off as a seam nobody can see.
+                slide_edge(ui, palette, surface);
+            }
+            render_review(
+                ui,
+                palette,
+                review,
+                surface,
+                rail_width,
+                rail_collapsed,
+                file_view,
+                if slide.is_some() {
+                    &mut sink
+                } else {
+                    &mut action
+                },
+            );
+            let requested = slide.is_none() && std::mem::take(&mut action.back);
+            action.back = advance_back_slide(ui, slide, requested);
+        }
         // The browse list owns the central area like the Agents dashboard: the
         // background already reached the window top, so the body is inset past the
         // macOS title strip to align with the side panels (which inset the same way).
         None => {
+            // Home: nothing is sliding, and a slide left behind by a surface that went
+            // away some other way must not fire the next time a PR opens.
+            ui.data_mut(|d| d.remove_temp::<f64>(back_slide_id()));
             ui.add_space(f32::from(TITLEBAR_HEIGHT));
             let body = ui.available_rect_before_wrap();
             render_list(ui, palette, prs, selected, hints, body, &mut action);
         }
     }
     action
+}
+
+/// How long the review takes to slide off to the right on its way back to the list.
+const BACK_SLIDE_SECS: f64 = 0.22;
+
+fn back_slide_id() -> egui::Id {
+    egui::Id::new("pr_back_slide")
+}
+
+/// The browse list's area: the same inset past the macOS title strip the `None` arm
+/// takes, computed from a rect rather than from the cursor.
+fn list_body_rect(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_x_y_ranges(
+        rect.x_range(),
+        egui::Rangef::new(rect.top() + f32::from(TITLEBAR_HEIGHT), rect.bottom()),
+    )
+}
+
+/// Progress of a running back-slide, eased out — `None` when the review is at rest.
+fn back_slide(ui: &egui::Ui) -> Option<f32> {
+    let started: f64 = ui.data(|d| d.get_temp(back_slide_id()))?;
+    let now = ui.input(|i| i.time);
+    let t = (((now - started) / BACK_SLIDE_SECS) as f32).clamp(0.0, 1.0);
+    Some(1.0 - (1.0 - t).powi(3))
+}
+
+/// Start, keep or land the back-slide. Returns whether the app should leave the review
+/// **now** — only once the surface has finished travelling, so the list it lands on is
+/// the one that was already showing underneath.
+fn advance_back_slide(ui: &egui::Ui, slide: Option<f32>, requested: bool) -> bool {
+    match slide {
+        Some(eased) if eased >= 1.0 => {
+            ui.data_mut(|d| d.remove_temp::<f64>(back_slide_id()));
+            true
+        }
+        Some(_) => {
+            ui.ctx().request_repaint();
+            false
+        }
+        None => {
+            if requested {
+                let now = ui.input(|i| i.time);
+                ui.data_mut(|d| d.insert_temp(back_slide_id(), now));
+                ui.ctx().request_repaint();
+            }
+            false
+        }
+    }
+}
+
+/// The leaving surface's left edge: a hairline over a short shadow, so it reads as a
+/// panel travelling over the list rather than as a redraw.
+fn slide_edge(ui: &egui::Ui, palette: &Palette, surface: egui::Rect) {
+    const DEPTH: f32 = 18.0;
+    const STEPS: usize = 6;
+    let painter = ui.painter();
+    let band_w = DEPTH / STEPS as f32;
+    for step in 0..STEPS {
+        let t = (step as f32 + 1.0) / STEPS as f32;
+        let x = surface.left() - DEPTH + band_w * step as f32;
+        let band = egui::Rect::from_x_y_ranges(egui::Rangef::new(x, x + band_w), surface.y_range());
+        let alpha = (26.0 * t) as u8;
+        painter.rect_filled(band, 0, crate::ui::with_alpha(egui::Color32::BLACK, alpha));
+    }
+    painter.vline(
+        surface.left(),
+        surface.y_range(),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
 }
 
 /// The review surface (pull-requests.md §11): the center area shows the open
@@ -429,6 +561,127 @@ fn render_review(
             action.back = true;
         }
     }
+
+    // Same place, same reason: the bands have had their say on whether a rightward
+    // swipe was theirs to scroll with.
+    if swipe_back(ui) {
+        action.back = true;
+    }
+}
+
+/// How far a trackpad swipe must travel, and how much straighter than tall, before it
+/// reads as **go back** rather than as a scroll (pull-requests.md §11).
+const SWIPE_BACK_MIN_X: f32 = 64.0;
+const SWIPE_BACK_RATIO: f32 = 2.0;
+/// Gap that tells two gestures apart. macOS restarts the phase cycle for the momentum
+/// that trails a flick (`winit`'s macOS view maps momentum `Began` to `TouchPhase::
+/// Started`), so a run beginning within this of the last one ending **continues** it:
+/// the coast inherits the run's distance and its verdict, instead of reading as a fresh
+/// swipe of its own.
+const SWIPE_BACK_GAP: f64 = 0.25;
+
+/// A trackpad swipe accumulated across one `TouchPhase` run. macOS has no navigation-
+/// swipe event winit surfaces — its `PanGesture` is iOS-only — but a two-finger swipe
+/// arrives as a `MouseWheel` in points carrying a real phase, so a run has a start and
+/// an end to measure between.
+#[derive(Clone, Copy, Default)]
+struct SwipeBack {
+    delta: egui::Vec2,
+    tracking: bool,
+    /// The run is disqualified: it ran under a surface that owns the horizontal axis, or
+    /// it has already fired and what is left of it is spent.
+    void: bool,
+    /// When the last run ended, against `InputState::time`; `None` before the first, so
+    /// the very first swipe of a session is not measured against the epoch.
+    ended_at: Option<f64>,
+}
+
+impl SwipeBack {
+    /// Fold one wheel event in. `armed` is false while a scrollable surface owns the
+    /// horizontal axis under the pointer. Returns true on the event that carries the run
+    /// past the threshold — mid-swipe, not on release: macOS trails a flick with a
+    /// momentum run whose end lands a second or more later, and a surface that waits for
+    /// it reacts long after the fingers have left the trackpad.
+    fn feed(&mut self, phase: egui::TouchPhase, delta: egui::Vec2, armed: bool, now: f64) -> bool {
+        match phase {
+            egui::TouchPhase::Start => {
+                let resumed = self
+                    .ended_at
+                    .is_some_and(|then| now - then < SWIPE_BACK_GAP);
+                if !resumed {
+                    *self = SwipeBack {
+                        ended_at: self.ended_at,
+                        ..Default::default()
+                    };
+                }
+                self.tracking = true;
+                self.void |= !armed;
+                false
+            }
+            egui::TouchPhase::Move => {
+                if !self.tracking {
+                    return false;
+                }
+                self.delta += delta;
+                // A run that wanders onto a scrollable line stops being a gesture.
+                self.void |= !armed;
+                if self.void || !self.completed() {
+                    return false;
+                }
+                // Spent: the rest of the run, and the momentum that continues it, must
+                // not fire a second time.
+                self.void = true;
+                true
+            }
+            egui::TouchPhase::End => {
+                self.tracking = false;
+                self.ended_at = Some(now);
+                false
+            }
+            egui::TouchPhase::Cancel => {
+                *self = SwipeBack {
+                    tracking: false,
+                    void: true,
+                    ended_at: self.ended_at,
+                    ..Default::default()
+                };
+                false
+            }
+        }
+    }
+
+    /// A push to the right — egui's positive X reveals content to the left, which is
+    /// the direction the list is in — far enough and straight enough.
+    fn completed(self) -> bool {
+        self.delta.x >= SWIPE_BACK_MIN_X && self.delta.x > self.delta.y.abs() * SWIPE_BACK_RATIO
+    }
+}
+
+/// Drive the back-swipe recognizer off this frame's wheel events. Only **point** deltas
+/// count: a line delta is a mouse wheel, which has no gesture to recognize.
+fn swipe_back(ui: &egui::Ui) -> bool {
+    let armed = !crate::ui::h_scroll_owns_swipe(ui.ctx());
+    let id = egui::Id::new("pr_swipe_back");
+    let mut swipe: SwipeBack = ui.data(|d| d.get_temp(id).unwrap_or_default());
+    let fired = ui.input(|i| {
+        let mut fired = false;
+        for event in &i.events {
+            if let egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                phase,
+                modifiers,
+            } = event
+            {
+                if modifiers.is_none() {
+                    fired |= swipe.feed(*phase, *delta, armed, i.time);
+                }
+            }
+        }
+        fired
+    });
+    ui.data_mut(|d| d.insert_temp(id, swipe));
+    fired
 }
 
 /// Which face of the review surface the center shows (pull-requests.md §11).
@@ -4765,17 +5018,21 @@ fn render_list(
 
     let header_h = PAGE_HEADER_HEIGHT + LIST_TABS_HEIGHT;
     let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), header_h));
-    list_header(ui, palette, header_rect, prs, hints, &mut state, action);
-
-    // Tab first (it drives the group counts), then the project filter and the query.
-    let visible: Vec<usize> = prs
-        .iter()
-        .enumerate()
-        .filter(|(_, pr)| state.tab.accepts(pr))
-        .filter(|(_, pr)| !state.hidden_projects.contains(&pr.repo_label))
-        .filter(|(_, pr)| crate::pull_requests::model::matches_search(pr, &state.query))
-        .map(|(i, _)| i)
-        .collect();
+    // The header names how many rows survive the filters, so it needs the count before
+    // it draws — and the controls it draws may change the filters again, which is what
+    // the second pass below picks up.
+    let shown = visible_indices(prs, &state).len();
+    list_header(
+        ui,
+        palette,
+        header_rect,
+        prs,
+        hints,
+        shown,
+        &mut state,
+        action,
+    );
+    let visible = visible_indices(prs, &state);
 
     let body_rect = egui::Rect::from_x_y_ranges(
         rect.x_range(),
@@ -4811,19 +5068,61 @@ fn render_list(
                         filtered_out_state(ui, palette);
                         return;
                     }
-                    for band in ActionGroup::ALL {
+                    for group in ActionGroup::ALL {
                         let mut indices: Vec<usize> = visible
                             .iter()
                             .copied()
-                            .filter(|&i| ActionGroup::of(&prs[i]) == band)
+                            .filter(|&i| ActionGroup::of(&prs[i]) == group)
                             .collect();
                         state.sort.apply(prs, &mut indices);
-                        group(ui, palette, band, &indices, prs, selected, action);
+                        band(
+                            ui, palette, group, &indices, prs, selected, &mut state, action,
+                        );
                     }
+                    list_footer(ui, palette, visible.len());
                 });
         });
 
     ui.data_mut(|d| d.insert_temp(state_id, state));
+}
+
+/// Which PRs the current tab, project filter and query leave standing, as indices into
+/// `prs`. Tab first — it drives the counts the rest of the header reports.
+fn visible_indices(prs: &[PullRequest], state: &ListState) -> Vec<usize> {
+    prs.iter()
+        .enumerate()
+        .filter(|(_, pr)| state.tab.accepts(pr))
+        .filter(|(_, pr)| !state.hidden_projects.contains(&pr.repo_label))
+        .filter(|(_, pr)| crate::pull_requests::model::matches_search(pr, &state.query))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The list runs out rather than trailing off — a quiet line saying so, and how much
+/// the filters let through (pull-requests.md §5).
+fn list_footer(ui: &mut egui::Ui, palette: &Palette, shown: usize) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::hover());
+    let label = format!("End of list · {}", plural(shown, "pull request"));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        &label,
+        egui::FontId::proportional(LIST_META_SIZE),
+        palette.text_muted,
+    );
+    response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
+}
+
+/// The reading column the list centers itself in: full width up to `LIST_MAX_WIDTH`,
+/// then centered with at least the panel's own gutter on each side.
+fn list_column(rect: egui::Rect) -> egui::Rect {
+    let width = (rect.width() - 2.0 * PANEL_PAD_X).min(LIST_MAX_WIDTH);
+    let left = rect.left() + ((rect.width() - width) / 2.0).max(PANEL_PAD_X);
+    egui::Rect::from_min_size(
+        egui::pos2(left, rect.top()),
+        egui::vec2(width, rect.height()),
+    )
 }
 
 /// Ordering **within** an actionability band (pull-requests.md §5) — the bands
@@ -4865,17 +5164,22 @@ struct ListState {
     query: String,
     hidden_projects: std::collections::BTreeSet<String>,
     sort: ListSort,
+    /// Stacks folded to their header, keyed by `repo · base branch of the stack`
+    /// — an index would move under the next refresh.
+    collapsed_stacks: std::collections::BTreeSet<String>,
 }
 
 /// The list header (pull-requests.md §5): a raised band carrying the title, the
 /// search field, the **Filters** / **Priority** / **Refresh** controls, and the
 /// tab bar beneath them.
+#[allow(clippy::too_many_arguments)]
 fn list_header(
     ui: &mut egui::Ui,
     palette: &Palette,
     rect: egui::Rect,
     prs: &[PullRequest],
     hints: &PrSourceHints<'_>,
+    shown: usize,
     state: &mut ListState,
     action: &mut PullRequestsPageAction,
 ) {
@@ -4893,37 +5197,88 @@ fn list_header(
         egui::FontId::new(PAGE_TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
         palette.text_primary,
     );
-    let title_right = top.left() + PANEL_PAD_X + title.size().x;
+    let mut left = top.left() + PANEL_PAD_X;
+    let title_w = title.size().x;
     ui.painter().galley(
-        egui::pos2(top.left() + PANEL_PAD_X, center_y - title.size().y / 2.0),
+        egui::pos2(left, center_y - title.size().y / 2.0),
         title,
         palette.text_primary,
     );
+    left += title_w + GAP_MD;
 
-    // Controls are laid out from the right edge; the search field takes what is left,
-    // capped so it never stretches across a wide window.
+    // Controls are laid out from the right edge; what they leave is what the title's
+    // tally and then the search field get — in that order, since a narrow window has
+    // to drop the field before it drops the count.
     let mut x = top.right() - PANEL_PAD_X;
-    let mut control = |ui: &mut egui::Ui, w: f32| {
-        x -= w;
+    let control = |x: &mut f32, w: f32| {
+        *x -= w;
         let r = egui::Rect::from_min_size(
-            egui::pos2(x, center_y - CTRL_HEIGHT / 2.0),
+            egui::pos2(*x, center_y - CTRL_HEIGHT / 2.0),
             egui::vec2(w, CTRL_HEIGHT),
         );
-        x -= GAP_SM;
-        let _ = ui;
+        *x -= GAP_SM;
         r
     };
-    let refresh_rect = control(ui, REFRESH_BTN_W);
-    let sort_rect = control(ui, SORT_BTN_W);
-    let filter_rect = control(ui, FILTER_BTN_W);
+    // "Refreshed 2 min ago" only makes sense once a fetch has landed.
+    let age = hints.refreshed_at.map(|at| {
+        format!(
+            "· {}",
+            crate::pull_requests::model::age_label(now_epoch_secs() - at)
+        )
+    });
+    let age_w = age.as_deref().map_or(0.0, |text| {
+        GAP_XS
+            + ui.painter()
+                .layout_no_wrap(
+                    text.to_owned(),
+                    egui::FontId::proportional(COUNT_BADGE_SIZE),
+                    palette.text_muted,
+                )
+                .size()
+                .x
+    });
+    let refresh_rect = control(&mut x, REFRESH_BTN_W + age_w);
+    let divider_x = x + GAP_SM / 2.0;
+    x -= GAP_SM;
+    let sort_rect = control(&mut x, SORT_BTN_W);
+    let filter_rect = control(&mut x, FILTER_BTN_W);
 
-    if refresh_button(ui, palette, refresh_rect, hints.loading) {
+    // Refresh is the page's own housekeeping, not a view control — it drops the outline
+    // and sits past a divider so the two groups don't read as one row of buttons.
+    ui.painter().vline(
+        divider_x,
+        egui::Rangef::new(center_y - 10.0, center_y + 10.0),
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+    );
+    if refresh_button(ui, palette, refresh_rect, hints.loading, age.as_deref()) {
         action.refresh = true;
     }
     sort_menu(ui, palette, sort_rect, state);
     filter_menu(ui, palette, filter_rect, prs, state);
 
-    let search_left = title_right + GAP_MD * 2.0;
+    // What the page is holding, next to its name: the whole cache at rest, and what the
+    // filters left when they are narrowing it.
+    let tally = if shown == prs.len() {
+        let drafts = prs.iter().filter(|pr| pr.state == PrState::Draft).count();
+        match drafts {
+            0 => plural(prs.len(), "open pull request"),
+            n => format!("{} open · {}", prs.len(), plural(n, "draft")),
+        }
+    } else {
+        format!("{shown} of {} shown", prs.len())
+    };
+    let controls_left = x + GAP_SM;
+    left = cell_text(
+        ui,
+        &tally,
+        egui::FontId::proportional(CHIP_SIZE),
+        palette.text_muted,
+        left,
+        center_y,
+        (controls_left - GAP_MD - left).clamp(0.0, 220.0),
+    );
+
+    let search_left = left + GAP_MD;
     let search_right = (x + GAP_SM).min(search_left + SEARCH_MAX_W);
     if search_right - search_left > 80.0 {
         search_field(
@@ -4951,33 +5306,47 @@ enum HeaderIcon {
     Spinner,
 }
 
-/// An outlined header control: leading slot, label, optional trailing chevron.
-/// Paints itself into `rect` and reports the click.
+/// A header control: leading slot, label, then whichever of a count pill, a quiet
+/// trailing note and a chevron it asked for. Paints itself into `rect` and reports the
+/// click.
+struct HeaderCtrl<'a> {
+    id: &'a str,
+    icon: HeaderIcon,
+    label: &'a str,
+    /// A count pill after the label — how many filters are on.
+    badge: Option<usize>,
+    /// A quiet run after the label — how long ago the list was refreshed.
+    note: Option<&'a str>,
+    chevron: bool,
+    /// The view controls are outlined so they read as a set; Refresh is not one of
+    /// them and stands bare.
+    outlined: bool,
+}
+
 fn header_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     rect: egui::Rect,
-    id: &str,
-    icon: HeaderIcon,
-    label: &str,
-    chevron: bool,
+    ctrl: HeaderCtrl<'_>,
 ) -> egui::Response {
-    let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    let response = ui.interact(rect, ui.id().with(ctrl.id), egui::Sense::click());
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, RADIUS_BUTTON, palette.bg_surface_hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect_stroke(
-        rect,
-        RADIUS_BUTTON,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
+    if ctrl.outlined {
+        ui.painter().rect_stroke(
+            rect,
+            RADIUS_BUTTON,
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
+            egui::StrokeKind::Inside,
+        );
+    }
     let center_y = rect.center().y;
     let mut x = rect.left() + 10.0;
     let icon_center = egui::pos2(x + STATUS_ICON / 2.0, center_y);
-    match icon {
+    match ctrl.icon {
         HeaderIcon::Glyph(icon) => {
             paint_icon(
                 ui.painter(),
@@ -4986,7 +5355,6 @@ fn header_button(
                 icon,
                 palette.text_secondary,
             );
-            x += STATUS_ICON + 6.0;
         }
         HeaderIcon::Spinner => {
             Spinner::new()
@@ -4996,17 +5364,33 @@ fn header_button(
                     ui,
                     egui::Rect::from_center_size(icon_center, egui::vec2(STATUS_ICON, STATUS_ICON)),
                 );
-            x += STATUS_ICON + 6.0;
         }
     }
-    ui.painter().text(
-        egui::pos2(x, center_y),
-        egui::Align2::LEFT_CENTER,
-        label,
+    x += STATUS_ICON + 6.0;
+    x = cell_text(
+        ui,
+        ctrl.label,
         egui::FontId::new(META_SIZE, crate::theme::medium_family(ui.ctx())),
         palette.text_secondary,
+        x,
+        center_y,
+        rect.right() - x,
     );
-    if chevron {
+    if let Some(count) = ctrl.badge {
+        x = count_pill(ui, palette, x + GAP_XS + 2.0, center_y, count, true);
+    }
+    if let Some(note) = ctrl.note {
+        cell_text(
+            ui,
+            note,
+            egui::FontId::proportional(COUNT_BADGE_SIZE),
+            palette.text_muted,
+            x + GAP_XS,
+            center_y,
+            rect.right() - x,
+        );
+    }
+    if ctrl.chevron {
         paint_icon(
             ui.painter(),
             egui::pos2(rect.right() - 12.0, center_y),
@@ -5015,19 +5399,75 @@ fn header_button(
             palette.text_muted,
         );
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let label = ctrl.label.to_owned();
+    response.widget_info(move || {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+    });
     response
 }
 
-/// **Refresh** (pull-requests.md §6) — the icon becomes a spinner while a fetch is
-/// in flight.
-fn refresh_button(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, loading: bool) -> bool {
+/// **Refresh** (pull-requests.md §6) — the icon becomes a spinner while a fetch is in
+/// flight, and `note` says how long ago the last one landed.
+fn refresh_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    loading: bool,
+    note: Option<&str>,
+) -> bool {
     let icon = if loading {
         HeaderIcon::Spinner
     } else {
         HeaderIcon::Glyph(Icon::RefreshCw)
     };
-    header_button(ui, palette, rect, "pr_refresh", icon, "Refresh", false).clicked()
+    header_button(
+        ui,
+        palette,
+        rect,
+        HeaderCtrl {
+            id: "pr_refresh",
+            icon,
+            label: "Refresh",
+            badge: None,
+            note,
+            chevron: false,
+            outlined: false,
+        },
+    )
+    .clicked()
+}
+
+/// A small count pill — the tab bar's per-tab tally, a band's row count, a stack's
+/// size. `accent` tints it as a live figure; otherwise it reads neutral. Returns the x
+/// it ended at.
+fn count_pill(
+    ui: &egui::Ui,
+    palette: &Palette,
+    left: f32,
+    center_y: f32,
+    count: usize,
+    accent: bool,
+) -> f32 {
+    let (ink, fill) = if accent {
+        (palette.accent, with_alpha(palette.accent, 38))
+    } else {
+        (palette.text_muted, with_alpha(palette.text_muted, 28))
+    };
+    let galley = ui.painter().layout_no_wrap(
+        count.to_string(),
+        egui::FontId::new(
+            COUNT_BADGE_SIZE - 1.0,
+            crate::theme::medium_family(ui.ctx()),
+        ),
+        ink,
+    );
+    let h = COUNT_BADGE_SIZE + 5.0;
+    let w = (galley.size().x + 11.0).max(h);
+    let pill = egui::Rect::from_min_size(egui::pos2(left, center_y - h / 2.0), egui::vec2(w, h));
+    ui.painter().rect_filled(pill, h / 2.0, fill);
+    ui.painter()
+        .galley(pill.center() - galley.size() / 2.0, galley, ink);
+    pill.right()
 }
 
 /// **Priority** (pull-requests.md §5): picks the ordering applied *inside* each
@@ -5037,10 +5477,15 @@ fn sort_menu(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, state: &mut
         ui,
         palette,
         rect,
-        "pr_sort",
-        HeaderIcon::Glyph(Icon::ArrowUpDown),
-        state.sort.label(),
-        true,
+        HeaderCtrl {
+            id: "pr_sort",
+            icon: HeaderIcon::Glyph(Icon::ArrowUpDown),
+            label: state.sort.label(),
+            badge: None,
+            note: None,
+            chevron: true,
+            outlined: true,
+        },
     );
     egui::Popup::menu(&response)
         .style(crate::theme::menu_style)
@@ -5063,19 +5508,19 @@ fn filter_menu(
     state: &mut ListState,
 ) {
     let hidden = state.hidden_projects.len();
-    let label = if hidden == 0 {
-        "Filters".to_owned()
-    } else {
-        format!("Filters ({hidden})")
-    };
     let response = header_button(
         ui,
         palette,
         rect,
-        "pr_filters",
-        HeaderIcon::Glyph(Icon::ListFilter),
-        &label,
-        true,
+        HeaderCtrl {
+            id: "pr_filters",
+            icon: HeaderIcon::Glyph(Icon::ListFilter),
+            label: "Filters",
+            badge: (hidden > 0).then_some(hidden),
+            note: None,
+            chevron: true,
+            outlined: true,
+        },
     );
     let mut projects: Vec<&str> = prs.iter().map(|p| p.repo_label.as_str()).collect();
     projects.sort_unstable();
@@ -5117,8 +5562,32 @@ fn search_field(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, state: &
         Icon::Search,
         palette.text_muted,
     );
+    // The clear affordance only appears once there is something to clear, so the field
+    // reads as a plain input at rest.
+    let mut field_right = rect.right() - 8.0;
+    if !state.query.is_empty() {
+        let hit = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 8.0 - STATUS_ICON / 2.0, rect.center().y),
+            egui::Vec2::splat(CTRL_HEIGHT - 6.0),
+        );
+        let clear = ui.interact(hit, ui.id().with("pr_search_clear"), egui::Sense::click());
+        let ink = if clear.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            palette.text_primary
+        } else {
+            palette.text_muted
+        };
+        paint_icon(ui.painter(), hit.center(), STATUS_ICON, Icon::X, ink);
+        clear.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear search")
+        });
+        if clear.clicked() {
+            state.query.clear();
+        }
+        field_right = hit.left() - 4.0;
+    }
     let field = egui::Rect::from_x_y_ranges(
-        egui::Rangef::new(rect.left() + 10.0 + STATUS_ICON + 6.0, rect.right() - 8.0),
+        egui::Rangef::new(rect.left() + 10.0 + STATUS_ICON + 6.0, field_right),
         rect.y_range(),
     );
     let mut child = ui.new_child(
@@ -5173,8 +5642,8 @@ fn tab_bar(
                 palette.text_secondary
             },
         );
-        let count_w = if count > 0 { 22.0 } else { 0.0 };
-        let w = galley.size().x + count_w + 2.0 * TAB_PAD_X;
+        let label_w = galley.size().x;
+        let w = label_w + 34.0 + 2.0 * TAB_PAD_X;
         let tab_rect =
             egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, rect.height()));
         let response = ui.interact(
@@ -5192,15 +5661,16 @@ fn tab_bar(
             galley,
             palette.text_primary,
         );
-        if count > 0 {
-            ui.painter().text(
-                egui::pos2(tab_rect.right() - TAB_PAD_X, center_y),
-                egui::Align2::RIGHT_CENTER,
-                count.to_string(),
-                egui::FontId::proportional(META_SIZE),
-                palette.text_muted,
-            );
-        }
+        // The count rides in a pill, tinted on the open tab — a tab that reads "0" is
+        // as much of an answer as one that reads "14".
+        count_pill(
+            ui,
+            palette,
+            text_left + label_w + GAP_SM,
+            center_y,
+            count,
+            active,
+        );
         if active {
             ui.painter().hline(
                 egui::Rangef::new(tab_rect.left() + 4.0, tab_rect.right() - 4.0),
@@ -5221,13 +5691,42 @@ fn tab_bar(
 /// Shown when the tab / search / project filters leave nothing — distinct from an
 /// empty workspace, which `empty_state` covers.
 fn filtered_out_state(ui: &mut egui::Ui, palette: &Palette) {
-    ui.add_space(48.0);
+    blank_slate(
+        ui,
+        palette,
+        Icon::FilterX,
+        "No pull request matches these filters",
+        Some("Clear the search or switch tab to see the rest."),
+    );
+}
+
+/// The list's centered nothing-here state: a muted glyph, the headline, and an
+/// optional line saying what to do about it.
+fn blank_slate(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: Icon,
+    headline: &str,
+    hint: Option<&str>,
+) {
+    ui.add_space(56.0);
     ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::hover());
+        paint_icon(ui.painter(), rect.center(), 28.0, icon, palette.text_muted);
+        ui.add_space(GAP_SM);
         ui.label(
-            egui::RichText::new("No pull request matches these filters")
+            egui::RichText::new(headline)
                 .size(13.0)
-                .color(palette.text_muted),
+                .color(palette.text_secondary),
         );
+        if let Some(hint) = hint {
+            ui.add_space(GAP_XS);
+            ui.label(
+                egui::RichText::new(hint)
+                    .size(CHIP_SIZE)
+                    .color(palette.text_muted),
+            );
+        }
     });
 }
 
@@ -5258,19 +5757,23 @@ fn hint_banner(ui: &mut egui::Ui, palette: &Palette, forge: &str, text: &str) {
 }
 
 fn empty_state(ui: &mut egui::Ui, palette: &Palette, hints: &PrSourceHints<'_>) {
-    let message = if hints.no_repos {
-        "No GitHub or Bitbucket repository in your workspace"
-    } else {
-        "No pull requests"
-    };
-    ui.add_space(48.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new(message)
-                .size(13.0)
-                .color(palette.text_muted),
+    if hints.no_repos {
+        blank_slate(
+            ui,
+            palette,
+            Icon::FolderGit2,
+            "No GitHub or Bitbucket repository in your workspace",
+            Some("Add one from the project sidebar to see its pull requests."),
         );
-    });
+    } else {
+        blank_slate(
+            ui,
+            palette,
+            Icon::GitPullRequest,
+            "No pull requests",
+            Some("Nothing is waiting on you right now."),
+        );
+    }
 }
 
 /// Centered loader for the cold list fetch (pull-requests.md §6): a spinner over a
@@ -5289,35 +5792,247 @@ fn loading_state(ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-/// One actionability band of the list (pull-requests.md §5): a colored section
-/// header over full-bleed rows separated by hairlines. Stacked PRs still nest
-/// inside their band, so merging a base stays visibly ahead of its children.
-fn group(
+/// One actionability band of the list (pull-requests.md §5): a colored section header
+/// over the band's blocks. Stacked PRs still stay inside their band, so merging a base
+/// stays visibly ahead of what it carries.
+#[allow(clippy::too_many_arguments)]
+fn band(
     ui: &mut egui::Ui,
     palette: &Palette,
-    band: ActionGroup,
+    group: ActionGroup,
     indices: &[usize],
     prs: &[PullRequest],
     selected: Option<usize>,
+    state: &mut ListState,
     action: &mut PullRequestsPageAction,
 ) {
     if indices.is_empty() {
         return;
     }
-    section_header(ui, palette, band, indices.len());
-    for stack in crate::pull_requests::model::stacked_rows(prs, indices) {
+    section_header(ui, palette, group, indices.len());
+    for block in crate::pull_requests::model::list_blocks(prs, indices) {
+        list_block(ui, palette, prs, group, &block, selected, state, action);
+        ui.add_space(LIST_BLOCK_GAP);
+    }
+    ui.add_space(GAP_SM);
+}
+
+/// One bordered block of a band: a stack under its own header, or the run of PRs that
+/// stand alone. Every part of it is a fixed height, so the card is allocated whole and
+/// its rows are carved out of it — which is also what lets a row round the corner it
+/// sits in.
+#[allow(clippy::too_many_arguments)]
+fn list_block(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    prs: &[PullRequest],
+    group: ActionGroup,
+    block: &crate::pull_requests::model::ListBlock,
+    selected: Option<usize>,
+    state: &mut ListState,
+    action: &mut PullRequestsPageAction,
+) {
+    use crate::pull_requests::model::ListBlock;
+
+    let stack = match block {
+        ListBlock::Stack(stack) => Some(stack),
+        ListBlock::Singles(_) => None,
+    };
+    let key = stack.map(|s| format!("{} · {}", s.repo_label, s.base));
+    let collapsed = key
+        .as_ref()
+        .is_some_and(|key| state.collapsed_stacks.contains(key));
+    let rows: Vec<(usize, Option<StackAt<'_>>)> = match block {
+        ListBlock::Stack(s) => s
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.idx,
+                    Some(StackAt {
+                        row,
+                        len: s.rows.len(),
+                    }),
+                )
+            })
+            .collect(),
+        ListBlock::Singles(idx) => idx.iter().map(|&i| (i, None)).collect(),
+    };
+
+    let header_h = if stack.is_some() {
+        STACK_HEADER_HEIGHT
+    } else {
+        0.0
+    };
+    let shown = if collapsed { 0 } else { rows.len() };
+    let height = header_h + ROW_HEIGHT * shown as f32;
+    let (strip, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let card = list_column(strip);
+    ui.painter()
+        .rect_filled(card, LIST_BLOCK_RADIUS, palette.bg_surface);
+
+    let mut y = card.top();
+    if let (Some(stack), Some(key)) = (stack, key) {
+        let head = egui::Rect::from_min_size(
+            egui::pos2(card.left(), y),
+            egui::vec2(card.width(), header_h),
+        );
+        if stack_header(ui, palette, head, stack, collapsed) && !state.collapsed_stacks.remove(&key)
+        {
+            state.collapsed_stacks.insert(key);
+        }
+        y += header_h;
+    }
+    for (n, (idx, row)) in rows.iter().take(shown).enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(card.left(), y),
+            egui::vec2(card.width(), ROW_HEIGHT),
+        );
         pr_row(
             ui,
             palette,
             prs,
-            stack.idx,
-            band,
-            selected == Some(stack.idx),
-            &stack,
+            *idx,
+            group,
+            selected == Some(*idx),
+            *row,
+            rect,
+            RowCorners {
+                top: n == 0 && header_h == 0.0,
+                bottom: n + 1 == shown,
+            },
             action,
         );
+        y += ROW_HEIGHT;
     }
-    ui.add_space(GAP_MD);
+    // The border last, over the row fills, so a hovered row never bleeds through it.
+    ui.painter().rect_stroke(
+        card,
+        LIST_BLOCK_RADIUS,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Which of a block's corners a row has to round — the first and last row carry the
+/// card's own radius, everything between is square.
+#[derive(Clone, Copy)]
+struct RowCorners {
+    top: bool,
+    bottom: bool,
+}
+
+impl RowCorners {
+    fn radius(self) -> egui::CornerRadius {
+        let r = LIST_BLOCK_RADIUS;
+        egui::CornerRadius {
+            nw: if self.top { r } else { 0 },
+            ne: if self.top { r } else { 0 },
+            sw: if self.bottom { r } else { 0 },
+            se: if self.bottom { r } else { 0 },
+        }
+    }
+}
+
+/// A stack's header (pull-requests.md §5): what it is, how big, where it lands, and
+/// the one instruction that matters — merge it bottom-up. Returns whether the fold
+/// chevron was hit.
+fn stack_header(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    stack: &crate::pull_requests::model::PrStack,
+    collapsed: bool,
+) -> bool {
+    let response = ui.interact(
+        rect,
+        ui.id().with(("pr_stack", &stack.repo_label, &stack.base)),
+        egui::Sense::click(),
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter()
+        .rect_filled(rect, 0, with_alpha(palette.accent, 20));
+    let center_y = rect.center().y;
+    let mut x = rect.left() + PAD_X;
+    paint_icon(
+        ui.painter(),
+        egui::pos2(x + CHIP_SIZE / 2.0, center_y),
+        STATUS_ICON,
+        Icon::ListTree,
+        palette.accent,
+    );
+    x += STATUS_ICON + GAP_SM;
+    x = cell_text(
+        ui,
+        "STACK",
+        egui::FontId::new(HEADER_SIZE + 0.5, crate::theme::medium_family(ui.ctx())),
+        palette.accent,
+        x,
+        center_y,
+        rect.width(),
+    );
+    x = count_pill(ui, palette, x + GAP_SM, center_y, stack.rows.len(), true) + GAP_MD;
+    x = cell_text(
+        ui,
+        &stack.repo_label,
+        egui::FontId::monospace(LIST_MONO_SIZE),
+        palette.text_muted,
+        x,
+        center_y,
+        220.0,
+    ) + GAP_SM;
+
+    let chevron_x = rect.right() - PAD_X - STATUS_ICON / 2.0;
+    // The instruction earns its place only on a stack you can actually walk up.
+    let hint = if stack.rows.len() > 1 {
+        "Merge bottom-up — start at #1"
+    } else {
+        ""
+    };
+    let hint_w = ui
+        .painter()
+        .layout_no_wrap(
+            hint.to_owned(),
+            egui::FontId::proportional(LIST_META_SIZE),
+            palette.text_secondary,
+        )
+        .size()
+        .x;
+    let hint_left = chevron_x - STATUS_ICON / 2.0 - GAP_MD - hint_w;
+    branch_pill(ui, palette, x, center_y, None, &stack.base, hint_left - x);
+    if !hint.is_empty() {
+        cell_text(
+            ui,
+            hint,
+            egui::FontId::proportional(LIST_META_SIZE),
+            palette.text_secondary,
+            hint_left,
+            center_y,
+            hint_w,
+        );
+    }
+    paint_icon(
+        ui.painter(),
+        egui::pos2(chevron_x, center_y),
+        STATUS_ICON,
+        if collapsed {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronUp
+        },
+        palette.text_muted,
+    );
+
+    let label = format!("Stack · {}", plural(stack.rows.len(), "PR"));
+    response.widget_info(move || {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, !collapsed, label.clone())
+    });
+    response.clicked()
 }
 
 /// Icon + color a band wears in its section header.
@@ -5330,15 +6045,17 @@ fn band_style(palette: &Palette, band: ActionGroup) -> (Icon, egui::Color32) {
     }
 }
 
-/// A band's header: its glyph and uppercase label in the band color, then the count.
+/// A band's header: its glyph and uppercase label in the band color, its count, then a
+/// rule running out to the edge of the column so the band reads as one span.
 fn section_header(ui: &mut egui::Ui, palette: &Palette, band: ActionGroup, count: usize) {
-    let (rect, response) = ui.allocate_exact_size(
+    let (strip, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), GROUP_HEADER_HEIGHT),
         egui::Sense::hover(),
     );
+    let rect = list_column(strip);
     let (icon, color) = band_style(palette, band);
-    let center_y = rect.center().y;
-    let left = rect.left() + PANEL_PAD_X;
+    let center_y = rect.center().y + 3.0;
+    let left = rect.left() + 2.0;
     paint_icon(
         ui.painter(),
         egui::pos2(left + STATUS_ICON / 2.0, center_y),
@@ -5349,81 +6066,160 @@ fn section_header(ui: &mut egui::Ui, palette: &Palette, band: ActionGroup, count
     let label = band.label().to_uppercase();
     let galley = ui.painter().layout_no_wrap(
         label.clone(),
-        egui::FontId::new(HEADER_SIZE, crate::theme::medium_family(ui.ctx())),
+        egui::FontId::new(HEADER_SIZE + 1.0, crate::theme::medium_family(ui.ctx())),
         color,
     );
-    let text_left = left + STATUS_ICON + 8.0;
+    let text_left = left + STATUS_ICON + GAP_SM;
+    let text_w = galley.size().x;
     ui.painter().galley(
         egui::pos2(text_left, center_y - galley.size().y / 2.0),
-        galley.clone(),
+        galley,
         color,
     );
-    ui.painter().text(
-        egui::pos2(text_left + galley.size().x + 8.0, center_y),
-        egui::Align2::LEFT_CENTER,
-        count.to_string(),
-        egui::FontId::proportional(HEADER_SIZE),
-        palette.text_muted,
+    let rule_left = count_pill(
+        ui,
+        palette,
+        text_left + text_w + GAP_SM,
+        center_y,
+        count,
+        false,
+    ) + GAP_MD;
+    ui.painter().hline(
+        egui::Rangef::new(rule_left, rect.right()),
+        center_y,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     response.widget_info(move || {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone())
     });
 }
 
-/// x-ranges of a row's right-hand data cluster, laid out from the right edge. The
-/// **Ready to merge** band swaps the ± / comment tally for the inline Merge button
-/// (pull-requests.md §5).
+/// Where a row's clusters sit. The author's avatar leads on the left, beside the state
+/// glyph — whose PR this is belongs with what it is, not across the row from it. The
+/// right edge is laid out backwards from there: the reviewers, the comment tally and
+/// the **Ready to merge** band's inline Merge button, with whatever is left over for
+/// the tag flags. The main column takes the rest.
 struct RowCols {
-    title: egui::Rangef,
-    ci: egui::Rangef,
-    comments: Option<egui::Rangef>,
-    add: Option<egui::Rangef>,
-    del: Option<egui::Rangef>,
+    author: f32,
+    main: egui::Rangef,
+    tags_right: f32,
+    comments: egui::Rangef,
     merge: Option<egui::Rect>,
-    avatar: f32,
+    reviewers_right: f32,
 }
 
 fn row_columns(rect: egui::Rect, band: ActionGroup) -> RowCols {
-    let mut x = rect.right() - PANEL_PAD_X;
+    let mut x = rect.right() - ROW_PAD_R;
     let center_y = rect.center().y;
-    let avatar = x - ROW_AVATAR / 2.0;
-    x -= ROW_AVATAR + GAP_MD;
+    let reviewers_right = x;
+    x -= COL_REVIEWERS_W + ROW_COL_GAP;
 
-    let mut merge = None;
-    let (mut comments, mut add, mut del) = (None, None, None);
-    if band == ActionGroup::ReadyToMerge {
+    x -= COL_COMMENTS_W;
+    let comments = egui::Rangef::new(x, x + COL_COMMENTS_W);
+    x -= ROW_COL_GAP;
+
+    let merge = (band == ActionGroup::ReadyToMerge).then(|| {
         x -= MERGE_BTN_W;
-        merge = Some(egui::Rect::from_min_size(
+        let btn = egui::Rect::from_min_size(
             egui::pos2(x, center_y - MERGE_BTN_H / 2.0),
             egui::vec2(MERGE_BTN_W, MERGE_BTN_H),
-        ));
-        x -= GAP_MD;
-    } else {
-        x -= COL_DEL_W;
-        del = Some(egui::Rangef::new(x, x + COL_DEL_W));
-        x -= GAP_SM + COL_ADD_W;
-        add = Some(egui::Rangef::new(x, x + COL_ADD_W));
-        x -= COL_COMMENTS_W;
-        comments = Some(egui::Rangef::new(x, x + COL_COMMENTS_W));
-        x -= GAP_SM;
-    }
-    x -= COL_CI_W;
-    let ci = egui::Rangef::new(x, x + COL_CI_W);
+        );
+        x -= ROW_COL_GAP;
+        btn
+    });
 
+    let author = rect.left() + ROW_GUTTER + ROW_AVATAR / 2.0;
+    let main_left = rect.left() + ROW_GUTTER + ROW_AVATAR + ROW_COL_GAP;
     RowCols {
-        title: egui::Rangef::new(rect.left() + PANEL_PAD_X + STATE_ICON + 8.0, x - GAP_MD),
-        ci,
+        author,
+        // The tag cluster is sized by its own content, so the main column only knows
+        // it must not run past where the tags may start.
+        main: egui::Rangef::new(main_left, x),
+        tags_right: x,
         comments,
-        add,
-        del,
         merge,
-        avatar,
+        reviewers_right,
     }
 }
 
-/// One list row (pull-requests.md §5): the state glyph, the title with its optional
-/// **Blocks N** flag, a meta line, then the right-hand cluster — CI, tallies (or the
-/// inline **Merge**) and the author avatar.
+/// A flag a row wears on its right-hand cluster (pull-requests.md §5), in paint order.
+/// The mock's row dropped the CI column because Bitbucket never fills it; folding the
+/// status in here keeps it for GitHub without giving an always-empty column its width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowTag {
+    /// The base of a stack: the one PR in it whose review unblocks the rest.
+    ReviewFirst,
+    ChangesRequested,
+    ChecksFailing,
+    ChecksRunning,
+    Draft,
+    /// How many listed PRs are waiting on this one.
+    Blocks(usize),
+}
+
+/// Which flags a row wears. Pure so the composition is unit-testable — the chips
+/// themselves are painted, like every other row ornament.
+fn row_tags(prs: &[PullRequest], idx: usize, stack_base: bool) -> Vec<RowTag> {
+    let pr = &prs[idx];
+    let mut tags = Vec::new();
+    if stack_base {
+        tags.push(RowTag::ReviewFirst);
+    }
+    if pr.review == Review::ChangesRequested {
+        tags.push(RowTag::ChangesRequested);
+    }
+    match pr.checks {
+        Checks::Failing => tags.push(RowTag::ChecksFailing),
+        Checks::Pending => tags.push(RowTag::ChecksRunning),
+        // A green build is not news; an absent one is not a fact.
+        Checks::Passing | Checks::None => {}
+    }
+    if pr.state == PrState::Draft {
+        tags.push(RowTag::Draft);
+    }
+    let blocks = crate::pull_requests::model::blocked_count(prs, idx);
+    if blocks > 0 {
+        tags.push(RowTag::Blocks(blocks));
+    }
+    tags
+}
+
+impl RowTag {
+    fn label(self) -> String {
+        match self {
+            RowTag::ReviewFirst => "Review first".to_owned(),
+            RowTag::ChangesRequested => "Changes requested".to_owned(),
+            RowTag::ChecksFailing => "Checks failing".to_owned(),
+            RowTag::ChecksRunning => "Checks running".to_owned(),
+            RowTag::Draft => "Draft".to_owned(),
+            RowTag::Blocks(n) => format!("blocks {n}"),
+        }
+    }
+
+    fn icon(self) -> Option<Icon> {
+        match self {
+            RowTag::ReviewFirst | RowTag::Draft => None,
+            RowTag::ChangesRequested => Some(Icon::AlertCircle),
+            RowTag::ChecksFailing => Some(Icon::X),
+            RowTag::ChecksRunning => Some(Icon::Clock),
+            RowTag::Blocks(_) => Some(Icon::Layers),
+        }
+    }
+
+    fn color(self, palette: &Palette) -> egui::Color32 {
+        match self {
+            RowTag::ReviewFirst => palette.accent,
+            RowTag::ChangesRequested | RowTag::ChecksFailing => palette.git_deleted,
+            RowTag::ChecksRunning | RowTag::Blocks(_) => palette.git_modified,
+            RowTag::Draft => palette.text_muted,
+        }
+    }
+}
+
+/// One list row (pull-requests.md §5), carved out of its block's card. The gutter
+/// carries the state glyph — or, in a stack, the spine and this PR's rank; the main
+/// column its ticket key, title and meta line; the right-hand cluster its flags, the
+/// comment tally (or the inline **Merge**) and the author avatar.
 #[allow(clippy::too_many_arguments)]
 fn pr_row(
     ui: &mut egui::Ui,
@@ -5432,28 +6228,45 @@ fn pr_row(
     idx: usize,
     band: ActionGroup,
     selected: bool,
-    stack: &StackRow,
+    stack: Option<StackAt<'_>>,
+    rect: egui::Rect,
+    corners: RowCorners,
     action: &mut PullRequestsPageAction,
 ) {
     let pr = &prs[idx];
-    let (rect, response, hovered) =
-        clickable(ui, egui::vec2(ui.available_width(), ROW_HEIGHT), true);
+    let response = ui.interact(rect, ui.id().with(("pr_row", idx)), egui::Sense::click());
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     if selected {
         ui.painter()
-            .rect_filled(rect, 0, with_alpha(palette.accent, 28));
+            .rect_filled(rect, corners.radius(), with_alpha(palette.accent, 28));
+        // A bar in the gutter, so the open row stays findable once the wash is scrolled
+        // past the pointer.
+        ui.painter().vline(
+            rect.left() + 1.0,
+            rect.y_range(),
+            egui::Stroke::new(2.0_f32, palette.accent),
+        );
     } else if hovered {
-        ui.painter().rect_filled(rect, 0, palette.bg_surface_hover);
+        ui.painter()
+            .rect_filled(rect, corners.radius(), palette.bg_surface_hover);
     }
-    ui.painter().hline(
-        rect.x_range(),
-        rect.top() - 0.5,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-    );
+    if !corners.top {
+        ui.painter().hline(
+            egui::Rangef::new(rect.left(), rect.right()),
+            rect.top() - 0.5,
+            egui::Stroke::new(1.0_f32, with_alpha(palette.border_subtle, 120)),
+        );
+    }
 
     let cols = row_columns(rect, band);
     let center_y = rect.center().y;
-    let title_y = rect.top() + ROW_HEIGHT * 0.36;
-    let meta_y = rect.top() + ROW_HEIGHT * 0.68;
+    // The two lines read as one block: they sit a fixed step either side of the row's
+    // centre, so the room the row gained lands around the pair, not between them.
+    let title_y = center_y - ROW_LINE_STEP;
+    let meta_y = center_y + ROW_LINE_STEP;
     // A band waiting on its author is informational — its rows read a notch quieter.
     let quiet = band == ActionGroup::WaitingOnAuthor;
     let title_color = if quiet {
@@ -5462,145 +6275,121 @@ fn pr_row(
         palette.text_primary
     };
 
-    let indent = stack_connectors(ui.painter(), palette, rect, stack);
-    let (state_icon, state_color) = match (pr.state, pr.review) {
-        (PrState::Draft, _) => (Icon::GitPullRequestDraft, palette.text_muted),
-        (PrState::Open, Review::ChangesRequested) => (Icon::GitPullRequest, palette.git_deleted),
-        (PrState::Open, _) => (Icon::GitPullRequest, palette.git_added),
-    };
-    paint_icon(
+    row_gutter(ui, palette, rect, pr, stack);
+    paint_avatar(
         ui.painter(),
-        egui::pos2(
-            rect.left() + PANEL_PAD_X + indent + STATE_ICON / 2.0,
-            title_y,
-        ),
-        STATE_ICON,
-        state_icon,
-        state_color,
+        palette,
+        &pr.author,
+        egui::pos2(cols.author, center_y),
+        ROW_AVATAR,
+        None,
     );
 
-    // Title, then the Blocks flag when merging this PR unblocks a stack.
-    let title_left = cols.title.min + indent;
-    let blocks = crate::pull_requests::model::blocked_count(prs, idx);
-    let flag_w = if blocks > 0 { BLOCKS_FLAG_W } else { 0.0 };
-    let title_w = (cols.title.max - title_left - flag_w).max(0.0);
-    let title_end = cell_text(
+    // The right-hand cluster first: the flags size themselves, and what they leave is
+    // the measure the title has to fit in.
+    let tags = row_tags(prs, idx, stack.is_some_and(|s| s.row.n == 1));
+    let tags_left = paint_row_tags(ui, palette, &tags, cols.tags_right, center_y);
+    let main_right = (tags_left - ROW_COL_GAP).max(cols.main.min);
+
+    // Title line: the ticket the team knows this PR by, then its subject.
+    let mut x = cols.main.min;
+    if let Some(key) = crate::pull_requests::model::issue_key(pr) {
+        x = cell_text(
+            ui,
+            key,
+            egui::FontId::new(KEY_SIZE, crate::theme::medium_family(ui.ctx())),
+            palette.accent,
+            x,
+            title_y,
+            main_right - x,
+        ) + GAP_SM;
+    }
+    cell_text(
         ui,
         &pr.title,
-        egui::FontId::new(TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
+        egui::FontId::new(LIST_TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
         title_color,
-        title_left,
+        x,
         title_y,
-        title_w,
+        (main_right - x).max(0.0),
     );
-    if blocks > 0 {
-        flag_chip(
-            ui,
-            palette,
-            &format!("Blocks {blocks}"),
-            title_end + GAP_SM,
-            title_y,
-        );
-    }
 
-    // Meta line: number, project, author, age, then either the branch flow or —
-    // in the waiting-on-author band — what the PR is actually blocked on.
+    // Meta line: number, author, age — then the project (a stack names it once, in its
+    // own header), the branch flow, what this row hangs off, and the ± tally.
     let age = crate::pull_requests::model::relative_age(&pr.updated_at, now_epoch_secs());
     let age = if age.is_empty() {
         pr.updated_at.clone()
     } else {
         age
     };
-    let mut meta = format!(
-        "#{} · {} · {} · {}",
-        pr.number, pr.repo_label, pr.author, age
-    );
-    let (tail, tail_color) = if quiet {
-        let (label, color) = pr_status(palette, pr.state, pr.review, pr.checks);
-        (label.to_owned(), color)
-    } else {
-        (
-            format!("{} → {}", pr.source_branch, pr.dest_branch),
-            palette.text_muted,
-        )
+    let mut meta = MetaLine {
+        x: cols.main.min,
+        y: meta_y,
+        right: main_right,
     };
-    meta.push_str(" · ");
-    let meta_end = cell_text(
+    let meta_font = egui::FontId::proportional(LIST_META_SIZE);
+    let mono = egui::FontId::monospace(LIST_MONO_SIZE);
+    meta.run(
         ui,
-        &meta,
-        egui::FontId::proportional(CHIP_SIZE),
+        &format!("#{}", pr.number),
         palette.text_muted,
-        title_left,
-        meta_y,
-        (cols.title.max - title_left).max(0.0),
+        mono.clone(),
     );
-    cell_text(
-        ui,
-        &tail,
-        egui::FontId::proportional(CHIP_SIZE),
-        tail_color,
-        meta_end,
-        meta_y,
-        (cols.title.max - meta_end).max(0.0),
-    );
-
-    // CI status.
-    if let Some((icon, color)) = checks_status(palette, pr.checks) {
-        paint_icon(
-            ui.painter(),
-            egui::pos2(cols.ci.min + STATUS_ICON / 2.0, center_y),
-            STATUS_ICON,
-            icon,
-            color,
-        );
-        cell_text(
+    meta.run(ui, &pr.author, palette.text_secondary, meta_font.clone());
+    meta.run(ui, &age, palette.text_muted, meta_font.clone());
+    if stack.is_none() {
+        meta.run(ui, &pr.repo_label, palette.text_muted, mono.clone());
+    }
+    if meta.x < meta.right {
+        meta.x = branch_pill(
             ui,
-            checks_short_label(pr.checks),
-            egui::FontId::proportional(META_SIZE),
-            color,
-            cols.ci.min + STATUS_ICON + 5.0,
-            center_y,
-            cols.ci.span() - STATUS_ICON - 5.0,
-        );
+            palette,
+            meta.x,
+            meta.y,
+            Some(&pr.source_branch),
+            &pr.dest_branch,
+            meta.right - meta.x,
+        ) + GAP_SM;
+    }
+    if let Some(off) = stack.and_then(|s| s.row.off_parent) {
+        meta.run(ui, &format!("↳ off #{off}"), palette.text_muted, meta_font);
+    }
+    // The ± tally is GitHub-only (model §4); it rides the meta line rather than holding
+    // a column that Bitbucket would always leave blank.
+    if let Some((added, deleted)) = pr.diffstat {
+        meta.run(ui, &format!("+{added}"), palette.git_added, mono.clone());
+        meta.run(ui, &format!("−{deleted}"), palette.git_deleted, mono);
     }
 
-    // Comment tally (Bitbucket-only) and ± tally (GitHub-only) — each column is
-    // simply left blank on the forge that can't supply it cheaply (model §4).
-    if let (Some(col), Some(count)) = (cols.comments, pr.comment_count) {
+    // Comment tally — Bitbucket-only, so the column stays blank rather than lying with
+    // a zero when the forge simply did not say (model §4).
+    if let Some(count) = pr.comment_count {
+        let ink = if count == 0 {
+            with_alpha(palette.text_muted, 120)
+        } else {
+            palette.text_muted
+        };
+        let text = count.to_string();
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text, egui::FontId::proportional(LIST_MONO_SIZE), ink);
+        ui.painter().galley(
+            egui::pos2(
+                cols.comments.max - galley.size().x,
+                center_y - galley.size().y / 2.0,
+            ),
+            galley.clone(),
+            ink,
+        );
         paint_icon(
             ui.painter(),
-            egui::pos2(col.min + CHIP_SIZE / 2.0, center_y),
-            CHIP_SIZE,
+            egui::pos2(
+                cols.comments.max - galley.size().x - GAP_XS - LIST_META_SIZE / 2.0,
+                center_y,
+            ),
+            LIST_META_SIZE,
             Icon::MessageSquare,
-            palette.text_muted,
-        );
-        cell_text(
-            ui,
-            &count.to_string(),
-            egui::FontId::proportional(META_SIZE),
-            palette.text_muted,
-            col.min + CHIP_SIZE + 5.0,
-            center_y,
-            col.span() - CHIP_SIZE - 5.0,
-        );
-    }
-    if let (Some(add_col), Some(del_col), Some((added, deleted))) =
-        (cols.add, cols.del, pr.diffstat)
-    {
-        let mono = egui::FontId::monospace(META_SIZE);
-        ui.painter().text(
-            egui::pos2(add_col.max, center_y),
-            egui::Align2::RIGHT_CENTER,
-            format!("+{added}"),
-            mono.clone(),
-            palette.git_added,
-        );
-        ui.painter().text(
-            egui::pos2(del_col.min, center_y),
-            egui::Align2::LEFT_CENTER,
-            format!("−{deleted}"),
-            mono,
-            palette.git_deleted,
+            ink,
         );
     }
 
@@ -5610,14 +6399,7 @@ fn pr_row(
         }
     }
 
-    paint_avatar(
-        ui.painter(),
-        palette,
-        &pr.author,
-        egui::pos2(cols.avatar, center_y),
-        ROW_AVATAR,
-        None,
-    );
+    reviewer_cluster(ui, palette, &pr.reviewers, cols.reviewers_right, center_y);
 
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, pr.title.clone())
@@ -5625,6 +6407,301 @@ fn pr_row(
     if response.clicked() {
         action.select = Some(idx);
     }
+}
+
+/// A row's meta line, laid out left to right: each run is appended where the last one
+/// ended and dropped once the line has reached the tag cluster.
+struct MetaLine {
+    x: f32,
+    y: f32,
+    right: f32,
+}
+
+impl MetaLine {
+    fn run(&mut self, ui: &egui::Ui, text: &str, color: egui::Color32, font: egui::FontId) {
+        if self.x < self.right {
+            self.x = cell_text(ui, text, font, color, self.x, self.y, self.right - self.x) + GAP_SM;
+        }
+    }
+}
+
+/// The row's leading column: a stacked PR gets the spine running through it and a
+/// badge with its rank; a loose one gets the open / draft / changes-requested glyph.
+fn row_gutter(
+    ui: &egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    pr: &PullRequest,
+    stack: Option<StackAt<'_>>,
+) {
+    let center = egui::pos2(rect.left() + ROW_GUTTER / 2.0, rect.center().y);
+    let Some(stack) = stack else {
+        let (icon, color) = match (pr.state, pr.review) {
+            (PrState::Draft, _) => (Icon::GitPullRequestDraft, palette.text_muted),
+            (PrState::Open, Review::ChangesRequested) => {
+                (Icon::GitPullRequest, palette.git_deleted)
+            }
+            (PrState::Open, _) => (Icon::GitPullRequest, palette.git_added),
+        };
+        paint_icon(ui.painter(), center, STATE_ICON, icon, color);
+        return;
+    };
+    // The spine spans the chain, not the block: it starts at the base's badge and dies
+    // at the top one's, so the run has visible ends.
+    let top = if stack.row.n == 1 {
+        center.y
+    } else {
+        rect.top()
+    };
+    let bottom = if stack.row.n == stack.len {
+        center.y
+    } else {
+        rect.bottom()
+    };
+    ui.painter().vline(
+        center.x,
+        egui::Rangef::new(top, bottom),
+        egui::Stroke::new(1.0_f32, palette.border_input),
+    );
+    ui.painter()
+        .circle_filled(center, STACK_BADGE / 2.0, palette.bg_surface);
+    ui.painter().circle_stroke(
+        center,
+        STACK_BADGE / 2.0,
+        egui::Stroke::new(1.0_f32, palette.border_input),
+    );
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        stack.row.n.to_string(),
+        egui::FontId::new(9.5, crate::theme::medium_family(ui.ctx())),
+        palette.text_secondary,
+    );
+}
+
+/// The assigned reviewers, as an overlapping row of avatars each badged with where it
+/// stands (pull-requests.md §5). Past `REVIEWER_MAX` the rest collapse into a `+N`
+/// disc. Painted right-aligned at `right`, so the clusters line up down the list.
+fn reviewer_cluster(
+    ui: &egui::Ui,
+    palette: &Palette,
+    reviewers: &[crate::pull_requests::model::Reviewer],
+    right: f32,
+    center_y: f32,
+) {
+    let ordered = reviewers_by_verdict(reviewers);
+    if ordered.is_empty() {
+        return;
+    }
+    let shown = ordered.len().min(REVIEWER_MAX);
+    let hidden = ordered.len() - shown;
+    let discs = shown + usize::from(hidden > 0);
+    let width = REVIEWER_AVATAR + (discs - 1) as f32 * ROW_REVIEWER_STEP;
+    let left = right - width + REVIEWER_AVATAR / 2.0;
+    let at = |i: usize| egui::pos2(left + i as f32 * ROW_REVIEWER_STEP, center_y);
+    // Left to right, so each disc laps the one before it the way the canvas draws it.
+    for (i, reviewer) in ordered[..shown].iter().enumerate() {
+        paint_avatar(
+            ui.painter(),
+            palette,
+            &reviewer.name,
+            at(i),
+            REVIEWER_AVATAR,
+            None,
+        );
+    }
+    if hidden > 0 {
+        let center = at(shown);
+        let r = REVIEWER_AVATAR / 2.0;
+        ui.painter()
+            .circle_filled(center, r + 1.5, palette.bg_canvas);
+        ui.painter()
+            .circle_filled(center, r, with_alpha(palette.text_muted, 46));
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            format!("+{hidden}"),
+            egui::FontId::new(
+                REVIEWER_AVATAR * 0.42,
+                crate::theme::medium_family(ui.ctx()),
+            ),
+            palette.text_secondary,
+        );
+    }
+    // Badges last, once every disc is down: each sits where its neighbour laps it, and a
+    // verdict buried under the next avatar would be a verdict lost.
+    for (i, reviewer) in ordered[..shown].iter().enumerate() {
+        verdict_badge(ui, palette, reviewer.state, at(i));
+    }
+}
+
+/// Reviewers with a verdict lead, changes-requested first: past `REVIEWER_MAX` the
+/// rest fall behind the `+N` disc, and the one standing in the way is the last thing
+/// that may go missing there.
+fn reviewers_by_verdict(
+    reviewers: &[crate::pull_requests::model::Reviewer],
+) -> Vec<&crate::pull_requests::model::Reviewer> {
+    let rank = |state: Review| match state {
+        Review::ChangesRequested => 0,
+        Review::Approved => 1,
+        Review::Pending | Review::None => 2,
+    };
+    let mut ordered: Vec<_> = reviewers.iter().collect();
+    ordered.sort_by_key(|reviewer| rank(reviewer.state));
+    ordered
+}
+
+/// The small disc on a reviewer avatar's top-right saying where they stand. A reviewer
+/// who has not ruled yet wears none — an empty badge would read as a verdict.
+fn verdict_badge(ui: &egui::Ui, palette: &Palette, state: Review, center: egui::Pos2) {
+    let (color, icon) = match state {
+        Review::Approved => (palette.git_added, Icon::Check),
+        Review::ChangesRequested => (palette.git_deleted, Icon::Minus),
+        Review::Pending | Review::None => return,
+    };
+    let offset = REVIEWER_AVATAR / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
+    let at = center + egui::vec2(offset, -offset);
+    ui.painter()
+        .circle_filled(at, VERDICT_BADGE_R + 1.2, palette.bg_canvas);
+    ui.painter().circle_filled(at, VERDICT_BADGE_R, color);
+    paint_icon(
+        ui.painter(),
+        at,
+        VERDICT_BADGE_R * 2.0,
+        icon,
+        egui::Color32::WHITE,
+    );
+}
+
+/// Where a row sits in its stack — its rank, and how long the chain is, which is what
+/// tells the spine where to stop.
+#[derive(Clone, Copy)]
+struct StackAt<'a> {
+    row: &'a StackRow,
+    len: usize,
+}
+
+/// Paint the row's flags right-aligned at `right`, in `RowTag` order. Returns the x
+/// the leftmost one starts at, which is where the title column has to stop.
+fn paint_row_tags(
+    ui: &egui::Ui,
+    palette: &Palette,
+    tags: &[RowTag],
+    right: f32,
+    center_y: f32,
+) -> f32 {
+    let mut left = right;
+    for tag in tags.iter().rev() {
+        let w = tag_chip(ui, palette, *tag, left, center_y);
+        left -= w + GAP_XS + 2.0;
+    }
+    left
+}
+
+/// One flag chip — a tinted pill in the flag's own color. Painted right-aligned at
+/// `right`; returns its width.
+fn tag_chip(ui: &egui::Ui, palette: &Palette, tag: RowTag, right: f32, center_y: f32) -> f32 {
+    let color = tag.color(palette);
+    let galley = ui.painter().layout_no_wrap(
+        tag.label(),
+        egui::FontId::new(LIST_MONO_SIZE - 1.0, crate::theme::medium_family(ui.ctx())),
+        color,
+    );
+    let icon = tag.icon();
+    let icon_w = if icon.is_some() {
+        LIST_META_SIZE + 3.0
+    } else {
+        0.0
+    };
+    let h = LIST_MONO_SIZE + 8.0;
+    let w = galley.size().x + icon_w + 14.0;
+    let chip =
+        egui::Rect::from_min_size(egui::pos2(right - w, center_y - h / 2.0), egui::vec2(w, h));
+    ui.painter()
+        .rect_filled(chip, RADIUS_BUTTON, with_alpha(color, 34));
+    ui.painter().rect_stroke(
+        chip,
+        RADIUS_BUTTON,
+        egui::Stroke::new(1.0_f32, with_alpha(color, 90)),
+        egui::StrokeKind::Inside,
+    );
+    let mut x = chip.left() + 7.0;
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::pos2(x + LIST_META_SIZE / 2.0, center_y),
+            LIST_META_SIZE,
+            icon,
+            color,
+        );
+        x += icon_w;
+    }
+    ui.painter().galley(
+        egui::pos2(x, center_y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    w
+}
+
+/// The branch flow as one chip — `head → base`, or just `→ base` when the head is
+/// understood (a stack header names where the whole chain lands). The head takes the
+/// truncation, since the base is the short, load-bearing half. Returns its right edge.
+fn branch_pill(
+    ui: &egui::Ui,
+    palette: &Palette,
+    left: f32,
+    center_y: f32,
+    head: Option<&str>,
+    base: &str,
+    max_w: f32,
+) -> f32 {
+    if max_w < 40.0 {
+        return left;
+    }
+    let font = egui::FontId::monospace(LIST_MONO_SIZE);
+    let base_galley =
+        ui.painter()
+            .layout_no_wrap(base.to_owned(), font.clone(), palette.text_secondary);
+    let arrow_w = LIST_META_SIZE + 4.0;
+    let fixed = base_galley.size().x + arrow_w + 14.0;
+    let head_galley = head.map(|head| {
+        let mut job = egui::text::LayoutJob::single_section(
+            head.to_owned(),
+            egui::TextFormat::simple(font, palette.text_muted),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - fixed).max(24.0));
+        ui.painter().layout_job(job)
+    });
+    let h = LIST_MONO_SIZE + 8.0;
+    let w = fixed + head_galley.as_ref().map_or(0.0, |g| g.size().x);
+    let chip = egui::Rect::from_min_size(egui::pos2(left, center_y - h / 2.0), egui::vec2(w, h));
+    ui.painter()
+        .rect_filled(chip, RADIUS_BUTTON, with_alpha(palette.text_muted, 26));
+    let mut x = chip.left() + 7.0;
+    if let Some(galley) = head_galley {
+        let width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(x, center_y - galley.size().y / 2.0),
+            galley,
+            palette.text_muted,
+        );
+        x += width;
+    }
+    paint_icon(
+        ui.painter(),
+        egui::pos2(x + arrow_w / 2.0, center_y),
+        LIST_META_SIZE,
+        Icon::ArrowRight,
+        palette.text_muted,
+    );
+    x += arrow_w;
+    ui.painter().galley(
+        egui::pos2(x, center_y - base_galley.size().y / 2.0),
+        base_galley,
+        palette.text_secondary,
+    );
+    chip.right()
 }
 
 /// Confirmation before merging on the forge (pull-requests.md §5). Merging is
@@ -5676,27 +6753,6 @@ pub fn merge_modal(
     }
 }
 
-/// A small amber flag beside a row title (**Blocks N**).
-fn flag_chip(ui: &egui::Ui, palette: &Palette, text: &str, left: f32, center_y: f32) {
-    let galley = ui.painter().layout_no_wrap(
-        text.to_owned(),
-        egui::FontId::new(COUNT_BADGE_SIZE, crate::theme::medium_family(ui.ctx())),
-        palette.git_modified,
-    );
-    let h = COUNT_BADGE_SIZE + 7.0;
-    let chip = egui::Rect::from_min_size(
-        egui::pos2(left, center_y - h / 2.0),
-        egui::vec2(galley.size().x + 14.0, h),
-    );
-    ui.painter()
-        .rect_filled(chip, h / 2.0, with_alpha(palette.git_modified, 36));
-    ui.painter().galley(
-        chip.center() - galley.size() / 2.0,
-        galley,
-        palette.git_modified,
-    );
-}
-
 /// The filled **Merge** button — inline on a ready-to-merge row, and in the review
 /// surface header (pull-requests.md §5/§11).
 fn merge_button(
@@ -5730,38 +6786,6 @@ fn merge_button(
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Merge"));
     response.clicked()
-}
-
-/// Draw a stacked PR's gutter — vertical lines for the ancestor columns still in play
-/// plus this row's `├`/`└` elbow — and return the pixel inset its title cell takes. A
-/// root (or unstacked PR) draws nothing and returns 0.
-fn stack_connectors(
-    painter: &egui::Painter,
-    palette: &Palette,
-    rect: egui::Rect,
-    stack: &StackRow,
-) -> f32 {
-    let base = rect.left() + PAD_X;
-    let stroke = egui::Stroke::new(1.0_f32, palette.border_input);
-    let col_x = |c: usize| base + c as f32 * STACK_INDENT + STACK_INDENT / 2.0;
-    for (c, &on) in stack.verticals.iter().enumerate() {
-        if on {
-            painter.vline(col_x(c), rect.y_range(), stroke);
-        }
-    }
-    if let Some(is_last) = stack.elbow_last {
-        let c = stack.verticals.len();
-        let x = col_x(c);
-        let mid = rect.center().y;
-        let bottom = if is_last { mid } else { rect.bottom() };
-        painter.vline(x, egui::Rangef::new(rect.top(), bottom), stroke);
-        painter.hline(
-            egui::Rangef::new(x, base + (c + 1) as f32 * STACK_INDENT),
-            mid,
-            stroke,
-        );
-    }
-    stack.depth() as f32 * STACK_INDENT
 }
 
 /// Left-aligned, vertically-centered text truncated to a column width. Returns the
@@ -5864,36 +6888,6 @@ fn reviewer_stack(
     }
 }
 
-/// Collapse `(state, review, checks)` into one status label + color — what a row in
-/// the **Waiting on the author** band is blocked on, named in its own color (§5).
-fn pr_status(
-    palette: &Palette,
-    state: PrState,
-    review: Review,
-    checks: Checks,
-) -> (&'static str, egui::Color32) {
-    match state {
-        PrState::Draft => ("Draft", palette.text_muted),
-        PrState::Open => match review {
-            Review::ChangesRequested => ("Changes requested", palette.git_deleted),
-            _ if checks == Checks::Failing => ("Checks failing", palette.git_deleted),
-            Review::Approved => ("Approved", palette.git_added),
-            Review::Pending => ("In review", palette.git_modified),
-            Review::None => ("Open", palette.accent),
-        },
-    }
-}
-
-/// The row-sized CI label beside `checks_status`'s glyph (§5).
-fn checks_short_label(checks: Checks) -> &'static str {
-    match checks {
-        Checks::Passing => "CI ok",
-        Checks::Failing => "CI failed",
-        Checks::Pending => "CI running",
-        Checks::None => "",
-    }
-}
-
 fn checks_status(palette: &Palette, checks: Checks) -> Option<(Icon, egui::Color32)> {
     match checks {
         Checks::Passing => Some((Icon::Check, palette.git_added)),
@@ -5953,6 +6947,178 @@ fn checks_label(checks: Checks) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_requests::model::{ForgeKind, PrRole};
+
+    fn tagged(state: PrState, review: Review, checks: Checks) -> PullRequest {
+        PullRequest {
+            forge_kind: ForgeKind::GitHub,
+            repo_label: "acme/web".to_owned(),
+            number: 1,
+            title: "A change".to_owned(),
+            role: PrRole::ToReview,
+            state,
+            author: "mira".to_owned(),
+            source_branch: "feature".to_owned(),
+            dest_branch: "main".to_owned(),
+            url: String::new(),
+            updated_at: String::new(),
+            checks,
+            review,
+            reviewers: Vec::new(),
+            labels: Vec::new(),
+            diffstat: None,
+            comment_count: None,
+        }
+    }
+
+    #[test]
+    fn a_settled_row_wears_no_flags() {
+        let prs = vec![tagged(PrState::Open, Review::Pending, Checks::Passing)];
+        assert!(row_tags(&prs, 0, false).is_empty());
+        // Nor does an absent CI invent one.
+        let prs = vec![tagged(PrState::Open, Review::Pending, Checks::None)];
+        assert!(row_tags(&prs, 0, false).is_empty());
+    }
+
+    #[test]
+    fn a_row_wears_every_flag_that_applies_in_order() {
+        let prs = vec![tagged(
+            PrState::Draft,
+            Review::ChangesRequested,
+            Checks::Failing,
+        )];
+        assert_eq!(
+            row_tags(&prs, 0, true),
+            [
+                RowTag::ReviewFirst,
+                RowTag::ChangesRequested,
+                RowTag::ChecksFailing,
+                RowTag::Draft,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_blocks_flag_counts_the_prs_stacked_on_this_one() {
+        let mut base = tagged(PrState::Open, Review::Pending, Checks::None);
+        base.source_branch = "a".to_owned();
+        let mut child = tagged(PrState::Open, Review::Pending, Checks::None);
+        child.number = 2;
+        child.dest_branch = "a".to_owned();
+        let prs = vec![base, child];
+        assert_eq!(row_tags(&prs, 0, false), [RowTag::Blocks(1)]);
+        assert!(row_tags(&prs, 1, false).is_empty());
+    }
+
+    #[test]
+    fn a_running_build_flags_itself_apart_from_a_failing_one() {
+        let prs = vec![tagged(PrState::Open, Review::Pending, Checks::Pending)];
+        assert_eq!(row_tags(&prs, 0, false), [RowTag::ChecksRunning]);
+    }
+
+    /// Play a whole run — start, the moves, release — at `t`, and say whether it fired.
+    fn swipe(moves: &[(f32, f32)], armed: bool, t: f64, state: &mut SwipeBack) -> bool {
+        let mut fired = state.feed(egui::TouchPhase::Start, egui::Vec2::ZERO, armed, t);
+        for &(x, y) in moves {
+            fired |= state.feed(egui::TouchPhase::Move, egui::vec2(x, y), armed, t);
+        }
+        fired | state.feed(egui::TouchPhase::End, egui::Vec2::ZERO, armed, t)
+    }
+
+    #[test]
+    fn a_swipe_right_goes_back_only_once_it_is_long_enough() {
+        let mut state = SwipeBack::default();
+        assert!(!swipe(&[(20.0, 0.0), (20.0, 0.0)], true, 1.0, &mut state));
+        assert!(swipe(&[(40.0, 2.0), (40.0, -2.0)], true, 2.0, &mut state));
+    }
+
+    #[test]
+    fn a_swipe_left_or_a_vertical_scroll_is_not_a_back() {
+        let mut state = SwipeBack::default();
+        // Leftward: that direction reveals content to the right, not the list.
+        assert!(!swipe(&[(-90.0, 0.0)], true, 1.0, &mut state));
+        // Mostly vertical, even though it drifts 70pt sideways.
+        assert!(!swipe(&[(70.0, 200.0)], true, 2.0, &mut state));
+    }
+
+    #[test]
+    fn a_swipe_a_scrolled_diff_owns_never_goes_back() {
+        let mut state = SwipeBack::default();
+        assert!(!swipe(&[(90.0, 0.0)], false, 1.0, &mut state));
+        // Nor does a run that only wanders onto one halfway through.
+        let mut fired = state.feed(egui::TouchPhase::Start, egui::Vec2::ZERO, true, 2.0);
+        fired |= state.feed(egui::TouchPhase::Move, egui::vec2(50.0, 0.0), true, 2.0);
+        fired |= state.feed(egui::TouchPhase::Move, egui::vec2(50.0, 0.0), false, 2.0);
+        fired |= state.feed(egui::TouchPhase::End, egui::Vec2::ZERO, true, 2.0);
+        assert!(!fired);
+    }
+
+    #[test]
+    fn the_momentum_trailing_a_flick_does_not_swipe_again() {
+        // macOS replays start/move/end for the coast after the fingers lift; it
+        // continues the gesture that is already spent rather than firing a second one.
+        let mut state = SwipeBack::default();
+        assert!(swipe(&[(90.0, 0.0)], true, 1.0, &mut state));
+        assert!(!swipe(
+            &[(300.0, 0.0)],
+            true,
+            1.0 + SWIPE_BACK_GAP / 2.0,
+            &mut state
+        ));
+        // A deliberate second swipe, after a human-sized pause, still works.
+        assert!(swipe(&[(90.0, 0.0)], true, 3.0, &mut state));
+    }
+
+    #[test]
+    fn a_flick_completes_on_the_momentum_that_carries_it() {
+        // Fingers barely travel before they lift; the coast is the rest of that same
+        // gesture, not a new one that has to clear the threshold on its own.
+        let mut state = SwipeBack::default();
+        assert!(!swipe(&[(20.0, 0.0)], true, 1.0, &mut state));
+        assert!(swipe(
+            &[(50.0, 0.0)],
+            true,
+            1.0 + SWIPE_BACK_GAP / 2.0,
+            &mut state
+        ));
+    }
+
+    #[test]
+    fn a_swipe_fires_while_the_fingers_are_still_down() {
+        // Waiting for the release would hang the surface on the momentum tail, which
+        // ends a second or more after the gesture reads as unmistakable.
+        let mut state = SwipeBack::default();
+        assert!(!state.feed(egui::TouchPhase::Start, egui::Vec2::ZERO, true, 1.0));
+        assert!(state.feed(egui::TouchPhase::Move, egui::vec2(70.0, 0.0), true, 1.0));
+    }
+
+    #[test]
+    fn a_release_with_no_run_behind_it_fires_nothing() {
+        let mut state = SwipeBack::default();
+        assert!(!state.feed(egui::TouchPhase::End, egui::vec2(200.0, 0.0), true, 1.0));
+    }
+
+    #[test]
+    fn the_reviewer_cluster_leads_with_the_verdicts() {
+        let reviewer = |name: &str, state| crate::pull_requests::model::Reviewer {
+            name: name.to_owned(),
+            state,
+        };
+        let reviewers = vec![
+            reviewer("pending", Review::Pending),
+            reviewer("approved", Review::Approved),
+            reviewer("unasked", Review::None),
+            reviewer("blocked", Review::ChangesRequested),
+        ];
+        // Only three discs fit; the one standing in the way must not be the fourth.
+        assert_eq!(
+            reviewers_by_verdict(&reviewers)
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            ["blocked", "approved", "pending", "unasked"]
+        );
+    }
 
     #[test]
     fn html_img_reads_src_and_alt() {

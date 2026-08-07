@@ -98,42 +98,69 @@ no side-by-side detail pane — selecting a PR **navigates** to its review surfa
 in **English** ([`design-system.md`](design-system.md) §7) — the design canvas this
 round was drawn on is French, but the label language is a frozen decision.
 
-- **Header** — a raised band carrying the **Pull Requests** title, a **search
-  field** (`model::matches_search`: title, number, author, branch, project), and
-  the **Filters** / **Priority** / **Refresh** (§6) controls. **Filters** opens a
-  checkbox per workspace project, so a noisy repo can be muted; **Priority**
-  chooses the ordering *inside* each band — *Priority* (oldest touched first: a PR
-  that has been sitting is the more urgent one) or *Recently updated*. Both are
-  **session state**, not persisted. No notification or theme chrome (the theme
-  lives in Preferences).
+- **Header** — a raised band carrying the **Pull Requests** title and, next to it,
+  what the page is holding (*"14 open · 1 draft"*, or *"7 of 14 shown"* while the
+  filters narrow it); a **search field** (`model::matches_search`: title, number,
+  author, branch, project) with a **clear** ✕ once it holds a query; then the
+  **Filters** / **Priority** / **Refresh** (§6) controls. **Filters** opens a
+  checkbox per workspace project, so a noisy repo can be muted, and wears a count
+  pill while any are off; **Priority** chooses the ordering *inside* each band —
+  *Priority* (oldest touched first: a PR that has been sitting is the more urgent
+  one) or *Recently updated*. Both are **session state**, not persisted. **Refresh**
+  is the page's own housekeeping rather than a view control, so it sits past a
+  divider, drops the outline, and carries how long ago the last fetch landed
+  (*"· 2 min ago"*). No notification or theme chrome (the theme lives in
+  Preferences).
 - **Tabs** — **Open · To review · Mine · Drafts** (`model::ListTab`), each with its
-  count. Every fetched PR is open by construction (§1), so the tabs are views over
-  the same cache: no extra query, and **no Merged tab** (merged PRs are out of the
-  fetch's scope).
+  count in a pill (tinted on the open tab; a tab reading `0` is as much of an answer
+  as one reading `14`). Every fetched PR is open by construction (§1), so the tabs
+  are views over the same cache: no extra query, and **no Merged tab** (merged PRs
+  are out of the fetch's scope).
 - **List**, grouped by **what each PR is waiting on** rather than by role or date
   (`model::ActionGroup`, in this order): **Waiting on your review** ·
   **Ready to merge** · **Waiting on the author** · **In review**. First match wins,
   so a PR blocked on its author never masquerades as reviewable and a review the
   user still owes outranks an approval someone else already gave. Each band is a
-  colored section header (glyph + uppercase label + count) over **full-bleed rows**
-  separated by hairlines — no card, no column-header row.
-- **Row** — the open / draft / changes-requested **state icon**, the **title** with
-  an optional amber **Blocks N** flag (`model::blocked_count`: how many listed PRs
-  target this one's source branch), and a meta line
-  `#number · project · author · age · source → dest`. In the **Waiting on the
-  author** band the row reads a notch quieter and the branch flow gives way to what
-  it is blocked on (*Changes requested* / *Checks failing* / *Draft*). On the right:
-  the **CI status**, the **comment** tally, the **± tally**, and the author avatar —
-  and in **Ready to merge**, an inline **Merge** button in place of the tallies.
-  A PR **stacked** on another listed PR — its **target** branch is that PR's
-  **source** in the same repo — still **nests** under it as an **indented tree**
-  (base first, `├`/`└` gutter connectors) **within its band**.
+  colored section header (glyph + uppercase label + count pill + a rule out to the
+  column edge) over the band's **blocks**. The whole list is centered in a reading
+  column capped at 1280pt, and closes on a quiet **"End of list · N pull requests"**.
+- **Blocks** (`model::list_blocks`) — a band's rows sit in bordered cards rather than
+  running full-bleed: one card per **stack**, one for everything loose, ordered by
+  where their first row falls under the chosen sort. A **stack** is a chain of PRs
+  each targeting the previous one's **source** branch in the same repo; it gets its
+  own header — glyph, **STACK**, size pill, repo, `→` its base, and the one
+  instruction that matters, *"Merge bottom-up — start at #1"* — and a chevron that
+  folds it to that header alone (session state, keyed by repo + base).
+- **Row** — a `gutter · author · main · flags · comments · reviewers` grid. The
+  **gutter** holds the open / draft / changes-requested **state icon** for a loose PR;
+  inside a stack it holds the **spine** and this PR's **rank badge**, numbered from the
+  base. The **author** avatar sits right beside it: whose PR this is belongs with what
+  it is, not across the row from it. The
+  **main** column leads with the PR's **tracker key** (`model::issue_key`, read off
+  the branch then the title) then the title, over a meta line
+  `#number · author · age · project · source → dest`, where the branch flow is a chip
+  and the project drops out inside a stack (its header names it once). A row hanging
+  off an earlier rank rather than the one above says so — **↳ off #N** — so a
+  branching stack still reads as a flat numbered list. In the **Waiting on the
+  author** band the row reads a notch quieter. On the right, the **flags** —
+  *Review first* (the base of a stack), *Changes requested*, *Checks failing* /
+  *running*, *Draft*, amber **blocks N** (`model::blocked_count`: how many listed PRs
+  target this one's source branch) — then the **comment** tally and, on the right edge,
+  the **assigned reviewers**: overlapping avatars, each badged with where it stands
+  (green check approved, red minus changes requested; a reviewer who has not ruled
+  wears none, an empty badge being itself a verdict), the rest collapsing into a `+N`
+  disc. Verdicts are ordered first, changes-requested leading, so the reviewer standing
+  in the way is never the one that falls behind the overflow. The cluster is
+  right-aligned in a fixed slot, so the clusters line up down the list. In
+  **Ready to merge** an inline **Merge** button precedes them.
   Clicking a row **selects** it (→ the §11 review surface).
 - **Per-forge gaps in the row tallies** (§4): the **± tally** is GitHub-only
   (`gh pr list` returns the scalars; Bitbucket would need one `diffstat` request per
   PR) and the **comment tally** is Bitbucket-only (its list payload carries
   `comment_count`, whereas `gh pr list --json comments` would pull every comment
-  *body* of every PR). Each column is simply left blank on the forge that cannot
+  *body* of every PR). Neither holds a column the other forge would always leave
+  blank: the ± rides the **meta line** and CI folds into the **flags** — and a green
+  build, being no news, raises none. Each is simply absent on the forge that cannot
   supply it cheaply, the way `labels` already is.
 - **Merge** — from the inline button on a ready-to-merge row, or from the review
   surface header (§11). Both raise a **confirmation modal** naming the repo, the
@@ -147,9 +174,11 @@ round was drawn on is French, but the label language is a frozen decision.
   message surfaces.
 - **Detail** of the selection: the **diff-centric review surface** (§11).
 
-Empty / edge states: no recognized-forge repo ⇒ *"No GitHub or Bitbucket
-repository in your workspace"*; a source unavailable ⇒ its inline hint (§3) while
-the other source still lists.
+Empty / edge states, all a centered glyph over a headline and a line saying what to
+do about it: no recognized-forge repo ⇒ *"No GitHub or Bitbucket repository in your
+workspace"*; nothing open ⇒ *"No pull requests"*; the filters leaving nothing ⇒
+*"No pull request matches these filters"*. A source unavailable ⇒ its inline hint
+(§3) while the other source still lists.
 
 ## 6. Fetching, refresh & threading
 
@@ -236,6 +265,25 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
   tab filter, the search field, a ready-to-merge row's inline **Merge**, the surface
   header's **Merge**, the popover verdict group driving the submit label, and
   **Hide tests** filtering the rail's file list.
+- **M-PR9 (list blocks & stacks)**: `list_blocks` (a chain numbers base-first, a
+  branching stack notes its `off #N`, loose rows collect into one block that keeps the
+  band's order, a cycle degrades to loose rows, no linking across repos), `issue_key`
+  (branch before title; `UTF-8` and a mid-word run are not tickets) and `row_tags`
+  (order, a green build raising nothing, the blocks tally) and `reviewers_by_verdict`
+  (a changes-requested reviewer never falls behind the `+N`) — all unit; UI e2e — a
+  stack lists under its header and folds away, a lone PR gets no header, a stacked row
+  still selects by its own title, the footer counts what the filters let through, and
+  the search field's **clear**.
+- **Swipe back & the slide (§11)**: the recognizer's thresholds, the vertical and
+  leftward rejections, firing while the fingers are still down, and the momentum run
+  both completing a short flick and never firing twice (unit);
+  `note_h_scroll_room` / `h_scroll_owns_swipe` composition — a scrolled surface under
+  the pointer claims the swipe, one back at its left edge or away from the pointer does
+  not, and a read clears the flag (unit); UI e2e — a two-finger swipe right returns to
+  the list once the slide lands, a scroll does not, a mouse wheel never reads as a
+  swipe, and `Esc` / **Back** still hand the app back after their travel. **Not
+  covered**: the veto reaching a real scrolled diff band end to end — the harness would
+  not move the band's own scroll offset.
 - **M-PR3 (cache & richer reviewing)**: the bounded review-cache LRU + the
   `should_refresh_pr` throttle predicate (unit); the GitHub / Bitbucket commit and
   `diff_hunk` parsers + the reply / issue-comment arg & body builders (unit); the
@@ -488,6 +536,33 @@ same one as commit/working-tree review.
   there**; else the current-file mark; else back to the list; and only from the list
   does `Esc` leave the cockpit for the terminal. A press that closes a comment field
   never also closes the panel behind it.
+- **Swipe back (macOS trackpad).** A **two-finger swipe rightward** over the review
+  returns to the list, the way every macOS document surface goes back. It goes
+  *straight* to the list rather than mirroring the `Esc` cascade: the file mark only
+  moves the rail's highlight in a column that already shows every diff, so a first
+  swipe spent on it would read as a dead gesture. Recognized off `MouseWheel` events
+  in **points** with a real `TouchPhase` — a mouse wheel reports lines and never
+  matches, and any modifier held disqualifies the run. It fires when the run has
+  travelled ≥64pt right and at least twice as far horizontally as vertically —
+  **mid-swipe, on the event that crosses the threshold, not on release**: macOS trails
+  a flick with a momentum run whose end lands a second or more later, and a surface
+  that waits for it answers long after the fingers have left the trackpad. That
+  momentum is the **same gesture**: a run beginning within 250ms of the last one ending
+  continues it, inheriting its distance (so a short flick completes on its coast) and
+  its verdict (so a spent run cannot fire twice, and one already disqualified stays
+  so). **A horizontally-scrolled surface under the pointer wins the swipe**: a diff
+  band whose long code line has been pushed off its left edge claims rightward swipes
+  over it until it is back home, the same precedence Safari applies before it will
+  navigate.
+- **Back slides.** Every way out of the review — the gesture, `Esc`, the header's
+  **Back** — plays the same **220ms** ease-out: the surface travels off to the right
+  over the list, which is already drawn underneath at rest, and the app is handed back
+  to the list only when the travel ends. The leaving surface carries a hairline over a
+  short shadow on its left edge; both pages sit on `bg_canvas`, so without one it would
+  slide off as a seam nobody can see. The list underneath **does not parallax**: it is
+  centered on its own measure, and shifting it crops the page header off the left edge
+  for the length of the animation. Mid-slide neither surface answers a click, and the
+  review cannot start a second slide out of the first.
 - **Existing threads (read).** Posted PR comments overlay the diff **anchored at
   their line**, read-only, via `review::ForgeThreads` (author + body cards with a
   compact in-card **Ask {agent}** action on the thread). They are **never edited**

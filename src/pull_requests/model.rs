@@ -317,7 +317,14 @@ pub fn relative_age(iso: &str, now_secs: i64) -> String {
     let Some(then) = epoch_secs(iso) else {
         return String::new();
     };
-    let d = (now_secs - then).max(0);
+    age_label(now_secs - then)
+}
+
+/// Humanize an age in seconds on the same scale as [`relative_age`], for the callers
+/// that already hold epoch seconds rather than a forge timestamp (the list header's
+/// last-refresh note). Negative input reads as "just now".
+pub fn age_label(delta_secs: i64) -> String {
+    let d = delta_secs.max(0);
     if d < 60 {
         "just now".to_owned()
     } else if d < 3600 {
@@ -419,36 +426,48 @@ pub fn dedupe(prs: Vec<PullRequest>) -> Vec<PullRequest> {
     out
 }
 
-/// One row of the stacked-PR layout for a single role group: which PR (`idx` into
-/// the `prs` slice), plus the gutter connectors the list draws to the left of it.
-/// A PR is *stacked on* another when its `dest_branch` is that other PR's
-/// `source_branch` in the same repo (pull-requests.md §5) — the chain renders as an
-/// indented tree, base first. A root (or any unstacked PR) has `elbow_last == None`
-/// and `verticals` empty, so it draws flush-left exactly like before.
+/// One row of a stack: which PR (`idx` into the `prs` slice) and where it sits in the
+/// merge order. A PR is *stacked on* another when its `dest_branch` is that other PR's
+/// `source_branch` in the same repo (pull-requests.md §5). The list draws the chain as
+/// a numbered spine rather than an indented tree: eight levels of indentation eat the
+/// title column, whereas "merge bottom-up, start at #1" is the thing to know.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackRow {
     pub idx: usize,
-    /// One flag per ancestor gutter column (`0..depth-1`): `true` where an ancestor
-    /// still has a sibling below, so a `│` runs through this row.
-    pub verticals: Vec<bool>,
-    /// `Some(is_last)` draws the `├`/`└` elbow at column `verticals.len()`; `None`
-    /// for a stack root, drawn flush-left with no elbow.
-    pub elbow_last: Option<bool>,
+    /// 1-based rank in the stack — the number the spine badge wears.
+    pub n: usize,
+    /// The rank this PR is stacked on, when that is *not* the row just above it. A
+    /// stack that branches is still listed flat, so a row hanging off an earlier one
+    /// has to say so ("off #6"); a plain chain never sets this.
+    pub off_parent: Option<usize>,
 }
 
-impl StackRow {
-    /// Indentation level: 0 for a stack root (and any unstacked PR), +1 per ancestor.
-    pub fn depth(&self) -> usize {
-        self.verticals.len() + usize::from(self.elbow_last.is_some())
-    }
+/// A chain of stacked PRs, laid out under one header instead of as loose rows
+/// (pull-requests.md §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrStack {
+    /// Repo the whole stack lives in — its rows share one by construction.
+    pub repo_label: String,
+    /// What the base of the stack targets: where merging it bottom-up finally lands.
+    pub base: String,
+    /// Base first, then its descendants (pre-order, children in listed order).
+    pub rows: Vec<StackRow>,
 }
 
-/// Lay a role group out as stacked trees: a PR whose `dest_branch` equals another
-/// listed PR's `source_branch` (same forge + repo) hangs under it. Roots keep their
-/// original relative order, each immediately followed by its descendants (pre-order,
-/// children in listed order); an unstacked list comes back unchanged. `indices` are
-/// positions into `prs` (one role group); the returned rows carry those same `idx`.
-pub fn stacked_rows(prs: &[PullRequest], indices: &[usize]) -> Vec<StackRow> {
+/// How one band's rows split up for rendering (pull-requests.md §5): every stack gets
+/// its own header and numbered spine, and the PRs that stand alone share a plain block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListBlock {
+    Stack(PrStack),
+    /// Indices into `prs`, in the band's order.
+    Singles(Vec<usize>),
+}
+
+/// Split one band's PRs into the blocks the list draws. Blocks keep the order in which
+/// their first PR appears in `indices`, so the band's chosen sort still decides what
+/// leads; every standalone PR collects into one block sitting where the first of them
+/// fell. `indices` are positions into `prs`; the returned rows carry those same `idx`.
+pub fn list_blocks(prs: &[PullRequest], indices: &[usize]) -> Vec<ListBlock> {
     let n = indices.len();
     let mut source_of: std::collections::HashMap<(ForgeKind, &str, &str), usize> =
         std::collections::HashMap::with_capacity(n);
@@ -482,46 +501,119 @@ pub fn stacked_rows(prs: &[PullRequest], indices: &[usize]) -> Vec<StackRow> {
         }
     }
 
-    let mut out = Vec::with_capacity(n);
-    let mut visited = vec![false; n];
-    // Explicit DFS stack: (pos, ancestor verticals, elbow). Children pushed in reverse
-    // so siblings still emit in their listed order.
-    let mut stack: Vec<(usize, Vec<bool>, Option<bool>)> = roots
-        .iter()
-        .rev()
-        .map(|&root| (root, Vec::new(), None))
-        .collect();
-    while let Some((pos, verticals, elbow_last)) = stack.pop() {
-        if visited[pos] {
-            continue;
+    // Pre-order each tree once; `tree_of` then tells any row which one it belongs to.
+    // A node reachable only through a cycle stays `None` and falls in with the singles,
+    // so no row is ever dropped.
+    let mut tree_of: Vec<Option<usize>> = vec![None; n];
+    let mut trees: Vec<Vec<usize>> = Vec::new();
+    for &root in &roots {
+        let mut order = Vec::new();
+        // Children pushed in reverse so siblings still emit in their listed order.
+        let mut dfs = vec![root];
+        while let Some(pos) = dfs.pop() {
+            if tree_of[pos].is_some() {
+                continue;
+            }
+            tree_of[pos] = Some(trees.len());
+            order.push(pos);
+            dfs.extend(children[pos].iter().rev());
         }
-        visited[pos] = true;
-        let kids = &children[pos];
-        let mut child_vert = verticals.clone();
-        if let Some(last) = elbow_last {
-            child_vert.push(!last);
-        }
-        for (i, &child) in kids.iter().enumerate().rev() {
-            stack.push((child, child_vert.clone(), Some(i + 1 == kids.len())));
-        }
-        out.push(StackRow {
-            idx: indices[pos],
-            verticals,
-            elbow_last,
-        });
+        trees.push(order);
     }
-    // A node reachable only through a cycle never sat under a root; emit it flush so
-    // no row is dropped.
-    for (pos, &done) in visited.iter().enumerate() {
-        if !done {
-            out.push(StackRow {
-                idx: indices[pos],
-                verticals: Vec::new(),
-                elbow_last: None,
-            });
+
+    let mut out: Vec<ListBlock> = Vec::new();
+    let mut emitted = vec![false; trees.len()];
+    let mut singles: Vec<usize> = Vec::new();
+    let mut singles_slot = 0;
+    for pos in 0..n {
+        match tree_of[pos] {
+            Some(tree) if trees[tree].len() > 1 => {
+                if std::mem::replace(&mut emitted[tree], true) {
+                    continue;
+                }
+                out.push(ListBlock::Stack(pr_stack(
+                    prs,
+                    indices,
+                    &trees[tree],
+                    &parent,
+                )));
+            }
+            _ => {
+                if singles.is_empty() {
+                    singles_slot = out.len();
+                }
+                singles.push(indices[pos]);
+            }
         }
+    }
+    if !singles.is_empty() {
+        out.insert(singles_slot, ListBlock::Singles(singles));
     }
     out
+}
+
+/// Number one pre-ordered tree into stack rows, noting every row whose base is not the
+/// row above it.
+fn pr_stack(
+    prs: &[PullRequest],
+    indices: &[usize],
+    order: &[usize],
+    parent: &[Option<usize>],
+) -> PrStack {
+    let rank: std::collections::HashMap<usize, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, &pos)| (pos, i + 1))
+        .collect();
+    let rows = order
+        .iter()
+        .enumerate()
+        .map(|(i, &pos)| StackRow {
+            idx: indices[pos],
+            n: i + 1,
+            // The row above wears rank `i`; anything else is worth calling out.
+            off_parent: parent[pos]
+                .and_then(|par| rank.get(&par).copied())
+                .filter(|&par| par != i),
+        })
+        .collect();
+    let root = &prs[indices[order[0]]];
+    PrStack {
+        repo_label: root.repo_label.clone(),
+        base: root.dest_branch.clone(),
+        rows,
+    }
+}
+
+/// The tracker key a PR carries (`BAPS-10701`), read off its source branch and falling
+/// back to the title — a team recognizes its PRs by the ticket long before the prose,
+/// so the list leads each row with it (pull-requests.md §5). Neither forge exposes the
+/// key as a field, hence the scan. A key is 2+ uppercase letters, a dash, then **two or
+/// more** digits: one digit would make `UTF-8` in a title read as a ticket.
+pub fn issue_key(pr: &PullRequest) -> Option<&str> {
+    scan_issue_key(&pr.source_branch).or_else(|| scan_issue_key(&pr.title))
+}
+
+fn scan_issue_key(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    for (dash, _) in text.char_indices().filter(|&(_, c)| c == '-') {
+        let mut start = dash;
+        while start > 0 && bytes[start - 1].is_ascii_uppercase() {
+            start -= 1;
+        }
+        // The run has to start on a word boundary, else `xBAPS-10` would match.
+        if dash - start < 2 || (start > 0 && bytes[start - 1].is_ascii_alphanumeric()) {
+            continue;
+        }
+        let mut end = dash + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end - dash > 2 {
+            return Some(&text[start..end]);
+        }
+    }
+    None
 }
 
 /// How many other listed PRs target this one's source branch — the **Blocks N**
@@ -817,63 +909,138 @@ mod tests {
         p
     }
 
+    fn stack_of(blocks: &[ListBlock]) -> &PrStack {
+        blocks
+            .iter()
+            .find_map(|b| match b {
+                ListBlock::Stack(s) => Some(s),
+                ListBlock::Singles(_) => None,
+            })
+            .expect("a stack block")
+    }
+
     #[test]
-    fn stacked_rows_leaves_an_unstacked_list_unchanged() {
+    fn list_blocks_puts_an_unstacked_list_in_one_singles_block() {
         let prs = vec![
             branched(1, "a", "main"),
             branched(2, "b", "main"),
             branched(3, "c", "develop"),
         ];
-        let rows = stacked_rows(&prs, &[0, 1, 2]);
-        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [0, 1, 2]);
-        assert!(rows
-            .iter()
-            .all(|r| r.depth() == 0 && r.elbow_last.is_none()));
+        assert_eq!(
+            list_blocks(&prs, &[0, 1, 2]),
+            vec![ListBlock::Singles(vec![0, 1, 2])]
+        );
     }
 
     #[test]
-    fn stacked_rows_nests_a_chain_base_first_with_growing_depth() {
+    fn list_blocks_numbers_a_chain_base_first() {
         // Listed out of order (top, base, mid); dest→source links them.
         let prs = vec![
             branched(3, "c", "b"),
             branched(1, "a", "main"),
             branched(2, "b", "a"),
         ];
-        let rows = stacked_rows(&prs, &[0, 1, 2]);
-        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [1, 2, 0]);
+        let blocks = list_blocks(&prs, &[0, 1, 2]);
+        assert_eq!(blocks.len(), 1);
+        let stack = stack_of(&blocks);
+        assert_eq!(stack.base, "main");
+        assert_eq!(stack.repo_label, "acme/web");
         assert_eq!(
-            rows.iter().map(|r| r.depth()).collect::<Vec<_>>(),
-            [0, 1, 2]
+            stack.rows.iter().map(|r| (r.idx, r.n)).collect::<Vec<_>>(),
+            [(1, 1), (2, 2), (0, 3)]
         );
-        assert_eq!(rows[0].elbow_last, None);
-        assert_eq!(rows[1].elbow_last, Some(true));
-        assert_eq!(rows[2].elbow_last, Some(true));
-        assert_eq!(rows[2].verticals, vec![false]);
+        // A plain chain never needs the "off #N" note.
+        assert!(stack.rows.iter().all(|r| r.off_parent.is_none()));
     }
 
     #[test]
-    fn stacked_rows_marks_siblings_and_runs_a_vertical_past_a_non_last_branch() {
-        // base ← {A, B}; A ← A1. A is not last, so A1 keeps a vertical in A's column.
+    fn list_blocks_notes_the_base_of_a_row_that_hangs_off_an_earlier_one() {
+        // base ← {A, B}; A ← A1. Pre-order is base, A, A1, B — so B hangs off #1.
         let prs = vec![
             branched(1, "a", "main"),
             branched(2, "b", "a"),
             branched(3, "c", "a"),
             branched(4, "d", "b"),
         ];
-        let rows = stacked_rows(&prs, &[0, 1, 2, 3]);
-        assert_eq!(rows.iter().map(|r| r.idx).collect::<Vec<_>>(), [0, 1, 3, 2]);
-        assert_eq!(rows[1].elbow_last, Some(false)); // A (├, sibling B below)
-        assert_eq!(rows[2].verticals, vec![true]); // A1 keeps A's column filled
-        assert_eq!(rows[3].elbow_last, Some(true)); // B (└, last)
+        let blocks = list_blocks(&prs, &[0, 1, 2, 3]);
+        let stack = stack_of(&blocks);
+        assert_eq!(
+            stack.rows.iter().map(|r| r.idx).collect::<Vec<_>>(),
+            [0, 1, 3, 2]
+        );
+        assert_eq!(
+            stack.rows.iter().map(|r| r.off_parent).collect::<Vec<_>>(),
+            [None, None, None, Some(1)]
+        );
     }
 
     #[test]
-    fn stacked_rows_does_not_link_across_repos() {
+    fn list_blocks_does_not_link_across_repos() {
         let mut other = branched(2, "b", "a");
         other.repo_label = "acme/other".to_owned();
         let prs = vec![branched(1, "a", "main"), other];
-        let rows = stacked_rows(&prs, &[0, 1]);
-        assert!(rows.iter().all(|r| r.depth() == 0));
+        assert_eq!(
+            list_blocks(&prs, &[0, 1]),
+            vec![ListBlock::Singles(vec![0, 1])]
+        );
+    }
+
+    #[test]
+    fn list_blocks_keeps_the_band_order_between_a_stack_and_the_loose_rows() {
+        // The lone PR is listed first, so its block leads the stack that follows.
+        let prs = vec![
+            branched(9, "solo", "main"),
+            branched(1, "a", "main"),
+            branched(2, "b", "a"),
+        ];
+        let blocks = list_blocks(&prs, &[0, 1, 2]);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], ListBlock::Singles(vec![0]));
+        assert_eq!(stack_of(&blocks).rows.len(), 2);
+
+        // Listed the other way round, the stack leads.
+        let blocks = list_blocks(&prs, &[1, 2, 0]);
+        assert!(matches!(blocks[0], ListBlock::Stack(_)));
+        assert_eq!(blocks[1], ListBlock::Singles(vec![0]));
+    }
+
+    #[test]
+    fn list_blocks_keeps_a_branch_cycle_as_loose_rows() {
+        // a→b and b→a: neither is a root, so the pre-order never reaches them.
+        let prs = vec![branched(1, "a", "b"), branched(2, "b", "a")];
+        assert_eq!(
+            list_blocks(&prs, &[0, 1]),
+            vec![ListBlock::Singles(vec![0, 1])]
+        );
+    }
+
+    #[test]
+    fn issue_key_reads_the_branch_first_then_the_title() {
+        let mut p = branched(1, "feat/BAPS-10701-counter-catalogue", "develop");
+        assert_eq!(issue_key(&p), Some("BAPS-10701"));
+
+        // Several tickets on one branch: the first one names the row.
+        p.source_branch = "feat/BAPS-11251_11252_11253".to_owned();
+        assert_eq!(issue_key(&p), Some("BAPS-11251"));
+
+        p.source_branch = "hotfix/9.6.6".to_owned();
+        p.title = "BNG-13753: carry over NRENOUV".to_owned();
+        assert_eq!(issue_key(&p), Some("BNG-13753"));
+    }
+
+    #[test]
+    fn issue_key_is_none_when_nothing_looks_like_a_ticket() {
+        let mut p = branched(1, "chore/cleanup-dead-code", "main");
+        p.title = "Remove epsilon and migrate to Decimal.js".to_owned();
+        assert_eq!(issue_key(&p), None);
+
+        // A single digit is an encoding, not a ticket.
+        p.title = "Fix UTF-8 handling".to_owned();
+        assert_eq!(issue_key(&p), None);
+
+        // A key has to start on a word boundary.
+        p.title = "xBAPS-10 is not a key".to_owned();
+        assert_eq!(issue_key(&p), None);
     }
 
     #[test]

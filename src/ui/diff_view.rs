@@ -1350,7 +1350,7 @@ fn diff_render(
             } else {
                 [true, true]
             };
-            egui::ScrollArea::new(axes)
+            let scrolled = egui::ScrollArea::new(axes)
                 .auto_shrink([false, !axes[1]])
                 // Without a salt the offset is keyed on the position in the Ui tree
                 // alone, so the next file opened here inherits the scroll of the
@@ -1567,6 +1567,10 @@ fn diff_render(
                     }
                     update_text_selection(ui, state, &text_rows);
                 });
+            // A code line wider than the band owns rightward swipes over it until it is
+            // back at its left edge, so the PR review's back gesture cannot steal one
+            // (pull-requests.md §11).
+            crate::ui::note_h_scroll_room(ui.ctx(), scrolled.inner_rect, scrolled.state.offset.x);
             out.reveal =
                 reveal.map(|pos| egui::Rect::from_min_size(pos, egui::vec2(1.0, LINE_HEIGHT)));
             for hunk in extend_requests {

@@ -6,6 +6,56 @@
 
 ---
 
+## ☑ Milestone — M-PR9 · Browse list → the Rush design
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5, from the
+`Rush Pull Requests` design canvas. Counter: **2/2**.
+
+- ☑ **T1 — Blocks, stacks and the row.** Model: `list_blocks` replaces `stacked_rows`
+  (numbered spine + `off #N` instead of the `├`/`└` tree), plus `issue_key` and
+  `age_label`; `PrCache.refreshed_at` feeds the header's age note. View: bands hold
+  bordered blocks, a stack carries its own foldable header, the row is
+  `gutter · main · flags · comments · avatar`, and CI / ± fold into the flags and the
+  meta line rather than holding always-blank columns. The **author** avatar leads on
+  the left beside the state glyph; the right edge carries the **assigned reviewers** as
+  badged overlapping avatars (`reviewers_by_verdict`, `+N` overflow). Header gains its
+  tally, the
+  search clear, count pills and a bare Refresh; the list is centered on a 1280pt
+  measure and closes on a footer.
+  *Files*: `src/pull_requests/{model,runner}.rs`, `src/ui/pull_requests_view.rs`,
+  `src/app/render.rs`, `specs/pull-requests.md`, `specs/screenshots/`.
+  *Tests*: 8 unit rewritten/added (`list_blocks`, `issue_key`, `row_tags`), 5 UI e2e
+  added. Gate green (2033). *Verified*: `specs/screenshots/pr-list.png` regenerated,
+  dark and light checked.
+- ☑ **T2 — Swipe back in the review, and the slide.** A two-finger rightward swipe
+  returns to the list (`SwipeBack` over `MouseWheel` in points with a real
+  `TouchPhase`: ≥64pt right, twice the vertical, no modifiers). It fires **mid-run**,
+  on the event that crosses the threshold — waiting for the release cost 1–2s, the
+  length of the momentum tail — and the momentum that trails a flick **continues** the
+  run (within 250ms) instead of starting one, so a short flick completes and a spent
+  run never fires twice. A horizontally-scrolled surface under the pointer vetoes it
+  via the shared `note_h_scroll_room` / `h_scroll_owns_swipe` flag, which the diff
+  bands raise. Every exit — gesture, `Esc`, **Back** — now plays a 220ms ease-out slide
+  off to the right over the list drawn underneath, and the app leaves the review only
+  when it lands. *Files*: `src/ui/{pull_requests_view,mod,diff_view}.rs`,
+  `specs/pull-requests.md`. *Tests*: 7 unit on the recognizer + 3 on the flag, 3 UI
+  e2e (+ 4 existing back tests now step through the slide). Gate green (2047).
+  *Verified*: mid-slide frames rendered off a seeded clock — the parallax that first
+  went with the slide left unpainted gaps at the left edge and was dropped.
+  *Unverified*: the veto end to end over a real scrolled band (see Next actions).
+
+### Next actions (M-PR9)
+- ☐ **Swipe on a real trackpad.** The threshold and the momentum handling were tuned
+  from one report of a 1–2s lag, not measured: confirm the gesture now answers at once
+  and that ≥64pt is neither too eager nor too far. The scrolled-band veto still has no
+  e2e cover (the harness would not move a band's own scroll offset).
+- ☐ **Sticky band headers.** The canvas pins a section header while its band scrolls;
+  egui's `ScrollArea` has no sticky, so it needs a clamped repaint pass.
+- ☐ **Live verification.** Rendered from fixtures only — the real list over a live
+  forge is unverified here (no creds/network).
+
+---
+
 ## ☑ Milestone — M-PR8 · Continuous Files column + markdown fidelity
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §11. Per the user: read a PR's

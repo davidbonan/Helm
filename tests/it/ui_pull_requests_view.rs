@@ -411,6 +411,107 @@ fn list_loading_shows_a_spinner_not_the_empty_state() {
     );
 }
 
+/// A chain of PRs each targeting the one below it, all awaiting the same review.
+fn stack(len: u64) -> Vec<PullRequest> {
+    (0..len)
+        .map(|i| {
+            let mut p = pr(
+                "acme/web",
+                100 + i,
+                &format!("Stacked step {}", i + 1),
+                PrRole::ToReview,
+            );
+            p.review = Review::Pending;
+            p.source_branch = format!("feat/step-{i}");
+            p.dest_branch = if i == 0 {
+                "main".to_owned()
+            } else {
+                format!("feat/step-{}", i - 1)
+            };
+            p
+        })
+        .collect()
+}
+
+#[test]
+fn a_stack_lists_under_one_header_that_folds_it_away() {
+    let (mut harness, _) = harness(stack(3), None, 460.0);
+    harness.get_by_label("Stack · 3 PRs");
+    harness.get_by_label("Stacked step 1");
+    harness.get_by_label("Stacked step 3");
+
+    // The header is the fold: collapsed, the chain is a one-line summary.
+    harness.get_by_label("Stack · 3 PRs").click();
+    harness.step();
+    harness.step();
+    harness.get_by_label("Stack · 3 PRs");
+    assert!(
+        harness.query_by_label("Stacked step 1").is_none(),
+        "a folded stack must not leave its rows on screen"
+    );
+}
+
+#[test]
+fn a_lone_pr_gets_no_stack_header() {
+    let (harness, _) = harness(
+        vec![pr("acme/web", 1, "Fix the login flow", PrRole::ToReview)],
+        None,
+        460.0,
+    );
+    harness.get_by_label("Fix the login flow");
+    assert!(harness.query_by_label("Stack · 1 PR").is_none());
+}
+
+#[test]
+fn a_stacked_row_still_selects_by_its_own_title() {
+    let (mut harness, cap) = harness(stack(3), None, 460.0);
+    harness.get_by_label("Stacked step 2").click();
+    harness.step();
+    assert_eq!(cap.select.get(), Some(1));
+}
+
+#[test]
+fn the_footer_reports_what_the_filters_let_through() {
+    let (mut harness, _) = harness(
+        vec![
+            pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+            pr("acme/api", 2, "Bump the cache TTL", PrRole::Mine),
+        ],
+        None,
+        460.0,
+    );
+    harness.get_by_label("End of list · 2 pull requests");
+    harness.get_by_label("Mine").click();
+    harness.step();
+    harness.get_by_label("End of list · 1 pull request");
+}
+
+#[test]
+fn the_search_field_offers_a_clear_once_it_holds_a_query() {
+    let (mut harness, _) = harness(
+        vec![
+            pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+            pr("acme/api", 2, "Bump the cache TTL", PrRole::ToReview),
+        ],
+        None,
+        460.0,
+    );
+    assert!(harness.query_by_label("Clear search").is_none());
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .focus();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .type_text("login");
+    harness.run();
+    assert!(harness.query_by_label("Bump the cache TTL").is_none());
+
+    harness.get_by_label("Clear search").click();
+    harness.run();
+    harness.get_by_label("Bump the cache TTL");
+}
+
 #[test]
 fn clicking_a_row_selects_it() {
     let (mut harness, cap) = harness(
@@ -491,8 +592,79 @@ fn review_back_returns_to_the_list() {
         460.0,
     );
     harness.get_by_label("Back").click();
-    harness.step();
+    // The review slides off before it hands the app back to the list.
+    harness.run();
     assert!(cap.back.get());
+}
+
+/// Feed one trackpad phase into the harness the way `egui-winit` does on macOS: a
+/// point-unit wheel event carrying the phase, then a frame to fold it in.
+fn wheel(harness: &mut Harness<'static>, phase: egui::TouchPhase, delta: egui::Vec2) {
+    harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.step();
+}
+
+/// Play a whole two-finger run over the review surface.
+fn trackpad_swipe(harness: &mut Harness<'static>, delta: egui::Vec2) {
+    wheel(harness, egui::TouchPhase::Start, egui::Vec2::ZERO);
+    wheel(harness, egui::TouchPhase::Move, delta);
+    wheel(harness, egui::TouchPhase::End, egui::Vec2::ZERO);
+}
+
+#[test]
+fn a_two_finger_swipe_right_returns_to_the_list() {
+    let (mut harness, cap) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    trackpad_swipe(&mut harness, egui::vec2(120.0, 4.0));
+    assert!(cap.back.get());
+}
+
+#[test]
+fn a_two_finger_scroll_does_not_return_to_the_list() {
+    let (mut harness, cap) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    // Down the page.
+    trackpad_swipe(&mut harness, egui::vec2(0.0, -300.0));
+    // Leftward, which reveals content to the right rather than the list.
+    trackpad_swipe(&mut harness, egui::vec2(-200.0, 0.0));
+    // Rightward but barely.
+    trackpad_swipe(&mut harness, egui::vec2(30.0, 0.0));
+    assert!(!cap.back.get());
+}
+
+#[test]
+fn a_mouse_wheel_never_reads_as_a_swipe() {
+    let (mut harness, cap) = review_harness(
+        pr("acme/web", 1, "Fix the login flow", PrRole::ToReview),
+        Vec::new(),
+        460.0,
+    );
+    // A wheel reports lines, not points, and has no gesture to recognize.
+    for phase in [
+        egui::TouchPhase::Start,
+        egui::TouchPhase::Move,
+        egui::TouchPhase::End,
+    ] {
+        harness.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(40.0, 0.0),
+            phase,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.step();
+    }
+    assert!(!cap.back.get());
 }
 
 /// Height the column measured for a file's band, read from the view's own record

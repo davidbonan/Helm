@@ -91,6 +91,9 @@ pub struct PrCache {
     /// At least one source served cached rows on the last refresh because its
     /// query failed transiently (pull-requests.md §6) — drives the "stale" hint.
     pub stale: bool,
+    /// Unix seconds of the last folded reply, for the header's "· 2 min ago" note.
+    /// `None` until the first one lands.
+    pub refreshed_at: Option<i64>,
 }
 
 impl PrCache {
@@ -111,6 +114,10 @@ impl PrCache {
         self.bitbucket = reply.bitbucket;
         self.loaded = true;
         self.stale = stale;
+        self.refreshed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .ok();
     }
 
     fn rows_of(&self, kind: ForgeKind) -> Vec<PullRequest> {

@@ -2204,8 +2204,49 @@ fn gen_pr_list() {
         diffstat: Some((number as u32 * 3, number as u32)),
         comment_count: Some((number % 7) as u32),
     };
+    // A chain of PRs each targeting the one below it, so the shot carries the stack
+    // block: its header, the numbered spine and the "Review first" flag on the base.
+    let stacked = |number: u64, title: &str, src: &str, dest: &str| PullRequest {
+        dest_branch: dest.to_owned(),
+        ..mk(
+            "acme/web",
+            number,
+            title,
+            "mira",
+            src,
+            PrRole::ToReview,
+            PrState::Open,
+            Checks::Passing,
+            Review::Pending,
+            vec![reviewer("octocat", Review::Pending)],
+        )
+    };
 
     let prs = vec![
+        stacked(
+            140,
+            "counter catalogue spike",
+            "feat/ACME-701-counter-catalogue",
+            "main",
+        ),
+        stacked(
+            141,
+            "setup the periodic batch and read CLIENTMAIL",
+            "feat/ACME-702-setup-batch",
+            "feat/ACME-701-counter-catalogue",
+        ),
+        stacked(
+            142,
+            "registry, dispatcher and the ENVOIMAIL log line",
+            "feat/ACME-703-dispatcher",
+            "feat/ACME-702-setup-batch",
+        ),
+        stacked(
+            143,
+            "daily lifecycle orchestrator",
+            "feat/ACME-704-daily-orchestrator",
+            "feat/ACME-703-dispatcher",
+        ),
         mk(
             "acme/web",
             128,
@@ -2274,7 +2315,15 @@ fn gen_pr_list() {
                 &palette,
                 &prs,
                 None,
-                &PrSourceHints::default(),
+                &PrSourceHints {
+                    // Two minutes back, so the header carries its age note; the label
+                    // is a function of the delta, so the shot stays reproducible.
+                    refreshed_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64 - 120)
+                        .ok(),
+                    ..Default::default()
+                },
                 None,
                 460.0,
                 false,

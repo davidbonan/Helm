@@ -969,6 +969,7 @@ impl HelmApp {
                     .pr_runner
                     .as_ref()
                     .is_some_and(crate::pull_requests::runner::PrRunner::busy));
+        let pr_refreshed_at = self.pr_cache.refreshed_at;
         let pr_selected = self.pr_selected;
         let pr_detail_width = self.pr_detail_width;
         let pr_rail_collapsed = self.pr_rail_collapsed;
@@ -1272,6 +1273,7 @@ impl HelmApp {
                                 bitbucket: pr_bitbucket_hint.as_deref(),
                                 no_repos: pr_no_repos,
                                 loading: pr_loading,
+                                refreshed_at: pr_refreshed_at,
                             };
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,
@@ -2152,6 +2154,7 @@ impl HelmApp {
                                 bitbucket: pr_bitbucket_hint.as_deref(),
                                 no_repos: pr_no_repos,
                                 loading: pr_loading,
+                                refreshed_at: pr_refreshed_at,
                             };
                             let action = crate::ui::pull_requests_view::pull_requests_page(
                                 ui,

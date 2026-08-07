@@ -77,6 +77,31 @@ pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
 }
 
+fn h_scroll_room_id() -> egui::Id {
+    egui::Id::new("h_scroll_room")
+}
+
+/// Raised by a horizontally-scrollable surface when the pointer sits over it **and** it
+/// still has room to its left. A rightward trackpad swipe there is that surface's
+/// scroll, not a navigation gesture — the same rule Safari uses before it will go back.
+/// Set while the frame's body renders, read once after it, which clears it.
+pub(crate) fn note_h_scroll_room(ctx: &egui::Context, viewport: egui::Rect, offset_x: f32) {
+    if offset_x <= 0.5
+        || !ctx
+            .pointer_latest_pos()
+            .is_some_and(|at| viewport.contains(at))
+    {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(h_scroll_room_id(), true));
+}
+
+/// Whether [`note_h_scroll_room`] fired this frame, clearing it for the next.
+pub(crate) fn h_scroll_owns_swipe(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(h_scroll_room_id()))
+        .unwrap_or(false)
+}
+
 /// Shared interaction acquisition for custom clickable widgets: allocates
 /// `size` with `Sense::click` when `enabled` (otherwise `hover` — the widget
 /// stays hoverable for its tooltip), sets the pointer cursor on hover and
@@ -1467,6 +1492,51 @@ mod tests {
         );
         // Negative seconds wrap back cleanly (rem_euclid).
         assert_eq!(format_date_time(-60), "31/12/1969 @ 23:59");
+    }
+
+    /// Runs one frame with the pointer parked at `at`, letting the body raise the flag.
+    fn frame_with_pointer(at: egui::Pos2, mut body: impl FnMut(&egui::Context)) -> egui::Context {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(at)],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| body(ui.ctx()));
+        ctx
+    }
+
+    const SCROLL_ROOM_VIEWPORT: egui::Rect = egui::Rect {
+        min: egui::pos2(100.0, 100.0),
+        max: egui::pos2(300.0, 300.0),
+    };
+
+    #[test]
+    fn a_scrolled_surface_under_the_pointer_claims_the_swipe() {
+        let ctx = frame_with_pointer(egui::pos2(150.0, 150.0), |ctx| {
+            note_h_scroll_room(ctx, SCROLL_ROOM_VIEWPORT, 40.0);
+        });
+
+        assert!(h_scroll_owns_swipe(&ctx));
+        // Reading clears it, so the next frame starts from nothing claimed.
+        assert!(!h_scroll_owns_swipe(&ctx));
+    }
+
+    #[test]
+    fn a_surface_back_at_its_left_edge_leaves_the_swipe_alone() {
+        let ctx = frame_with_pointer(egui::pos2(150.0, 150.0), |ctx| {
+            note_h_scroll_room(ctx, SCROLL_ROOM_VIEWPORT, 0.0);
+        });
+
+        assert!(!h_scroll_owns_swipe(&ctx));
+    }
+
+    #[test]
+    fn a_surface_the_pointer_is_not_over_leaves_the_swipe_alone() {
+        let ctx = frame_with_pointer(egui::pos2(600.0, 150.0), |ctx| {
+            note_h_scroll_room(ctx, SCROLL_ROOM_VIEWPORT, 40.0);
+        });
+
+        assert!(!h_scroll_owns_swipe(&ctx));
     }
 
     #[test]
