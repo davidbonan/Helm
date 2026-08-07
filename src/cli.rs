@@ -8,6 +8,7 @@
 
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,6 +30,7 @@ Usage:
   helm                 Launch the app
   helm <path>          Open the repository or worktree at <path>
   helm run <command>   Drive the Run server of a worktree (see below)
+  helm init claude     Teach Claude Code to use `helm run` (writes HELM.md)
   helm --help          Show this message
   helm --version       Show the version
 
@@ -63,10 +65,19 @@ pub enum Args {
     Open(PathBuf),
     /// `helm run …`: the Run strip, driven from outside the app (§9).
     Run(RunArgs),
+    /// `helm init <agent>`: install helm's instructions for a coding agent (§10).
+    Init(InitTarget),
     Help,
     Version,
     /// Misuse: the message to print on stderr.
     Usage(String),
+}
+
+/// Agent `helm init` knows how to equip. One today; the verb takes a target so a
+/// second one costs a match arm, not a new syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitTarget {
+    Claude,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +106,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Args {
     let first = args.first().map(|a| a.to_string_lossy().into_owned());
     if first.as_deref() == Some("run") {
         return parse_run(&args[1..]);
+    }
+    if first.as_deref() == Some("init") {
+        return parse_init(&args[1..]);
     }
     match (args.len(), first.as_deref()) {
         (0, _) => Args::Gui { open_url: None },
@@ -168,6 +182,21 @@ fn parse_run(rest: &[OsString]) -> Args {
     })
 }
 
+fn parse_init(rest: &[OsString]) -> Args {
+    let words: Vec<String> = rest
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    match words.len() {
+        0 => Args::Usage("init: expected an agent to equip (claude)".to_owned()),
+        1 => match words[0].as_str() {
+            "claude" => Args::Init(InitTarget::Claude),
+            other => Args::Usage(format!("helm cannot equip “{other}” yet")),
+        },
+        _ => Args::Usage("init takes a single agent".to_owned()),
+    }
+}
+
 /// Runs everything but `Args::Gui` and returns the process exit code.
 pub fn execute(args: Args) -> i32 {
     match args {
@@ -192,6 +221,112 @@ pub fn execute(args: Args) -> i32 {
             }
         },
         Args::Run(run) => execute_run(run),
+        Args::Init(InitTarget::Claude) => execute_init_claude(),
+    }
+}
+
+/// Instructions file helm owns inside the Claude config dir — its own file, so a
+/// rewrite never touches a line the user wrote.
+const CLAUDE_INSTRUCTIONS_FILE: &str = "HELM.md";
+/// Claude Code's user-level memory, which pulls the above in.
+const CLAUDE_MEMORY_FILE: &str = "CLAUDE.md";
+/// The `@` include, resolved by Claude Code against the memory file's own folder.
+const CLAUDE_INCLUDE: &str = "@HELM.md";
+
+/// What helm tells an agent about `helm run` (§10), baked into the binary the same
+/// way the release notes are: one source, and `helm init claude` after an update
+/// refreshes it.
+const AGENT_INSTRUCTIONS: &str = include_str!("../agent-instructions.md");
+
+/// Claude Code's config folder: `CLAUDE_CONFIG_DIR` when set (it is what Claude
+/// itself honours), else `~/.claude`.
+fn claude_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".claude"))
+}
+
+/// What the install did, so the CLI can report it instead of claiming work.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InitReport {
+    pub instructions: PathBuf,
+    /// False when the file already held exactly these instructions.
+    pub instructions_written: bool,
+    pub memory: PathBuf,
+    /// False when the include line was already there.
+    pub include_added: bool,
+}
+
+/// Writes helm's instructions into `dir` and makes the memory file pull them in.
+/// Idempotent, and additive on the memory file: one appended line, never a rewrite
+/// — that file is the user's. Opened in append mode, so a symlinked `CLAUDE.md`
+/// (a dotfiles setup) is followed rather than replaced.
+pub fn install_claude_instructions(dir: &Path) -> std::io::Result<InitReport> {
+    std::fs::create_dir_all(dir)?;
+    let instructions = dir.join(CLAUDE_INSTRUCTIONS_FILE);
+    let instructions_written =
+        std::fs::read_to_string(&instructions).ok().as_deref() != Some(AGENT_INSTRUCTIONS);
+    if instructions_written {
+        std::fs::write(&instructions, AGENT_INSTRUCTIONS)?;
+    }
+
+    let memory = dir.join(CLAUDE_MEMORY_FILE);
+    let existing = std::fs::read_to_string(&memory).unwrap_or_default();
+    let include_added = !existing.lines().any(|line| line.trim() == CLAUDE_INCLUDE);
+    if include_added {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&memory)?;
+        let separator = if existing.is_empty() || existing.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        writeln!(file, "{separator}{CLAUDE_INCLUDE}")?;
+    }
+
+    Ok(InitReport {
+        instructions,
+        instructions_written,
+        memory,
+        include_added,
+    })
+}
+
+fn execute_init_claude() -> i32 {
+    let Some(dir) = claude_config_dir() else {
+        eprintln!("helm: cannot locate Claude's config folder (no home directory)");
+        return 1;
+    };
+    match install_claude_instructions(&dir) {
+        Ok(report) => {
+            let (verb, path) = match report.instructions_written {
+                true => ("wrote", &report.instructions),
+                false => ("unchanged", &report.instructions),
+            };
+            println!("{verb:<10}{}", tilde(path));
+            match report.include_added {
+                true => println!("linked    {CLAUDE_INCLUDE} in {}", tilde(&report.memory)),
+                false => println!("linked    already in {}", tilde(&report.memory)),
+            }
+            0
+        }
+        Err(err) => {
+            eprintln!("helm: cannot write into {}: {err}", dir.display());
+            1
+        }
+    }
+}
+
+/// Home-relative display: these paths are read by a human, and `~/.claude/…` says
+/// more at a glance than the absolute one.
+fn tilde(path: &Path) -> String {
+    let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    match home.and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 
@@ -729,6 +864,84 @@ mod tests {
             "a process that died says with what: {}",
             run_line(&crashed)
         );
+    }
+
+    #[test]
+    fn init_takes_one_known_agent() {
+        assert_eq!(args(&["init", "claude"]), Args::Init(InitTarget::Claude));
+        assert!(matches!(args(&["init"]), Args::Usage(_)));
+        assert!(matches!(args(&["init", "codex"]), Args::Usage(_)));
+        assert!(matches!(args(&["init", "claude", "x"]), Args::Usage(_)));
+    }
+
+    #[test]
+    fn installing_writes_the_instructions_and_links_them_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().join("claude");
+
+        let first = install_claude_instructions(&dir).unwrap();
+        assert!(first.instructions_written && first.include_added);
+        assert_eq!(
+            std::fs::read_to_string(&first.instructions).unwrap(),
+            AGENT_INSTRUCTIONS
+        );
+        assert_eq!(
+            std::fs::read_to_string(&first.memory).unwrap(),
+            "@HELM.md\n",
+            "a missing memory file is created holding the include"
+        );
+
+        let again = install_claude_instructions(&dir).unwrap();
+        assert!(
+            !again.instructions_written && !again.include_added,
+            "a second run has nothing to do: {again:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&again.memory).unwrap(),
+            "@HELM.md\n",
+            "the include is not appended twice"
+        );
+    }
+
+    #[test]
+    fn installing_only_appends_to_a_memory_file_the_user_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = dir.path().join(CLAUDE_MEMORY_FILE);
+        // No trailing newline: the include must not land on the user's last line.
+        std::fs::write(&memory, "@RTK.md\n\n# Coding Behavior\n\nBe careful.").unwrap();
+
+        install_claude_instructions(dir.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&memory).unwrap(),
+            "@RTK.md\n\n# Coding Behavior\n\nBe careful.\n@HELM.md\n"
+        );
+    }
+
+    #[test]
+    fn a_stale_instructions_file_is_refreshed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(CLAUDE_INSTRUCTIONS_FILE), "# old helm\n").unwrap();
+        std::fs::write(dir.path().join(CLAUDE_MEMORY_FILE), "@HELM.md\n").unwrap();
+
+        let report = install_claude_instructions(dir.path()).unwrap();
+
+        assert!(report.instructions_written, "an update rewrites the file");
+        assert!(!report.include_added, "the link was already there");
+        assert_eq!(
+            std::fs::read_to_string(&report.instructions).unwrap(),
+            AGENT_INSTRUCTIONS
+        );
+    }
+
+    #[test]
+    fn the_bundled_instructions_teach_the_run_commands() {
+        for command in ["helm run status", "helm run list", "helm run logs"] {
+            assert!(
+                AGENT_INSTRUCTIONS.contains(command),
+                "the shipped instructions must name `{command}`"
+            );
+        }
     }
 
     #[test]

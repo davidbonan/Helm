@@ -249,6 +249,24 @@ helm ~/dev/api.worktrees/feature-x    # open that worktree
 Other applications get the same door through the `helm://open?path=…` URL
 scheme — a Raycast script, an Alfred workflow, a link in your notes.
 
+### CLI — your agent asks before it starts a server
+
+Helm runs one dev server per worktree, on a port it assigns. A coding agent that
+spawns its own `npm run dev` competes with it, so it can ask instead:
+
+```sh
+helm run status               # is a server up on this worktree, on which port
+helm run list                 # every worktree helm knows
+helm run start | stop | relaunch
+helm run logs -n 40           # tail what the server printed
+helm init claude              # teach Claude Code the above, once
+```
+
+`helm init claude` writes the rules to `~/.claude/HELM.md` and links them from your
+`CLAUDE.md` — re-run it after an update to refresh them. Everything is answered by
+the running app: `--json` on any command, and exit code `3` when helm is not there
+to answer, which is the agent's cue to fall back to its own shell.
+
 Details → [`specs/cli.md`](specs/cli.md)
 
 ### Preferences — make it yours

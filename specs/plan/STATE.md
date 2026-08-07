@@ -10,7 +10,8 @@
 
 Spec: [`specs/cli.md`](../cli.md) §9. Per the user: let an agent working in a
 worktree ask helm whether a server is already up there, list the runs, and start
-one — then read what that server printed. Counter: **3/3**.
+one — then read what that server printed, and have any helm user equip their agent
+in one command. Counter: **4/4**.
 
 - ☑ **T1 — Control socket + `helm run` subcommands.** `helm://` cannot answer a
   question, so the app binds `<support dir>/helm.sock` (after the instance lock) and
@@ -70,6 +71,20 @@ one — then read what that server printed. Counter: **3/3**.
   real fix would be a shareable run registry (pid + `SharedTerm`) so read-only
   requests never need a frame — not done, deliberately: it duplicates state the
   workspace owns.
+- ☑ **T4 — `helm init claude`.** The commands were useless to an agent nobody told
+  about them. `agent-instructions.md` (repo root, `include_str!` like the release
+  notes) is written to `<CLAUDE_CONFIG_DIR|~/.claude>/HELM.md` — a file helm owns
+  alone — and a single `@HELM.md` line is **appended** to that folder's `CLAUDE.md`,
+  in append mode so a symlinked memory file is followed, never replaced. Idempotent
+  and it says which (`wrote`/`unchanged`, `linked`/`already`). The verb takes a
+  target so Codex or opencode cost a match arm, not a syntax.
+  *Files*: `agent-instructions.md` (new), `src/cli.rs`, `specs/cli.md` §10.
+  *Tests*: 6 unit `cli::tests` (argv, first install, idempotence, append to a
+  user-owned file without a trailing newline, refresh of a stale file, the shipped
+  text still naming its commands). Gate green (2081).
+  *Verified*: dev binary against a throwaway `CLAUDE_CONFIG_DIR` (two runs, user
+  content preserved) then on the real config — `~/.claude/HELM.md` written and
+  `@HELM.md` linked beside `@RTK.md` / `@LSP.md`.
 
 ---
 

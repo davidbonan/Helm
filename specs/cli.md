@@ -33,6 +33,7 @@ project/worktree argument pair to disambiguate.
 | `--open-url <url>` | **GUI**, with a startup target injected (§5) |
 | `<path>` | **CLI** — resolve, hand over, exit |
 | `run <verb> [path]` | **CLI** — ask the running app about the Run strip (§9) |
+| `init <agent>` | **CLI** — install helm's instructions for a coding agent (§10) |
 | `-h`/`--help`, `-V`/`--version` | print, exit 0 |
 | anything else | usage on stderr, exit 2 |
 
@@ -278,3 +279,41 @@ command returns, the adoption of a worktree created outside helm, the refusals
 (unit, `app::tests`). Verified by hand on a dev instance: the hidden-window
 timeout, a 121-character line coming back whole out of an 80-column grid, and
 `exit_code` 7 surfacing in both output forms.
+
+## 10. Equipping an agent — `helm init claude`
+
+§9 gives an agent the commands; nothing tells it they exist. A user who installs
+helm has to discover `helm run`, write the rules down, and keep them current — three
+occasions to not bother. `helm init claude` does it:
+
+```sh
+helm init claude
+# wrote     ~/.claude/HELM.md
+# linked    @HELM.md in ~/.claude/CLAUDE.md
+```
+
+- **One file helm owns.** The instructions live in `HELM.md`, alone, so a rewrite
+  never touches a line the user wrote. They are baked into the binary
+  (`include_str!("../agent-instructions.md")`, the same treatment as the release
+  notes, `update.md` §9.1): one source, offline, and re-running the command after an
+  update refreshes the file. This is also the answer to drift — the instructions ship
+  with the version of `helm run` they describe.
+- **The memory file is only appended to**: a single `@HELM.md` line, Claude Code's
+  own include, resolved against that file's folder. Never a rewrite, never a
+  reordering — and opened in **append mode**, so a `CLAUDE.md` symlinked out of a
+  dotfiles repo is followed rather than replaced.
+- **Idempotent, and it says which**: a second run prints `unchanged` /
+  `linked already`, so a user (or a script) can call it on every update without
+  wondering what it did. The include is matched line-wise, so it is never doubled.
+- **Where**: `CLAUDE_CONFIG_DIR` when set — Claude Code honours it, and a user who
+  moved their config expects helm to follow — else `~/.claude`. The folder is created
+  if missing; a first-time user gets a `CLAUDE.md` holding just the include.
+- **One agent today.** The verb takes a target (`helm init <agent>`) rather than
+  hard-coding Claude, so Codex or opencode ([`agents.md`](agents.md)) cost a match arm
+  and a file, not a new syntax. An unknown target is a usage error, not a silent
+  no-op: `helm cannot equip “codex” yet`.
+
+Covered by tests: argv (target required, single, known), the install against a
+throwaway folder — creation, idempotence on a second run, append to a user-owned
+memory file with no trailing newline, refresh of a stale instructions file — and a
+check that the shipped text still names the commands it teaches (unit, `cli::tests`).
