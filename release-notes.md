@@ -1,5 +1,29 @@
 # Release notes
 
+## 2.2.0
+
+- Ask helm from the terminal whether a dev server is already running:
+  `helm run status` answers for the worktree you are standing in — state, port,
+  command — and `helm run list` covers every worktree helm knows. `start` /
+  `stop` / `relaunch` drive the Run strip without touching the window, and
+  `helm run logs -n 40` tails what the server printed, so a stack trace is one
+  command away. Every one of them takes `--json`.
+- `helm init claude` teaches Claude Code those commands in one shot: the rules
+  land in `~/.claude/HELM.md`, linked from your `CLAUDE.md`. Your agent then asks
+  helm before spawning a second server on a port nobody assigned it — and reuses
+  the one already running, in the strip where you can watch it. Re-run it after
+  an update to refresh the rules.
+- The Agents wall comes in four pages: a set of terminals you arranged stays
+  arranged when you need another pair, and the four-terminal cap counts per page.
+  The pager rides the title row instead of a row of its own, which hands 30px of
+  header back to the wall.
+- Pull requests open on a redesigned browse list: stacks carry a numbered spine
+  and their own foldable header, the author's avatar leads beside the state, the
+  assigned reviewers sit on the right edge, and CI and ± fold into the row's
+  flags rather than holding always-blank columns.
+- A two-finger swipe to the right leaves a review and goes straight back to the
+  list.
+
 ## 2.1.1
 
 - The Agents strip groups its chips by project: the project is named once, as a
@@ -101,13 +125,4 @@
 - *Open in editor* now re-focuses the Zed window that already holds the project
   and adds the file as a tab, instead of opening a second window and reloading
   the whole workspace.
-
-## 1.5.0
-
-- Clean up several worktrees in a row: a *Delete worktree from disk* clicked
-  while another removal is still running no longer vanishes without a trace.
-  Each row now carries its own spinner, and two removals finishing together
-  both land.
-- A collapsed card in the Agents *Columns* view previews a few more lines of
-  its conversation.
 
