@@ -488,9 +488,10 @@ pub struct HelmApp {
     /// tab/pane closed is dropped (and the most urgent agent re-picked) each frame.
     selected_agent: Option<(RepoKey, TabId, PaneId)>,
     /// Which agents the dashboard's wall mirrors, and how their tiles are
-    /// laid out (specs/agents.md §5). Session state — an agent key only means
-    /// something while its pane runs, so nothing is persisted.
-    agents_wall: crate::agents_wall::AgentWall<(RepoKey, TabId, PaneId)>,
+    /// laid out (specs/agents.md §5) — one composition per page, the header flips
+    /// between them. Session state — an agent key only means something while its pane
+    /// runs, so nothing is persisted.
+    agents_wall: crate::agents_wall::AgentWallPages<(RepoKey, TabId, PaneId)>,
     /// The wall is seeded with the most urgent agent when the dashboard opens, so it
     /// never opens empty; cleared on leaving, so hiding every tile stays the user's
     /// answer for as long as the page is up.
@@ -757,7 +758,7 @@ impl HelmApp {
             font_zoom: FontZoom::default(),
             central_mode: CentralMode::default(),
             selected_agent: None,
-            agents_wall: crate::agents_wall::AgentWall::new(),
+            agents_wall: crate::agents_wall::AgentWallPages::new(),
             agents_wall_seeded: false,
             git_file_view: prefs.git_file_view,
             run_panel_height: prefs.run_panel_height,

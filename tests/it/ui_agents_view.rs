@@ -41,6 +41,7 @@ struct Captured {
     select: Cell<Option<usize>>,
     jump: Cell<Option<usize>>,
     toggle: Cell<Option<usize>>,
+    page: Cell<Option<usize>>,
     resize: Cell<Option<ResizeDrag>>,
     drop: Cell<Option<PaneDrop>>,
     drawn: RefCell<Vec<usize>>,
@@ -100,6 +101,17 @@ fn wall_harness(
     selected: Option<usize>,
     shown: &[usize],
 ) -> (Harness<'static>, Rc<Captured>) {
+    wall_harness_with(data, selected, shown, true)
+}
+
+/// Same again, saying whether the workspace sidebar holds the window's left edge — what
+/// places the pager in the title row.
+fn wall_harness_with(
+    data: Vec<Row>,
+    selected: Option<usize>,
+    shown: &[usize],
+    workspace_shown: bool,
+) -> (Harness<'static>, Rc<Captured>) {
     let palette = Palette::light();
     let cap = Rc::new(Captured::default());
     let sink = cap.clone();
@@ -110,6 +122,9 @@ fn wall_harness(
     let slots: Vec<(PaneId, usize)> = wall.slots().to_vec();
     let layout = wall.layout().cloned();
     let full = wall.full();
+    // Page one is the one on screen; the pager also marks page two as carrying something,
+    // so the "holds terminals" state renders alongside the empty ones.
+    let page_counts = [wall.len(), 1, 0, 0];
     let mut harness = Harness::builder().with_size(WINDOW).build_ui(move |ui| {
         let rows: Vec<AgentRow> = data
             .iter()
@@ -128,13 +143,23 @@ fn wall_harness(
             layout: layout.as_ref(),
             slots: &slots,
             full,
+            page: 0,
+            page_counts,
         };
-        let action = agents_page(ui, &palette, &rows, selected, &wall, |idx, term_ui| {
-            sink.drawn.borrow_mut().push(idx);
-            sink.term_rects.borrow_mut().push((idx, term_ui.max_rect()));
-            term_ui.label(format!("TERM-{idx}"));
-            false
-        });
+        let action = agents_page(
+            ui,
+            &palette,
+            &rows,
+            selected,
+            &wall,
+            workspace_shown,
+            |idx, term_ui| {
+                sink.drawn.borrow_mut().push(idx);
+                sink.term_rects.borrow_mut().push((idx, term_ui.max_rect()));
+                term_ui.label(format!("TERM-{idx}"));
+                false
+            },
+        );
         // Latch: a Working row repaints (spinner), so later settle frames see no
         // click and would otherwise clear the action captured on the click frame.
         if action.select.is_some() {
@@ -145,6 +170,9 @@ fn wall_harness(
         }
         if action.toggle.is_some() {
             sink.toggle.set(action.toggle);
+        }
+        if action.page.is_some() {
+            sink.page.set(action.page);
         }
         if action.resize.is_some() {
             sink.resize.set(action.resize);
@@ -455,6 +483,48 @@ fn a_full_wall_leaves_the_remaining_chips_out_of_reach() {
     harness.get_by_label("Amp · helm · main · Tab 4").click();
     harness.step();
     assert_eq!(cap.toggle.get(), Some(3));
+}
+
+#[test]
+fn the_pager_offers_a_button_per_wall_page_and_reports_the_one_clicked() {
+    let (mut harness, cap) = wall_harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Idle)],
+        Some(0),
+        &[0],
+    );
+    harness.get_by_label("Wall page 1");
+    harness.get_by_label("Wall page 3");
+    harness.get_by_label("Wall page 4").click();
+    harness.step();
+    assert_eq!(cap.page.get(), Some(3));
+    assert_eq!(
+        cap.toggle.get(),
+        None,
+        "the pager flips pages, it shows no agent"
+    );
+}
+
+#[test]
+fn the_pager_steps_clear_of_the_window_controls_when_the_sidebar_is_hidden() {
+    let (with_sidebar, _) = wall_harness(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Idle)],
+        Some(0),
+        &[0],
+    );
+    let on_the_rail = with_sidebar.get_by_label("Wall page 1").rect().left();
+    // Sidebar hidden: the central area reaches the window's left edge, where the macOS
+    // traffic lights and the sidebar toggle float over the title row the pager rides.
+    let (no_sidebar, _) = wall_harness_with(
+        vec![row("helm", "claude", "Tab 1", AgentBadge::Idle)],
+        Some(0),
+        &[0],
+        false,
+    );
+    let shifted = no_sidebar.get_by_label("Wall page 1").rect().left();
+    assert!(
+        shifted > on_the_rail + 78.0,
+        "the pager clears the lights ({shifted} vs {on_the_rail})"
+    );
 }
 
 #[test]

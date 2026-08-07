@@ -435,12 +435,24 @@ impl HelmApp {
             return;
         };
         let key = (entry.repo_key.clone(), entry.tab_id, entry.pane_id);
-        if self.agents_wall.shows(&key) {
-            self.agents_wall.hide(&key);
-            if let Some(next) = self.agents_wall.focused().cloned() {
+        let wall = self.agents_wall.active_mut();
+        if wall.shows(&key) {
+            wall.hide(&key);
+            if let Some(next) = wall.focused().cloned() {
                 self.selected_agent = Some(next);
             }
-        } else if self.agents_wall.show(key.clone(), rect(area)).is_some() {
+        } else if wall.show(key.clone(), rect(area)).is_some() {
+            self.selected_agent = Some(key);
+        }
+    }
+
+    /// Applies a header pager click (specs/agents.md §5): flips the wall to that page.
+    /// The keyboard follows what the new page shows — the tile it left focused — so the
+    /// selection never points at an agent that is no longer on screen; an empty page
+    /// keeps the current selection, which is what the next chip click will move.
+    pub(super) fn open_wall_page(&mut self, page: usize) {
+        self.agents_wall.open(page);
+        if let Some(key) = self.agents_wall.active().focused().cloned() {
             self.selected_agent = Some(key);
         }
     }
@@ -856,6 +868,7 @@ impl HelmApp {
         let mut agents_select = None;
         let mut agents_focus = None;
         let mut agents_toggle = None;
+        let mut agents_page_switch = None;
         let mut agents_wall_rect = None;
         let mut agents_resize = None;
         let mut agents_drop = None;
@@ -919,6 +932,7 @@ impl HelmApp {
         // the render closure holds no borrow on the app.
         let wall_slots: Vec<(PaneId, usize)> = self
             .agents_wall
+            .active()
             .slots()
             .iter()
             .filter_map(|(slot, key)| {
@@ -928,8 +942,10 @@ impl HelmApp {
                     .map(|row| (*slot, row))
             })
             .collect();
-        let wall_layout = self.agents_wall.layout().cloned();
-        let wall_full = self.agents_wall.full();
+        let wall_layout = self.agents_wall.active().layout().cloned();
+        let wall_full = self.agents_wall.active().full();
+        let wall_page = self.agents_wall.page();
+        let wall_page_counts = self.agents_wall.counts();
         let mut open_feedback_request = false;
         let mut open_dialog_requested = false;
         let mut open_link: Option<LinkAction> = None;
@@ -1230,6 +1246,8 @@ impl HelmApp {
                                 layout: wall_layout.as_ref(),
                                 slots: &wall_slots,
                                 full: wall_full,
+                                page: wall_page,
+                                page_counts: wall_page_counts,
                             };
                             let action = crate::ui::agents_view::agents_page(
                                 ui,
@@ -1237,6 +1255,7 @@ impl HelmApp {
                                 &agent_rows,
                                 selected_index,
                                 &wall,
+                                workspace_shown,
                                 |idx, term_ui| {
                                     mirror_agent_terminal(
                                         term_ui,
@@ -1256,6 +1275,7 @@ impl HelmApp {
                             agents_select = action.select;
                             agents_focus = action.jump;
                             agents_toggle = action.toggle;
+                            agents_page_switch = action.page;
                             agents_wall_rect = action.wall_rect;
                             agents_resize = action.resize;
                             agents_drop = action.drop;
@@ -2116,6 +2136,8 @@ impl HelmApp {
                                 layout: wall_layout.as_ref(),
                                 slots: &wall_slots,
                                 full: wall_full,
+                                page: wall_page,
+                                page_counts: wall_page_counts,
                             };
                             let action = crate::ui::agents_view::agents_page(
                                 ui,
@@ -2123,6 +2145,7 @@ impl HelmApp {
                                 &agent_rows,
                                 selected_index,
                                 &wall,
+                                workspace_shown,
                                 |idx, term_ui| {
                                     mirror_agent_terminal(
                                         term_ui,
@@ -2142,6 +2165,7 @@ impl HelmApp {
                             agents_select = action.select;
                             agents_focus = action.jump;
                             agents_toggle = action.toggle;
+                            agents_page_switch = action.page;
                             agents_wall_rect = action.wall_rect;
                             agents_resize = action.resize;
                             agents_drop = action.drop;
@@ -2434,6 +2458,10 @@ impl HelmApp {
             self.toggle_wall_agent(index, agents_wall_rect.unwrap_or(egui::Rect::ZERO));
             ctx.request_repaint();
         }
+        if let Some(page) = agents_page_switch {
+            self.open_wall_page(page);
+            ctx.request_repaint();
+        }
         // Wall relayout — the split tree's own gestures and chords (terminal.md §5,
         // keybindings §2), applied to the wall's tree exactly as the workspace applies
         // them to a tab's.
@@ -2441,7 +2469,9 @@ impl HelmApp {
             // A grip drag carries the focus with the pane it moves, and a focus chord
             // moves it outright: either way the dashboard's selection follows the tree.
             let mut focus_moved = agents_drop.is_some();
-            if let (Some(area), Some(layout)) = (agents_wall_rect, self.agents_wall.layout_mut()) {
+            if let (Some(area), Some(layout)) =
+                (agents_wall_rect, self.agents_wall.active_mut().layout_mut())
+            {
                 let (cell_w, cell_h) = cell_metrics(ctx, font_size);
                 if let Some(drag) = agents_resize {
                     layout.resize_split(
@@ -2466,7 +2496,7 @@ impl HelmApp {
                 focus_moved |= route_wall_keys(ctx, &self.keymap, layout, area, font_size);
             }
             if focus_moved {
-                if let Some(key) = self.agents_wall.focused().cloned() {
+                if let Some(key) = self.agents_wall.active().focused().cloned() {
                     self.selected_agent = Some(key);
                 }
             }
@@ -3071,15 +3101,18 @@ fn project_root_label(root: &Path) -> String {
 /// Keeps the Terminals wall in step with what is running (specs/agents.md §5), and with
 /// the page's selection. Off screen it only rearms the seed — `live` is empty then, and
 /// pruning against it would wipe a wall the user set up. On screen: an agent that stopped
-/// running loses its tile; the **first** frame of a visit seeds an empty wall with the
-/// selected agent, so the view never opens on an empty grid, while a wall the user emptied
+/// running loses its tile **on every page**, since a parked composition mirrors dead panes
+/// just the same; the **first** frame of a visit seeds an empty wall with the selected
+/// agent, so the view never opens on an empty grid, while a wall the user emptied
 /// afterwards stays empty for the rest of the visit; and the tree's focus tracks the
-/// selection, so the wall marks the tile the keyboard drives.
+/// selection, so the wall marks the tile the keyboard drives. Only the page on screen is
+/// seeded and focused — a page the user flips to empty is their answer, as an emptied wall
+/// is.
 ///
 /// Takes the two fields rather than `&mut self`: the frame's agent rows borrow
 /// `caches.agents` throughout.
 pub(super) fn sync_agents_wall<K: Clone + PartialEq>(
-    wall: &mut crate::agents_wall::AgentWall<K>,
+    pages: &mut crate::agents_wall::AgentWallPages<K>,
     seeded: &mut bool,
     live: &[K],
     selected: Option<&K>,
@@ -3089,7 +3122,10 @@ pub(super) fn sync_agents_wall<K: Clone + PartialEq>(
         *seeded = false;
         return;
     }
-    wall.retain(|key| live.contains(key));
+    for wall in pages.all_mut() {
+        wall.retain(|key| live.contains(key));
+    }
+    let wall = pages.active_mut();
     if !*seeded {
         *seeded = true;
         if let (true, Some(key)) = (wall.is_empty(), selected) {

@@ -157,8 +157,8 @@ workspace-wide max badge (accent spinner = working, green dot = a finished turn)
 the central area to the dashboard while the **project sidebar stays** (the entry
 highlighted); the per-repo git panel is **hidden** (the view is cross-repo).
 
-The dashboard is a **wall of live terminals** — its only view, with no control of
-its own in the titlebar (the title row stays empty, clear of the traffic lights): a
+The dashboard is a **wall of live terminals** — its only view, the title row carrying
+nothing but the wall's **pager** (below), clear of the traffic lights: a
 **header strip** listing every running agent as a **chip**, over the mirrored
 terminals of the ones picked from it.
 
@@ -181,9 +181,10 @@ labels drowns the one thing that identifies a terminal; it rides on the chip's *
 text** with the project, and on the accessibility label. Clicking a chip **shows** that
 agent's terminal on the wall, or
 **hides** it when it is already there; a chip whose agent is on the wall is filled
-in its project's hue. At most **`MAX_SHOWN` = 4** terminals are shown at once —
-past that the remaining chips read **disabled** and say so on hover, since a fifth
-pane would leave none of them watchable; hiding one is how room is made.
+in its project's hue. At most **`MAX_SHOWN` = 4** terminals are shown at once on a
+**page** — past that the remaining chips read **disabled** and say so on hover, since a
+fifth pane would leave none of them watchable; hiding one, or moving to another page, is
+how room is made.
 
 The strip is **one row of clusters** and scrolls **sideways** past the window's width, so
 its height is the same whether one agent runs or twenty and the wall keeps all the rest. The
@@ -209,6 +210,20 @@ agent that stopped running. Opening the dashboard **seeds** the wall with the ag
 the page selects anyway (Working > Done > Idle, ties by workspace order), so the
 view never opens on an empty grid; a wall the user then empties **stays** empty for
 the rest of the visit, with a hint pointing back at the header.
+
+The wall comes in **`PAGES` = 4** compositions, flipped between by a discreet **pager**
+that rides the **title row** — the band this page leaves empty otherwise, so the header
+costs nothing for it; with the workspace sidebar hidden it steps clear of the macOS
+traffic lights and the sidebar toggle, which then float over that corner. One small
+numbered button per page — the page on screen **filled**,
+a page holding terminals **outlined**, an empty one a bare digit, with the count on hover.
+A page owns its agents *and* its geometry, so a set-up can be parked whole and come back
+exactly as it was left rather than being taken apart to watch something else; the
+four-terminal cap is **per page**. Flipping is not a selection of its own: the keyboard
+follows the tile the page it opens left focused, and a page that has nothing on it stays
+empty until a chip is clicked (the seed only ever fires on the first frame of a visit).
+Pages are session state like the walls themselves, and an agent that stops running loses
+its tile on **every** page, on screen or parked.
 
 Each tile is a **status band** over its pane, flush and full-bleed — no card frame,
 no gap: the band carries the state indicator, `project · branch` (the project first

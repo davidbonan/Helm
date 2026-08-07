@@ -440,6 +440,25 @@ seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
   **pins** at the strip's left edge. `specs/agents.md` §5 follows. *Tests*: 3 new
   `tests/it/ui_agents_view.rs` (18 total) + 2 unit; gate green (`fmt`, `clippy
   --all-targets -D warnings`, 2020 tests).
+- ☑ **Post-M-Wall — the wall has four pages.** `AgentWallPages<K>` (`PAGES = 4`) holds
+  one `AgentWall` per page + the active index (`active`/`active_mut`, `page`, `open`,
+  `counts`, `all_mut`); `HelmApp::agents_wall` becomes it, `sync_agents_wall` prunes
+  **every** page and seeds/focuses only the one on screen, `open_wall_page` moves the
+  selection onto what the page it opens shows. The view gains a discreet **pager** over
+  the chip strip (`wall_pager` / `pager_button`, `WallView.page` + `page_counts`,
+  `AgentsPageAction.page`): filled on screen, outlined when the page holds terminals,
+  bare when empty. The 4-terminal cap is per page (blocked chip's hover says so).
+  `specs/agents.md` §5 follows. *Tests*: 3 unit + 2 `src/app/tests.rs` + 1 kittest
+  (19 in `ui_agents_view.rs`); gate green (`fmt`, `clippy --all-targets -D warnings`,
+  2070 tests) + `gen_agents_wall_frames` re-rendered.
+- ☑ **Post-M-Wall — the pager rides the title row.** Its own 30px row above the strip was
+  30px of header for four 20px buttons, over a title band this page leaves empty: the
+  pager moves into it (`agents_page` gains `workspace_shown`, `PAGER_ROW_H` gone), header
+  157 → 127px. With the workspace sidebar hidden it steps clear of the traffic lights and
+  the sidebar toggle — the rule the branch reminder already used, extracted as
+  `ui::titlebar_content_inset`. *Tests*: 1 kittest (20 in `ui_agents_view.rs`, the shifted
+  pager); gate green (`fmt`, `clippy --all-targets -D warnings`, 2075 tests) +
+  `gen_agents_wall_frames` re-rendered.
 
 ---
 

@@ -364,11 +364,13 @@ fn render(
                 layout: wall_layout.as_ref(),
                 slots: &slots,
                 full: wall_full,
+                page: 0,
+                page_counts: [slots.len(), 0, 0, 0],
             };
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(palette.bg_canvas))
                 .show_inside(ui, |ui| {
-                    agents_page(ui, &palette, &rows, selected, &wall, |idx, tui| {
+                    agents_page(ui, &palette, &rows, selected, &wall, true, |idx, tui| {
                         terminal_view(
                             tui,
                             &grids[idx],

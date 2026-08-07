@@ -483,6 +483,24 @@ fn paint_active_border(
     );
 }
 
+/// Left inset of central content that shares the **title row** with the floating window
+/// controls: the sidebar's own padding while the workspace sidebar holds the window's
+/// left edge, else clear of the macOS traffic lights and of the sidebar toggle, which then
+/// float over the central area (in fullscreen the lights are hidden and the toggle hugs
+/// the edge — mirrors `root_layout`'s `toggle_x`).
+pub(crate) fn titlebar_content_inset(ui: &egui::Ui, workspace_shown: bool) -> f32 {
+    if workspace_shown {
+        return f32::from(SIDEBAR_PAD_X);
+    }
+    let fullscreen = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
+    (if fullscreen {
+        8.0
+    } else {
+        TRAFFIC_LIGHTS_RESERVE
+    }) + TOGGLE_HIT.x
+        + 8.0
+}
+
 /// Project (and worktree, when the active entry is one) reminder painted in the
 /// left gutter of the switch row, left-aligned and truncated so it never reaches
 /// the centered switch. A painter overlay: it doesn't consume layout, so the
@@ -497,20 +515,7 @@ fn paint_project_reminder(
     workspace_shown: bool,
     gutter: f32,
 ) {
-    let fullscreen = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
-    // With the workspace sidebar hidden the central panel reaches the window's
-    // left edge: clear the macOS traffic lights and the sidebar toggle so the
-    // reminder doesn't sit under them (mirrors root_layout's toggle_x).
-    let inset = if workspace_shown {
-        f32::from(SIDEBAR_PAD_X)
-    } else {
-        (if fullscreen {
-            8.0
-        } else {
-            TRAFFIC_LIGHTS_RESERVE
-        }) + TOGGLE_HIT.x
-            + 8.0
-    };
+    let inset = titlebar_content_inset(ui, workspace_shown);
     let max_width = gutter - inset - SWITCH_LABEL_GAP;
     if max_width <= 0.0 {
         return;

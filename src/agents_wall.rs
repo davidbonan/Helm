@@ -162,6 +162,66 @@ impl<K: Clone + PartialEq> AgentWall<K> {
     }
 }
 
+/// Walls the dashboard keeps side by side. The header offers one button apiece: a page is
+/// a whole composition of its own, so a set-up can be parked and come back untouched
+/// instead of being taken apart to watch something else.
+pub const PAGES: usize = 4;
+
+/// The Terminals view's [`PAGES`] walls and which one is on screen. Only the active page
+/// renders; the others keep their agents and their geometry. Session state like a single
+/// wall — nothing is persisted.
+pub struct AgentWallPages<K> {
+    pages: [AgentWall<K>; PAGES],
+    active: usize,
+}
+
+impl<K> Default for AgentWallPages<K> {
+    fn default() -> Self {
+        Self {
+            pages: std::array::from_fn(|_| AgentWall::default()),
+            active: 0,
+        }
+    }
+}
+
+impl<K: Clone + PartialEq> AgentWallPages<K> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The page on screen — what a chip click and every wall gesture act on.
+    pub fn active(&self) -> &AgentWall<K> {
+        &self.pages[self.active]
+    }
+
+    pub fn active_mut(&mut self) -> &mut AgentWall<K> {
+        &mut self.pages[self.active]
+    }
+
+    pub fn page(&self) -> usize {
+        self.active
+    }
+
+    /// Flips to `page`; out of range is a no-op — the header only ever offers [`PAGES`].
+    pub fn open(&mut self, page: usize) {
+        if page < PAGES {
+            self.active = page;
+        }
+    }
+
+    /// How many agents each page holds, so the header can mark the ones carrying
+    /// something.
+    pub fn counts(&self) -> [usize; PAGES] {
+        std::array::from_fn(|nth| self.pages[nth].len())
+    }
+
+    /// Every page, to drop the agents that stopped running: a slot off screen mirrors a
+    /// dead pane just the same.
+    pub fn all_mut(&mut self) -> impl Iterator<Item = &mut AgentWall<K>> {
+        self.pages.iter_mut()
+    }
+}
+
 /// The pane with the most room, and the orientation that halves it across its longer
 /// axis (a wide pane splits into two columns, a tall one into two rows). Equal room
 /// goes to the **last** in tree order, so a newcomer subdivides the youngest region:
@@ -362,6 +422,44 @@ mod tests {
         let mut wall = wall(2);
         wall.set_focus(&42);
         assert_eq!(wall.focused(), Some(&1));
+    }
+
+    #[test]
+    fn each_page_keeps_its_own_composition() {
+        let mut pages: AgentWallPages<u32> = AgentWallPages::new();
+        assert_eq!(pages.page(), 0);
+        pages.active_mut().show(0, AREA);
+        pages.open(2);
+        assert!(pages.active().is_empty());
+        pages.active_mut().show(1, AREA);
+        assert_eq!(pages.counts(), [1, 0, 1, 0]);
+        // Back to the first page: the wall parked there is exactly as it was left.
+        pages.open(0);
+        assert!(pages.active().shows(&0));
+        assert!(!pages.active().shows(&1));
+    }
+
+    #[test]
+    fn opening_a_page_out_of_range_is_a_no_op() {
+        let mut pages: AgentWallPages<u32> = AgentWallPages::new();
+        pages.open(PAGES);
+        assert_eq!(pages.page(), 0);
+    }
+
+    #[test]
+    fn a_stopped_agent_loses_its_slot_on_every_page() {
+        let mut pages: AgentWallPages<u32> = AgentWallPages::new();
+        pages.active_mut().show(0, AREA);
+        pages.open(1);
+        pages.active_mut().show(0, AREA);
+        pages.active_mut().show(1, AREA);
+        for wall in pages.all_mut() {
+            wall.retain(|key| *key != 0);
+        }
+        assert!(pages.active().shows(&1));
+        assert!(!pages.active().shows(&0));
+        pages.open(0);
+        assert!(pages.active().is_empty());
     }
 
     #[test]

@@ -953,8 +953,8 @@ fn opening_the_dashboard_seeds_the_wall_with_the_selected_agent() {
         selected.as_ref(),
         true,
     );
-    assert_eq!(app.agents_wall.len(), 1);
-    assert_eq!(app.agents_wall.focused(), Some(&keys[1]));
+    assert_eq!(app.agents_wall.active().len(), 1);
+    assert_eq!(app.agents_wall.active().focused(), Some(&keys[1]));
 }
 
 #[test]
@@ -972,16 +972,16 @@ fn a_wall_the_user_emptied_stays_empty_until_the_page_is_left() {
         )
     };
     sync(&mut app, true);
-    assert_eq!(app.agents_wall.len(), 1);
+    assert_eq!(app.agents_wall.active().len(), 1);
     // Hiding the last tile is an answer, not a gap: further frames leave it empty.
-    app.agents_wall.hide(&keys[0]);
+    app.agents_wall.active_mut().hide(&keys[0]);
     sync(&mut app, true);
     sync(&mut app, true);
-    assert!(app.agents_wall.is_empty());
+    assert!(app.agents_wall.active().is_empty());
     // Leaving the dashboard rearms the seed, so the next visit opens populated again.
     sync(&mut app, false);
     sync(&mut app, true);
-    assert_eq!(app.agents_wall.len(), 1);
+    assert_eq!(app.agents_wall.active().len(), 1);
 }
 
 #[test]
@@ -989,9 +989,11 @@ fn an_agent_that_stops_running_loses_its_tile() {
     let mut app = app_with_agents(&[("claude", AgentBadge::Working), ("codex", AgentBadge::Idle)]);
     let keys = agent_keys(&app);
     for key in &keys {
-        app.agents_wall.show(key.clone(), rect(egui::Rect::ZERO));
+        app.agents_wall
+            .active_mut()
+            .show(key.clone(), rect(egui::Rect::ZERO));
     }
-    assert_eq!(app.agents_wall.len(), 2);
+    assert_eq!(app.agents_wall.active().len(), 2);
     // Its pane closed (or the agent left the foreground): the watch drops the entry.
     app.caches.agents.remove(1);
     let live = agent_keys(&app);
@@ -1002,8 +1004,8 @@ fn an_agent_that_stops_running_loses_its_tile() {
         Some(&keys[0]),
         true,
     );
-    assert_eq!(app.agents_wall.len(), 1);
-    assert!(app.agents_wall.shows(&keys[0]));
+    assert_eq!(app.agents_wall.active().len(), 1);
+    assert!(app.agents_wall.active().shows(&keys[0]));
     // Off screen the wall is left alone — `live` is empty then, and pruning against it
     // would wipe a wall the user set up.
     sync_agents_wall(
@@ -1013,7 +1015,7 @@ fn an_agent_that_stops_running_loses_its_tile() {
         None,
         false,
     );
-    assert_eq!(app.agents_wall.len(), 1);
+    assert_eq!(app.agents_wall.active().len(), 1);
 }
 
 #[test]
@@ -1023,17 +1025,57 @@ fn a_chip_toggles_its_terminal_onto_the_wall_and_off_again() {
     let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
     app.toggle_wall_agent(0, area);
     app.toggle_wall_agent(1, area);
-    assert_eq!(app.agents_wall.len(), 2);
+    assert_eq!(app.agents_wall.active().len(), 2);
     // Showing an agent makes it the active tile — the keyboard follows it there.
     assert_eq!(app.selected_agent.as_ref(), Some(&keys[1]));
     // Hiding it hands the keyboard to the sibling that took its room.
     app.toggle_wall_agent(1, area);
-    assert!(!app.agents_wall.shows(&keys[1]));
+    assert!(!app.agents_wall.active().shows(&keys[1]));
     assert_eq!(app.selected_agent.as_ref(), Some(&keys[0]));
     // An index no longer in the list (the watch rebuilt between click and apply) is a
     // no-op, not a panic.
     app.toggle_wall_agent(9, area);
-    assert_eq!(app.agents_wall.len(), 1);
+    assert_eq!(app.agents_wall.active().len(), 1);
+}
+
+#[test]
+fn each_wall_page_keeps_its_own_terminals() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Working), ("codex", AgentBadge::Idle)]);
+    let keys = agent_keys(&app);
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+    app.toggle_wall_agent(0, area);
+    // A page the user flips to opens on its own composition — here, nothing yet.
+    app.open_wall_page(1);
+    assert!(app.agents_wall.active().is_empty());
+    app.toggle_wall_agent(1, area);
+    assert!(app.agents_wall.active().shows(&keys[1]));
+    // Back: the first page is as it was left, and the keyboard follows what it shows.
+    app.open_wall_page(0);
+    assert!(app.agents_wall.active().shows(&keys[0]));
+    assert_eq!(app.selected_agent.as_ref(), Some(&keys[0]));
+    assert_eq!(app.agents_wall.counts(), [1, 1, 0, 0]);
+}
+
+#[test]
+fn an_agent_that_stops_running_loses_its_tile_on_a_parked_page_too() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Working), ("codex", AgentBadge::Idle)]);
+    let keys = agent_keys(&app);
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+    app.open_wall_page(1);
+    app.toggle_wall_agent(1, area);
+    app.open_wall_page(0);
+    app.toggle_wall_agent(0, area);
+    // The second agent's pane closed: the page parked off screen mirrors it no longer.
+    app.caches.agents.remove(1);
+    let live = agent_keys(&app);
+    sync_agents_wall(
+        &mut app.agents_wall,
+        &mut app.agents_wall_seeded,
+        &live,
+        Some(&keys[0]),
+        true,
+    );
+    assert_eq!(app.agents_wall.counts(), [1, 0, 0, 0]);
 }
 
 #[test]

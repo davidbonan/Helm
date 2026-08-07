@@ -6,7 +6,7 @@
 //! only — the page returns the targeted action, the app applies it.
 
 use crate::agent_watch::AgentBadge;
-use crate::agents_wall::MAX_SHOWN;
+use crate::agents_wall::{MAX_SHOWN, PAGES};
 use crate::terminal::layout::{Layout, PaneId};
 use crate::theme::{self, Palette};
 use crate::ui::spinner::{done_flash_lift, paint_done_dot, paint_done_flash, Spinner};
@@ -31,6 +31,15 @@ const ROW_MIN_BRANCH_W: f32 = 48.0;
 /// the green would swallow.
 const ON_GREEN_SOFT: u8 = 205;
 const ON_GREEN_FAINT: u8 = 165;
+
+/// The pager, in the title row over the header strip: one small button per wall page
+/// (specs/agents.md §5). Deliberately quiet — it is a place to put a second set-up, not
+/// the page's subject: a numbered square, the one on screen filled, a page holding
+/// terminals outlined, an empty one left as a bare digit.
+const PAGER_BTN: f32 = 20.0;
+const PAGER_GAP: f32 = 4.0;
+const PAGER_RADIUS: u8 = 6;
+const PAGER_FONT: f32 = 11.0;
 
 /// Page header: **one cluster per project**, on a single line that scrolls sideways. A
 /// cluster titles its project once — the sidebar's own hue-tinted folder box, then the name
@@ -157,6 +166,8 @@ pub struct AgentsPageAction {
     /// A header chip was clicked: show that agent's terminal on the wall, or hide it
     /// when it is already there.
     pub toggle: Option<usize>,
+    /// A pager button was clicked: flip the wall to that page.
+    pub page: Option<usize>,
     /// The wall's own rect this frame — the app splits it to place a newly shown
     /// terminal, and reads a seam drag against it. `None` while nothing runs.
     pub wall_rect: Option<egui::Rect>,
@@ -174,20 +185,29 @@ pub struct AgentsPageAction {
 /// wall's seams resize and its panes rearrange exactly like a workspace tab's
 /// (terminal.md §5). `render_terminal(idx, ui)` mirrors the live pane of the agent at
 /// row `idx`, once per wall tile, and reports whether it was clicked. Returns the
-/// targeted action. The page owns the whole central area, titlebar included — nothing
-/// sits in the title row, so it only clears the macOS traffic lights.
+/// targeted action. The page owns the whole central area, titlebar included: the only
+/// thing in the title row is the **pager**, which rides the band this page would otherwise
+/// leave empty — `workspace_shown` places it, since with the workspace sidebar hidden the
+/// macOS traffic lights and the sidebar toggle float over that corner.
+#[allow(clippy::too_many_arguments)]
 pub fn agents_page(
     ui: &mut egui::Ui,
     palette: &Palette,
     rows: &[AgentRow],
     selected: Option<usize>,
     wall: &WallView,
+    workspace_shown: bool,
     render_terminal: impl FnMut(usize, &mut egui::Ui) -> bool,
 ) -> AgentsPageAction {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0, palette.bg_canvas);
-    ui.add_space(f32::from(TITLEBAR_HEIGHT));
     let mut action = AgentsPageAction::default();
+    // Nothing to page through while no agent runs, and the empty state reads better
+    // under a bare title row.
+    if !rows.is_empty() {
+        wall_pager(ui, palette, rect, wall, workspace_shown, &mut action);
+    }
+    ui.add_space(f32::from(TITLEBAR_HEIGHT));
     let rect = ui.available_rect_before_wrap();
 
     if rows.is_empty() {
@@ -238,6 +258,10 @@ pub struct WallView<'a> {
     pub layout: Option<&'a Layout>,
     pub slots: &'a [(PaneId, usize)],
     pub full: bool,
+    /// The page on screen — the one the tree and the slots above belong to.
+    pub page: usize,
+    /// How many terminals each page holds, the pager's own state.
+    pub page_counts: [usize; PAGES],
 }
 
 impl WallView<'_> {
@@ -251,6 +275,100 @@ impl WallView<'_> {
     fn shows(&self, row: usize) -> bool {
         self.slots.iter().any(|(_, r)| *r == row)
     }
+}
+
+/// The pager: [`PAGES`] buttons, one wall composition apiece (specs/agents.md §5).
+/// Flipping parks the current set-up whole — its agents and its geometry — and brings the
+/// other one back as it was left. It rides the **title row**, which this page leaves empty
+/// otherwise: a row of its own cost 30px of header to carry four 20px buttons.
+fn wall_pager(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    wall: &WallView,
+    workspace_shown: bool,
+    action: &mut AgentsPageAction,
+) {
+    let row = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.top() + f32::from(TITLEBAR_HEIGHT)),
+    );
+    let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(row));
+    // On the chips' own rail, unless the title row's floating controls need more room —
+    // with the workspace sidebar hidden they reach over this corner.
+    let left =
+        row.left() + crate::ui::titlebar_content_inset(ui, workspace_shown).max(CHIP_STRIP_PAD_X);
+    // Placed by hand rather than by a layout: a horizontal layout would add its own
+    // spacing before the first button and drop them at the row's top.
+    for nth in 0..PAGES {
+        let button = egui::Rect::from_min_size(
+            egui::pos2(
+                left + nth as f32 * (PAGER_BTN + PAGER_GAP),
+                row.center().y - PAGER_BTN / 2.0,
+            ),
+            egui::Vec2::splat(PAGER_BTN),
+        );
+        if pager_button(&mut row_ui, palette, button, nth, wall) {
+            action.page = Some(nth);
+        }
+    }
+}
+
+/// One pager button: its number, filled while it is the page on screen, outlined while it
+/// holds terminals it is not showing, bare when that page is empty.
+fn pager_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    rect: egui::Rect,
+    nth: usize,
+    wall: &WallView,
+) -> bool {
+    let count = wall.page_counts.get(nth).copied().unwrap_or(0);
+    let active = wall.page == nth;
+    let response = ui
+        .allocate_rect(rect, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    let fill = match (active, hovered) {
+        (true, _) => palette.bg_surface,
+        (false, true) => palette.bg_surface_hover,
+        (false, false) => egui::Color32::TRANSPARENT,
+    };
+    let border = if active {
+        with_alpha(palette.accent, 110)
+    } else if count > 0 {
+        palette.border_subtle
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(PAGER_RADIUS),
+        fill,
+        egui::Stroke::new(1.0_f32, border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        (nth + 1).to_string(),
+        egui::FontId::new(PAGER_FONT, theme::medium_family(ui.ctx())),
+        match (active, count > 0) {
+            (true, _) => palette.text_primary,
+            (false, true) => palette.text_secondary,
+            (false, false) => with_alpha(palette.text_muted, 140),
+        },
+    );
+    let label = format!("Wall page {}", nth + 1);
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, &label));
+    response
+        .on_hover_text(match count {
+            0 => format!("{label} — empty"),
+            1 => format!("{label} — 1 terminal"),
+            n => format!("{label} — {n} terminals"),
+        })
+        .clicked()
 }
 
 /// The header strip: one cluster per project, in workspace order (so a project's worktrees
@@ -687,7 +805,7 @@ fn chip_outcome(
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, shown, &label));
     if blocked {
         response.on_hover_text(format!(
-            "{MAX_SHOWN} terminals at most — hide one to make room"
+            "{MAX_SHOWN} terminals at most on a page — hide one, or use another page"
         ));
         return false;
     }
@@ -1099,6 +1217,8 @@ mod tests {
             layout: None,
             slots: &slots,
             full: false,
+            page: 0,
+            page_counts: [2, 0, 0, 0],
         };
         assert_eq!(wall.row_of(PaneId(3)), Some(2));
         assert_eq!(wall.row_of(PaneId(9)), None);
