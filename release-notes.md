@@ -1,5 +1,17 @@
 # Release notes
 
+## 2.2.2
+
+- Terminal glyphs stay in their cell: Claude Code's ✻ spinner, its ⏺ bullets and
+  the emoji were drawn at their own size and spilled ink over the characters
+  next to them. Anything wider than the grid is now shrunk into it.
+- The bundled terminal face is JetBrains Mono **Nerd Font** — the statusline
+  private-use icons and the braille spinners are drawn by the mono face itself,
+  on the grid, instead of being borrowed oversized from a symbol font. Menlo
+  backs it for the Dingbats, where Claude Code takes its spinner.
+- The Pull Requests header stands on the page instead of over it: the tab
+  baseline alone separates it from the list.
+
 ## 2.2.1
 
 - `helm run` works again from the installed `helm` command: the symlink in
@@ -115,7 +127,3 @@
   re-staged for you, and where a caret cannot open (binary, symlink, a file
   sitting in both sections) a toast says why and offers *Open in editor*.
 - The Agents *Columns* wall is now one borderless lane per worktree.
-
-## 1.5.2
-
-- Maintenance release: no user-facing changes since 1.5.1.
