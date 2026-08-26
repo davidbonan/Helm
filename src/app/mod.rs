@@ -4422,8 +4422,10 @@ const SHELL_PATH_MARKER: &str = "__helm_path__";
 /// already inherits the right PATH and skips this.
 #[cfg(target_os = "macos")]
 fn import_login_shell_path() {
+    // Canonicalized: macOS hands back the exec path with its symlinks intact,
+    // and the installed CLI is a symlink into the bundle (see update::bundle_path).
     let in_bundle = std::env::current_exe()
-        .map(|exe| exe_in_app_bundle(&exe))
+        .map(|exe| exe_in_app_bundle(&exe.canonicalize().unwrap_or(exe)))
         .unwrap_or(false);
     if !in_bundle {
         return;

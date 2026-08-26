@@ -226,7 +226,11 @@ impl InstallError {
 
 /// `.app` containing the current executable; `None` under `cargo run`/tests.
 pub fn bundle_path() -> Option<PathBuf> {
-    bundle_path_from(&std::env::current_exe().ok()?)
+    let exe = std::env::current_exe().ok()?;
+    // macOS returns the path the process was exec'd with, symlinks intact: the
+    // installed CLI is `/usr/local/bin/helm -> …/helm.app/Contents/MacOS/helm`,
+    // and unresolved it reads as unbundled (wrong support dir, wrong socket).
+    bundle_path_from(&exe.canonicalize().unwrap_or(exe))
 }
 
 /// Pure resolution: `<App>.app/Contents/MacOS/<bin>` ⇒ `<App>.app`.
@@ -781,6 +785,24 @@ mod tests {
         assert_eq!(
             bundle_path_from(Path::new("/Applications/helm.app/Contents/MacOS/helm")),
             Some(PathBuf::from("/Applications/helm.app"))
+        );
+    }
+
+    #[test]
+    fn a_symlink_to_the_bundled_binary_still_resolves_the_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("helm.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = macos.join("helm");
+        std::fs::write(&exe, b"").unwrap();
+        let link = dir.path().join("helm");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+
+        let bundle = dir.path().join("helm.app").canonicalize().unwrap();
+        assert_eq!(bundle_path_from(&link), None);
+        assert_eq!(
+            bundle_path_from(&link.canonicalize().unwrap()),
+            Some(bundle)
         );
     }
 
