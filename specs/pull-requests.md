@@ -98,7 +98,8 @@ no side-by-side detail pane — selecting a PR **navigates** to its review surfa
 in **English** ([`design-system.md`](design-system.md) §7) — the design canvas this
 round was drawn on is French, but the label language is a frozen decision.
 
-- **Header** — a raised band carrying the **Pull Requests** title and, next to it,
+- **Header** — a band on the page's own ground, held apart from the list by the tab
+  baseline alone, carrying the **Pull Requests** title and, next to it,
   what the page is holding (*"14 open · 1 draft"*, or *"7 of 14 shown"* while the
   filters narrow it); a **search field** (`model::matches_search`: title, number,
   author, branch, project) with a **clear** ✕ once it holds a query; then the
@@ -322,7 +323,8 @@ PR shown **without cloning the branch**, each diff annotatable, with a composer 
 M-RC review engine (`review.rs`, `ui::diff_view`) so the in-diff comment UX is the
 same one as commit/working-tree review.
 
-- **Surface header.** A **full-width band above both panes**, so the PR's identity
+- **Surface header.** A **full-width band above both panes**, on the page's own
+  ground and held apart by the tab baseline alone, so the PR's identity
   and the review actions stay put whatever the body shows. Three rows: **Back** ·
   the **title** · `#number` · a **health cluster** (passing checks · unresolved
   threads · mergeability) · a hairline · icon-only **Open in browser** / **Checkout**

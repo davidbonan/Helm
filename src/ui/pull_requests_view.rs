@@ -2260,7 +2260,9 @@ fn review_header(
     action: &mut PullRequestsPageAction,
 ) -> PrTab {
     let pr = review.pr;
-    ui.painter().rect_filled(rect, 0, palette.bg_surface);
+    // Same ground as the panes below, like the list header: the tab baseline is the
+    // whole separation.
+    ui.painter().rect_filled(rect, 0, palette.bg_canvas);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
@@ -5169,7 +5171,7 @@ struct ListState {
     collapsed_stacks: std::collections::BTreeSet<String>,
 }
 
-/// The list header (pull-requests.md §5): a raised band carrying the title, the
+/// The list header (pull-requests.md §5): a band carrying the title, the
 /// search field, the **Filters** / **Priority** / **Refresh** controls, and the
 /// tab bar beneath them.
 #[allow(clippy::too_many_arguments)]
@@ -5183,7 +5185,9 @@ fn list_header(
     state: &mut ListState,
     action: &mut PullRequestsPageAction,
 ) {
-    ui.painter().rect_filled(rect, 0, palette.bg_surface);
+    // Same ground as the list it heads — like the Agents dashboard, the tab baseline
+    // alone separates them; a raised band would read as a strip glued over the page.
+    ui.painter().rect_filled(rect, 0, palette.bg_canvas);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
