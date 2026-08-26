@@ -481,6 +481,35 @@ fn single_glyph_job(cell: &CellView, font: egui::FontId, row_h: f32) -> egui::te
     job
 }
 
+/// A fallback glyph whose advance overflows its cells (Claude Code's `\u{273B}` spinner
+/// served by ZapfDingbats at 1.6 cell, its `\u{23FA}` bullet at 2.2) would spill ink over
+/// the neighboring columns: it is laid out again smaller so it stays inside them,
+/// like Ghostty/Kitty. The grid is untouched — the glyph is still centered on
+/// its own cells.
+fn fit_loose_glyph(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    cell: &CellView,
+    font: &egui::FontId,
+    max_w: f32,
+    row_h: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut galley = fonts.layout_job(single_glyph_job(cell, font.clone(), row_h));
+    let mut size = font.size;
+    // Hinting keeps the re-laid-out glyph a hair over the target: shrink again on
+    // what was actually measured, a couple of rounds at most.
+    for _ in 0..3 {
+        let width = galley.size().x;
+        if width <= max_w || width <= 0.0 {
+            break;
+        }
+        size *= max_w / width;
+        let mut shrunk = font.clone();
+        shrunk.size = size;
+        galley = fonts.layout_job(single_glyph_job(cell, shrunk, row_h));
+    }
+    galley
+}
+
 /// Splits a line into grid-aligned operations: backgrounds merged by color
 /// (full-cell rects, seamless), standard-advance text runs anchored at their
 /// column, fallback glyphs centered in their cell(s), procedural shapes. This
@@ -544,7 +573,7 @@ fn row_paint_ops(
         }
         let advance = fonts.glyph_width(&font, cell.c);
         if cell.wide || (advance - char_w).abs() > ADVANCE_EPSILON {
-            let galley = fonts.layout_job(single_glyph_job(cell, font.clone(), row_h));
+            let galley = fit_loose_glyph(fonts, cell, &font, span as f32 * char_w, row_h);
             ops.push(PaintOp::Loose { col, span, galley });
             col += span;
             continue;
@@ -2249,6 +2278,25 @@ mod tests {
                 assert_eq!(galley.text(), "x");
             }
             other => panic!("expected a Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_oversized_fallback_glyph_is_shrunk_into_its_cell() {
+        // \u{23FA}: Claude Code's tool-call bullet, served by a fallback font whose
+        // advance is far wider than the mono cell.
+        let (ops, char_w) = ops_for(&[cv('\u{23FA}')]);
+        match &ops[0] {
+            PaintOp::Loose { col, span, galley } => {
+                assert_eq!((*col, *span), (0, 1));
+                assert!(
+                    galley.size().x <= char_w + ADVANCE_EPSILON,
+                    "glyph {} wide for a {char_w} cell — it would spill over the next column",
+                    galley.size().x
+                );
+                assert!(galley.size().x > char_w * 0.5, "shrunk to nothing");
+            }
+            other => panic!("expected a Loose, got {other:?}"),
         }
     }
 
