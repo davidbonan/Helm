@@ -368,9 +368,10 @@ Licensed under either of **Apache License, Version 2.0**
 <details>
 <summary>Bundled fonts & contributions</summary>
 
-Bundled fonts keep their own licenses: JetBrains Mono
-([`assets/JetBrainsMono-LICENSE`](assets/JetBrainsMono-LICENSE)) and Symbols
-Nerd Font ([`assets/SymbolsNerdFont-LICENSE`](assets/SymbolsNerdFont-LICENSE)).
+The bundled font keeps its own licenses: JetBrains Mono Nerd Font Mono — the
+JetBrains Mono face ([`assets/JetBrainsMono-LICENSE`](assets/JetBrainsMono-LICENSE),
+OFL) patched with the Nerd Fonts glyphs
+([`assets/NerdFonts-LICENSE`](assets/NerdFonts-LICENSE), MIT).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be

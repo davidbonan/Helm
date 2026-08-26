@@ -41,17 +41,24 @@ const MEDIUM_FONT_PATH: &str = "/System/Library/Fonts/HelveticaNeue.ttc";
 const MEDIUM_FONT_INDEX: u32 = 10;
 const MEDIUM_FAMILY: &str = "ui-medium";
 
-// Terminal mono face: JetBrains Mono (embedded, OFL — assets/JetBrainsMono-LICENSE),
-// Ghostty's default. Its natural metrics carry a line gap SF Mono lacks, so the grid
-// reads less cramped. SF Mono stays behind it as a fallback for the glyphs it covers.
-const JBM_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
-// Mono fallbacks for the terminal: JetBrains Mono has neither the powerline/Nerd Font
-// glyphs (agent statuslines) nor braille (spinners). Symbols NF (embedded, MIT —
-// assets/SymbolsNerdFont-LICENSE) covers the E0xx/F0xx private-use area; Apple
-// Symbols (system) covers braille, arrows, and various symbols; Zapf Dingbats
-// (system) covers the Dingbats block U+2700–27BF (Claude Code's ✢✶✻✽ spinner),
-// otherwise absent from the whole stack.
-const NF_SYMBOLS_BYTES: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
+// Terminal mono face: JetBrains Mono **Nerd Font Mono** (embedded, OFL —
+// assets/JetBrainsMono-LICENSE, patch glyphs MIT — assets/NerdFonts-LICENSE),
+// Ghostty's default face patched with the whole Nerd Font set. Same metrics as the
+// unpatched JetBrains Mono (cell, ascent, descent), plus 10 900 glyphs — the E0xx/F0xx
+// private-use area (powerline, agent statuslines) and braille (spinners) — every one
+// of them on the mono grid, where the separate symbol fonts served them at 1.6–2.2
+// cells. Its natural metrics carry a line gap SF Mono lacks, so the grid reads less
+// cramped. SF Mono stays behind it as a fallback for the glyphs it covers.
+const JBM_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMonoNerdFontMono-Regular.ttf");
+// Remaining mono fallbacks, off-grid but shrunk to their cell at paint time
+// (terminal_view::fit_loose_glyph): Menlo (system, DejaVu-derived) draws the
+// Dingbats — Claude Code's ✢✶✻✽ spinner, ✔✘ — as a mono face does, 1.14 cell
+// against the 1.6–1.9 of Zapf Dingbats, which stays behind it for what it lacks;
+// Apple Symbols (system) covers misc technical (Claude Code's ⎿) and various
+// arrows. None of these blocks exist in the rest of the stack.
+const MENLO_PATH: &str = "/System/Library/Fonts/Menlo.ttc";
+/// Menlo.ttc faces: 0 Regular, 1 Bold, 2 Italic, 3 Bold Italic.
+const MENLO_INDEX: u32 = 0;
 const APPLE_SYMBOLS_PATH: &str = "/System/Library/Fonts/Apple Symbols.ttf";
 const ZAPF_DINGBATS_PATH: &str = "/System/Library/Fonts/ZapfDingbats.ttf";
 
@@ -526,7 +533,7 @@ pub fn font_definitions() -> FontDefinitions {
     if let Some(data) = load_font(UI_FONT_PATH) {
         register_font(&mut fonts, "sf-pro", data, FontFamily::Proportional);
     }
-    // Head insertions: final order jetbrains-mono → sf-mono → nf-symbols →
+    // Head insertions: final order jetbrains-mono → sf-mono → menlo →
     // apple-symbols → zapf-dingbats → egui fonts. The symbol fallbacks come before
     // Hack (egui), whose powerline glyphs have metrics foreign to the mono face.
     if let Some(data) = load_font(ZAPF_DINGBATS_PATH) {
@@ -535,12 +542,9 @@ pub fn font_definitions() -> FontDefinitions {
     if let Some(data) = load_font(APPLE_SYMBOLS_PATH) {
         register_font(&mut fonts, "apple-symbols", data, FontFamily::Monospace);
     }
-    register_font(
-        &mut fonts,
-        "nf-symbols",
-        FontData::from_static(NF_SYMBOLS_BYTES),
-        FontFamily::Monospace,
-    );
+    if let Some(data) = load_font_face(MENLO_PATH, MENLO_INDEX) {
+        register_font(&mut fonts, "menlo", data, FontFamily::Monospace);
+    }
     if let Some(data) = load_font(MONO_FONT_PATH) {
         register_font(&mut fonts, "sf-mono", data, FontFamily::Monospace);
     }
@@ -556,15 +560,16 @@ pub fn font_definitions() -> FontDefinitions {
     );
     // Lucide (the app's icon set) backs the proportional family right after SF
     // Pro, ahead of the symbol fallbacks: it shares the private-use range with the
-    // Nerd Font, so the app icons must win there. The symbol fallbacks follow (tab
+    // Nerd Font face, so the app icons must win there. The symbol fallbacks follow (tab
     // titles render proportional, and a process e.g. Claude Code can emit Nerd Font
     // glyphs in its OSC title Lucide doesn't cover); both sit before egui's bundled
     // fonts, which only fill glyphs SF Pro lacks. Normal text keeps SF Pro.
-    let symbol_fallbacks: Vec<String> = ["nf-symbols", "apple-symbols", "zapf-dingbats"]
-        .into_iter()
-        .filter(|name| fonts.font_data.contains_key(*name))
-        .map(str::to_owned)
-        .collect();
+    let symbol_fallbacks: Vec<String> =
+        ["jetbrains-mono", "menlo", "apple-symbols", "zapf-dingbats"]
+            .into_iter()
+            .filter(|name| fonts.font_data.contains_key(*name))
+            .map(str::to_owned)
+            .collect();
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(1, "lucide".to_owned());
     for (i, name) in symbol_fallbacks.into_iter().enumerate() {
@@ -1100,29 +1105,97 @@ mod tests {
     }
 
     #[test]
-    fn nf_symbols_then_apple_symbols_back_the_mono_family() {
+    fn the_nerd_font_face_leads_the_mono_family_ahead_of_the_symbol_fallbacks() {
         let fonts = font_definitions();
         let mono = &fonts.families[&FontFamily::Monospace];
-        assert!(fonts.font_data.contains_key("nf-symbols"));
         assert!(fonts.font_data.contains_key("jetbrains-mono"));
-        let nf = mono.iter().position(|n| n == "nf-symbols").unwrap();
         let jbm = mono
             .iter()
             .position(|n| n == "jetbrains-mono")
-            .expect("JetBrains Mono is the primary mono");
+            .expect("JetBrains Mono Nerd Font is the primary mono");
+        assert_eq!(
+            jbm, 0,
+            "the Nerd Font face serves the private-use area first"
+        );
         if let Some(sf) = mono.iter().position(|n| n == "sf-mono") {
             assert!(jbm < sf, "JetBrains Mono outranks SF Mono");
-            assert!(sf < nf, "SF Mono stays ahead of the symbol fallbacks");
-        }
-        assert!(jbm < nf, "the mono face comes before the symbol fallbacks");
-        if let Some(apple) = mono.iter().position(|n| n == "apple-symbols") {
-            assert!(nf < apple, "nf-symbols takes priority over apple-symbols");
         }
         let hack = mono.iter().position(|n| n == "Hack").unwrap();
-        assert!(
-            nf < hack,
-            "the symbol fallbacks come before the egui fonts (Hack's powerline)"
-        );
+        for fallback in ["menlo", "apple-symbols", "zapf-dingbats"] {
+            if let Some(pos) = mono.iter().position(|n| n == fallback) {
+                assert!(jbm < pos, "the mono face comes before {fallback}");
+                assert!(
+                    pos < hack,
+                    "the symbol fallbacks come before the egui fonts (Hack's powerline)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_bundled_face_serves_powerline_and_braille_on_the_mono_grid() {
+        let data = &font_definitions().font_data["jetbrains-mono"];
+        let face = ab_glyph::FontRef::try_from_slice(&data.font).unwrap();
+        let scaled = <_ as ab_glyph::Font>::as_scaled(&face, 14.0_f32);
+        let cell = ab_glyph::ScaleFont::h_advance(&scaled, ab_glyph::Font::glyph_id(&face, 'M'));
+        // The glyphs the separate symbol fonts used to serve off-grid: powerline,
+        // a Nerd Font icon, braille (spinners), box drawing.
+        for c in [
+            '\u{e0a0}', '\u{e0b0}', '\u{f015}', '\u{280b}', '\u{28ff}', '\u{2500}',
+        ] {
+            let gid = ab_glyph::Font::glyph_id(&face, c);
+            assert!(
+                gid.0 != 0,
+                "U+{:04X} missing from the bundled face",
+                c as u32
+            );
+            let advance = ab_glyph::ScaleFont::h_advance(&scaled, gid);
+            assert!(
+                (advance - cell).abs() < 0.01,
+                "U+{:04X} advance {advance} ≠ cell {cell}",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn menlo_serves_the_dingbats_ahead_of_zapf_and_closer_to_the_cell() {
+        let fonts = font_definitions();
+        let mono = &fonts.families[&FontFamily::Monospace];
+        let Some(menlo) = mono.iter().position(|n| n == "menlo") else {
+            return; // system font absent (CI image): the stack simply falls back
+        };
+        if let Some(zapf) = mono.iter().position(|n| n == "zapf-dingbats") {
+            assert!(
+                menlo < zapf,
+                "Menlo draws the Dingbats closer to the mono cell"
+            );
+        }
+        let advances = |name: &str, chars: &[char]| -> Vec<f32> {
+            let data = &fonts.font_data[name];
+            let face = ab_glyph::FontRef::try_from_slice_and_index(&data.font, data.index).unwrap();
+            let scaled = <_ as ab_glyph::Font>::as_scaled(&face, 14.0_f32);
+            chars
+                .iter()
+                .map(|c| {
+                    ab_glyph::ScaleFont::h_advance(&scaled, ab_glyph::Font::glyph_id(&face, *c))
+                })
+                .collect()
+        };
+        let grid = advances("jetbrains-mono", &['M'])[0];
+        // Claude Code's spinner and its ✔/✘, off the grid in every fallback — Menlo
+        // stays within a shrink the eye doesn't catch, where Zapf reached 1.9 cell.
+        let dingbats = [
+            '\u{273B}', '\u{273D}', '\u{2722}', '\u{2733}', '\u{2714}', '\u{2718}',
+        ];
+        for (c, advance) in dingbats.iter().zip(advances("menlo", &dingbats)) {
+            let ratio = advance / grid;
+            assert!(
+                (1.0..1.2).contains(&ratio),
+                "U+{:04X} at {ratio:.2} cell in Menlo",
+                *c as u32
+            );
+        }
     }
 
     #[test]
@@ -1135,16 +1208,12 @@ mod tests {
             lucide > 0,
             "a text font must stay ahead of lucide so normal text never hits the icon font"
         );
-        let nf = proportional.iter().position(|n| n == "nf-symbols").unwrap();
-        assert!(
-            lucide < nf,
-            "lucide and the Nerd Font share the private-use range: the app icon set must win"
-        );
-        for name in ["apple-symbols", "zapf-dingbats"] {
+        for name in ["jetbrains-mono", "menlo", "apple-symbols", "zapf-dingbats"] {
             if let Some(p) = proportional.iter().position(|n| n == name) {
                 assert!(
                     lucide < p,
-                    "lucide must outrank {name} in the private-use range"
+                    "lucide and the Nerd Font face share the private-use range: \
+                     the app icon set must outrank {name}"
                 );
             }
         }

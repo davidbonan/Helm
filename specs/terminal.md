@@ -89,10 +89,14 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
   `U+E0B0–E0B3` and block elements `U+2580–259F` (shades ░▒▓ = alpha fill)
   drawn by the painter, full-cell, seamless — continuous statuslines and progress
   bars, independent of fonts.
-- **Mono chain**: SF Mono → **Symbols Nerd Font Mono** (embedded, MIT —
-  private-use-area icons of statuslines) → **Apple Symbols** (system: spinner
-  braille, miscellaneous symbols) → **Zapf Dingbats** (system: Dingbats block
-  U+2700–27BF, Claude Code's ✢✶✻✽ spinner) → egui fonts.
+- **Mono chain**: **JetBrains Mono Nerd Font Mono** (embedded — the mono face
+  patched with the whole Nerd Font set: statusline private-use icons and spinner
+  braille, all on the cell grid) → SF Mono → **Menlo** (system: the Dingbats
+  block U+2700–27BF — Claude Code's ✢✶✻✽ spinner, ✔✘ — drawn as a mono face does)
+  → **Apple Symbols** (system: miscellaneous technical, Claude Code's ⎿) → **Zapf
+  Dingbats** (system: what Menlo lacks of the Dingbats) → egui fonts. A glyph a fallback serves
+  wider than its cells is **shrunk to fit** them (Ghostty/Kitty), never allowed to
+  spill over the neighboring columns.
 - Cursor: solid block when the pane has focus, hollow outline otherwise.
 - **Unfocused split dim** (Ghostty `unfocused-split-opacity`): in a tab with
   several panes, the focused pane stays at full opacity and the others are
