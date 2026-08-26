@@ -20,7 +20,14 @@ pub fn oldest_notes_fragment() -> String {
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .expect("a non-empty line in the oldest section");
-    last.strip_prefix("- ").unwrap_or(last).to_owned()
+    let text = last.strip_prefix("- ").unwrap_or(last);
+    // Inline markdown (emphasis, code) renders as its own node: the longest run
+    // free of markers is the one stretch guaranteed to sit in a single label.
+    text.split(['*', '`'])
+        .max_by_key(|part| part.len())
+        .unwrap_or(text)
+        .trim()
+        .to_owned()
 }
 
 fn modal_harness() -> Harness<'static, ModalState> {
