@@ -1,5 +1,11 @@
 # Release notes
 
+## 2.2.1
+
+- `helm run` works again from the installed `helm` command: the symlink in
+  `/usr/local/bin` was read as an unbundled build, so every `helm run …`
+  answered "helm is not running" while the app was listening on another socket.
+
 ## 2.2.0
 
 - Ask helm from the terminal whether a dev server is already running:
@@ -113,16 +119,3 @@
 ## 1.5.2
 
 - Maintenance release: no user-facing changes since 1.5.1.
-
-## 1.5.1
-
-- Walking the Git file list with the arrow keys no longer stutters on large
-  files: a diff now colours what the viewport shows straight away and finishes
-  the rest over the following frames.
-- Clicking a file in the Git sidebar brings up its diff at once instead of
-  waiting behind the background refresh — up to half a second saved on a large
-  repository.
-- *Open in editor* now re-focuses the Zed window that already holds the project
-  and adds the file as a tab, instead of opening a second window and reloading
-  the whole workspace.
-
