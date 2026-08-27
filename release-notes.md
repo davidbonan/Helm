@@ -1,5 +1,27 @@
 # Release notes
 
+## 2.3.0
+
+- Annotating a diff now sends. `Enter` still queues the note for the batch;
+  **⌘↩** — and the editor's **Send review** button — validate it *and* hand the
+  whole batch to the agent, without the detour through the recap pill. A review
+  comment destined for GitHub / Bitbucket never leaves on a keystroke: it is
+  posted publicly on submit, so it keeps `Enter` alone.
+- Every comment surface of a review now reads as one object — the note editor,
+  the reply editor, the inline threads and the Conversation blocks all wear the
+  same shape: the text, a rule, and an action bar carrying each control with its
+  own shortcut beside it.
+- An inline thread is **one block**: the comment, its replies nested on a rail,
+  and a single bar for the whole thread — instead of a card per comment with the
+  Reply and Resolve buttons floating underneath. Answering replaces the bar in
+  place rather than splitting the thread in two.
+- A **resolved** thread folds to a single line — the tally and the first words —
+  and opens when you ask it to, so what is settled no longer pushes the code
+  apart.
+- Comment cards no longer run off the right edge on a file with long lines: they
+  were as wide as the longest line in the diff, which put **Resolve** and **Send
+  review** past the window, out of reach.
+
 ## 2.2.2
 
 - Terminal glyphs stay in their cell: Claude Code's ✻ spinner, its ⏺ bullets and
@@ -113,17 +135,3 @@
 - With `Esc` a real way back, the save after a pause in typing is gone: an open
   buffer only reaches the working tree on an exit that keeps it, so nothing
   lands behind your back.
-
-## 1.6.0
-
-- Fix a file straight from its diff: click a line — or `Cmd+E` on the hovered
-  one — and a caret opens right there, the hunk turning into an editor without
-  moving a pixel. Context lines are editable too, so *Extend context* widens the
-  window; untracked files take a caret like any other.
-- No save button to hunt for: the buffer is written to the working tree when you
-  step out — `Cmd+S`, `Esc`, a click elsewhere, even switching repo — and after
-  a short pause in typing. `Cmd+Z` undoes inside the buffer.
-- An edit stays in the section it was made from: from *Staged* the file is
-  re-staged for you, and where a caret cannot open (binary, symlink, a file
-  sitting in both sections) a toast says why and offers *Open in editor*.
-- The Agents *Columns* wall is now one borderless lane per worktree.
