@@ -6,6 +6,51 @@
 
 ---
 
+## ☑ Milestone — M-RC2 · Review surfaces: one framed object everywhere
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §11,
+[`specs/keybindings.md`](../keybindings.md) §3. Per the user: send a diff annotation
+without the detour, then make every comment surface of the review read the same.
+Counter: **4/4**.
+
+- ☑ **T1 — `⌘↩` sends the review batch.** The note editor's bare `Enter` still queues;
+  `⌘↩` — and a *Send review* action — validate the note **and** raise `SendToAgent`.
+  Agent pool only: a forge note is posted publicly on submit, so it never leaves on a
+  keystroke. The sidebar renders before the diff and reads `Cmd+Enter` without
+  consuming it, so `git_panel_state.inline_editing` now also covers an open note
+  editor — otherwise the same press committed. *Files*: `src/ui/diff_view.rs`,
+  `src/app/render.rs`, `specs/{keybindings,pull-requests}.md`. *Tests*: 5 UI e2e.
+  Gate green (2090).
+- ☑ **T2 — The note editor, framed.** Rebuilt on the reply editor's shape: padded field
+  over a hairline and an action bar, focus ring in the pool's color. `bar_button` gains
+  a dimmed `shortcut` slot — *Save note* `↩`, *Send review* `⌘↩` — pinned by a unit test
+  to `Shortcut::display`. *Files*: `src/ui/diff_view.rs`. *Tests*: 1 unit + label
+  updates. Gate green (2091). *Verified*: rendered dark and light, agent and forge.
+- ☑ **T3 — Thread cards and the Conversation blocks.** A posted thread is **one** block
+  — root, replies on a left rail, hairline, one action bar (*Ask {agent}* left,
+  *Reply* / *Resolve* right) — not a card per comment with the controls floating
+  underneath. Opening the composer replaces the whole bar in place. The Conversation
+  tab's thread blocks and its expanded resolved rows wear the same foot.
+  Comment surfaces now clamp to the **visible** width: diff rows are allocated at the
+  longest line, which had been pushing the right-edge controls off the viewport.
+  *Files*: `src/ui/{diff_view,pull_requests_view}.rs`, `specs/pull-requests.md`.
+  *Tests*: 3 UI e2e (the clamp one confirmed failing without the fix). Gate green
+  (2093). *Verified*: rendered over a diff that really overflows, dark and light.
+- ☑ **T4 — Resolved threads fold.** A resolved thread renders as a single summary row
+  (check, tally, elided first line, chevron); clicking it opens the block below, the
+  row staying as its head. Fold state shared with the Conversation tab's resolved
+  group. *Files*: `src/ui/diff_view.rs`, `specs/pull-requests.md`. *Tests*: 1 UI e2e.
+  Gate green (2094). *Verified*: folded and open, dark and light.
+
+### Next actions (M-RC2)
+- ☐ **Live PR.** Every render came from fixtures; the surfaces are unverified against a
+  real forge thread (no creds/network here).
+- ☐ **Blank-note actions.** On an empty note, *Save note* closes without saving and
+  *Send review* flushes the rest of the batch — both stay enabled. `Send reply` greys
+  itself blank; decide whether these should too.
+
+---
+
 ## ☑ Milestone — M-CLI2 · `helm run` over a control socket
 
 Spec: [`specs/cli.md`](../cli.md) §9. Per the user: let an agent working in a

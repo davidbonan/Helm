@@ -184,6 +184,14 @@ impl DiffViewState {
         self.inline_edit.as_ref()
     }
 
+    /// Whether a review note editor is open (inline on a line, or in the recap
+    /// popover): it holds the text input, so the app disarms the sidebar keys that
+    /// would otherwise land in the buffer — `Cmd+Enter` above all, which sends the
+    /// review batch here (keybindings.md §4).
+    pub fn note_editing(&self) -> bool {
+        self.active_comment.is_some() || self.popover_edit.is_some()
+    }
+
     /// The write the open editor still owes: its buffer, when it differs from what has
     /// already reached the worker. Read when the diff that holds it is being torn down
     /// without another frame to blur on — a repo switch is not a discard
@@ -575,8 +583,9 @@ const MAX_EDIT_LINES: usize = 2_000;
 const EDIT_BAR_W: f32 = 3.0;
 /// Lines of the commented hunk previewed atop an overlay thread (pull-requests.md §5).
 const OVERLAY_SNIPPET_LINES: usize = 3;
-/// Extra indent a reply nests under its thread root in the overlay (§11).
-const REPLY_NEST_INDENT: f32 = 14.0;
+/// Indent a reply nests under its thread root, wide enough to seat the rail drawn down
+/// its middle (§11) — the Conversation tab's own reply indent.
+const REPLY_NEST_INDENT: f32 = 26.0;
 
 /// Horizontal geometry of the rows: two number columns (old | new) sized to the
 /// largest number in the file, then the sign, then the content.
@@ -1676,10 +1685,14 @@ fn open_inline_editor(
 }
 
 /// Outcome of a note editor frame.
+#[derive(Clone, Copy)]
 enum NoteEdit {
     Idle,
     Delete,
     Save,
+    /// Validate the note *and* hand the whole agent batch to the agent (⌘↵ or the
+    /// Sparkles button) — agent pool only.
+    SaveAndSend,
 }
 
 /// Visual identity of a review pool — the color, icon, header label and editor
@@ -1706,11 +1719,14 @@ fn pool_style(palette: &Palette, pool: ReviewPool) -> PoolStyle {
     }
 }
 
-/// Shared note field: a multiline input (Enter validates, Shift+Enter inserts a
-/// newline) with a compact Delete / validate footer underneath. Clicking outside
-/// the field also validates. `focus` is a one-shot that lands the caret in the
-/// field the frame the editor opens; `style` colors the caret/selection and the
-/// validate button to the pool's identity.
+/// Shared note field, built as **one framed object** — a padded input over a hairline
+/// and an action bar — the same shape as the PR reply editor and the conversation
+/// composer, so a review note reads like every other authoring surface of the app.
+/// Enter validates, `Shift+Enter` inserts a newline, a click outside validates too.
+/// `focus` is a one-shot that lands the caret in the field the frame the editor opens;
+/// `style` colors the focus ring and the caret to the pool's identity. `can_send` adds
+/// the *Send review* action and its `⌘↩`, which validate then flush the batch: agent
+/// pool only, so a forge review is never posted on a keystroke.
 fn note_editor(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -1718,76 +1734,138 @@ fn note_editor(
     buffer: &mut String,
     focus: &mut bool,
     width: f32,
+    can_send: bool,
 ) -> NoteEdit {
     // Consume the bare Enter before the field sees it so it validates instead of
     // inserting a newline; Shift+Enter falls through to the field as a newline.
-    let submit_key = ui.input_mut(|i| {
-        let mut submit = false;
+    let (submit_key, send_key) = ui.input_mut(|i| {
+        let (mut submit, mut send) = (false, false);
         i.events.retain(|e| {
-            let is_submit = matches!(
-                e,
-                egui::Event::Key {
-                    key: egui::Key::Enter,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if !modifiers.shift
-            );
-            submit |= is_submit;
-            !is_submit
+            let egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                modifiers,
+                ..
+            } = e
+            else {
+                return true;
+            };
+            if modifiers.shift {
+                return true;
+            }
+            if can_send && modifiers.command {
+                send = true;
+            } else {
+                submit = true;
+            }
+            false
         });
-        submit
+        (submit, send)
     });
-    let response = ui
-        .scope(|ui| {
-            let radius = egui::CornerRadius::same(RADIUS_BUTTON);
-            let w = &mut ui.visuals_mut().widgets;
-            w.inactive.corner_radius = radius;
-            w.hovered.corner_radius = radius;
-            w.active.corner_radius = radius;
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, style.color);
-            ui.add(
-                egui::TextEdit::multiline(buffer)
-                    .desired_rows(2)
-                    .desired_width(width)
-                    .hint_text(style.hint),
-            )
+    let mut edit = if send_key {
+        NoteEdit::SaveAndSend
+    } else if submit_key {
+        NoteEdit::Save
+    } else {
+        NoteEdit::Idle
+    };
+    // The focus ring is read *before* the field is added, so the frame around it can
+    // carry the ring — egui's own widget stroke sits inside the frame and is invisible
+    // once the field is frameless.
+    let field_id = ui.id().with("note_editor_field");
+    let ring = if ui.memory(|m| m.has_focus(field_id)) {
+        egui::Stroke::new(1.5_f32, style.color)
+    } else {
+        egui::Stroke::new(1.0_f32, palette.border_input)
+    };
+    let response = egui::Frame::new()
+        .fill(palette.bg_surface)
+        .stroke(ring)
+        .corner_radius(egui::CornerRadius::same(EDITOR_RADIUS))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, style.color);
+                let response = ui.add(
+                    egui::TextEdit::multiline(buffer)
+                        .id(field_id)
+                        // `TextEdit::margin` is ignored once a custom frame is given, so
+                        // the padding rides on the frame itself (as in `reply_editor`).
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+                            EDITOR_PAD_X as i8,
+                            EDITOR_PAD_Y as i8,
+                        )))
+                        .desired_rows(2)
+                        .desired_width(ui.available_width())
+                        .font(egui::FontId::proportional(EDITOR_TEXT_SIZE))
+                        .hint_text(style.hint),
+                );
+                // A click outside the field (it loses focus) validates, like Enter or
+                // *Save note* — but the bar below is evaluated after, so clicking one of
+                // its actions, which blurs the field too, still raises that action.
+                if matches!(edit, NoteEdit::Idle) && response.lost_focus() {
+                    edit = NoteEdit::Save;
+                }
+                editor_hairline(ui, palette);
+                // Pin the bar to its own height: a bare layout would inherit the parent's
+                // remaining height and drop the buttons out of reach in a tall scroll area.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), EDITOR_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(8.0);
+                        // The destructive action sits alone on the far side of the bar:
+                        // it must not share an edge with the two confirmations.
+                        if bar_button(ui, palette, "Delete note", None, false, true) {
+                            edit = NoteEdit::Delete;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if can_send
+                                && bar_button(
+                                    ui,
+                                    palette,
+                                    "Send review",
+                                    Some(SHORTCUT_SEND),
+                                    true,
+                                    true,
+                                )
+                            {
+                                edit = NoteEdit::SaveAndSend;
+                            }
+                            // Primary only where it is the sole confirmation — with a
+                            // Send beside it, two filled buttons would compete.
+                            if bar_button(
+                                ui,
+                                palette,
+                                "Save note",
+                                Some(SHORTCUT_SAVE),
+                                !can_send,
+                                true,
+                            ) {
+                                edit = NoteEdit::Save;
+                            }
+                        });
+                    },
+                );
+                response
+            })
+            .inner
         })
         .inner;
     if *focus {
         response.request_focus();
         *focus = false;
     }
-    // A click outside the field (it loses focus) validates, like Enter or ✓.
-    let mut edit = if submit_key || response.lost_focus() {
-        NoteEdit::Save
-    } else {
-        NoteEdit::Idle
-    };
-    ui.add_space(4.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if icon_button(
-            ui,
-            palette,
-            lucide_icons::Icon::Check,
-            style.color,
-            "Validate note",
-        ) {
-            edit = NoteEdit::Save;
-        }
-        ui.add_space(2.0);
-        if icon_button(
-            ui,
-            palette,
-            lucide_icons::Icon::Trash2,
-            palette.git_deleted,
-            "Delete note",
-        ) {
-            edit = NoteEdit::Delete;
-        }
-    });
     edit
 }
+
+/// The two note-editor shortcuts, in the badge convention the rest of the app displays
+/// (`keybindings::Shortcut::display` — `↩` for Enter, modifiers in `⌃⌥⇧⌘` order).
+const SHORTCUT_SAVE: &str = "↩";
+const SHORTCUT_SEND: &str = "⌘↩";
 
 /// Small square icon button (hover-tinted) used for the note editor and popover
 /// controls; `label` is its accessibility name.
@@ -1829,9 +1907,10 @@ const EDITOR_PAD_X: f32 = 12.0;
 const EDITOR_PAD_Y: f32 = 10.0;
 const EDITOR_TEXT_SIZE: f32 = 13.5;
 const EDITOR_HINT_SIZE: f32 = 12.0;
-const EDITOR_BAR_HEIGHT: f32 = 40.0;
+pub(crate) const EDITOR_BAR_HEIGHT: f32 = 40.0;
 const EDITOR_BUTTON_SIZE: f32 = 12.0;
 const EDITOR_BUTTON_HEIGHT: f32 = 28.0;
+const EDITOR_HINT_GAP: f32 = 6.0;
 
 /// The hint and button captions for a `reply_editor`, so the same field reads as a
 /// reply or a new comment depending on where it is opened (pull-requests.md §11).
@@ -1942,11 +2021,17 @@ pub(crate) fn reply_editor(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(8.0);
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            if bar_button(ui, palette, labels.send, true, !buffer.trim().is_empty())
-                            {
+                            if bar_button(
+                                ui,
+                                palette,
+                                labels.send,
+                                None,
+                                true,
+                                !buffer.trim().is_empty(),
+                            ) {
                                 edit = ReplyEdit::Send;
                             }
-                            if bar_button(ui, palette, labels.cancel, false, true) {
+                            if bar_button(ui, palette, labels.cancel, None, false, true) {
                                 edit = ReplyEdit::Cancel;
                             }
                         });
@@ -1978,11 +2063,14 @@ fn editor_hairline(ui: &mut egui::Ui, palette: &Palette) {
 
 /// One button of an editor's action bar: `filled` paints the accent primary (greyed while
 /// `enabled` is false, since an empty reply has nothing to send), otherwise a quiet ghost.
+/// `shortcut` rides inside the button, one notch quieter than the caption, so the keyboard
+/// path is read off the action itself rather than learned elsewhere.
 /// Sized to the app's dense-desktop hit area rather than to its glyph.
 fn bar_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     label: &str,
+    shortcut: Option<&str>,
     filled: bool,
     enabled: bool,
 ) -> bool {
@@ -1991,7 +2079,13 @@ fn bar_button(
     let galley =
         ui.painter()
             .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
-    let size = egui::vec2(galley.size().x + 24.0, EDITOR_BUTTON_HEIGHT);
+    let hint = shortcut.map(|s| {
+        ui.painter()
+            .layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+    });
+    let caption = galley.size();
+    let hint_width = hint.as_ref().map_or(0.0, |g| EDITOR_HINT_GAP + g.size().x);
+    let size = egui::vec2(caption.x + hint_width + 24.0, EDITOR_BUTTON_HEIGHT);
     let (rect, response, hovered) = crate::ui::clickable(ui, size, enabled);
     let (fill, ink) = match (filled, enabled, hovered) {
         (true, false, _) => (palette.bg_surface_hover, palette.state_disabled),
@@ -2004,8 +2098,20 @@ fn bar_button(
         ui.painter()
             .rect_filled(rect, egui::CornerRadius::same(RADIUS_BUTTON), fill);
     }
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, ink);
+    let left = rect.center().x - (caption.x + hint_width) / 2.0;
+    ui.painter().galley(
+        egui::pos2(left, rect.center().y - caption.y / 2.0),
+        galley,
+        ink,
+    );
+    if let Some(hint) = hint {
+        let top = rect.center().y - hint.size().y / 2.0;
+        ui.painter().galley(
+            egui::pos2(left + caption.x + EDITOR_HINT_GAP, top),
+            hint,
+            with_alpha(ink, 150),
+        );
+    }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.clone())
     });
@@ -2037,7 +2143,7 @@ fn comment_block(
         ui.horizontal(|ui| {
             ui.add_space(indent);
             ui.vertical(|ui| {
-                let width = (ui.available_width() - 8.0).max(160.0);
+                let width = card_width(ui);
                 edit = note_editor(
                     ui,
                     palette,
@@ -2045,12 +2151,13 @@ fn comment_block(
                     &mut state.comment_buffer,
                     &mut state.note_focus,
                     width,
+                    pool == ReviewPool::Agent,
                 );
             });
         });
         ui.add_space(3.0);
         match edit {
-            NoteEdit::Save => {
+            NoteEdit::Save | NoteEdit::SaveAndSend => {
                 save_note(
                     review_out,
                     pool,
@@ -2060,6 +2167,9 @@ fn comment_block(
                     code,
                     state.comment_buffer.trim(),
                 );
+                if matches!(edit, NoteEdit::SaveAndSend) {
+                    review_out.push(ReviewIntent::SendToAgent);
+                }
                 state.active_comment = None;
                 state.comment_buffer.clear();
             }
@@ -2123,79 +2233,52 @@ fn existing_block(
             .iter()
             .find_map(|c| c.context.as_deref())
             .map(|h| crate::pull_requests::model::hunk_snippet(h, OVERLAY_SNIPPET_LINES));
-        for (idx, comment) in thread.iter().enumerate() {
-            ui.add_space(2.0);
-            let ask_label =
-                (!agent.is_empty() && idx + 1 == thread.len()).then(|| format!("Ask {agent}"));
-            let mut ask_clicked = false;
-            ui.horizontal(|ui| {
-                // Replies nest a step in under the thread root (pull-requests.md §11).
-                ui.add_space(indent + if idx == 0 { 0.0 } else { REPLY_NEST_INDENT });
-                ask_clicked = thread_card(
-                    ui,
-                    palette,
-                    path,
-                    comment,
-                    ask_label.as_deref(),
-                    (idx == 0).then_some(snippet.as_deref()).flatten(),
-                    now,
-                );
-            });
-            if ask_clicked {
-                out.push(ReviewIntent::AskAgentOnThread {
-                    file: path.to_owned(),
-                    old: anchor.0,
-                    new: anchor.1,
-                });
-            }
-        }
+        // Thread-level handles, read once: the actions they drive all hang off the
+        // root, not off the comment whose card carries them.
         let resolved = thread.first().is_some_and(|c| c.resolved);
         let thread_id = thread.iter().find_map(|c| c.thread_id.clone());
-        if let Some(reply_id) = thread.iter().find_map(|c| c.id) {
-            reply_block(
-                ui, palette, state, reply_id, resolved, thread_id, out, indent,
-            );
-        }
+        let reply_id = thread.iter().find_map(|c| c.id);
+        let replying = reply_id.is_some_and(|id| state.active_reply == Some(id));
+        // A resolved thread folds to a single row, like the Conversation tab's resolved
+        // group: what is settled must not push the code apart (pull-requests.md §11).
+        let fold = reply_id
+            .filter(|_| resolved)
+            .map(|id| state.is_resolved_expanded(id));
+        let actions = ThreadActions {
+            ask: (!agent.is_empty()).then(|| format!("Ask {agent}")),
+            reply: reply_id.is_some() && !replying,
+            resolve: reply_id.map(|_| resolved),
+        };
         ui.add_space(2.0);
-    }
-}
-
-/// The reply affordance under a thread: a "Reply" pill that swaps to the inline
-/// reply editor for thread `reply_id` when clicked, raising `ReplyToThread` on send.
-#[allow(clippy::too_many_arguments)]
-fn reply_block(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    state: &mut DiffViewState,
-    reply_id: u64,
-    resolved: bool,
-    thread_id: Option<String>,
-    out: &mut Vec<ReviewIntent>,
-    indent: f32,
-) {
-    if state.active_reply == Some(reply_id) {
-        ui.add_space(3.0);
+        let mut click = ThreadClick::default();
         let mut edit = ReplyEdit::Idle;
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            ui.vertical(|ui| {
-                let width = (ui.available_width() - 8.0).max(160.0);
-                edit = reply_editor(
-                    ui,
-                    palette,
-                    &mut state.reply_buffer,
-                    &mut state.note_focus,
-                    width,
-                    &REPLY_LABELS,
-                );
-            });
+            // The open composer takes the bar's place inside the card, on the same
+            // gutter: answering a thread must not split it into two objects.
+            let mut composer = |ui: &mut egui::Ui| {
+                let (buffer, focus) = state.reply_fields();
+                let width = ui.available_width();
+                edit = reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS);
+            };
+            click = thread_card(
+                ui,
+                palette,
+                path,
+                thread,
+                &actions,
+                snippet.as_deref(),
+                now,
+                fold,
+                replying.then_some(&mut composer as &mut dyn FnMut(&mut egui::Ui)),
+            );
         });
         match edit {
             ReplyEdit::Send => {
                 let body = state.reply_buffer.trim().to_owned();
-                if !body.is_empty() {
+                if let Some(id) = reply_id.filter(|_| !body.is_empty()) {
                     out.push(ReviewIntent::ReplyToThread {
-                        comment_id: reply_id,
+                        comment_id: id,
                         body,
                     });
                 }
@@ -2204,26 +2287,29 @@ fn reply_block(
             ReplyEdit::Cancel => state.cancel_reply(),
             ReplyEdit::Idle => {}
         }
-    } else {
-        ui.add_space(2.0);
-        let mut reply_clicked = false;
-        let mut resolve_clicked = false;
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            ui.spacing_mut().item_spacing.x = 6.0;
-            reply_clicked = reply_pill(ui, palette);
-            resolve_clicked = resolve_pill(ui, palette, resolved);
-        });
-        if reply_clicked {
-            state.open_reply(reply_id);
-        }
-        if resolve_clicked {
-            out.push(ReviewIntent::ResolveThread {
-                thread_id,
-                comment_id: reply_id,
-                resolved: !resolved,
+        if click.ask {
+            out.push(ReviewIntent::AskAgentOnThread {
+                file: path.to_owned(),
+                old: anchor.0,
+                new: anchor.1,
             });
         }
+        if let Some(id) = reply_id {
+            if click.toggle {
+                state.toggle_resolved(id);
+            }
+            if click.reply {
+                state.open_reply(id);
+            }
+            if click.resolve {
+                out.push(ReviewIntent::ResolveThread {
+                    thread_id: thread_id.clone(),
+                    comment_id: id,
+                    resolved: !resolved,
+                });
+            }
+        }
+        ui.add_space(2.0);
     }
 }
 
@@ -2259,73 +2345,333 @@ pub(crate) fn reply_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
     )
 }
 
-/// One posted PR comment: an initials avatar beside the author and the body —
-/// read-only. Wears the same tinted-card-with-left-edge grammar as the editable
-/// note card, but in a neutral ink so a fetched comment reads apart from a forge
-/// review (`accent`) or an agent note (`accent_ai`). Reuses the shared
-/// `detail::author_avatar`, so inline threads and the PR conversation rail wear
-/// the same face.
+/// The thread-level controls in a thread block's action bar. `reply` is false while its
+/// editor is already open below, `resolve` is `None` on a thread the forge gave no id.
+struct ThreadActions {
+    ask: Option<String>,
+    reply: bool,
+    resolve: Option<bool>,
+}
+
+/// What a thread block raised this frame — its action bar, or the summary row of a
+/// resolved thread.
+#[derive(Default)]
+struct ThreadClick {
+    ask: bool,
+    reply: bool,
+    resolve: bool,
+    toggle: bool,
+}
+
+const THREAD_CARD_PAD: i8 = 10;
+const THREAD_CARD_RADIUS: u8 = 10;
+const THREAD_AVATAR_GAP: f32 = 10.0;
+
+/// A whole posted thread as **one framed object**, the shape the Conversation tab gives
+/// it: the root comment at full weight, its replies nested under a left thread-rail with
+/// a lighter avatar, then a hairline and the thread's action bar. One block — not a
+/// stack of drifting cards, one per comment. Read-only ink, so a fetched comment reads
+/// apart from a forge review (`accent`) or an agent note (`accent_ai`).
+#[allow(clippy::too_many_arguments)]
 fn thread_card(
     ui: &mut egui::Ui,
     palette: &Palette,
     path: &str,
-    comment: &crate::review::ThreadComment,
-    ask_label: Option<&str>,
+    thread: &[crate::review::ThreadComment],
+    actions: &ThreadActions,
     snippet: Option<&[crate::pull_requests::model::SnippetLine]>,
     now: i64,
-) -> bool {
-    let mut ask_clicked = false;
+    fold: Option<bool>,
+    composer: Option<&mut dyn FnMut(&mut egui::Ui)>,
+) -> ThreadClick {
+    let mut click = ThreadClick::default();
+    let Some((root, replies)) = thread.split_first() else {
+        return click;
+    };
+    let width = card_width(ui);
     egui::Frame::new()
         .fill(palette.bg_surface)
-        .inner_margin(egui::Margin::same(10))
-        .corner_radius(egui::CornerRadius::same(10))
+        .corner_radius(egui::CornerRadius::same(THREAD_CARD_RADIUS))
         .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
         .show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                crate::ui::detail::author_avatar(ui, palette, &comment.author);
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(
-                            egui::RichText::new(&comment.author)
-                                .size(LINE_SIZE)
-                                .color(palette.text_primary)
-                                .strong(),
-                        );
-                        let age =
-                            crate::pull_requests::model::relative_age(&comment.created_at, now);
-                        if !age.is_empty() {
-                            ui.label(
-                                egui::RichText::new(age)
-                                    .size(LINE_SIZE - 1.0)
-                                    .color(palette.text_muted),
-                            );
-                        }
+            // The hairline must run edge to edge, so the padding rides on the body
+            // block rather than on the card — the body keeps the ambient spacing the
+            // stack around it is zeroed of.
+            let body_spacing = ui.spacing().item_spacing;
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if let Some(expanded) = fold {
+                    if resolved_summary(ui, palette, thread, expanded) {
+                        click.toggle = true;
+                    }
+                    if !expanded {
+                        return;
+                    }
+                    editor_hairline(ui, palette);
+                }
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(THREAD_CARD_PAD))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = body_spacing;
+                        thread_member(ui, palette, path, root, snippet, now, false);
+                        thread_replies(ui, palette, path, replies, now);
                     });
-                    if let Some(snip) = snippet.filter(|s| !s.is_empty()) {
-                        ui.add_space(4.0);
-                        crate::ui::detail::code_snippet(ui, palette, path, snip);
-                    }
-                    ui.add_space(3.0);
-                    crate::ui::pull_requests_view::markdown(ui, palette, &comment.body);
-                    if let Some(label) = ask_label {
-                        ui.add_space(4.0);
-                        if pill_button(
-                            ui,
-                            palette,
-                            palette.accent_ai,
-                            lucide_icons::Icon::Bot,
-                            label,
-                            RADIUS_PILL,
-                        ) {
-                            ask_clicked = true;
+                editor_hairline(ui, palette);
+                if let Some(composer) = composer {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::same(THREAD_CARD_PAD))
+                        .show(ui, |ui| composer(ui));
+                    return;
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), EDITOR_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(THREAD_CARD_PAD as f32);
+                        // The hand-off to the agent stands apart from the two forge
+                        // actions: it writes nothing to the thread.
+                        if let Some(label) = &actions.ask {
+                            if pill_button(
+                                ui,
+                                palette,
+                                palette.accent_ai,
+                                lucide_icons::Icon::Bot,
+                                label,
+                                RADIUS_BUTTON,
+                            ) {
+                                click.ask = true;
+                            }
                         }
-                    }
-                });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(THREAD_CARD_PAD as f32);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if let Some(resolved) = actions.resolve {
+                                if resolve_pill(ui, palette, resolved) {
+                                    click.resolve = true;
+                                }
+                            }
+                            if actions.reply && reply_pill(ui, palette) {
+                                click.reply = true;
+                            }
+                        });
+                    },
+                );
             });
         });
-    ask_clicked
+    click
+}
+
+/// A resolved thread folded to one row: the check, the comment tally and the first line
+/// of its root elided, with a chevron. Clicking it toggles the body below. Returns
+/// `true` on click (pull-requests.md §11).
+fn resolved_summary(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    thread: &[crate::review::ThreadComment],
+    expanded: bool,
+) -> bool {
+    let (rect, response, hovered) = crate::ui::clickable(
+        ui,
+        egui::vec2(ui.available_width(), THREAD_FOLD_ROW_H),
+        true,
+    );
+    // Folded, the row *is* the card: it wears all four corners. Expanded, the body
+    // below owns the bottom pair.
+    let radius = if expanded {
+        egui::CornerRadius {
+            nw: THREAD_CARD_RADIUS,
+            ne: THREAD_CARD_RADIUS,
+            sw: 0,
+            se: 0,
+        }
+    } else {
+        egui::CornerRadius::same(THREAD_CARD_RADIUS)
+    };
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, radius, palette.bg_surface_hover);
+    }
+    let pad = THREAD_CARD_PAD as f32;
+    crate::ui::paint_icon(
+        painter,
+        egui::pos2(rect.left() + pad + LINE_SIZE / 2.0, rect.center().y),
+        LINE_SIZE,
+        lucide_icons::Icon::Check,
+        palette.git_added,
+    );
+    let chevron_x = rect.right() - pad - LINE_SIZE / 2.0;
+    crate::ui::paint_icon(
+        painter,
+        egui::pos2(chevron_x, rect.center().y),
+        LINE_SIZE,
+        if expanded {
+            lucide_icons::Icon::ChevronUp
+        } else {
+            lucide_icons::Icon::ChevronDown
+        },
+        palette.text_muted,
+    );
+    let mut left = rect.left() + pad + LINE_SIZE + 6.0;
+    let font = egui::FontId::proportional(LINE_SIZE);
+    for (text, color) in [
+        ("Resolved".to_owned(), palette.text_secondary),
+        (thread_tally(thread.len()), palette.text_muted),
+    ] {
+        let galley = painter.layout_no_wrap(text, font.clone(), color);
+        painter.galley(
+            egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+            galley.clone(),
+            color,
+        );
+        left += galley.size().x + 8.0;
+    }
+    // The excerpt takes what is left, elided rather than run under the chevron.
+    let excerpt = thread
+        .first()
+        .and_then(|c| c.body.lines().map(str::trim).find(|l| !l.is_empty()))
+        .map(excerpt_text)
+        .unwrap_or_default();
+    let available = chevron_x - LINE_SIZE / 2.0 - 8.0 - left;
+    if !excerpt.is_empty() && available > 24.0 {
+        let mut job = egui::text::LayoutJob::single_section(
+            excerpt.to_owned(),
+            egui::text::TextFormat {
+                font_id: font,
+                color: palette.text_muted,
+                ..Default::default()
+            },
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: available,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let galley = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+            galley,
+            palette.text_muted,
+        );
+    }
+    let label = format!("Resolved thread · {}", thread_tally(thread.len()));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
+/// The first line of a comment as a one-line excerpt: the markdown that would render as
+/// weight or code is only noise once it is painted raw (`**SUGGESTION**`).
+fn excerpt_text(line: &str) -> String {
+    line.trim_start_matches(['#', '>', '-', ' '])
+        .replace(['*', '_', '`'], "")
+        .trim()
+        .to_owned()
+}
+
+fn thread_tally(n: usize) -> String {
+    if n == 1 {
+        "1 comment".to_owned()
+    } else {
+        format!("{n} comments")
+    }
+}
+
+const THREAD_FOLD_ROW_H: f32 = 34.0;
+
+/// Width a comment surface takes inside the diff. The rows are allocated at the width of
+/// the **longest line** so egui exposes a horizontal scrollbar for lines past the
+/// preview — a card sized on that available width would run its right-edge controls off
+/// the viewport, unreachable. Clamp to what is actually visible from here.
+fn card_width(ui: &egui::Ui) -> f32 {
+    let visible = ui.clip_rect().right() - ui.max_rect().left() - CARD_TRAILING_PAD;
+    ui.available_width().min(visible).max(MIN_CARD_WIDTH)
+}
+
+const CARD_TRAILING_PAD: f32 = 8.0;
+const MIN_CARD_WIDTH: f32 = 160.0;
+
+/// The replies of a thread, indented under a vertical rail so they read as answers to
+/// the root rather than as comments of their own (the Conversation tab's grammar).
+fn thread_replies(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    path: &str,
+    replies: &[crate::review::ThreadComment],
+    now: i64,
+) {
+    if replies.is_empty() {
+        return;
+    }
+    let block = ui.horizontal_top(|ui| {
+        ui.add_space(REPLY_NEST_INDENT);
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            for reply in replies {
+                ui.add_space(8.0);
+                thread_member(ui, palette, path, reply, None, now, true);
+            }
+        });
+    });
+    let rect = block.response.rect;
+    ui.painter().vline(
+        rect.left() + REPLY_NEST_INDENT * 0.5,
+        egui::Rangef::new(rect.top() + 6.0, rect.bottom() - 2.0),
+        egui::Stroke::new(2.0_f32, palette.border_input),
+    );
+}
+
+/// One comment of a thread: the avatar in a fixed left gutter (lighter for a reply), the
+/// author line — with the age pushed to the right edge — and the body in the column
+/// beside it. Reuses the shared `detail::author_avatar`, so inline threads and the PR
+/// conversation rail wear the same face.
+fn thread_member(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    path: &str,
+    comment: &crate::review::ThreadComment,
+    snippet: Option<&[crate::pull_requests::model::SnippetLine]>,
+    now: i64,
+    reply: bool,
+) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        if reply {
+            crate::ui::detail::author_avatar_small(ui, palette, &comment.author);
+        } else {
+            crate::ui::detail::author_avatar(ui, palette, &comment.author);
+        }
+        ui.add_space(THREAD_AVATAR_GAP);
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&comment.author)
+                        .size(LINE_SIZE)
+                        .color(palette.text_primary)
+                        .strong(),
+                );
+                let age = crate::pull_requests::model::relative_age(&comment.created_at, now);
+                if !age.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(age)
+                                .size(LINE_SIZE - 1.0)
+                                .color(palette.text_muted),
+                        );
+                    });
+                }
+            });
+            if let Some(snip) = snippet.filter(|s| !s.is_empty()) {
+                ui.add_space(4.0);
+                crate::ui::detail::code_snippet(ui, palette, path, snip);
+            }
+            ui.add_space(3.0);
+            crate::ui::pull_requests_view::markdown(ui, palette, &comment.body);
+        });
+    });
 }
 
 /// Saved note rendered as a compact identity-tinted card — the pool's icon beside
@@ -2489,9 +2835,10 @@ fn review_popover(
                             &mut state.popover_buffer,
                             &mut state.note_focus,
                             ui.available_width(),
+                            true,
                         );
                         match edit {
-                            NoteEdit::Save => {
+                            NoteEdit::Save | NoteEdit::SaveAndSend => {
                                 save_note(
                                     out,
                                     ReviewPool::Agent,
@@ -2501,6 +2848,9 @@ fn review_popover(
                                     &c.code,
                                     state.popover_buffer.trim(),
                                 );
+                                if matches!(edit, NoteEdit::SaveAndSend) {
+                                    out.push(ReviewIntent::SendToAgent);
+                                }
                                 state.popover_edit = None;
                                 state.popover_buffer.clear();
                             }
@@ -3955,6 +4305,16 @@ fn gutter_icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_note_editor_hints_follow_the_app_badge_convention() {
+        // The captions are literals (the two keys are hard-wired here, not rebindable
+        // `Action`s), so they must be pinned to the convention the badges elsewhere
+        // render — a change to `key_display` must not leave this editor behind.
+        let send = crate::keybindings::Shortcut::cmd(egui::Key::Enter).display();
+        assert_eq!(SHORTCUT_SEND, send);
+        assert_eq!(SHORTCUT_SAVE, send.trim_start_matches('⌘'));
+    }
 
     /// State holding an open editor on lines 1..3 of `f`, buffer as seeded.
     fn state_editing() -> DiffViewState {

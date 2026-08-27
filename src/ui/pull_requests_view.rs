@@ -23,7 +23,7 @@ use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
 use crate::ui::detail::{author_avatar, author_avatar_small, code_snippet, count_chip};
 use crate::ui::diff_view::{
     reply_editor, reply_pill, resolve_pill, ConversationEdit, DiffReview, DiffViewState, ReplyEdit,
-    REPLY_LABELS,
+    EDITOR_BAR_HEIGHT, REPLY_LABELS,
 };
 use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
 use crate::ui::spinner::Spinner;
@@ -172,6 +172,8 @@ const COMPOSER_PAD_Y: f32 = 10.0;
 /// sitting in that padding has to read a step tighter, and an input nested in *that*
 /// tighter again (`diff_view::EDITOR_RADIUS`).
 const BLOCK_RADIUS: u8 = 8;
+/// Gutter of a raised block — the padding its body and its action bar both sit on.
+const BLOCK_PAD: i8 = 14;
 /// Text scale of the conversation card: the canvas's own 15 / 13.5 / 12.5 steps, a
 /// notch above the browse list's metrics — a thread is prose to read, not a table to
 /// scan, and the list's 11–12pt ink was not legible at arm's length.
@@ -1482,34 +1484,47 @@ fn comment_role(pr: &PullRequest, author: &str) -> Option<&'static str> {
 /// swaps to the shared composer. A threaded forge passes the card's id as `parent` so
 /// the reply nests under it (Bitbucket); a flat forge passes `None` and the reply
 /// posts a new top-level comment (GitHub issue comments don't thread) (§11).
+#[allow(clippy::too_many_arguments)]
 fn conversation_reply_block(
     ui: &mut egui::Ui,
     palette: &Palette,
     diff_view: &mut DiffViewState,
     index: usize,
     parent: Option<u64>,
+    pad: f32,
     action: &mut PullRequestsPageAction,
 ) {
-    ui.add_space(4.0);
     if diff_view.conversation_edit() == Some(ConversationEdit::Reply(index)) {
-        let width = (ui.available_width() - 8.0).max(160.0);
-        let (buffer, focus) = diff_view.conversation_fields();
-        match reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS) {
-            ReplyEdit::Send => {
-                let body = diff_view.conversation_buffer_mut().trim().to_owned();
-                if !body.is_empty() {
-                    action
-                        .review_intents
-                        .push(ReviewIntent::PostConversationComment { parent, body });
+        foot_frame(pad).show(ui, |ui| {
+            let width = ui.available_width();
+            let (buffer, focus) = diff_view.conversation_fields();
+            match reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS) {
+                ReplyEdit::Send => {
+                    let body = diff_view.conversation_buffer_mut().trim().to_owned();
+                    if !body.is_empty() {
+                        action
+                            .review_intents
+                            .push(ReviewIntent::PostConversationComment { parent, body });
+                    }
+                    diff_view.cancel_conversation();
                 }
-                diff_view.cancel_conversation();
+                ReplyEdit::Cancel => diff_view.cancel_conversation(),
+                ReplyEdit::Idle => {}
             }
-            ReplyEdit::Cancel => diff_view.cancel_conversation(),
-            ReplyEdit::Idle => {}
+        });
+    } else {
+        let mut clicked = false;
+        thread_bar(ui, pad, |ui| clicked = reply_pill(ui, palette));
+        if clicked {
+            diff_view.open_conversation_reply(index);
         }
-    } else if reply_pill(ui, palette) {
-        diff_view.open_conversation_reply(index);
     }
+}
+
+/// The padded region a thread block's foot gives an open composer — the same gutter its
+/// action bar would have used, so the block does not shift when the editor opens.
+fn foot_frame(pad: f32) -> egui::Frame {
+    egui::Frame::new().inner_margin(egui::Margin::same(pad as i8))
 }
 
 /// The conversation composer at the card's foot (pull-requests.md §11): **one object**
@@ -1531,72 +1546,65 @@ fn conversation_add_block(
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         author_avatar(ui, palette, current_user.unwrap_or(""));
         ui.add_space(AVATAR_GUTTER_GAP);
-        raised_frame(palette)
-            .inner_margin(egui::Margin::ZERO)
-            .show(ui, |ui| {
-                // The frame inherits the surrounding horizontal layout, in which the field
-                // and its action bar would sit side by side: stack them explicitly.
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    let field_id = ui.id().with("pr_conversation_add");
-                    // This composer is always on screen, so its `Esc` can't read as
-                    // "close the editor": egui drops the field's focus, and the key is
-                    // swallowed there rather than falling through to the surface's
-                    // cascade and closing the review (pull-requests.md §11).
-                    if ui.memory(|m| m.had_focus_last_frame(field_id)) {
-                        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                    }
-                    ui.add(
-                        egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
-                            .id(field_id)
-                            // The box around field *and* action bar is the outer frame, so the
-                            // field brings none of its own — but `TextEdit::margin` is only
-                            // honoured on a frame egui builds itself, so the padding has to
-                            // ride on this one or the text lands flush against the border.
-                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
-                                COMPOSER_PAD_X as i8,
-                                COMPOSER_PAD_Y as i8,
-                            )))
-                            .desired_rows(3)
-                            .desired_width(ui.available_width())
-                            .font(egui::FontId::proportional(MD_TEXT_SIZE))
-                            .hint_text("Add a comment…"),
-                    );
-                    hairline(ui, palette);
-                    // A fixed-height bar so the right-to-left layout can't claim the scroll
-                    // area's full remaining height and strand the button at the panel foot.
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), COMPOSER_BAR_HEIGHT),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
+        raised_frame(palette).show(ui, |ui| {
+            // The frame inherits the surrounding horizontal layout, in which the field
+            // and its action bar would sit side by side: stack them explicitly.
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                let field_id = ui.id().with("pr_conversation_add");
+                // This composer is always on screen, so its `Esc` can't read as
+                // "close the editor": egui drops the field's focus, and the key is
+                // swallowed there rather than falling through to the surface's
+                // cascade and closing the review (pull-requests.md §11).
+                if ui.memory(|m| m.had_focus_last_frame(field_id)) {
+                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                }
+                ui.add(
+                    egui::TextEdit::multiline(diff_view.conversation_add_buffer_mut())
+                        .id(field_id)
+                        // The box around field *and* action bar is the outer frame, so the
+                        // field brings none of its own — but `TextEdit::margin` is only
+                        // honoured on a frame egui builds itself, so the padding has to
+                        // ride on this one or the text lands flush against the border.
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+                            COMPOSER_PAD_X as i8,
+                            COMPOSER_PAD_Y as i8,
+                        )))
+                        .desired_rows(3)
+                        .desired_width(ui.available_width())
+                        .font(egui::FontId::proportional(MD_TEXT_SIZE))
+                        .hint_text("Add a comment…"),
+                );
+                hairline(ui, palette);
+                // A fixed-height bar so the right-to-left layout can't claim the scroll
+                // area's full remaining height and strand the button at the panel foot.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), COMPOSER_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(COMPOSER_PAD_X);
+                        ui.label(conv_muted(palette, "Markdown supported"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(COMPOSER_PAD_X);
-                            ui.label(conv_muted(palette, "Markdown supported"));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.add_space(COMPOSER_PAD_X);
-                                    if comment_button(ui, palette, diff_view) {
-                                        let body = diff_view
-                                            .conversation_add_buffer_mut()
-                                            .trim()
-                                            .to_owned();
-                                        if !body.is_empty() {
-                                            action.review_intents.push(
-                                                ReviewIntent::PostConversationComment {
-                                                    parent: None,
-                                                    body,
-                                                },
-                                            );
-                                            diff_view.conversation_add_buffer_mut().clear();
-                                        }
-                                    }
-                                },
-                            );
-                        },
-                    );
-                });
+                            if comment_button(ui, palette, diff_view) {
+                                let body =
+                                    diff_view.conversation_add_buffer_mut().trim().to_owned();
+                                if !body.is_empty() {
+                                    action.review_intents.push(
+                                        ReviewIntent::PostConversationComment {
+                                            parent: None,
+                                            body,
+                                        },
+                                    );
+                                    diff_view.conversation_add_buffer_mut().clear();
+                                }
+                            }
+                        });
+                    },
+                );
             });
+        });
     });
 }
 
@@ -1646,13 +1654,30 @@ fn hairline(ui: &mut egui::Ui, palette: &Palette) {
 }
 
 /// A block raised one step above the card it sits in (the canvas's `surf2`/`border2`):
-/// the open-thread blocks and the composer inside the conversation card.
+/// the open-thread blocks and the composer inside the conversation card. It carries no
+/// padding of its own: both blocks close on a full-bleed hairline and an action bar, so
+/// the gutter rides on the body inside rather than on the frame.
 fn raised_frame(palette: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.bg_surface_hover)
         .stroke(egui::Stroke::new(1.0_f32, palette.border_input))
         .corner_radius(egui::CornerRadius::same(BLOCK_RADIUS))
-        .inner_margin(egui::Margin::same(14))
+}
+
+/// The foot of a thread block: its controls on a bar of their own, pushed to the block's
+/// right gutter under the hairline that closes the body — the grammar the note editor,
+/// the reply editor and the inline thread card all wear (§11). `pad` is the block's own
+/// gutter; a block whose frame already reserves one passes `0.0`.
+fn thread_bar(ui: &mut egui::Ui, pad: f32, content: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), EDITOR_BAR_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.add_space(pad);
+            ui.spacing_mut().item_spacing.x = GAP_SM;
+            content(ui);
+        },
+    );
 }
 
 /// `1 comment` / `3 comments` — the tally grammar of the conversation card.
@@ -1680,33 +1705,48 @@ fn open_thread_block(
     action: &mut PullRequestsPageAction,
 ) {
     raised_frame(palette).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        thread_anchor_label(ui, palette, thread);
-        thread_snippet(ui, palette, diffs, files, thread, action);
-        thread_members(ui, palette, pr, &thread.comments, now);
-        ui.add_space(GAP_SM);
-        match thread.root_id() {
-            // Line-anchored and posted: the shared Reply + Resolve pair, whose handles are
-            // the root's comment id and (GitHub) its review-thread node id.
-            Some(root_id) if thread.path.is_some() => center_reply_block(
-                ui,
-                palette,
-                diff_view,
-                root_id,
-                thread.resolved(),
-                thread.thread_id(),
-                action,
-            ),
-            // PR-level: Reply only — a conversation comment carries no resolve handle.
-            _ => conversation_reply_block(
-                ui,
-                palette,
-                diff_view,
-                thread.index,
-                thread.root_id(),
-                action,
-            ),
-        }
+        // The hairline that closes the body must run edge to edge, so the gutter rides
+        // on the body block rather than on the frame — the grammar of the inline thread
+        // card and of both editors.
+        let body_spacing = ui.spacing().item_spacing;
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(BLOCK_PAD))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = body_spacing;
+                    ui.set_width(ui.available_width());
+                    thread_anchor_label(ui, palette, thread);
+                    thread_snippet(ui, palette, diffs, files, thread, action);
+                    thread_members(ui, palette, pr, &thread.comments, now);
+                });
+            hairline(ui, palette);
+            match thread.root_id() {
+                // Line-anchored and posted: the shared Reply + Resolve pair, whose handles
+                // are the root's comment id and (GitHub) its review-thread node id.
+                Some(root_id) if thread.path.is_some() => center_reply_block(
+                    ui,
+                    palette,
+                    diff_view,
+                    root_id,
+                    thread.resolved(),
+                    thread.thread_id(),
+                    BLOCK_PAD as f32,
+                    action,
+                ),
+                // PR-level: Reply only — a conversation comment carries no resolve handle.
+                _ => conversation_reply_block(
+                    ui,
+                    palette,
+                    diff_view,
+                    thread.index,
+                    thread.root_id(),
+                    BLOCK_PAD as f32,
+                    action,
+                ),
+            }
+        });
     });
     ui.add_space(GAP_MD);
 }
@@ -2097,6 +2137,8 @@ fn resolved_thread_body(
                     root_id,
                     true,
                     thread.thread_id(),
+                    // The row's own frame already reserves the gutter this bar would add.
+                    0.0,
                     action,
                 );
             }
@@ -2138,42 +2180,46 @@ fn center_reply_block(
     reply_id: u64,
     resolved: bool,
     thread_id: Option<String>,
+    pad: f32,
     action: &mut PullRequestsPageAction,
 ) {
     if diff_view.reply_target() == Some(reply_id) {
-        ui.add_space(4.0);
-        let width = (ui.available_width() - 8.0).max(160.0);
-        let (buffer, focus) = diff_view.reply_fields();
-        let edit = reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS);
-        match edit {
-            ReplyEdit::Send => {
-                let body = diff_view.reply_buffer_mut().trim().to_owned();
-                if !body.is_empty() {
-                    action.review_intents.push(ReviewIntent::ReplyToThread {
-                        comment_id: reply_id,
-                        body,
-                    });
+        foot_frame(pad).show(ui, |ui| {
+            let width = ui.available_width();
+            let (buffer, focus) = diff_view.reply_fields();
+            let edit = reply_editor(ui, palette, buffer, focus, width, &REPLY_LABELS);
+            match edit {
+                ReplyEdit::Send => {
+                    let body = diff_view.reply_buffer_mut().trim().to_owned();
+                    if !body.is_empty() {
+                        action.review_intents.push(ReviewIntent::ReplyToThread {
+                            comment_id: reply_id,
+                            body,
+                        });
+                    }
+                    diff_view.cancel_reply();
                 }
-                diff_view.cancel_reply();
-            }
-            ReplyEdit::Cancel => diff_view.cancel_reply(),
-            ReplyEdit::Idle => {}
-        }
-    } else {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if reply_pill(ui, palette) {
-                diff_view.open_reply(reply_id);
-            }
-            if resolve_pill(ui, palette, resolved) {
-                action.review_intents.push(ReviewIntent::ResolveThread {
-                    thread_id,
-                    comment_id: reply_id,
-                    resolved: !resolved,
-                });
+                ReplyEdit::Cancel => diff_view.cancel_reply(),
+                ReplyEdit::Idle => {}
             }
         });
+    } else {
+        let (mut reply, mut resolve) = (false, false);
+        // Laid out right to left, so the pair still reads Reply then Resolve.
+        thread_bar(ui, pad, |ui| {
+            resolve = resolve_pill(ui, palette, resolved);
+            reply = reply_pill(ui, palette);
+        });
+        if reply {
+            diff_view.open_reply(reply_id);
+        }
+        if resolve {
+            action.review_intents.push(ReviewIntent::ResolveThread {
+                thread_id,
+                comment_id: reply_id,
+                resolved: !resolved,
+            });
+        }
     }
 }
 

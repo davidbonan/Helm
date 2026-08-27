@@ -85,7 +85,9 @@ put a terminal on the wall or take it off.
 | `↑` / `↓` (**commit** diff open) | Opens the diff of the previous / next file **of the commit** (sidebar list), with start/end wrap — same traversal as the status files |
 | `Esc` | Closes the diff view, returns to the repo's terminal |
 | `Esc` (diff opened from the **graph**) | Closes the commit diff, returns to the **graph** (post-MVP, [`git.md`](git.md) §9) |
-| `Cmd+Enter` | **Commit** (if the message is non-empty and at least one file is staged) |
+| `Enter` (note editor open) | *Save note* — validates the note into the review batch, which **queues**: nothing leaves. `Shift+Enter` inserts a newline instead |
+| `Cmd+Enter` (**agent** note editor open) | *Send review* — validates the note **and** sends the whole batch to the agent: the `Send to {agent}` pill without the detour. Agent pool only: a **forge** note is posted publicly on submit, so it never leaves on a keystroke (there `Cmd+Enter` only validates) |
+| `Cmd+Enter` | **Commit** (if the message is non-empty and at least one file is staged) — disarmed while an inline or note editor is open, which owns the keystroke |
 
 Per-hunk/line staging is done from the diff view via mouse
 controls (no dedicated shortcut in the MVP); the `Esc` cascade in the diff runs

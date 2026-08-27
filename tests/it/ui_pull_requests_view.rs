@@ -2368,8 +2368,9 @@ fn esc_in_the_add_comment_field_does_not_leave_the_review() {
     );
 }
 
-#[test]
-fn inline_comment_card_resolve_emits_resolve_thread() {
+/// Review surface on the Conversation tab with one **line-anchored** open thread, so
+/// the block carries the Reply + Resolve pair; the intents it raises are captured.
+fn anchored_thread_harness() -> (Harness<'static>, Rc<RefCell<Vec<ReviewIntent>>>) {
     use helm::pull_requests::model::{PrComment, PrDetail};
     let palette = Palette::light();
     let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
@@ -2447,6 +2448,12 @@ fn inline_comment_card_resolve_emits_resolve_thread() {
             sink.borrow_mut().extend(action.review_intents);
         });
     harness.run();
+    (harness, intents)
+}
+
+#[test]
+fn inline_comment_card_resolve_emits_resolve_thread() {
+    let (mut harness, intents) = anchored_thread_harness();
     harness.get_by_label("Resolve").click();
     harness.run();
 
@@ -2458,6 +2465,31 @@ fn inline_comment_card_resolve_emits_resolve_thread() {
         )),
         "the resolve pill must emit ResolveThread toggling to resolved, got {:?}",
         intents.borrow(),
+    );
+}
+
+#[test]
+fn a_conversation_thread_closes_on_an_action_bar_at_its_right_edge() {
+    // The block reads body / hairline / bar, like the inline thread card and both
+    // editors: the controls sit under the body, pushed to the block's right gutter —
+    // not inline at the foot of the text column — and still read Reply then Resolve.
+    let (harness, _) = anchored_thread_harness();
+    let body = harness.get_by_label("rename this").rect();
+    let reply = harness.get_by_label("Reply").rect();
+    let resolve = harness.get_by_label("Resolve").rect();
+
+    assert!(
+        reply.top() >= body.bottom(),
+        "the controls belong under the comment body, not beside it ({reply:?} vs {body:?})",
+    );
+    assert!(
+        reply.left() > body.center().x,
+        "the bar is right-aligned: its first control starts past the block's midline \
+         ({reply:?} vs {body:?})",
+    );
+    assert!(
+        reply.right() <= resolve.left(),
+        "laid out right to left, the pair must still read Reply then Resolve",
     );
 }
 

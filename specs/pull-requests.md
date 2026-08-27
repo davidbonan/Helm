@@ -518,6 +518,45 @@ same one as commit/working-tree review.
   opens its own inline note editor on the line; the pools never cross, so a forge
   review comment is **never** forced through the agent. Both batch — never one line
   at a time. (The working-tree / commit diffs keep only the agent `Sparkles`.)
+- **Note editor.** **One framed object** — a padded field over a hairline and an
+  action bar — the same shape as the reply editor and the conversation composer, so
+  a review note reads like every other authoring surface. The frame carries the
+  focus ring in the **pool's** color (`accent` forge / `accent_ai` agent); the bar
+  puts the destructive *Delete note* alone on the left and the confirmations on the
+  right, each **wearing its own shortcut** in the app's badge convention: *Save note*
+  `↩`, and — agent pool only — *Send review* `⌘↩`, which validates the note *and*
+  flushes the batch (the recap pill's action without the detour). The primary fill
+  marks the sole confirmation: *Send review* where it exists, *Save note* on the
+  **forge** pool, which has no send at all — those comments are posted publicly on
+  submit, so they never leave on a keystroke.
+- **Thread card.** A posted thread is **one framed object**, the shape the Conversation
+  tab gives it: the root comment — avatar in a fixed gutter, author line with the age
+  pushed to the right edge, body — then its replies nested under a **left thread-rail**
+  with a lighter avatar, then a hairline and the thread's action bar. One block, never a
+  stack of cards one per comment, and never a detached row of controls floating under
+  them. The bar carries *Ask {agent}* on the left (the hand-off writes nothing to the
+  thread) and *Reply* + *Resolve* / *Reopen* on the right, all three in the app's
+  outlined secondary shape. Opening the composer replaces the **whole bar** in place, on
+  the same gutter, so answering a thread never splits it in two.
+- **Resolved threads fold.** A resolved thread in the diff renders as a **single
+  summary row** — the check, the comment tally and the first line of its root elided,
+  with a chevron — so what is settled does not push the code apart. Clicking it opens
+  the block below the row, which stays as its head and its fold-back control; the bar
+  then offers *Reopen*. The fold state is the one the Conversation tab's resolved group
+  keeps, keyed on the thread root, so a thread opened on one surface is open on the
+  other.
+- **Card width.** Diff rows are allocated at the width of the **longest line**, so egui
+  exposes a horizontal scrollbar for lines past the preview. A comment surface sized on
+  that available width would run its right-edge controls off the viewport, unreachable:
+  the thread card, the note editor and the reply editor all clamp to what is **visible**
+  from where they start.
+- **Conversation blocks.** The same foot closes the **Conversation** tab's thread
+  blocks: the raised block carries no padding of its own, its body does, and it ends on
+  a full-bleed hairline and a bar whose controls sit at the block's right gutter —
+  *Reply* alone on a PR-level thread (no resolve handle), *Reply* + *Resolve* /
+  *Reopen* on a line-anchored one. Opening a composer replaces the bar in place, on the
+  same gutter, so the block does not shift. An expanded **resolved** row wears the bar
+  too (its own frame already reserves the gutter, so it adds none).
 - **Diff producer (domain, I/O-free).** `git::diff::pr_changed_files(repo, base,
   head)` + `pr_file_diff(...)` compute the PR delta over the **three-dot**
   `merge-base(base, head)..head` range — only the PR's own changes, never the

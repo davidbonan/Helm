@@ -1163,6 +1163,15 @@ fn drive_review(
     comments: FileComments,
     actions: impl Fn(&mut Harness<'_, ()>) + 'static,
 ) -> Vec<ReviewIntent> {
+    drive_review_full(diff, comments, actions).0
+}
+
+/// Same, also handing back the view state the run left behind.
+fn drive_review_full(
+    diff: FileDiff,
+    comments: FileComments,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> (Vec<ReviewIntent>, Rc<RefCell<DiffViewState>>) {
     let palette = Palette::light();
     let git = Rc::new(RefCell::new(Vec::new()));
     let review = Rc::new(RefCell::new(Vec::new()));
@@ -1195,7 +1204,37 @@ fn drive_review(
     harness.run();
 
     let out = review.borrow().clone();
-    out
+    (out, state)
+}
+
+#[test]
+fn an_open_note_editor_takes_the_keyboard_from_the_sidebar() {
+    // The right sidebar renders before the diff, so its `Cmd+Enter` (commit) would
+    // fire on the very keystroke that sends the review: the app disarms it off this
+    // flag while a note editor holds the text input.
+    let (_, idle) = drive_review_full(review_diff(), FileComments::new(), |_| {});
+    assert!(
+        !idle.borrow().note_editing(),
+        "control: no editor open, the sidebar keeps its keys"
+    );
+
+    let (_, editing) = drive_review_full(review_diff(), FileComments::new(), |h| {
+        h.get_all_by_label("Comment line").last().unwrap().click();
+    });
+    assert!(
+        editing.borrow().note_editing(),
+        "an open note editor must disarm the sidebar keys"
+    );
+
+    let (_, validated) = drive_review_full(review_diff(), FileComments::new(), |h| {
+        h.get_all_by_label("Comment line").last().unwrap().click();
+        h.run();
+        h.get_by_label("Save note").click();
+    });
+    assert!(
+        !validated.borrow().note_editing(),
+        "the sidebar gets its keys back once the note is validated"
+    );
 }
 
 #[test]
@@ -1207,7 +1246,7 @@ fn clicking_the_note_icon_then_validating_emits_save_comment() {
         h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
             .type_text("needs rename");
         h.run();
-        h.get_by_label("Validate note").click();
+        h.get_by_label("Save note").click();
     });
 
     assert!(
@@ -1223,9 +1262,106 @@ fn clicking_the_note_icon_then_validating_emits_save_comment() {
     );
 }
 
+#[test]
+fn the_sparkles_button_saves_the_note_then_sends_the_batch() {
+    let intents = drive_review(review_diff(), FileComments::new(), |h| {
+        h.get_all_by_label("Comment line").last().unwrap().click();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("needs rename");
+        h.run();
+        h.get_by_label("Send review").click();
+    });
+
+    let saved = intents
+        .iter()
+        .position(|i| matches!(i, ReviewIntent::SaveComment { comment, .. } if comment.note == "needs rename"));
+    let sent = intents
+        .iter()
+        .position(|i| matches!(i, ReviewIntent::SendToAgent));
+    assert!(
+        matches!((saved, sent), (Some(s), Some(t)) if s < t),
+        "the Sparkles button must save the note before sending the batch, got {intents:?}",
+    );
+}
+
+#[test]
+fn cmd_enter_saves_the_note_then_sends_the_batch() {
+    let intents = drive_review(review_diff(), FileComments::new(), |h| {
+        h.get_all_by_label("Comment line").last().unwrap().click();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("needs rename");
+        h.run();
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+    });
+
+    let saved = intents
+        .iter()
+        .position(|i| matches!(i, ReviewIntent::SaveComment { comment, .. } if comment.note == "needs rename"));
+    let sent = intents
+        .iter()
+        .position(|i| matches!(i, ReviewIntent::SendToAgent));
+    assert!(
+        matches!((saved, sent), (Some(s), Some(t)) if s < t),
+        "⌘↵ must save the note before sending the batch, got {intents:?}",
+    );
+}
+
+#[test]
+fn a_bare_enter_only_queues_the_note() {
+    let intents = drive_review(review_diff(), FileComments::new(), |h| {
+        h.get_all_by_label("Comment line").last().unwrap().click();
+        h.run();
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("needs rename");
+        h.run();
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, ReviewIntent::SaveComment { .. })),
+        "Enter must still validate the note, got {intents:?}",
+    );
+    assert!(
+        !intents
+            .iter()
+            .any(|i| matches!(i, ReviewIntent::SendToAgent)),
+        "Enter must queue only — sending is ⌘↵, got {intents:?}",
+    );
+}
+
 /// Drives the PR review surface (two pools) and returns the emitted intents after
 /// clicking the gutter button labelled `button`, typing `note`, and validating.
 fn drive_pr_review(button: &'static str, note: &'static str) -> Vec<ReviewIntent> {
+    drive_pr_review_with(button, move |h| {
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text(note);
+        h.run();
+        h.get_by_label("Save note").click();
+    })
+}
+
+/// Same, with the note editor open on `button`'s pool and the scripted `actions`
+/// driving it instead of the plain type-then-validate.
+fn drive_pr_review_with(
+    button: &'static str,
+    actions: impl Fn(&mut Harness<'_, ()>) + 'static,
+) -> Vec<ReviewIntent> {
     let palette = Palette::light();
     let diff = review_diff();
     let review = Rc::new(RefCell::new(Vec::new()));
@@ -1259,11 +1395,7 @@ fn drive_pr_review(button: &'static str, note: &'static str) -> Vec<ReviewIntent
     harness.run();
     harness.get_all_by_label(button).last().unwrap().click();
     harness.run();
-    harness
-        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
-        .type_text(note);
-    harness.run();
-    harness.get_by_label("Validate note").click();
+    actions(&mut harness);
     harness.run();
 
     let out = review.borrow().clone();
@@ -1303,6 +1435,43 @@ fn pr_agent_button_records_an_agent_pool_note() {
                     && comment.note == "ask claude"
         )),
         "the agent note button must record an Agent-pool note, got {intents:?}",
+    );
+}
+
+#[test]
+fn the_forge_editor_offers_no_send_shortcut() {
+    // A forge note is posted publicly on submit: it must never leave on a
+    // keystroke, so the pool carries neither the Sparkles button nor ⌘↵.
+    let intents = drive_pr_review_with("Comment for review", |h| {
+        assert!(
+            h.query_by_label("Send review").is_none(),
+            "the forge editor must not offer the agent send button",
+        );
+        h.get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
+            .type_text("needs rename");
+        h.run();
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+    });
+
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            ReviewIntent::SaveComment { pool, comment, .. }
+                if *pool == ReviewPool::Forge && comment.note == "needs rename"
+        )),
+        "⌘↵ must still validate the forge note, got {intents:?}",
+    );
+    assert!(
+        !intents
+            .iter()
+            .any(|i| matches!(i, ReviewIntent::SendToAgent)),
+        "the forge pool must never raise SendToAgent, got {intents:?}",
     );
 }
 
@@ -1565,6 +1734,247 @@ fn reply_pill_on_a_thread_emits_reply_to_thread() {
         )),
         "the Reply editor must emit ReplyToThread for the thread root, got {:?}",
         intents.borrow(),
+    );
+}
+
+#[test]
+fn a_thread_renders_as_one_block_with_a_single_action_bar() {
+    // A thread is one block — root plus replies — closed by a single action bar: never
+    // one card per comment, never a set of controls per comment, never a detached row
+    // floating under the cards.
+    let palette = Palette::light();
+    let diff = review_diff();
+    let comment = |author: &str, body: &str, id: u64| helm::review::ThreadComment {
+        author: author.into(),
+        body: body.into(),
+        id: Some(id),
+        created_at: String::new(),
+        context: None,
+        resolved: false,
+        thread_id: None,
+    };
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            (None, Some(2u32)),
+            vec![
+                comment("octocat", "please rename work()", 77),
+                comment("valentin", "good catch", 78),
+            ],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let mut intents: Vec<ReviewIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::PrReview,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                forge: Some(&empty),
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents,
+            }),
+        );
+    });
+    harness.run();
+
+    for label in ["Reply", "Resolve", "Ask claude"] {
+        assert_eq!(
+            harness.query_all_by_label(label).count(),
+            1,
+            "a two-comment thread must expose exactly one {label}",
+        );
+    }
+
+    // Both comments live in the same block, so the thread never renders as a stack of
+    // cards: one avatar per comment, one card.
+    assert!(
+        harness.query_by_label("please rename work()").is_some()
+            && harness.query_by_label("good catch").is_some(),
+        "the root and its reply must both render inside the thread block",
+    );
+
+    // The composer takes the bar's place: the whole bar steps aside, so the thread
+    // stays one object while it is being answered.
+    harness.get_by_label("Reply").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Send reply").is_some(),
+        "the reply editor must open in the bar's place",
+    );
+    for label in ["Reply", "Resolve", "Ask claude"] {
+        assert!(
+            harness.query_by_label(label).is_none(),
+            "{label} must step aside while the composer holds the foot",
+        );
+    }
+}
+
+#[test]
+fn a_thread_over_an_overflowing_diff_keeps_its_controls_on_screen() {
+    // Diff rows are allocated at the width of the longest line so egui exposes a
+    // horizontal scrollbar; a comment card sized on that available width would push its
+    // right-edge controls past the viewport, out of reach.
+    let long = "x".repeat(400);
+    let diff = FileDiff {
+        path: "src/main.rs".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -1,1 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("{long}\n"),
+                old_lineno: None,
+                new_lineno: Some(2),
+            }],
+        }],
+        source_lines: Vec::new(),
+        image: None,
+        editable: false,
+    };
+    let palette = Palette::light();
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            (None, Some(2u32)),
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename work()".into(),
+                id: Some(77),
+                created_at: String::new(),
+                context: None,
+                resolved: false,
+                thread_id: None,
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 400.0))
+        .build_ui(move |ui| {
+            let mut git: Vec<GitIntent> = Vec::new();
+            let mut intents: Vec<ReviewIntent> = Vec::new();
+            let empty = FileComments::new();
+            diff_view(
+                ui,
+                &palette,
+                &diff,
+                DiffSurface::PrReview,
+                &mut state_in_ui.borrow_mut(),
+                &mut git,
+                Some(&mut DiffReview {
+                    comments: &empty,
+                    forge: Some(&empty),
+                    existing: &existing,
+                    agent: "claude",
+                    intents: &mut intents,
+                }),
+            );
+        });
+    harness.run();
+    harness.run();
+
+    let viewport = 600.0_f32;
+    for label in ["Reply", "Resolve", "Ask claude"] {
+        let rect = harness.get_by_label(label).rect();
+        assert!(
+            rect.right() <= viewport,
+            "{label} is off the viewport at {rect:?} — the card must clamp to what is \
+             visible, not to the widest diff line",
+        );
+    }
+}
+
+#[test]
+fn a_resolved_thread_folds_to_one_row_until_it_is_opened() {
+    // What is settled must not push the code apart: a resolved thread renders as a
+    // single summary row, its body only on demand.
+    let palette = Palette::light();
+    let diff = review_diff();
+    let mut existing = ForgeThreads::new();
+    existing.insert(
+        "src/main.rs".into(),
+        std::iter::once((
+            (None, Some(2u32)),
+            vec![helm::review::ThreadComment {
+                author: "octocat".into(),
+                body: "please rename work()".into(),
+                id: Some(77),
+                created_at: String::new(),
+                context: None,
+                resolved: true,
+                thread_id: None,
+            }],
+        ))
+        .collect(),
+    );
+    let state = Rc::new(RefCell::new(DiffViewState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut git: Vec<GitIntent> = Vec::new();
+        let mut intents: Vec<ReviewIntent> = Vec::new();
+        let empty = FileComments::new();
+        diff_view(
+            ui,
+            &palette,
+            &diff,
+            DiffSurface::PrReview,
+            &mut state_in_ui.borrow_mut(),
+            &mut git,
+            Some(&mut DiffReview {
+                comments: &empty,
+                forge: Some(&empty),
+                existing: &existing,
+                agent: "claude",
+                intents: &mut intents,
+            }),
+        );
+    });
+    harness.run();
+
+    assert!(
+        harness.query_by_label("please rename work()").is_none(),
+        "a resolved thread must stay folded: its body is not drawn",
+    );
+    for label in ["Reply", "Reopen", "Ask claude"] {
+        assert!(
+            harness.query_by_label(label).is_none(),
+            "{label} belongs to the body, which is folded away",
+        );
+    }
+
+    harness.get_by_label_contains("Resolved thread").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("please rename work()").is_some(),
+        "clicking the summary row must open the thread",
+    );
+    assert!(
+        harness.query_by_label("Reopen").is_some(),
+        "an opened resolved thread offers Reopen in its bar",
+    );
+    assert!(
+        harness.query_by_label_contains("Resolved thread").is_some(),
+        "the summary row stays as the block's head, now a fold-back control",
     );
 }
 

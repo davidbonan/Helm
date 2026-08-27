@@ -522,13 +522,15 @@ impl HelmApp {
             .as_ref()
             .is_some_and(|g| g.worker.pending_mutation().is_some());
         self.git_panel_state.lock_busy = self.git.as_ref().is_some_and(|g| g.lock_busy());
-        // An open inline editor takes the text input (keybindings.md §4): the sidebar's
-        // ↑/↓ file navigation and `Cmd+Enter` would land in the buffer, so they disarm
-        // until it closes.
+        // An open inline editor — or a review note editor — takes the text input
+        // (keybindings.md §4): the sidebar's ↑/↓ file navigation and `Cmd+Enter` would
+        // land in the buffer, so they disarm until it closes. The sidebar renders
+        // before the diff, so without this the `Cmd+Enter` that sends the review batch
+        // would also commit.
         self.git_panel_state.inline_editing = self
             .diff
             .as_ref()
-            .is_some_and(|d| d.view.inline_edit().is_some());
+            .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing());
     }
 
     pub(super) fn render_page(
