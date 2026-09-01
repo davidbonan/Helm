@@ -1,5 +1,21 @@
 # Release notes
 
+## 2.4.0
+
+- A pull request opens at once. The changed files come from the repository
+  itself when the listed head and base commits are already there — a PR opened
+  before, a branch you work on — with no round trip to the remote at all
+  (≈ 3.4 s → 35 ms); when they are not, a single fetch brings both tips instead
+  of two in a row.
+- The PR body, checks and conversation paint as soon as the forge returns them;
+  inline comments, review threads and commits load beside them and fill in a
+  moment later, under a *Loading comments…* row — instead of everything waiting
+  for the last call (first paint ≈ 2.5 s → 0.9 s on GitHub).
+- Refreshing an open PR keeps its threads on screen until the fresh detail has
+  fully landed — no blank in between.
+- File diffs of a review are computed by a small pool, the file you are on
+  first, rather than one thread per file.
+
 ## 2.3.0
 
 - Annotating a diff now sends. `Enter` still queues the note for the batch;
@@ -126,12 +142,3 @@
 - The `List | Terminals` switch is gone with the grouped agent list and the
   per-card conversation preview. The dashboard always opens on the wall, and
   which terminals you watch is a choice instead of something derived.
-
-## 1.6.1
-
-- `Esc` now leaves an inline edit *without* keeping it: the buffer is dropped
-  and the diff comes back exactly as it was. Every other way out still saves —
-  `Cmd+S`, a click elsewhere, another hunk, switching file, repo or worktree.
-- With `Esc` a real way back, the save after a pause in typing is gone: an open
-  buffer only reaches the working tree on an exit that keeps it, so nothing
-  lands behind your back.
