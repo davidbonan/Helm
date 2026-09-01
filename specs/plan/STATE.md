@@ -6,6 +6,36 @@
 
 ---
 
+## ☑ Milestone — M-RC3 · Fetched views answer at once
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §6, §11. Per the user: a view
+showing fetched content (PR detail, changed files, diffs) took a moment to appear.
+Survey first: the git diff view already jumps the worker queue and highlights
+incrementally; the lag sat in the PR path — a serial chain of forge calls before
+anything painted, two serial `git fetch` before any file, a thread per file diff.
+Counter: **3/3**.
+
+- ☑ **T1 — Changed files without the round trips.** The list now carries the tips
+  the forge listed (`PullRequest::{source_commit,dest_commit}` — `headRefOid` /
+  `baseRefOid`, Bitbucket `commit.hash`); `load_pr_files` answers from the repo when
+  both are already objects (no network at all), else **one** `git fetch origin
+  <head> <dest>` instead of two. *Files*: `src/pull_requests/{model,github,bitbucket,
+  runner}.rs`, fixtures. *Tests*: 2 parser asserts + 2 business e2e (no-`origin`
+  fixture proves the no-fetch path).
+- ☑ **T2 — Detail in two replies, forge calls concurrent.** `PrDetailReply::
+  {Partial,Complete}`: the PR body paints as soon as it returns; comments / threads /
+  commits are fetched on scoped threads beside it and merged in the complete reply.
+  A surface already showing a detail keeps it until `Complete` (no blank on a
+  refetch); `PrReview::comments_loading` drives a *Loading comments…* row in the
+  conversation card. The per-open `gh auth status` probe is gone. *Files*:
+  `src/pull_requests/runner.rs`, `src/app/{mod,render}.rs`,
+  `src/ui/pull_requests_view.rs`. *Tests*: 1 UI e2e.
+- ☑ **T3 — Bounded diff pool, selected file first.** `PrReviewRunner` serves file
+  diffs from a 4-worker pool over a `DiffQueue` (newest batch first, batch order
+  kept) via `request_file_diffs`; `ensure_range_diffs` rotates the batch to start at
+  the selected file. *Files*: `src/pull_requests/runner.rs`, `src/app/mod.rs`.
+  *Tests*: 1 unit (queue order).
+
 ## ☑ Milestone — M-RC2 · Review surfaces: one framed object everywhere
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §11,

@@ -338,8 +338,10 @@ pub struct PrReviewKey {
 }
 
 /// Ask the review runner to resolve a PR's `merge-base(dest, head)..head` and list
-/// its changed files (pull-requests.md §5). Network: fetches the PR head and the
-/// base branch into `FETCH_HEAD` — **no local branch is written** (read-only).
+/// its changed files (pull-requests.md §5). Network only when the listed tips
+/// (`source_commit` / `dest_commit`) are not already in the repo: then one fetch of
+/// the PR head and the base branch into `FETCH_HEAD` — **no local branch is
+/// written** (read-only).
 #[derive(Debug, Clone)]
 pub struct PrFilesRequest {
     pub key: PrReviewKey,
@@ -348,6 +350,8 @@ pub struct PrFilesRequest {
     pub number: u64,
     pub source_branch: String,
     pub dest_branch: String,
+    pub source_commit: String,
+    pub dest_commit: String,
 }
 
 /// The resolved review base/head and the changed-files list.
@@ -372,7 +376,8 @@ pub enum CommitRange {
 }
 
 /// A review fetch: the changed-files list (network), a per-commit/range files recompute
-/// (local), or one file's diff (local).
+/// (local), or an embedded image. One file's diff is a `PrFileDiffRequest`: batched
+/// through the runner's bounded pool rather than a thread per request.
 #[derive(Debug, Clone)]
 pub enum PrReviewRequest {
     Files(PrFilesRequest),
@@ -384,13 +389,6 @@ pub enum PrReviewRequest {
         selection: Option<String>,
         range: CommitRange,
     },
-    FileDiff {
-        key: PrReviewKey,
-        root: PathBuf,
-        base: git2::Oid,
-        head: git2::Oid,
-        path: String,
-    },
     /// An image a markdown body / comment embeds (pull-requests.md §11). Not keyed on
     /// a review: the same asset can be linked from any PR, and the cache is the URL's.
     Image {
@@ -399,6 +397,16 @@ pub enum PrReviewRequest {
         /// Bitbucket identity for the Basic header, empty on GitHub.
         bitbucket_email: String,
     },
+}
+
+/// One file's local diff over a fetched range (pull-requests.md §11).
+#[derive(Debug, Clone)]
+pub struct PrFileDiffRequest {
+    pub key: PrReviewKey,
+    pub root: PathBuf,
+    pub base: git2::Oid,
+    pub head: git2::Oid,
+    pub path: String,
 }
 
 /// The single reply per review request, echoing the key (and path/selection) for adoption.
@@ -438,19 +446,93 @@ pub fn review_head_ref(forge_kind: ForgeKind, number: u64, source_branch: &str) 
 /// contract). Fire-and-forget — unlike the gated list/checkout runners, several
 /// requests may be in flight (the file-list load then per-file diffs), each
 /// adopted by its echoed `PrReviewKey`/path.
+///
+/// File diffs go through a **bounded pool** (`DIFF_WORKERS`) fed by `DiffQueue`
+/// rather than a thread per file: the Files tab asks for every file of a PR on
+/// one frame, and a hundred threads each opening the repo contended with the
+/// frame instead of finishing sooner. The newest batch is served first, in its
+/// own order — the PR just opened ahead of the one just left, and the file the
+/// user is looking at ahead of the rest of its column.
 pub struct PrReviewRunner {
     on_event: std::sync::Arc<dyn Fn() + Send + Sync>,
     results_tx: Sender<PrReviewReply>,
     results_rx: Receiver<PrReviewReply>,
+    diffs: std::sync::Arc<DiffQueue>,
+}
+
+/// Threads serving the file-diff queue: a diff is a few ms of CPU, so a handful
+/// keeps the column filling without starving the UI thread of a core.
+const DIFF_WORKERS: usize = 4;
+
+/// The file-diff work queue shared by the runner and its workers: newest batch at
+/// the front, `closed` once the runner is dropped so the workers exit.
+#[derive(Default)]
+struct DiffQueue {
+    jobs: std::sync::Mutex<DiffJobs>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct DiffJobs {
+    pending: std::collections::VecDeque<PrFileDiffRequest>,
+    closed: bool,
+}
+
+impl DiffQueue {
+    /// Puts `batch` ahead of everything pending, keeping the batch's own order.
+    fn push_front(&self, batch: Vec<PrFileDiffRequest>) {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        for job in batch.into_iter().rev() {
+            jobs.pending.push_front(job);
+        }
+        self.ready.notify_all();
+    }
+
+    /// Blocks until a job is available; `None` once the queue is closed.
+    fn pop_front(&self) -> Option<PrFileDiffRequest> {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(job) = jobs.pending.pop_front() {
+                return Some(job);
+            }
+            if jobs.closed {
+                return None;
+            }
+            jobs = self.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        jobs.closed = true;
+        jobs.pending.clear();
+        self.ready.notify_all();
+    }
 }
 
 impl PrReviewRunner {
     pub fn new(on_event: impl Fn() + Send + Sync + 'static) -> Self {
         let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        let on_event: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(on_event);
+        let diffs = std::sync::Arc::new(DiffQueue::default());
+        for _ in 0..DIFF_WORKERS {
+            let queue = std::sync::Arc::clone(&diffs);
+            let tx = results_tx.clone();
+            let on_event = std::sync::Arc::clone(&on_event);
+            std::thread::spawn(move || {
+                while let Some(job) = queue.pop_front() {
+                    if tx.send(run_file_diff(job)).is_err() {
+                        break;
+                    }
+                    on_event();
+                }
+            });
+        }
         Self {
-            on_event: std::sync::Arc::new(on_event),
+            on_event,
             results_tx,
             results_rx,
+            diffs,
         }
     }
 
@@ -464,8 +546,34 @@ impl PrReviewRunner {
         });
     }
 
+    /// Queues a batch of file diffs ahead of what is still pending, served in the
+    /// batch's order by the pool.
+    pub fn request_file_diffs(&self, batch: Vec<PrFileDiffRequest>) {
+        self.diffs.push_front(batch);
+    }
+
     pub fn try_recv(&self) -> Option<PrReviewReply> {
         self.results_rx.try_recv().ok()
+    }
+}
+
+impl Drop for PrReviewRunner {
+    fn drop(&mut self) {
+        self.diffs.close();
+    }
+}
+
+fn run_file_diff(job: PrFileDiffRequest) -> PrReviewReply {
+    let result = git2::Repository::open(&job.root)
+        .map_err(|e| e.message().to_owned())
+        .and_then(|repo| {
+            crate::git::diff::pr_file_diff(&repo, job.base, job.head, &job.path)
+                .map_err(|e| e.message().to_owned())
+        });
+    PrReviewReply::FileDiff {
+        key: job.key,
+        path: job.path,
+        result,
     }
 }
 
@@ -485,21 +593,6 @@ fn run_review(request: PrReviewRequest) -> PrReviewReply {
             selection,
             result: load_commit_files(&root, range),
         },
-        PrReviewRequest::FileDiff {
-            key,
-            root,
-            base,
-            head,
-            path,
-        } => {
-            let result = git2::Repository::open(&root)
-                .map_err(|e| e.message().to_owned())
-                .and_then(|repo| {
-                    crate::git::diff::pr_file_diff(&repo, base, head, &path)
-                        .map_err(|e| e.message().to_owned())
-                });
-            PrReviewReply::FileDiff { key, path, result }
-        }
         PrReviewRequest::Image {
             url,
             forge_kind,
@@ -635,21 +728,11 @@ fn load_pr_files(req: &PrFilesRequest) -> Result<PrFilesLoaded, String> {
     if req.source_branch.starts_with('-') || req.dest_branch.starts_with('-') {
         return Err("invalid branch name".to_owned());
     }
-    let head_ref = review_head_ref(req.forge_kind, req.number, &req.source_branch);
-    fetch_origin(&req.root, &head_ref)?;
     let repo = git2::Repository::open(&req.root).map_err(|e| e.message().to_owned())?;
-    let head = revparse_commit(&repo, "FETCH_HEAD")
-        .ok_or_else(|| format!("cannot resolve PR head '{head_ref}'"))?;
-
-    // The base branch tip: prefer a fresh fetch into FETCH_HEAD, else the
-    // remote-tracking ref or a same-name local branch already present.
-    let dest_fetched = fetch_origin(&req.root, &req.dest_branch).is_ok();
-    let dest = dest_fetched
-        .then(|| revparse_commit(&repo, "FETCH_HEAD"))
-        .flatten()
-        .or_else(|| revparse_commit(&repo, &format!("origin/{}", req.dest_branch)))
-        .or_else(|| revparse_commit(&repo, &req.dest_branch))
-        .ok_or_else(|| format!("cannot resolve base branch '{}'", req.dest_branch))?;
+    let (head, dest) = match listed_tips(&repo, req) {
+        Some(tips) => tips,
+        None => fetch_tips(&repo, req)?,
+    };
 
     // Three-dot base: the merge-base, so the diff excludes commits already on the
     // destination. Unrelated histories ⇒ fall back to the destination tip.
@@ -657,6 +740,42 @@ fn load_pr_files(req: &PrFilesRequest) -> Result<PrFilesLoaded, String> {
     let files = crate::git::diff::pr_changed_files(&repo, base, head)
         .map_err(|e| e.message().to_owned())?;
     Ok(PrFilesLoaded { base, head, files })
+}
+
+/// The two tips exactly as the forge listed them, when both objects are already in
+/// the repo — a PR opened before, or a branch the user works on here. No network:
+/// the file list is on screen at once (pull-requests.md §5).
+fn listed_tips(repo: &git2::Repository, req: &PrFilesRequest) -> Option<(git2::Oid, git2::Oid)> {
+    if req.source_commit.is_empty() || req.dest_commit.is_empty() {
+        return None;
+    }
+    let head = revparse_commit(repo, &req.source_commit)?;
+    let dest = revparse_commit(repo, &req.dest_commit)?;
+    Some((head, dest))
+}
+
+/// One `git fetch origin <head> <dest>` lands both tips in a single round trip.
+/// The PR head is `FETCH_HEAD`'s first line; the destination is the listed commit
+/// once fetched, else the remote-tracking ref or a same-name local branch. A
+/// destination the remote no longer has fails the whole fetch, so the head alone
+/// is retried before giving up.
+fn fetch_tips(
+    repo: &git2::Repository,
+    req: &PrFilesRequest,
+) -> Result<(git2::Oid, git2::Oid), String> {
+    let head_ref = review_head_ref(req.forge_kind, req.number, &req.source_branch);
+    if fetch_origin(&req.root, &[&head_ref, &req.dest_branch]).is_err() {
+        fetch_origin(&req.root, &[&head_ref])?;
+    }
+    let head = revparse_commit(repo, "FETCH_HEAD")
+        .ok_or_else(|| format!("cannot resolve PR head '{head_ref}'"))?;
+    let dest = (!req.dest_commit.is_empty())
+        .then(|| revparse_commit(repo, &req.dest_commit))
+        .flatten()
+        .or_else(|| revparse_commit(repo, &format!("origin/{}", req.dest_branch)))
+        .or_else(|| revparse_commit(repo, &req.dest_branch))
+        .ok_or_else(|| format!("cannot resolve base branch '{}'", req.dest_branch))?;
+    Ok((head, dest))
 }
 
 /// Recompute the changed files for a single commit (`parent..commit`) or an explicit
@@ -677,8 +796,10 @@ fn load_commit_files(root: &Path, range: CommitRange) -> Result<PrFilesLoaded, S
     Ok(PrFilesLoaded { base, head, files })
 }
 
-fn fetch_origin(root: &Path, refspec: &str) -> Result<(), String> {
-    match crate::git::cli::run(root, &["fetch", "origin", refspec]) {
+fn fetch_origin(root: &Path, refspecs: &[&str]) -> Result<(), String> {
+    let mut args = vec!["fetch", "origin"];
+    args.extend_from_slice(refspecs);
+    match crate::git::cli::run(root, &args) {
         Ok(out) if out.success() => Ok(()),
         Ok(out) => Err(out.stderr.trim().to_owned()),
         Err(err) => Err(format!("{err:?}")),
@@ -704,11 +825,21 @@ pub struct PrDetailRequest {
     pub bitbucket_email: String,
 }
 
-/// The single reply per detail request, echoing the key for adoption.
+/// A detail request answers in up to two replies, each echoing the key for
+/// adoption: `Partial` as soon as the forge returns the PR itself — comments and
+/// commits still on their way — then `Complete` with everything (or the failure).
+/// A surface still empty paints the partial at once; one already showing a detail
+/// keeps it until `Complete`, so a staleness refetch never blanks the threads.
 #[derive(Debug, Clone)]
-pub struct PrDetailReply {
-    pub key: PrReviewKey,
-    pub result: Result<crate::pull_requests::model::PrDetail, String>,
+pub enum PrDetailReply {
+    Partial {
+        key: PrReviewKey,
+        detail: crate::pull_requests::model::PrDetail,
+    },
+    Complete {
+        key: PrReviewKey,
+        result: Result<crate::pull_requests::model::PrDetail, String>,
+    },
 }
 
 /// Off-thread per-PR detail fetch (`gh pr view` / Bitbucket REST). Fire-and-forget
@@ -734,8 +865,17 @@ impl PrDetailRunner {
         let tx = self.results_tx.clone();
         let on_event = std::sync::Arc::clone(&self.on_event);
         std::thread::spawn(move || {
-            let result = fetch_detail(&request);
-            let _ = tx.send(PrDetailReply {
+            let partial_tx = tx.clone();
+            let partial_key = request.key.clone();
+            let partial_event = std::sync::Arc::clone(&on_event);
+            let result = fetch_detail(&request, &|detail| {
+                let _ = partial_tx.send(PrDetailReply::Partial {
+                    key: partial_key.clone(),
+                    detail,
+                });
+                partial_event();
+            });
+            let _ = tx.send(PrDetailReply::Complete {
                 key: request.key,
                 result,
             });
@@ -748,37 +888,47 @@ impl PrDetailRunner {
     }
 }
 
-fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::PrDetail, String> {
+/// The forge calls a detail needs are independent of each other, so they run at
+/// once and the reply lands when the slowest returns, not their sum; `on_partial`
+/// fires as soon as the PR itself is parsed. GitHub: `gh pr view` (body, checks,
+/// conversation, commits) beside the two inline-comment resources. Bitbucket: the
+/// PR beside its paginated comments and commits.
+fn fetch_detail(
+    req: &PrDetailRequest,
+    on_partial: &(dyn Fn(crate::pull_requests::model::PrDetail) + Sync),
+) -> Result<crate::pull_requests::model::PrDetail, String> {
     match req.forge_kind {
-        ForgeKind::GitHub => {
-            if !command_ok("gh", &github::auth_status_args()) {
-                return Err("Install gh and run `gh auth login`".to_owned());
-            }
-            let json = run_stdout("gh", &github::view_args(&req.repo_label, req.number))
-                .ok_or_else(|| format!("gh pr view {} failed", req.number))?;
-            let mut detail = github::parse_detail(&json).map_err(|e| e.to_string())?;
+        ForgeKind::GitHub => std::thread::scope(|scope| {
             // Inline review comments are a separate REST resource; missing them is
-            // non-fatal (the conversation + diff still render).
-            if let Some(mut inline) = run_stdout(
-                "gh",
-                &github::review_comments_args(&req.repo_label, req.number),
-            )
-            .and_then(|j| github::parse_review_comments(&j).ok())
-            {
-                // Resolution + the thread node id live on the GraphQL review thread,
-                // a separate query joined back by `databaseId`; also non-fatal.
-                if let Some(threads) = run_stdout(
+            // non-fatal (the conversation + diff still render). Resolution + the
+            // thread node id live on the GraphQL review thread, joined back by
+            // `databaseId`; also non-fatal.
+            let inline = scope.spawn(|| {
+                run_stdout(
+                    "gh",
+                    &github::review_comments_args(&req.repo_label, req.number),
+                )
+                .and_then(|j| github::parse_review_comments(&j).ok())
+            });
+            let threads = scope.spawn(|| {
+                run_stdout(
                     "gh",
                     &github::review_threads_args(&req.repo_label, req.number),
                 )
                 .and_then(|j| github::parse_review_threads(&j).ok())
-                {
+            });
+            let json = run_stdout("gh", &github::view_args(&req.repo_label, req.number))
+                .ok_or_else(|| format!("gh pr view {} failed", req.number))?;
+            let mut detail = github::parse_detail(&json).map_err(|e| e.to_string())?;
+            on_partial(detail.clone());
+            if let Some(mut inline) = joined(inline)? {
+                if let Some(threads) = joined(threads)? {
                     github::apply_thread_resolution(&mut inline, &threads);
                 }
                 detail.comments.extend(inline);
             }
             Ok(detail)
-        }
+        }),
         ForgeKind::Bitbucket => {
             let (workspace, repo) = req
                 .repo_label
@@ -790,38 +940,63 @@ fn fetch_detail(req: &PrDetailRequest) -> Result<crate::pull_requests::model::Pr
                 .flatten()
                 .ok_or_else(|| "Set a Bitbucket email and token in Preferences".to_owned())?;
             let header = bitbucket::basic_auth_header(email, &token);
-            let detail_json = curl_body(
-                &bitbucket::pull_request_url(workspace, repo, req.number),
-                &header,
-            )?;
-            let body = bitbucket::parse_body(&detail_json).map_err(|e| e.to_string())?;
-            let created_at =
-                bitbucket::parse_created_on(&detail_json).map_err(|e| e.to_string())?;
-            let mut comments = Vec::new();
-            let mut next = Some(bitbucket::comments_url(workspace, repo, req.number));
-            while let Some(url) = next {
-                let page = curl_body(&url, &header)?;
-                comments.extend(bitbucket::parse_comments(&page).map_err(|e| e.to_string())?);
-                next = bitbucket::next_page(&page);
-            }
-            let mut commits = Vec::new();
-            let mut next = Some(bitbucket::commits_url(workspace, repo, req.number));
-            while let Some(url) = next {
-                let page = curl_body(&url, &header)?;
-                commits.extend(bitbucket::parse_commits(&page).map_err(|e| e.to_string())?);
-                next = bitbucket::next_page(&page);
-            }
-            // Bitbucket lists commits newest-first; flip to the oldest-first invariant.
-            commits.reverse();
-            Ok(crate::pull_requests::model::PrDetail {
-                body,
-                comments,
-                check_runs: Vec::new(),
-                commits,
-                created_at,
+            std::thread::scope(|scope| {
+                let comments = scope.spawn(|| {
+                    collect_pages(
+                        bitbucket::comments_url(workspace, repo, req.number),
+                        &header,
+                        bitbucket::parse_comments,
+                    )
+                });
+                let commits = scope.spawn(|| {
+                    collect_pages(
+                        bitbucket::commits_url(workspace, repo, req.number),
+                        &header,
+                        bitbucket::parse_commits,
+                    )
+                });
+                let detail_json = curl_body(
+                    &bitbucket::pull_request_url(workspace, repo, req.number),
+                    &header,
+                )?;
+                let mut detail = crate::pull_requests::model::PrDetail {
+                    body: bitbucket::parse_body(&detail_json).map_err(|e| e.to_string())?,
+                    created_at: bitbucket::parse_created_on(&detail_json)
+                        .map_err(|e| e.to_string())?,
+                    ..Default::default()
+                };
+                on_partial(detail.clone());
+                detail.comments = joined(comments)??;
+                detail.commits = joined(commits)??;
+                // Bitbucket lists commits newest-first; flip to the oldest-first invariant.
+                detail.commits.reverse();
+                Ok(detail)
             })
         }
     }
+}
+
+/// A scoped fetch thread's value; a panic in it is reported, not propagated.
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> Result<T, String> {
+    handle
+        .join()
+        .map_err(|_| "detail fetch thread panicked".to_owned())
+}
+
+/// Walks a paginated Bitbucket collection from `first` to the last page.
+fn collect_pages<T>(
+    first: String,
+    auth_header: &str,
+    parse: fn(&str) -> serde_json::Result<Vec<T>>,
+) -> Result<Vec<T>, String> {
+    let mut items = Vec::new();
+    let mut next = Some(first);
+    while let Some(url) = next {
+        let page = curl_body(&url, auth_header)?;
+        items.extend(parse(&page).map_err(|e| e.to_string())?);
+        next = bitbucket::next_page(&page);
+    }
+    Ok(items)
 }
 
 /// `curl_get` reduced to `Result<body, message>` for the single-PR detail fetch.
@@ -1828,6 +2003,8 @@ mod tests {
             author: String::new(),
             source_branch: String::new(),
             dest_branch: String::new(),
+            source_commit: String::new(),
+            dest_commit: String::new(),
             url: String::new(),
             updated_at: String::new(),
             checks: Checks::None,
@@ -1904,6 +2081,26 @@ mod tests {
         name: &str,
         content: &str,
     ) -> git2::Oid {
+        commit_file_on(repo, Some("HEAD"), parent, name, content)
+    }
+
+    /// A commit HEAD does not move to — a branch diverging from the one HEAD is on.
+    fn commit_file_detached(
+        repo: &git2::Repository,
+        parent: git2::Oid,
+        name: &str,
+        content: &str,
+    ) -> git2::Oid {
+        commit_file_on(repo, None, Some(parent), name, content)
+    }
+
+    fn commit_file_on(
+        repo: &git2::Repository,
+        update_ref: Option<&str>,
+        parent: Option<git2::Oid>,
+        name: &str,
+        content: &str,
+    ) -> git2::Oid {
         let root = repo.workdir().unwrap();
         std::fs::write(root.join(name), content).unwrap();
         let mut index = repo.index().unwrap();
@@ -1916,7 +2113,7 @@ mod tests {
             .map(|oid| repo.find_commit(oid).unwrap())
             .collect();
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-        repo.commit(Some("HEAD"), &sig, &sig, name, &tree, &parent_refs)
+        repo.commit(update_ref, &sig, &sig, name, &tree, &parent_refs)
             .unwrap()
     }
 
@@ -1951,6 +2148,86 @@ mod tests {
         let loaded = load_commit_files(tmp.path(), CommitRange::Commit(root_commit)).unwrap();
         assert_eq!(loaded.base, root_commit);
         assert!(loaded.files.is_empty());
+    }
+
+    fn files_request(root: &Path, source_commit: &str, dest_commit: &str) -> PrFilesRequest {
+        PrFilesRequest {
+            key: PrReviewKey {
+                forge_kind: ForgeKind::GitHub,
+                repo_label: "acme/webapp".to_owned(),
+                number: 1,
+            },
+            root: root.to_path_buf(),
+            forge_kind: ForgeKind::GitHub,
+            number: 1,
+            source_branch: "feature".to_owned(),
+            dest_branch: "main".to_owned(),
+            source_commit: source_commit.to_owned(),
+            dest_commit: dest_commit.to_owned(),
+        }
+    }
+
+    /// Both listed tips already in the repo ⇒ the files come back with no network:
+    /// the fixture has no `origin`, so any fetch attempt would fail the load. The
+    /// range is the three-dot one — the destination's own drift (a.txt) stays out.
+    #[test]
+    fn load_pr_files_serves_listed_tips_without_fetching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let fork = commit_file(&repo, None, "a.txt", "1\n");
+        let head = commit_file(&repo, Some(fork), "b.txt", "new\n");
+        let dest = commit_file_detached(&repo, fork, "a.txt", "1\n2\n");
+
+        // Bitbucket lists abbreviated hashes; GitHub full ones — both resolve.
+        let short_head = &head.to_string()[..12];
+        let loaded =
+            load_pr_files(&files_request(tmp.path(), short_head, &dest.to_string())).unwrap();
+        assert_eq!(loaded.head, head);
+        assert_eq!(loaded.base, fork);
+        let paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["b.txt"]);
+    }
+
+    /// A tip the repo does not hold (or none listed) is the fetch path — which this
+    /// origin-less fixture cannot serve, so the load reports the fetch failure
+    /// rather than answering from stale local refs.
+    #[test]
+    fn load_pr_files_fetches_when_a_listed_tip_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let only = commit_file(&repo, None, "a.txt", "1\n");
+        let unknown = "0".repeat(40);
+        assert!(load_pr_files(&files_request(tmp.path(), &unknown, &only.to_string())).is_err());
+        assert!(load_pr_files(&files_request(tmp.path(), "", "")).is_err());
+    }
+
+    fn diff_job(path: &str) -> PrFileDiffRequest {
+        PrFileDiffRequest {
+            key: PrReviewKey {
+                forge_kind: ForgeKind::GitHub,
+                repo_label: "acme/webapp".to_owned(),
+                number: 1,
+            },
+            root: PathBuf::new(),
+            base: git2::Oid::ZERO_SHA1,
+            head: git2::Oid::ZERO_SHA1,
+            path: path.to_owned(),
+        }
+    }
+
+    /// The pool serves the newest batch first, each batch in its own order — the PR
+    /// just opened ahead of the one just left, the selected file ahead of its column.
+    #[test]
+    fn diff_queue_serves_the_newest_batch_first_in_order() {
+        let queue = DiffQueue::default();
+        queue.push_front(vec![diff_job("old/1"), diff_job("old/2")]);
+        queue.push_front(vec![diff_job("new/1"), diff_job("new/2")]);
+        let served: Vec<String> = std::iter::from_fn(|| queue.pop_front().map(|j| j.path))
+            .take(4)
+            .collect();
+        assert_eq!(served, vec!["new/1", "new/2", "old/1", "old/2"]);
+        queue.close();
+        assert!(queue.pop_front().is_none());
     }
 
     #[test]

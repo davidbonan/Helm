@@ -16,7 +16,7 @@ use crate::pull_requests::model::{
     PullRequest, Review, ReviewVerdict, Reviewer,
 };
 
-const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,labels,additions,deletions";
+const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,headRefOid,baseRefOid,url,updatedAt,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,labels,additions,deletions";
 const DETAIL_FIELDS: &str = "body,comments,commits,statusCheckRollup,createdAt";
 
 /// `gh auth status` — exit 0 ⇒ the GitHub source is usable (pull-requests.md §3).
@@ -454,6 +454,8 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
         author,
         source_branch: o["headRefName"].as_str().unwrap_or_default().to_owned(),
         dest_branch: o["baseRefName"].as_str().unwrap_or_default().to_owned(),
+        source_commit: o["headRefOid"].as_str().unwrap_or_default().to_owned(),
+        dest_commit: o["baseRefOid"].as_str().unwrap_or_default().to_owned(),
         url: o["url"].as_str().unwrap_or_default().to_owned(),
         updated_at: o["updatedAt"].as_str().unwrap_or_default().to_owned(),
         checks: aggregate_checks(&o["statusCheckRollup"]),
@@ -624,6 +626,11 @@ mod tests {
         assert_eq!(mine.author, "alice");
         assert_eq!(mine.source_branch, "feature/login");
         assert_eq!(mine.dest_branch, "main");
+        assert_eq!(
+            mine.source_commit,
+            "1111111111111111111111111111111111111111"
+        );
+        assert_eq!(mine.dest_commit, "2222222222222222222222222222222222222222");
         assert_eq!(mine.url, "https://github.com/acme/webapp/pull/42");
 
         let to_review = &prs[1];

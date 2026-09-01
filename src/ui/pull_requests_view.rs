@@ -285,6 +285,9 @@ pub struct PrReviewView<'a> {
     /// The forge detail (body/comments/checks/commits) is still in flight — the
     /// center shows a loader rather than the (empty, misleading) detail sections.
     pub detail_loading: bool,
+    /// The PR itself is in, its comments (and commits) still on their way — the
+    /// conversation card shows a loader under whatever threads it already has.
+    pub comments_loading: bool,
     pub detail_error: Option<&'a str>,
     pub files: &'a [CommitFile],
     pub files_loading: bool,
@@ -888,7 +891,7 @@ fn review_detail(
             // body/checks/conversation rather than their empty shells, which read as
             // "nothing here" instead of "loading".
             if review.detail_loading {
-                detail_loading(ui, palette);
+                loading_row(ui, palette, "Loading pull request…");
                 ui.add_space(PANEL_PAD_Y);
                 return;
             }
@@ -1033,14 +1036,14 @@ fn reviewer_verdict(
     }
 }
 
-/// Center placeholder while the forge detail is in flight (pull-requests.md §5): a
-/// spinner over a muted label, mirroring the rail's "Loading changed files…" line.
-fn detail_loading(ui: &mut egui::Ui, palette: &Palette) {
+/// Center placeholder while a forge fetch is in flight (pull-requests.md §5): a
+/// spinner beside a muted label, mirroring the rail's "Loading changed files…" line.
+fn loading_row(ui: &mut egui::Ui, palette: &Palette, label: &str) {
     ui.add_space(SECTION_TOP_MARGIN);
     ui.horizontal(|ui| {
         ui.add(Spinner::new().size(16.0).color(palette.text_muted));
         ui.add_space(8.0);
-        ui.label(muted(palette, "Loading pull request…"));
+        ui.label(muted(palette, label));
     });
 }
 
@@ -1219,6 +1222,7 @@ fn conversation_card(
     let threads = conversation_threads(review.detail);
     let comment_diffs: &[&FileDiff] = &review.comment_diffs;
     let files = review.files;
+    let comments_loading = review.comments_loading;
     let diff_view = &mut *review.diff_view;
     let total: usize = threads.iter().map(|t| t.comments.len()).sum();
     let now = now_epoch_secs();
@@ -1249,6 +1253,9 @@ fn conversation_card(
                         action,
                     );
                 }
+            }
+            if comments_loading {
+                loading_row(ui, palette, "Loading comments…");
             }
             if !resolved.is_empty() {
                 resolved_group(
@@ -7010,6 +7017,8 @@ mod tests {
             author: "mira".to_owned(),
             source_branch: "feature".to_owned(),
             dest_branch: "main".to_owned(),
+            source_commit: String::new(),
+            dest_commit: String::new(),
             url: String::new(),
             updated_at: String::new(),
             checks,

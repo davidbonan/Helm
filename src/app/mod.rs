@@ -180,6 +180,9 @@ struct PrReview {
     fetched_at: f64,
     detail: Option<crate::pull_requests::model::PrDetail>,
     detail_error: Option<String>,
+    /// The forge replied with the PR itself but its comments (and commits) are still
+    /// in flight — the conversation shows a loader under the threads it has.
+    comments_loading: bool,
     files: Vec<crate::git::commit_detail::CommitFile>,
     /// The currently-displayed diff range: the three-dot anchors below for "All
     /// commits", or `commit^..commit` when a commit is selected (per-commit diff: T5).
@@ -230,6 +233,14 @@ struct PrReview {
     summary: String,
     posting: bool,
     post_error: Option<String>,
+}
+
+impl PrReview {
+    fn adopt_detail(&mut self, detail: crate::pull_requests::model::PrDetail) {
+        self.existing = crate::pull_requests::model::forge_threads(&detail.comments);
+        self.detail = Some(detail);
+        self.detail_error = None;
+    }
 }
 
 /// Writes one embedded image's state into the cache the markdown renderer reads
@@ -2045,6 +2056,7 @@ impl HelmApp {
                         fetched_at: now,
                         detail: None,
                         detail_error: None,
+                        comments_loading: true,
                         files: Vec::new(),
                         base: None,
                         head: None,
@@ -2084,15 +2096,7 @@ impl HelmApp {
         key: &crate::pull_requests::runner::PrReviewKey,
         ctx: &egui::Context,
     ) {
-        let bitbucket_email = self.prefs.bitbucket_email.clone();
-        self.pr_detail_runner(ctx)
-            .request(crate::pull_requests::runner::PrDetailRequest {
-                key: key.clone(),
-                forge_kind: pr.forge_kind,
-                repo_label: pr.repo_label.clone(),
-                number: pr.number,
-                bitbucket_email,
-            });
+        self.request_pr_detail(key.clone(), pr, ctx);
         self.pr_review_runner(ctx)
             .request(crate::pull_requests::runner::PrReviewRequest::Files(
                 crate::pull_requests::runner::PrFilesRequest {
@@ -2102,6 +2106,8 @@ impl HelmApp {
                     number: pr.number,
                     source_branch: pr.source_branch.clone(),
                     dest_branch: pr.dest_branch.clone(),
+                    source_commit: pr.source_commit.clone(),
+                    dest_commit: pr.dest_commit.clone(),
                 },
             ));
     }
@@ -2196,7 +2202,7 @@ impl HelmApp {
         let (Some(base), Some(head)) = (review.base, review.head) else {
             return;
         };
-        let wanted: Vec<String> = review
+        let mut wanted: Vec<String> = review
             .files
             .iter()
             .map(|f| f.path.clone())
@@ -2208,24 +2214,44 @@ impl HelmApp {
         if wanted.is_empty() {
             return;
         }
-        let key = review.key.clone();
-        let root = review.root.clone();
-        if let Some(review) = self.active_review_mut() {
-            for path in &wanted {
-                review.diff_requests.insert((base, head, path.clone()));
+        // The file the user is on (a rail click, an opened inline comment) leads;
+        // the pool serves the batch in order, so its band fills first.
+        if let Some(selected) = review.selected_file.and_then(|i| review.files.get(i)) {
+            if let Some(at) = wanted.iter().position(|p| *p == selected.path) {
+                wanted.rotate_left(at);
             }
         }
-        for path in wanted {
-            self.pr_review_runner(ctx).request(
-                crate::pull_requests::runner::PrReviewRequest::FileDiff {
+        self.request_file_diffs(base, head, wanted, ctx);
+    }
+
+    /// Marks `paths` as requested on the active review and hands them to the review
+    /// runner's diff pool as one batch, ahead of anything still queued.
+    fn request_file_diffs(
+        &mut self,
+        base: git2::Oid,
+        head: git2::Oid,
+        paths: Vec<String>,
+        ctx: &egui::Context,
+    ) {
+        let Some(review) = self.active_review_mut() else {
+            return;
+        };
+        let key = review.key.clone();
+        let root = review.root.clone();
+        let batch = paths
+            .into_iter()
+            .map(|path| {
+                review.diff_requests.insert((base, head, path.clone()));
+                crate::pull_requests::runner::PrFileDiffRequest {
                     key: key.clone(),
                     root: root.clone(),
                     base,
                     head,
                     path,
-                },
-            );
-        }
+                }
+            })
+            .collect();
+        self.pr_review_runner(ctx).request_file_diffs(batch);
     }
 
     /// Prefetch the local diff of every file in the current range that carries an
@@ -2262,31 +2288,14 @@ impl HelmApp {
         if wanted.is_empty() {
             return;
         }
-        let key = review.key.clone();
-        let root = review.root.clone();
-        if let Some(review) = self.active_review_mut() {
-            for path in &wanted {
-                review.diff_requests.insert((base, head, path.clone()));
-            }
-        }
-        for path in wanted {
-            self.pr_review_runner(ctx).request(
-                crate::pull_requests::runner::PrReviewRequest::FileDiff {
-                    key: key.clone(),
-                    root: root.clone(),
-                    base,
-                    head,
-                    path,
-                },
-            );
-        }
+        self.request_file_diffs(base, head, wanted, ctx);
     }
 
     /// Drain the detail and review runners into the cached surface their `key` (and,
     /// for a diff, path) names — so a re-fetch lands even when the user has navigated
     /// to another PR in the meantime, keeping every cached surface warm.
     fn poll_pr_review(&mut self, ctx: &egui::Context) {
-        use crate::pull_requests::runner::PrReviewReply;
+        use crate::pull_requests::runner::{PrDetailReply, PrReviewReply};
         let mut details = Vec::new();
         if let Some(runner) = self.pr_detail_runner.as_ref() {
             while let Some(reply) = runner.try_recv() {
@@ -2294,15 +2303,24 @@ impl HelmApp {
             }
         }
         for reply in details {
-            if let Some(review) = self.pr_reviews.get_mut(&reply.key) {
-                match reply.result {
-                    Ok(detail) => {
-                        review.existing =
-                            crate::pull_requests::model::forge_threads(&detail.comments);
-                        review.detail = Some(detail);
-                        review.detail_error = None;
+            match reply {
+                // A partial only fills an empty surface: a refetch keeps the full
+                // detail on screen until its complete reply.
+                PrDetailReply::Partial { key, detail } => {
+                    if let Some(review) = self.pr_reviews.get_mut(&key) {
+                        if review.detail.is_none() {
+                            review.adopt_detail(detail);
+                        }
                     }
-                    Err(message) => review.detail_error = Some(message),
+                }
+                PrDetailReply::Complete { key, result } => {
+                    if let Some(review) = self.pr_reviews.get_mut(&key) {
+                        review.comments_loading = false;
+                        match result {
+                            Ok(detail) => review.adopt_detail(detail),
+                            Err(message) => review.detail_error = Some(message),
+                        }
+                    }
                 }
             }
         }
@@ -2618,12 +2636,26 @@ impl HelmApp {
         let Some((key, pr)) = self.active_review().map(|r| (r.key.clone(), r.pr.clone())) else {
             return;
         };
+        self.request_pr_detail(key, &pr, ctx);
+    }
+
+    /// Fire the forge detail fetch for `key`, flagging its surface as awaiting the
+    /// comments so the conversation shows a loader under what it already has.
+    fn request_pr_detail(
+        &mut self,
+        key: crate::pull_requests::runner::PrReviewKey,
+        pr: &crate::pull_requests::model::PullRequest,
+        ctx: &egui::Context,
+    ) {
+        if let Some(review) = self.pr_reviews.get_mut(&key) {
+            review.comments_loading = true;
+        }
         let bitbucket_email = self.prefs.bitbucket_email.clone();
         self.pr_detail_runner(ctx)
             .request(crate::pull_requests::runner::PrDetailRequest {
                 key,
                 forge_kind: pr.forge_kind,
-                repo_label: pr.repo_label,
+                repo_label: pr.repo_label.clone(),
                 number: pr.number,
                 bitbucket_email,
             });

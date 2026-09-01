@@ -83,6 +83,11 @@ pub struct PullRequest {
     pub author: String,
     pub source_branch: String,
     pub dest_branch: String,
+    /// Commit ids of the two branch tips as the forge listed them — full shas on
+    /// GitHub (`headRefOid` / `baseRefOid`), abbreviated on Bitbucket (`commit.hash`).
+    /// The review skips the network when both are already in the local repo (§5).
+    pub source_commit: String,
+    pub dest_commit: String,
     pub url: String,
     pub updated_at: String,
     pub checks: Checks,
@@ -803,6 +808,8 @@ mod tests {
             author: "someone".to_owned(),
             source_branch: "feature".to_owned(),
             dest_branch: "main".to_owned(),
+            source_commit: String::new(),
+            dest_commit: String::new(),
             url: String::new(),
             updated_at: String::new(),
             checks: Checks::None,

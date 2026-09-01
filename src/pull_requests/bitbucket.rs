@@ -315,6 +315,14 @@ fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
             .as_str()
             .unwrap_or_default()
             .to_owned(),
+        source_commit: o["source"]["commit"]["hash"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        dest_commit: o["destination"]["commit"]["hash"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
         url: o["links"]["html"]["href"]
             .as_str()
             .unwrap_or_default()
@@ -544,6 +552,8 @@ mod tests {
         assert_eq!(first.author, "Alice");
         assert_eq!(first.source_branch, "feature/billing");
         assert_eq!(first.dest_branch, "main");
+        assert_eq!(first.source_commit, "a1b2c3d4e5f6");
+        assert_eq!(first.dest_commit, "0f0e0d0c0b0a");
         assert_eq!(
             first.url,
             "https://bitbucket.org/team/repo/pull-requests/101"

@@ -52,6 +52,8 @@ fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
         author: "octocat".to_owned(),
         source_branch: "feature".to_owned(),
         dest_branch: "main".to_owned(),
+        source_commit: String::new(),
+        dest_commit: String::new(),
         url: format!("https://example.test/{repo}/pull/{number}"),
         updated_at: "2 days ago".to_owned(),
         checks: Checks::Passing,
@@ -128,6 +130,7 @@ fn review_harness(
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -224,6 +227,7 @@ fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captur
                 pr: &pr_value,
                 detail: None,
                 detail_loading: true,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -738,6 +742,7 @@ fn the_files_tab_stacks_every_diff_in_one_column() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -812,6 +817,7 @@ fn folding_a_band_hides_its_rows_and_keeps_the_column() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -932,6 +938,7 @@ fn arrows_navigate_between_changed_files() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1023,6 +1030,7 @@ fn clicking_a_commit_row_selects_that_commit() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1119,6 +1127,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1185,6 +1194,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1262,6 +1272,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1378,6 +1389,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 pr: &pr_value,
                 detail: None,
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1480,6 +1492,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1559,6 +1572,7 @@ fn markdown_image_stands_in_until_it_loads() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1636,6 +1650,7 @@ fn body_harness(body: &str) -> Harness<'static> {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1838,6 +1853,7 @@ fn markdown_table_renders_as_cells_not_a_wall_of_pipes() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -1938,6 +1954,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2041,6 +2058,7 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2134,6 +2152,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2238,6 +2257,7 @@ fn conversation_harness() -> (Harness<'static>, Rc<Captured>) {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2411,6 +2431,7 @@ fn anchored_thread_harness() -> (Harness<'static>, Rc<RefCell<Vec<ReviewIntent>>
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2533,6 +2554,7 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2610,6 +2632,7 @@ fn conversation_composer_emits_post_conversation_comment() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2711,6 +2734,7 @@ fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2811,6 +2835,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -2978,6 +3003,7 @@ fn conversation_reply_nests_under_its_parent() {
                 pr: &pr_value,
                 detail: Some(&detail),
                 detail_loading: false,
+                comments_loading: false,
                 detail_error: None,
                 files: &files,
                 files_loading: false,
@@ -3022,5 +3048,93 @@ fn conversation_reply_nests_under_its_parent() {
         harness.get_all_by_label("Reply").count(),
         1,
         "a parented conversation reply must nest under its root, not stand as a second top-level card",
+    );
+}
+
+/// The PR itself is in but its comments still load (the partial detail reply): the
+/// conversation keeps the threads it already has and shows a loader under them, so
+/// the body reads at once and the card never claims "no comments" early.
+#[test]
+fn review_comments_loading_shows_a_loader_under_the_threads() {
+    use helm::pull_requests::model::{PrComment, PrDetail};
+    let palette = Palette::light();
+    let pr_value = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    let detail = PrDetail {
+        body: "Describe the change".to_owned(),
+        comments: vec![PrComment {
+            author: "reviewer-top".to_owned(),
+            body: "overall looks good".to_owned(),
+            path: None,
+            old_lineno: None,
+            new_lineno: None,
+            id: None,
+            parent_id: None,
+            context: None,
+            created_at: String::new(),
+            resolved: false,
+            thread_id: None,
+        }],
+        ..PrDetail::default()
+    };
+    let files = vec![changed_file("src/main.rs")];
+    let mut diff_view = DiffViewState::default();
+    let mut file_views = std::collections::HashMap::new();
+    let mut scroll_to_file = None;
+    let existing = ForgeThreads::new();
+    let draft = FileComments::new();
+    let agent_notes = FileComments::new();
+    let mut verdict = ReviewVerdict::default();
+    let mut summary = String::new();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let mut review = PrReviewView {
+                pr: &pr_value,
+                detail: Some(&detail),
+                detail_loading: false,
+                comments_loading: true,
+                detail_error: None,
+                files: &files,
+                files_loading: false,
+                files_error: None,
+                selected_file: None,
+                commits: &[],
+                selected_commit: None,
+                diffs: Vec::new(),
+                diff_errors: Vec::new(),
+                scroll_to_file: &mut scroll_to_file,
+                file_views: &mut file_views,
+                comment_diffs: Vec::new(),
+                diff_view: &mut diff_view,
+                existing: &existing,
+                draft: &draft,
+                agent_notes: &agent_notes,
+                agent: "claude",
+                verdict: &mut verdict,
+                summary: &mut summary,
+                posting: false,
+                post_error: None,
+                current_user: None,
+            };
+            pull_requests_page(
+                ui,
+                &palette,
+                &[],
+                None,
+                &PrSourceHints::default(),
+                Some(&mut review),
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+        });
+    harness.step();
+    harness.step();
+    harness.get_by_label("Describe the change");
+    harness.get_by_label("reviewer-top");
+    harness.get_by_label("Loading comments…");
+    assert!(
+        harness.query_by_label("Loading pull request…").is_none(),
+        "the partial detail must render its sections, not the whole-detail loader"
     );
 }

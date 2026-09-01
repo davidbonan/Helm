@@ -47,6 +47,7 @@ fn pr_review_view<'a>(
         detail: r.detail.as_ref(),
         // Loading until the forge detail lands or fails — mirrors `files_loading`.
         detail_loading: r.detail.is_none() && r.detail_error.is_none(),
+        comments_loading: r.comments_loading,
         detail_error: r.detail_error.as_deref(),
         files: &r.files,
         files_loading: r.files_loading,

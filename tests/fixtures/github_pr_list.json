@@ -4,6 +4,8 @@
     "title": "Add login page",
     "author": { "id": "u1", "is_bot": false, "login": "alice", "name": "Alice" },
     "headRefName": "feature/login",
+    "headRefOid": "1111111111111111111111111111111111111111",
+    "baseRefOid": "2222222222222222222222222222222222222222",
     "baseRefName": "main",
     "url": "https://github.com/acme/webapp/pull/42",
     "updatedAt": "2026-06-20T10:00:00Z",

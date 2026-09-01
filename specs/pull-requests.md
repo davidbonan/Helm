@@ -191,6 +191,31 @@ roles against the cached identity, and returns a `Vec<PullRequest>` + per-source
 status. **Detail** (on selection) and **checkout** (§7) are separate gated
 requests.
 
+The **detail** answers in up to **two replies**: a *partial* one — the PR itself
+(body, and on GitHub its conversation / checks / commits) the moment the forge
+returns it — then the *complete* one once the comments (and on Bitbucket the
+commits) are in; those resources are independent, so they are fetched
+**concurrently** and the complete reply lands when the slowest returns, not their
+sum. An empty surface paints the partial at once, with a *Loading comments…* row
+under the threads it already has; a surface already showing a detail (staleness
+refetch, post-submit refresh) keeps it until the complete reply, so the threads
+never blank. No per-open `gh auth status` probe: the list runner has already
+proven the account.
+
+The **changed files** load with **no network** when both tips the forge listed
+(`source_commit` / `dest_commit`, carried by the list payload — GitHub
+`headRefOid` / `baseRefOid`, Bitbucket `commit.hash`) are already objects of the
+matched repo: a PR opened before, a branch worked on here. Otherwise **one**
+`git fetch origin <head> <dest>` lands both tips in a single round trip (a
+destination the remote no longer has retries the head alone). The head the
+review shows is thus the one the list saw; a push in the window before the next
+list poll appears on that poll, as the row's own data does.
+
+The **per-file diffs** of the column go through a **bounded pool** (a few workers
+fed by a queue) rather than a thread per file: the newest batch is served first
+— the PR just opened ahead of the one just left — and, within it, the selected
+file's band ahead of the rest of the column.
+
 Refresh happens on a **cold cache** (first frame after launch), on a **manual
 Refresh** button, and on a **slow background tick** while the window is
 **focused** — network is heavier than the worktree / git ticks, so the cadence is
@@ -560,12 +585,15 @@ same one as commit/working-tree review.
 - **Diff producer (domain, I/O-free).** `git::diff::pr_changed_files(repo, base,
   head)` + `pr_file_diff(...)` compute the PR delta over the **three-dot**
   `merge-base(base, head)..head` range — only the PR's own changes, never the
-  destination branch's drift. Base/head are the PR's `dest`/`source` tips resolved
-  in the matched workspace repo; an unfetched head ⇒ the diff is unavailable with
-  a one-line hint (Checkout §7 fetches it).
+  destination branch's drift. Base/head are the tips the forge listed
+  (`dest_commit` / `source_commit`) resolved in the matched workspace repo — already
+  present ⇒ no network, else one fetch of both into `FETCH_HEAD` (§6); a head that
+  cannot be fetched ⇒ the diff is unavailable with a one-line hint (Checkout §7
+  fetches it).
 - **Changed files + diff (read).** The rail lists the changed files (path, kind,
   ±counts, quiet review/agent icons); every one of them is diffed in the column, each
-  fetched once per (range, file) and cached. Picking a row scrolls to its band and
+  fetched once per (range, file) through the bounded diff pool (§6, the selected
+  file's band first) and cached. Picking a row scrolls to its band and
   marks it viewed for that review session. The header's icon-only unread filter chip
   filters the list down to files not yet opened; when the filter hides every row, the
   list shows **All files viewed**. The surface opens on the **Conversation** tab;
