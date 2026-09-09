@@ -318,13 +318,15 @@ fn line_stats_for(stats: &LineStats, path: &str) -> (usize, usize) {
 /// stats fall to 0/0 — hidden by the sidebar, like the diff view's oversize
 /// rule (git.md §8). Without the cap, a poll re-read every huge file each
 /// second just to count lines nobody would see.
+/// `show_binary` must stay off here: it makes libgit2 load (mmap) the blob past
+/// this cap, and a workdir file a build rewrites under that mmap kills us on SIGBUS.
 const MAX_STAT_BLOB_BYTES: i64 = crate::git::diff::MAX_DIFF_BYTES as i64;
 
 fn staged_line_stats(repo: &git2::Repository) -> Result<LineStats, git2::Error> {
     // Unborn HEAD ⇒ diff against the empty tree (the whole index is additions).
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let mut opts = git2::DiffOptions::new();
-    opts.show_binary(true).max_size(MAX_STAT_BLOB_BYTES);
+    opts.max_size(MAX_STAT_BLOB_BYTES);
     let mut diff = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
     find_renames(&mut diff)?;
     diff_line_stats(&diff)
@@ -337,7 +339,6 @@ fn unstaged_line_stats(repo: &git2::Repository) -> Result<LineStats, git2::Error
         // Without this flag libgit2 does not load an untracked file's lines —
         // its delta would stay at 0/0 (cf. git::diff::untracked_file_diff).
         .show_untracked_content(true)
-        .show_binary(true)
         .max_size(MAX_STAT_BLOB_BYTES);
     let mut diff = repo.diff_index_to_workdir(None, Some(&mut opts))?;
     find_renames(&mut diff)?;
