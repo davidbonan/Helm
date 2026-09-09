@@ -1,5 +1,12 @@
 # Release notes
 
+## 2.4.1
+
+- Fixes the crashes: the file list no longer reads a large file of the worktree
+  to count its lines. It read it whole — every second, for every repository of
+  the group — only to throw the result away, and a build rewriting that file
+  underneath killed the app on the spot.
+
 ## 2.4.0
 
 - A pull request opens at once. The changed files come from the repository
@@ -127,18 +134,3 @@
   `helm-studio · main` rather than a wall of identical `Claude` labels. The
   agent's name and its tab moved to the chip's hover text.
 
-## 2.0.0
-
-- The Agents dashboard is one view now — a wall of live terminals you compose.
-  A header strip lists every running agent as a chip carrying its state, its
-  name and `project · branch`: click one to put its terminal on the wall, click
-  again to take it off. Four at a time is the cap; past it the remaining chips
-  read disabled and say so on hover.
-- The wall is the terminal's own layout, so the workspace splits carry over —
-  drag a seam to resize, drag a tile's grip onto another to re-split or swap,
-  and the focus/resize chords drive it. Showing an agent splits the roomiest
-  tile across its longer axis: one fills the wall, two sit side by side, and a
-  wall you rearranged keeps its shape.
-- The `List | Terminals` switch is gone with the grouped agent list and the
-  per-card conversation preview. The dashboard always opens on the wall, and
-  which terminals you watch is a choice instead of something derived.
