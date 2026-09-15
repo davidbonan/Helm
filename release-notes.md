@@ -1,5 +1,11 @@
 # Release notes
 
+## 2.4.2
+
+- The Run panel's inline command field survives `Cmd+V`: holding Cmd made the
+  `⌘R` hint appear and the field quietly lost its focus, cancelling the edit
+  before the paste could land. Paste a launch command, press Enter, done.
+
 ## 2.4.1
 
 - Fixes the crashes: the file list no longer reads a large file of the worktree
@@ -123,14 +129,3 @@
 - The Run panel's output can be selected and copied: drag over it, double-click
   a word, triple-click a line, then `Cmd+C`. A server error no longer has to be
   retyped to be shared — lift it straight out of the strip.
-
-## 2.0.1
-
-- A finished agent now turns its whole tile band green on the Agents wall,
-  instead of marking it with a small dot — the tile you have to come back to
-  reads from across the screen. The moment a turn lands, the band brightens
-  once and settles.
-- Agent chips and tile bands lead with the project instead of the agent's name:
-  `helm-studio · main` rather than a wall of identical `Claude` labels. The
-  agent's name and its tab moved to the chip's hover text.
-
