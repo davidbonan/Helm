@@ -279,6 +279,59 @@ fn no_shortcut_hides_the_badge() {
     });
 }
 
+/// Holding Cmd mid-edit (to paste) makes the `⌘R` badge appear in the same row as
+/// the command field: the field must keep its focus and take the paste, not
+/// cancel the edit.
+#[test]
+fn cmd_held_while_editing_keeps_the_field_and_takes_the_paste() {
+    let last = Rc::new(RefCell::new(RunPanelAction::default()));
+    let buffer = Rc::new(RefCell::new(String::new()));
+    let shortcut: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
+    let sink = last.clone();
+    let typed = buffer.clone();
+    let badge = shortcut.clone();
+    let palette = Palette::light();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 320.0))
+        .build_ui(move |ui| {
+            let mut guard = typed.borrow_mut();
+            let action = run_panel(
+                ui,
+                &palette,
+                &RunStatus::Stopped,
+                "cargo run",
+                None,
+                false,
+                Some(&mut *guard),
+                None,
+                *badge.borrow(),
+                |ui| {
+                    ui.label("RUN_BODY");
+                },
+            );
+            if action.any() {
+                *sink.borrow_mut() = action;
+            }
+        });
+    harness.run();
+
+    *shortcut.borrow_mut() = Some("⌘R");
+    harness.run();
+    harness.get_by_label("⌘R");
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Paste("npm run dev".into()));
+    harness.run();
+
+    assert_eq!(buffer.borrow().as_str(), "npm run dev");
+    assert!(
+        !last.borrow().cancel_edit,
+        "the badge appearing must not drop the field's focus"
+    );
+}
+
 /// The viewer sits in a clipped child `Ui` built by `run_panel`: the selection is
 /// kept in egui memory under that child's id, so this drives the real nesting —
 /// not just `terminal_view_readonly` on its own.

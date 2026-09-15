@@ -197,7 +197,9 @@ fn command_field(
             ) {
                 action.commit_edit = true;
             }
+            // Stable id: the `⌘R` badge appearing on Cmd (paste) would shift the auto id.
             let field = egui::TextEdit::singleline(buffer)
+                .id_salt("run_command_edit")
                 .desired_width(ui.available_width())
                 .font(egui::TextStyle::Monospace)
                 .hint_text("npm run dev");
@@ -259,6 +261,7 @@ fn port_field(
                 action.commit_port_edit = true;
             }
             let field = egui::TextEdit::singleline(buffer)
+                .id_salt("run_port_edit")
                 .desired_width(PORT_FIELD_WIDTH)
                 .font(egui::TextStyle::Monospace)
                 .hint_text("3000");
