@@ -6,6 +6,19 @@
 
 ---
 
+## ☑ Milestone — M-Word · Intra-line diff highlight
+
+Spec: [`specs/git.md`](../git.md) §4. Per the user: a partly changed line showed one
+red row and one green row, nothing pointing at the change itself. Counter: **1/1**.
+
+- ☑ **T1 — Word-level ranges on paired rows.** `git::intraline` pairs a hunk's
+  deletions with its additions, aligns them token by token (LCS, affix fallback past
+  256 tokens, similarity floor under which nothing is highlighted) and fills over
+  frames like the syntax cache; the diff rows paint the changed columns in a stronger
+  tint of the row's color.
+
+---
+
 ## ☑ Milestone — M-RC3 · Fetched views answer at once
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §6, §11. Per the user: a view

@@ -211,6 +211,16 @@ placeholder launches verbatim.
   **two-face** syntaxes (TypeScript/TSX, TOML, Dockerfile, Vue, Svelte…). The
   addition/deletion backgrounds and the staging controls stay on top; an unknown
   language, a binary or a large diff ⇒ raw monospace rendering.
+- **Intra-line highlight**: a deletion and the addition facing it are paired
+  (n-th to n-th inside a block of changed lines) and aligned **word by word**; the
+  columns that actually changed take a **stronger tint** of the row's own color, so
+  a line rewritten in part shows *what* moved rather than just *that* it moved.
+  Two lines too far apart to be one rewrite (under a quarter of their non-blank
+  characters in common) keep the plain row background — highlighting nearly all of
+  both would say less than the row colors already do; same for an unpaired
+  insertion or removal. A line beyond ~256 tokens falls back to trimming its common
+  prefix and suffix. The pairing fills over frames like the syntax pass: a line not
+  aligned yet renders plain.
 - **Image preview**: a binary file with a recognized image extension (png, jpg,
   jpeg, gif, webp, bmp, ico, tiff) renders its **new-side blob** as a zoomable,
   pannable image instead of the *Binary file* placeholder — a toolbar with

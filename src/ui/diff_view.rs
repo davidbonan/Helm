@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use crate::git::diff::{DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
+use crate::git::diff::{DiffFingerprint, DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::git::edit::EditRequest;
+use crate::git::intraline::{Columns, IntralineChanges};
 use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, EditRefusal, GitIntent};
@@ -27,6 +28,9 @@ pub struct DiffViewState {
     extensions: HashMap<usize, u32>,
     text_selection: Option<TextSelection>,
     syntax_cache: Option<HighlightedDiffCache>,
+    /// Columns each changed line differs from its counterpart on (git.md §4):
+    /// the rows paint them, they never compute them.
+    intraline_cache: Option<IntralineChanges>,
     /// Widest displayed line, kept across frames: measuring it walks every
     /// displayed line, and only the diff content or an extension moves it.
     width_cache: Option<WidthCache>,
@@ -150,6 +154,7 @@ impl DiffViewState {
         self.extensions.clear();
         self.text_selection = None;
         self.syntax_cache = None;
+        self.intraline_cache = None;
         self.width_cache = None;
         self.stale = false;
         self.image = None;
@@ -491,13 +496,19 @@ impl DiffViewState {
     /// Opens the cache on the current diff, then fills one frame's worth of it —
     /// the rest lands on the following frames, repaint after repaint, so opening
     /// a big file never costs a visible hitch.
-    fn ensure_syntax_cache(&mut self, ui: &egui::Ui, diff: &FileDiff, syntax_theme: &'static str) {
+    fn ensure_syntax_cache(
+        &mut self,
+        ui: &egui::Ui,
+        diff: &FileDiff,
+        fingerprint: DiffFingerprint,
+        syntax_theme: &'static str,
+    ) {
         if !self
             .syntax_cache
             .as_ref()
-            .is_some_and(|cache| cache.is_current(diff, syntax_theme))
+            .is_some_and(|cache| cache.is_current(fingerprint, syntax_theme))
         {
-            self.syntax_cache = HighlightedDiffCache::new(diff, syntax_theme);
+            self.syntax_cache = HighlightedDiffCache::new(diff, fingerprint, syntax_theme);
         }
         let incomplete = self
             .syntax_cache
@@ -510,6 +521,36 @@ impl DiffViewState {
 
     fn syntax_line(&self, hunk: usize, line: usize) -> Option<&[HighlightedSpan]> {
         self.syntax_cache.as_ref()?.line(hunk, line)
+    }
+
+    /// Same deal as the syntax cache above: the pairing of a big diff is filled one
+    /// frame's budget at a time, so opening it never costs a visible hitch.
+    fn ensure_intraline_cache(
+        &mut self,
+        ui: &egui::Ui,
+        diff: &FileDiff,
+        fingerprint: DiffFingerprint,
+    ) {
+        if !self
+            .intraline_cache
+            .as_ref()
+            .is_some_and(|changes| changes.is_current(fingerprint))
+        {
+            self.intraline_cache = Some(IntralineChanges::new(diff, fingerprint));
+        }
+        let incomplete = self
+            .intraline_cache
+            .as_mut()
+            .is_some_and(|changes| changes.extend(diff, INTRALINE_BUDGET));
+        if incomplete {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn intraline_line(&self, hunk: usize, line: usize) -> &[Columns] {
+        self.intraline_cache
+            .as_ref()
+            .map_or(&[], |changes| changes.line(hunk, line))
     }
 
     /// Width of the widest displayed line, in characters — the rows are allocated
@@ -541,6 +582,9 @@ impl DiffViewState {
 /// a viewport's worth on the frame the file opens, and short enough to leave the
 /// 16 ms frame intact.
 const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+/// Time the intra-line pairing may fill per frame, alongside the syntax budget
+/// above: ~1 000 pairs, several viewports' worth on the frame the file opens.
+const INTRALINE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 const LINE_SIZE: f32 = 12.0;
 const LINE_PAD_X: f32 = 8.0;
 /// Breathing room kept after the longest line so it isn't flush against the
@@ -575,6 +619,9 @@ const BAND_HEADER_PAD_Y: i8 = 6;
 const BAND_BODY_PAD_Y: i8 = 8;
 const TEXT_DRAG_THRESHOLD: f32 = 2.0;
 const TEXT_SELECTION_ALPHA: u8 = 70;
+/// Tint of the changed columns inside a rewritten line, over the row's own (alpha
+/// 30): enough of a step for the eye to land on the change first.
+const WORD_CHANGE_ALPHA: u8 = 85;
 /// Above this many working-tree lines a hunk does not open an inline editor
 /// (git.md §4): the buffer is re-highlighted as it is typed, and a whole-file-sized
 /// hunk belongs in the external editor.
@@ -1335,7 +1382,11 @@ fn diff_render(
                 return;
             }
 
-            state.ensure_syntax_cache(ui, diff, palette.syntax);
+            // Both caches key on the diff's content: hashing it walks the whole diff,
+            // so the frame does it once and hands the result to each of them.
+            let fingerprint = diff.fingerprint();
+            state.ensure_syntax_cache(ui, diff, fingerprint, palette.syntax);
+            state.ensure_intraline_cache(ui, diff, fingerprint);
             let char_w = ui.ctx().fonts_mut(|fonts| {
                 fonts
                     .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')
@@ -1466,6 +1517,7 @@ fn diff_render(
                                     selected: state.selected(hunk_idx, line_idx),
                                     caret,
                                     highlighted: state.syntax_line(hunk_idx, line_idx),
+                                    changed: state.intraline_line(hunk_idx, line_idx),
                                     text_range: state.text_range_for_row(text_row, text),
                                     text_row,
                                     char_w,
@@ -3117,6 +3169,7 @@ fn extension_line(
         selected: false,
         caret: ext.caret,
         highlighted: None,
+        changed: &[],
         text_range: state.text_range_for_row(ext.text_row, text),
         text_row: ext.text_row,
         char_w: ext.char_w,
@@ -3729,6 +3782,9 @@ struct DiffLineCtx<'a> {
     /// What this row's content column answers a caret ask with (git.md §4).
     caret: CaretOffer,
     highlighted: Option<&'a [HighlightedSpan]>,
+    /// Columns this line differs from its counterpart on (git.md §4); empty when it
+    /// has none, or when the two lines are too far apart to pair.
+    changed: &'a [Columns],
     text_range: Option<(usize, usize)>,
     text_row: usize,
     char_w: f32,
@@ -3863,6 +3919,7 @@ fn diff_line(
     if bg != egui::Color32::TRANSPARENT {
         ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, bg);
     }
+    paint_changed_columns(ui, rect, content_left, ctx, fg);
     if selected {
         ui.painter().rect_stroke(
             rect,
@@ -4064,6 +4121,26 @@ fn paint_line_content(
         galley,
         fallback,
     );
+}
+
+/// The columns that actually changed, over the row's own tint: on a line rewritten
+/// in part, what reads first is the word that moved, not the whole line (git.md §4).
+fn paint_changed_columns(
+    ui: &mut egui::Ui,
+    row: egui::Rect,
+    content_left: f32,
+    ctx: &DiffLineCtx<'_>,
+    color: egui::Color32,
+) {
+    for columns in ctx.changed {
+        let left = content_left + columns.start as f32 * ctx.char_w;
+        let right = content_left + columns.end as f32 * ctx.char_w;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(egui::pos2(left, row.top()), egui::pos2(right, row.bottom())),
+            egui::CornerRadius::ZERO,
+            with_alpha(color, WORD_CHANGE_ALPHA),
+        );
+    }
 }
 
 fn paint_text_selection(

@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -7,7 +5,7 @@ use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack};
 
 use crate::git::conflict::{ConflictFile, Region};
-use crate::git::diff::{FileDiff, LineOrigin};
+use crate::git::diff::{DiffFingerprint, FileDiff};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HighlightedSpan {
@@ -37,17 +35,22 @@ struct Pending {
     hunk: usize,
 }
 
+/// What the spans were computed from. The fingerprint covers the diff's path as
+/// well as its content, so the key is the theme plus that one value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HighlightKey {
-    path: String,
     syntax_theme: &'static str,
-    fingerprint: u64,
+    fingerprint: DiffFingerprint,
 }
 
 impl HighlightedDiffCache {
     /// Empty cache for `diff`, everything left to `extend`. `None` when the
     /// file has no syntax to apply (binary, oversize, unknown extension).
-    pub fn new(diff: &FileDiff, syntax_theme: &'static str) -> Option<Self> {
+    pub fn new(
+        diff: &FileDiff,
+        fingerprint: DiffFingerprint,
+        syntax_theme: &'static str,
+    ) -> Option<Self> {
         if diff.binary || diff.oversize {
             return None;
         }
@@ -57,7 +60,10 @@ impl HighlightedDiffCache {
             .flatten()?;
         let highlighter = Highlighter::new(theme(syntax_theme));
         Some(Self {
-            key: HighlightKey::new(diff, syntax_theme),
+            key: HighlightKey {
+                syntax_theme,
+                fingerprint,
+            },
             lines: vec![Vec::new(); diff.hunks.len()],
             pending: Some(Pending {
                 syntax,
@@ -116,13 +122,17 @@ impl HighlightedDiffCache {
 
     /// Cache filled in one pass — the shape the tests and the small diffs use.
     pub fn for_diff(diff: &FileDiff, syntax_theme: &'static str) -> Option<Self> {
-        let mut cache = Self::new(diff, syntax_theme)?;
+        let mut cache = Self::new(diff, diff.fingerprint(), syntax_theme)?;
         cache.extend(diff, std::time::Duration::MAX);
         Some(cache)
     }
 
-    pub fn is_current(&self, diff: &FileDiff, syntax_theme: &'static str) -> bool {
-        self.key == HighlightKey::new(diff, syntax_theme)
+    pub fn is_current(&self, fingerprint: DiffFingerprint, syntax_theme: &'static str) -> bool {
+        self.key
+            == HighlightKey {
+                syntax_theme,
+                fingerprint,
+            }
     }
 
     pub fn line(&self, hunk: usize, line: usize) -> Option<&[HighlightedSpan]> {
@@ -130,16 +140,6 @@ impl HighlightedDiffCache {
             .get(hunk)
             .and_then(|lines| lines.get(line))
             .map(Vec::as_slice)
-    }
-}
-
-impl HighlightKey {
-    fn new(diff: &FileDiff, syntax_theme: &'static str) -> Self {
-        Self {
-            path: diff.path.clone(),
-            syntax_theme,
-            fingerprint: fingerprint(diff),
-        }
     }
 }
 
@@ -411,35 +411,6 @@ pub fn display_text(content: &str) -> &str {
     content.trim_end_matches(['\n', '\r'])
 }
 
-fn fingerprint(diff: &FileDiff) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    diff.path.hash(&mut hasher);
-    diff.binary.hash(&mut hasher);
-    diff.oversize.hash(&mut hasher);
-    for hunk in &diff.hunks {
-        hunk.header.hash(&mut hasher);
-        hunk.old_start.hash(&mut hasher);
-        hunk.old_lines.hash(&mut hasher);
-        hunk.new_start.hash(&mut hasher);
-        hunk.new_lines.hash(&mut hasher);
-        for line in &hunk.lines {
-            line_origin_key(line.origin).hash(&mut hasher);
-            line.content.hash(&mut hasher);
-            line.old_lineno.hash(&mut hasher);
-            line.new_lineno.hash(&mut hasher);
-        }
-    }
-    hasher.finish()
-}
-
-fn line_origin_key(origin: LineOrigin) -> u8 {
-    match origin {
-        LineOrigin::Context => 0,
-        LineOrigin::Addition => 1,
-        LineOrigin::Deletion => 2,
-    }
-}
-
 fn syntect_color(color: syntect::highlighting::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a)
 }
@@ -467,7 +438,7 @@ fn theme(name: &str) -> &'static syntect::highlighting::Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::{DiffLine, Hunk};
+    use crate::git::diff::{DiffLine, Hunk, LineOrigin};
 
     fn diff(path: &str, content: &str) -> FileDiff {
         FileDiff {
@@ -527,7 +498,8 @@ mod tests {
         let diff = long_diff("src/main.rs");
         let full = HighlightedDiffCache::for_diff(&diff, "InspiredGitHub").unwrap();
 
-        let mut cache = HighlightedDiffCache::new(&diff, "InspiredGitHub").unwrap();
+        let mut cache =
+            HighlightedDiffCache::new(&diff, diff.fingerprint(), "InspiredGitHub").unwrap();
         assert!(
             cache.line(0, 0).is_none(),
             "before the first fill every line renders plain"
@@ -597,10 +569,10 @@ mod tests {
         let changed = diff("src/main.rs", "fn changed() {}\n");
         let cache = HighlightedDiffCache::for_diff(&original, "InspiredGitHub").unwrap();
 
-        assert!(cache.is_current(&original, "InspiredGitHub"));
-        assert!(!cache.is_current(&changed, "InspiredGitHub"));
+        assert!(cache.is_current(original.fingerprint(), "InspiredGitHub"));
+        assert!(!cache.is_current(changed.fingerprint(), "InspiredGitHub"));
         assert!(
-            !cache.is_current(&original, "Catppuccin Mocha"),
+            !cache.is_current(original.fingerprint(), "Catppuccin Mocha"),
             "changing the theme must invalidate the cache"
         );
     }

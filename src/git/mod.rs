@@ -10,6 +10,7 @@ pub mod edit;
 pub mod file_tree;
 pub mod forge;
 pub mod graph;
+pub mod intraline;
 pub mod rebase;
 pub mod stage;
 pub mod stash;

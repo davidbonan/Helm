@@ -60,6 +60,36 @@ pub struct FileDiff {
     pub editable: bool,
 }
 
+/// Fingerprint of a diff's content: what the views that cache work derived from it
+/// (syntax spans, intra-line ranges) key that work on, so a file reloading with
+/// another content rebuilds it. Walking the whole diff costs ~0.3 ms per MB, so a
+/// frame takes it **once** and hands it to every cache it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffFingerprint(u64);
+
+impl FileDiff {
+    pub fn fingerprint(&self) -> DiffFingerprint {
+        let mut hasher = DefaultHasher::new();
+        self.path.hash(&mut hasher);
+        self.binary.hash(&mut hasher);
+        self.oversize.hash(&mut hasher);
+        for hunk in &self.hunks {
+            hunk.header.hash(&mut hasher);
+            hunk.old_start.hash(&mut hasher);
+            hunk.old_lines.hash(&mut hasher);
+            hunk.new_start.hash(&mut hasher);
+            hunk.new_lines.hash(&mut hasher);
+            for line in &hunk.lines {
+                line.origin.hash(&mut hasher);
+                line.content.hash(&mut hasher);
+                line.old_lineno.hash(&mut hasher);
+                line.new_lineno.hash(&mut hasher);
+            }
+        }
+        DiffFingerprint(hasher.finish())
+    }
+}
+
 /// Decodable image content of a `FileDiff`, plus a fingerprint of the bytes so the
 /// diff view can cache the decoded texture and re-decode only when it changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
