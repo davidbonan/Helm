@@ -1,5 +1,12 @@
 # Release notes
 
+## 2.4.3
+
+- The diff shows *what* changed inside a line, not just that the line changed:
+  a rewritten line and the one it replaces are aligned word by word, and the
+  parts that actually differ take a stronger tint. Two lines too far apart to be
+  one rewrite keep their plain red/green, as before.
+
 ## 2.4.2
 
 - The Run panel's inline command field survives `Cmd+V`: holding Cmd made the
@@ -123,9 +130,3 @@
   instead of closing everything from anywhere.
 - Links open where you click them in the prose, and Bitbucket repo images load
   instead of failing with a 401.
-
-## 2.0.2
-
-- The Run panel's output can be selected and copied: drag over it, double-click
-  a word, triple-click a line, then `Cmd+C`. A server error no longer has to be
-  retyped to be shared — lift it straight out of the strip.
