@@ -1,5 +1,12 @@
 # Release notes
 
+## 2.6.0
+
+- `Cmd+J` jumps straight to the first agent that has finished — the top green row
+  under **Agents** in the sidebar. Landing there clears its green, so pressing
+  again takes you to the next finished one. Rebindable in Preferences › Keyboard;
+  hold `Cmd` to see the `⌘J` hint on the row.
+
 ## 2.5.0
 
 - The PR review surface keeps track of how long you have spent on each pull
@@ -109,15 +116,3 @@
 - A two-finger swipe to the right leaves a review and goes straight back to the
   list.
 
-## 2.1.1
-
-- The Agents strip groups its chips by project: the project is named once, as a
-  header over the chips that belong to it, instead of being repeated on every
-  one of them. Each chip spends that room on what actually tells your agents
-  apart — its branch over the tab it runs in.
-- Two agents in the same worktree running the same tool are numbered (`#1`,
-  `#2`), on the chip and on its tile on the wall, so identical terminals can be
-  told apart.
-- The strip is one row that scrolls sideways now, so it keeps the same height
-  whether one agent runs or twenty and the wall keeps the rest of the window.
-  Scroll into a project and its header stays pinned on the left.
