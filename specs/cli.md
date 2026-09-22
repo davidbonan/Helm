@@ -317,3 +317,39 @@ Covered by tests: argv (target required, single, known), the install against a
 throwaway folder — creation, idempotence on a second run, append to a user-owned
 memory file with no trailing newline, refresh of a stale instructions file — and a
 check that the shipped text still names the commands it teaches (unit, `cli::tests`).
+
+## 11. Review time — `helm pr time`
+
+The cockpit keeps how long each PR has been under review
+([`pull-requests.md`](pull-requests.md) §12); this is how the user gets the figures
+back out — for a timesheet, a retro, or plain curiosity.
+
+```sh
+helm pr time            # every PR reviewed so far, most recent first
+helm pr time --json     # the same as a JSON array
+```
+
+```
+1 h 05 min    acme/web#42                       PR cockpit  · 2h ago
+12 min        acme/api#7                        Retry the webhook  · 3 days ago
+```
+
+- **It reads the file, not the app.** Unlike `helm run` (§9) the data is not live
+  state inside `HelmApp` — it is `review_time.toml` in the support dir, which the
+  app writes every accrued minute and whenever the clock stops. So the command
+  answers whether or not helm is running (no exit `3`), at most a minute behind
+  the header's own readout. The same support-dir split applies: a `cargo run` build
+  reports `helm-dev`'s log, the installed bundle `helm`'s.
+- **One line per PR**: time spent in minutes (the header's format — never seconds),
+  `repo#number`, the title as of the last review, and how long ago that was. The
+  JSON carries the raw fields (`forge`, `repo`, `number`, `title`, `seconds`,
+  `last_active` as epoch seconds) for whatever the user wants to compute.
+- **No filter flags** in v1: the list is short enough to read, and `--json | jq`
+  covers the rest. An empty log says so rather than printing nothing.
+- **`helm pr` shadows a folder named `pr`**, the way `helm run` shadows `run` (§9):
+  `helm ./pr` opens the directory.
+
+Covered by tests: argv (`time` required and alone, `--json` anywhere, no path, no
+`-n`) and the human line format (unit, `cli::tests`); the log itself is covered
+with the cockpit (`review_time::tests`).
+

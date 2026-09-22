@@ -70,6 +70,7 @@ fn pr_review_view<'a>(
         posting: r.posting,
         post_error: r.post_error.as_deref(),
         current_user,
+        time_spent_secs: r.time_spent_secs,
     }
 }
 

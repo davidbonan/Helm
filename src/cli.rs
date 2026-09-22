@@ -30,6 +30,7 @@ Usage:
   helm                 Launch the app
   helm <path>          Open the repository or worktree at <path>
   helm run <command>   Drive the Run server of a worktree (see below)
+  helm pr time         Time spent reviewing each pull request (--json for machines)
   helm init claude     Teach Claude Code to use `helm run` (writes HELM.md)
   helm --help          Show this message
   helm --version       Show the version
@@ -67,6 +68,10 @@ pub enum Args {
     Run(RunArgs),
     /// `helm init <agent>`: install helm's instructions for a coding agent (§10).
     Init(InitTarget),
+    /// `helm pr time [--json]`: the review-time log, most recent PR first (§11).
+    PrTime {
+        json: bool,
+    },
     Help,
     Version,
     /// Misuse: the message to print on stderr.
@@ -109,6 +114,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Args {
     }
     if first.as_deref() == Some("init") {
         return parse_init(&args[1..]);
+    }
+    if first.as_deref() == Some("pr") {
+        return parse_pr(&args[1..]);
     }
     match (args.len(), first.as_deref()) {
         (0, _) => Args::Gui { open_url: None },
@@ -197,6 +205,26 @@ fn parse_init(rest: &[OsString]) -> Args {
     }
 }
 
+fn parse_pr(rest: &[OsString]) -> Args {
+    let mut json = false;
+    let mut words: Vec<String> = Vec::new();
+    for arg in rest.iter().map(|a| a.to_string_lossy().into_owned()) {
+        match arg.as_str() {
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Args::Usage(format!("unknown option “{other}”"))
+            }
+            other => words.push(other.to_owned()),
+        }
+    }
+    match words.as_slice() {
+        [word] if word == "time" => Args::PrTime { json },
+        [] => Args::Usage("pr: expected time".to_owned()),
+        [other] => Args::Usage(format!("unknown pr command “{other}”")),
+        _ => Args::Usage("pr time takes no argument".to_owned()),
+    }
+}
+
 /// Runs everything but `Args::Gui` and returns the process exit code.
 pub fn execute(args: Args) -> i32 {
     match args {
@@ -222,7 +250,48 @@ pub fn execute(args: Args) -> i32 {
         },
         Args::Run(run) => execute_run(run),
         Args::Init(InitTarget::Claude) => execute_init_claude(),
+        Args::PrTime { json } => execute_pr_time(json),
     }
+}
+
+/// Reads the review-time log the app writes (pull-requests.md §12) — data on disk,
+/// so it answers whether or not helm is running; the app flushes every minute, the
+/// display's own granularity.
+fn execute_pr_time(json: bool) -> i32 {
+    use crate::pull_requests::review_time::{self, ReviewTimeLog};
+    let Some(path) = review_time::path() else {
+        eprintln!("helm: cannot locate helm's support folder (no home directory)");
+        return 1;
+    };
+    let log = ReviewTimeLog::load_from(&path);
+    let entries = log.by_recency();
+    if json {
+        match serde_json::to_string_pretty(&entries) {
+            Ok(text) => println!("{text}"),
+            Err(err) => eprintln!("helm: {err}"),
+        }
+        return 0;
+    }
+    if entries.is_empty() {
+        println!("no review time recorded yet — open a pull request in helm");
+        return 0;
+    }
+    let now = crate::ui::pull_requests_view::now_epoch_secs();
+    for entry in entries {
+        println!("{}", review_time_line(entry, now));
+    }
+    0
+}
+
+/// One line per PR: time spent, which PR, its title, when it was last open.
+fn review_time_line(
+    entry: &crate::pull_requests::review_time::ReviewTimeEntry,
+    now: i64,
+) -> String {
+    let spent = crate::pull_requests::review_time::format_time_spent(entry.seconds);
+    let pr = format!("{}#{}", entry.repo, entry.number);
+    let last = crate::pull_requests::model::age_label(now - entry.last_active);
+    format!("{spent:<12}  {pr:<32}  {}  · {last}", entry.title)
 }
 
 /// Instructions file helm owns inside the Claude config dir — its own file, so a
@@ -863,6 +932,32 @@ mod tests {
             run_line(&crashed).starts_with("exited 1 "),
             "a process that died says with what: {}",
             run_line(&crashed)
+        );
+    }
+
+    #[test]
+    fn pr_time_takes_json_and_nothing_else() {
+        assert_eq!(args(&["pr", "time"]), Args::PrTime { json: false });
+        assert_eq!(args(&["pr", "--json", "time"]), Args::PrTime { json: true });
+        assert!(matches!(args(&["pr"]), Args::Usage(_)));
+        assert!(matches!(args(&["pr", "list"]), Args::Usage(_)));
+        assert!(matches!(args(&["pr", "time", "."]), Args::Usage(_)));
+        assert!(matches!(args(&["pr", "time", "-n", "3"]), Args::Usage(_)));
+    }
+
+    #[test]
+    fn a_review_time_line_reads_in_minutes_and_names_the_pr() {
+        let entry = crate::pull_requests::review_time::ReviewTimeEntry {
+            forge: crate::pull_requests::model::ForgeKind::GitHub,
+            repo: "acme/web".to_owned(),
+            number: 42,
+            title: "PR cockpit".to_owned(),
+            seconds: 3_900,
+            last_active: 1_000,
+        };
+        assert_eq!(
+            review_time_line(&entry, 1_000 + 7_200),
+            "1 h 05 min    acme/web#42                       PR cockpit  · 2h ago"
         );
     }
 

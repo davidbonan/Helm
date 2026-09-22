@@ -335,6 +335,9 @@ pub struct PrReviewView<'a> {
     /// Current user's display name for the conversation composer avatar (§11), or
     /// `None` before the forge identity resolves — then the avatar is a plain dot.
     pub current_user: Option<&'a str>,
+    /// Seconds already spent reviewing this PR (pull-requests.md §12); the header
+    /// shows them in minutes.
+    pub time_spent_secs: u64,
 }
 
 /// The cockpit page. `review` switches the surface: `None` ⇒ the browse list;
@@ -2464,6 +2467,14 @@ fn review_header(
         "{} · {} → {}{}",
         pr.author, pr.source_branch, pr.dest_branch, created
     );
+    let time_left = time_spent_chip(
+        ui,
+        palette,
+        review.time_spent_secs,
+        row2.right() - PANEL_PAD_X,
+        sub_y,
+        row2.y_range(),
+    );
     cell_text(
         ui,
         &subtitle,
@@ -2471,13 +2482,13 @@ fn review_header(
         palette.text_secondary,
         sx,
         sub_y,
-        (row2.right() - PANEL_PAD_X - sx).max(0.0),
+        (time_left - GAP_MD - sx).max(0.0),
     );
     detail_label_accessibility(
         ui,
         egui::Rect::from_min_max(
             egui::pos2(sx, row2.top()),
-            egui::pos2(row2.right(), row2.bottom()),
+            egui::pos2(time_left, row2.bottom()),
         ),
         "pr_detail_header_subtitle",
         subtitle,
@@ -2489,6 +2500,45 @@ fn review_header(
         egui::Rangef::new(row2.bottom(), rect.bottom()),
     );
     review_tabs(ui, palette, review, row3, action)
+}
+
+/// Time spent reviewing this PR, a clock glyph over a minutes-only readout
+/// (pull-requests.md §12), right-aligned at `right`. Returns its left edge.
+fn time_spent_chip(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    seconds: u64,
+    right: f32,
+    center_y: f32,
+    y_range: egui::Rangef,
+) -> f32 {
+    let label = crate::pull_requests::review_time::format_time_spent(seconds);
+    let galley = ui.painter().layout_no_wrap(
+        label.clone(),
+        egui::FontId::proportional(DETAIL_HEADER_SUBTITLE_SIZE),
+        palette.text_muted,
+    );
+    let icon_w = LIST_META_SIZE + GAP_XS;
+    let left = right - galley.size().x - icon_w;
+    paint_icon(
+        ui.painter(),
+        egui::pos2(left + LIST_META_SIZE / 2.0, center_y),
+        LIST_META_SIZE,
+        Icon::Clock,
+        palette.text_muted,
+    );
+    ui.painter().galley(
+        egui::pos2(left + icon_w, center_y - galley.size().y / 2.0),
+        galley,
+        palette.text_muted,
+    );
+    detail_label_accessibility(
+        ui,
+        egui::Rect::from_x_y_ranges(egui::Rangef::new(left, right), y_range),
+        "pr_detail_header_time_spent",
+        label,
+    );
+    left
 }
 
 /// Small filled state chip ("Open" / "Draft"). Returns its right edge.

@@ -6,6 +6,25 @@
 
 ---
 
+## ☑ Milestone — M-Time · Review time per PR
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §8, §12,
+[`specs/cli.md`](../cli.md) §11. Per the user: know how long each PR review really
+took — tracked per PR, shown on the PR's overview without seconds, retrievable from
+the CLI. Counter: **3/3**.
+
+- ☑ **T1 — Accrual + store.** `pull_requests::review_time`: `ReviewClock` (frame
+  clock → whole seconds; first counting frame and non-drawing gaps dropped),
+  `ReviewTimeLog` (per forge+repo+number, title kept, `review_time.toml` beside the
+  prefs via `persistence::support_file`). `HelmApp::tick_review_time` counts while
+  the review surface is on screen and the window focused; writes every 60 s accrued,
+  on stop, on quit. *Tests*: 4 unit + 1 app unit.
+- ☑ **T2 — Header readout.** `PrReviewView::time_spent_secs` → right-aligned clock
+  glyph + `format_time_spent` (`< 1 min` / `12 min` / `1 h 05 min`) on the identity
+  row. *Tests*: 1 unit (format) + 1 UI e2e. *Verified*: `gen_pr_detail` shot.
+- ☑ **T3 — `helm pr time [--json]`.** Reads the TOML (no socket, answers with helm
+  closed), most recent first. *Tests*: 2 unit (`cli::tests`).
+
 ## ☑ Milestone — M-Word · Intra-line diff highlight
 
 Spec: [`specs/git.md`](../git.md) §4. Per the user: a partly changed line showed one

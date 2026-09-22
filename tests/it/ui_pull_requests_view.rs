@@ -153,6 +153,7 @@ fn review_harness(
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -250,6 +251,7 @@ fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captur
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -541,6 +543,7 @@ fn review_detail_header_shows_pr_context() {
     harness.get_by_label("PR cockpit");
     harness.get_by_label("octocat · feature → main");
     harness.get_by_label("#42");
+    harness.get_by_label("< 1 min");
 }
 
 #[test]
@@ -765,6 +768,7 @@ fn the_files_tab_stacks_every_diff_in_one_column() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -840,6 +844,7 @@ fn folding_a_band_hides_its_rows_and_keeps_the_column() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -961,6 +966,7 @@ fn arrows_navigate_between_changed_files() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -1053,6 +1059,7 @@ fn clicking_a_commit_row_selects_that_commit() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -1150,6 +1157,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1217,6 +1225,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1295,6 +1304,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1412,6 +1422,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1515,6 +1526,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1595,6 +1607,7 @@ fn markdown_image_stands_in_until_it_loads() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1673,6 +1686,7 @@ fn body_harness(body: &str) -> Harness<'static> {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1876,6 +1890,7 @@ fn markdown_table_renders_as_cells_not_a_wall_of_pipes() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -1977,6 +1992,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2081,6 +2097,7 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2175,6 +2192,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2280,6 +2298,7 @@ fn conversation_harness() -> (Harness<'static>, Rc<Captured>) {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2454,6 +2473,7 @@ fn anchored_thread_harness() -> (Harness<'static>, Rc<RefCell<Vec<ReviewIntent>>
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2577,6 +2597,7 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -2655,6 +2676,7 @@ fn conversation_composer_emits_post_conversation_comment() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2757,6 +2779,7 @@ fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -2858,6 +2881,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             let action = pull_requests_page(
                 ui,
@@ -3026,6 +3050,7 @@ fn conversation_reply_nests_under_its_parent() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,
@@ -3115,6 +3140,7 @@ fn review_comments_loading_shows_a_loader_under_the_threads() {
                 posting: false,
                 post_error: None,
                 current_user: None,
+                time_spent_secs: 0,
             };
             pull_requests_page(
                 ui,

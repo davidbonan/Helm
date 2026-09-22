@@ -452,8 +452,13 @@ fn support_dir_name_for(bundled: bool) -> &'static str {
 }
 
 pub fn prefs_path() -> Option<PathBuf> {
+    support_file(PREFS_FILE)
+}
+
+/// A file of helm's own in the support dir (prefs, review time, …).
+pub fn support_file(name: &str) -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", support_dir_name())
-        .map(|dirs| dirs.config_dir().join(PREFS_FILE))
+        .map(|dirs| dirs.config_dir().join(name))
 }
 
 #[cfg(test)]

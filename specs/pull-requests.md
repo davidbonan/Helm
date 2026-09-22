@@ -266,6 +266,12 @@ New `Prefs` scalars (architecture §4), placed **before** the `keybindings` /
 `pr_detail_width: f32`. The Bitbucket **token is not persisted in TOML** —
 Keychain only (§3). Identity and PR lists are **session caches**, not persisted.
 
+The **time spent per PR** (§12) is data, not a preference: it lives in its own
+`review_time.toml` beside `prefs.toml` (same support dir, same dev / bundle split),
+one `[[pr]]` table per PR — `forge`, `repo`, `number`, `title`, `seconds`,
+`last_active` (epoch seconds). Written by the app alone; read by the app at launch
+and by `helm pr time` ([`cli.md`](cli.md) §11).
+
 ## 9. Tests (testing.md — 3 levels)
 
 - **Unit (pure)**: `github::parse_list` / `parse_detail` and
@@ -317,6 +323,13 @@ Keychain only (§3). Identity and PR lists are **session caches**, not persisted
   selection, an inline center card with its snippet emitting `select_file`, the
   reply editor (overlay + center) emitting `ReplyToThread`, and the conversation
   composer / card reply emitting `PostConversationComment`.
+- **Review time (§12)**: the frame clock — nothing credited on the frame counting
+  starts, whole seconds with a carried remainder, a non-drawing gap and a pause
+  dropped; the log — accrual creates then grows an entry and refreshes its title,
+  recency order, the TOML round trip and the empty first launch; the minutes-only
+  formatter (unit, `review_time::tests`); the app tick crediting the open surface
+  and writing the log once counting stops (unit, `app::tests`); the header showing
+  the readout (UI e2e); `helm pr time` argv and its line format (unit, `cli::tests`).
 
 ## 10. Accepted limitations / out of scope (v1)
 
@@ -699,3 +712,40 @@ same one as commit/working-tree review.
 
 This supersedes the §10 "no posting / approving / requesting changes / replying"
 limitations for **GitHub + Bitbucket Cloud** reviews; **merging** is covered by §5.
+
+## 12. Review time — how long each PR has actually taken
+
+Reviews are billed in attention, not in commits: the user wants to know how long
+they *really* spent on a given PR. helm keeps a running total per PR.
+
+- **What counts.** A second counts when the PR's **review surface** (§11) is on
+  screen — the cockpit open on that PR, not the list, not Preferences — **and the
+  window is focused**. Reading the PR in a browser tab or testing its branch in
+  another app is not counted: helm can only vouch for the time in front of it,
+  and a figure that kept running while the user was at lunch would be worthless.
+  Switching PR, going back to the list, leaving the cockpit or losing focus stops
+  the clock; coming back resumes it on the same total.
+- **The clock is the frame clock** (`review_time::ReviewClock`). Each frame credits
+  the gap since the previous one when both were spent reviewing; the frame counting
+  *starts* on credits nothing (its gap belongs to whatever was on screen before), and
+  a gap over **90 s** is dropped — a hidden or minimized window draws no frame
+  ([`cli.md`](cli.md) §9), so a long gap is time the app was not visible at all.
+  A focused app redraws every few seconds regardless (the group-sync tick), so a
+  real reviewing frame never trips the cap. Whole seconds are handed to the log,
+  the remainder carried into the next frame.
+- **The readout** sits on the review header's identity row, right-aligned: a clock
+  glyph and the total in **minutes only** — `< 1 min`, `12 min`, `1 h 05 min`. No
+  seconds: a second hand ticking on a review reads as pressure, and the point is a
+  figure to look back on, not a stopwatch to race. It refreshes within the tick
+  cadence, so a new minute shows up within seconds.
+- **Storage** (§8): `review_time.toml`, keyed by forge + repo label + number — the
+  same identity the review cache uses — and carrying the title so the file reads on
+  its own. The app writes it once **60 s** have accrued unsaved and as soon as the
+  clock stops (a closed surface leaves nothing behind), plus on quit; a crash loses
+  at most a minute, the display's own granularity. Titles refresh on every accrual.
+- **Looking it up**: `helm pr time [--json]` ([`cli.md`](cli.md) §11) lists every PR,
+  most recently reviewed first.
+
+Out of scope: idle detection inside a focused window (no input for ten minutes
+still counts), per-session breakdowns (one total per PR), and forge-side reporting.
+

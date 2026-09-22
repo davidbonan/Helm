@@ -233,6 +233,9 @@ struct PrReview {
     summary: String,
     posting: bool,
     post_error: Option<String>,
+    /// Seconds spent reviewing this PR so far — a mirror of the review-time log's
+    /// entry (pull-requests.md §12), refreshed by the frame tick, read by the header.
+    time_spent_secs: u64,
 }
 
 impl PrReview {
@@ -689,6 +692,14 @@ pub struct HelmApp {
     /// Last `persist` call; trailing debounce — flushed once `PREFS_DEBOUNCE`
     /// elapses without a new change, and unconditionally on save/exit.
     prefs_dirty_at: Option<Instant>,
+    /// Time spent per PR (pull-requests.md §12): the log every open surface's
+    /// `time_spent_secs` mirrors, the frame clock feeding it, the seconds accrued
+    /// since the last write, and the file — `None` (constructors) = ephemeral, like
+    /// `prefs_path`.
+    review_time: crate::pull_requests::review_time::ReviewTimeLog,
+    review_clock: crate::pull_requests::review_time::ReviewClock,
+    review_time_unflushed: u64,
+    review_time_path: Option<PathBuf>,
     /// In-app updater (update.md): created on the first frame (it carries the `ctx`
     /// repaint) with a silent boot check — a no-op outside an `.app` bundle.
     update_runner: Option<UpdateRunner>,
@@ -841,6 +852,10 @@ impl HelmApp {
             keymap: snapshot.keymap(),
             prefs: snapshot,
             prefs_dirty_at: None,
+            review_time: Default::default(),
+            review_clock: Default::default(),
+            review_time_unflushed: 0,
+            review_time_path: None,
             update_runner: None,
             group_refresh: None,
             titlebar_fullscreen: None,
@@ -1286,6 +1301,47 @@ impl HelmApp {
             // No event may come before the deadline: book the frame that will
             // perform the flush.
             Some(wait) => ctx.request_repaint_after(wait),
+        }
+    }
+
+    /// Review time (pull-requests.md §12): credits the frame to the open PR while
+    /// `reviewing` (its surface on screen, window focused) and writes the log once a
+    /// minute has accrued or as soon as counting stops — a closed surface leaves
+    /// nothing unsaved behind.
+    fn tick_review_time(&mut self, now: f64, reviewing: bool) {
+        let credited = self.review_clock.tick(now, reviewing);
+        if credited > 0 {
+            let Self {
+                review_time,
+                pr_reviews,
+                pr_active,
+                ..
+            } = self;
+            if let Some(review) = pr_active.as_ref().and_then(|key| pr_reviews.get_mut(key)) {
+                let now_epoch = crate::ui::pull_requests_view::now_epoch_secs();
+                review.time_spent_secs = review_time.accrue(&review.pr, credited, now_epoch);
+                self.review_time_unflushed += credited;
+            }
+        }
+        let flush_due = if reviewing {
+            self.review_time_unflushed >= crate::pull_requests::review_time::FLUSH_EVERY_SECS
+        } else {
+            self.review_time_unflushed > 0
+        };
+        if flush_due {
+            self.flush_review_time();
+        }
+    }
+
+    fn flush_review_time(&mut self) {
+        if std::mem::take(&mut self.review_time_unflushed) == 0 {
+            return;
+        }
+        let Some(path) = &self.review_time_path else {
+            return;
+        };
+        if let Err(err) = self.review_time.save_to(path) {
+            eprintln!("helm: cannot save review time {}: {err}", path.display());
         }
     }
 
@@ -2079,6 +2135,7 @@ impl HelmApp {
                         summary: String::new(),
                         posting: false,
                         post_error: None,
+                        time_spent_secs: self.review_time.seconds_for(&pr),
                     },
                 );
                 self.request_pr_review_fetch(&pr, &root, &key, ctx);
@@ -4052,10 +4109,12 @@ impl eframe::App for HelmApp {
     /// eframe calls `save` on shutdown (and periodically), `on_exit` last.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.flush_prefs();
+        self.flush_review_time();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.flush_prefs();
+        self.flush_review_time();
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -4188,6 +4247,15 @@ impl eframe::App for HelmApp {
         if focused {
             ctx.request_repaint_after(pr_interval);
         }
+
+        // Review time (pull-requests.md §12): counts while a review surface is on
+        // screen in the focused window. The focused app already redraws every few
+        // seconds (group tick), so the clock never sees a gap it would drop.
+        let reviewing = focused
+            && self.page == Page::Main
+            && self.central_mode == CentralMode::PullRequests
+            && self.pr_active.is_some();
+        self.tick_review_time(now, reviewing);
 
         // While the Keyboard recorder is armed, the toggle is captured as a combo
         // instead of acting (preferences.md §4).
@@ -4553,6 +4621,8 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             }
             let mut app = HelmApp::from_prefs(prefs);
             app.prefs_path = crate::persistence::prefs_path();
+            app.review_time = crate::pull_requests::review_time::ReviewTimeLog::load();
+            app.review_time_path = crate::pull_requests::review_time::path();
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
