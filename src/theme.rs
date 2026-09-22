@@ -488,6 +488,19 @@ impl Palette {
         self.lane_colors[lane % self.lane_colors.len()]
     }
 
+    /// Fill of an initials avatar: a stable lane color derived from `name`, darkened
+    /// so the `lane_node_text` initials stay legible — the lane tints are tuned to
+    /// read as thin lines on the graph, too bright to sit under white text as a disc.
+    pub fn avatar_fill(&self, name: &str) -> Color32 {
+        const DARKEN: f32 = 0.68;
+        let hash = name.bytes().fold(0usize, |acc, byte| {
+            acc.wrapping_mul(31).wrapping_add(usize::from(byte))
+        });
+        let [r, g, b, _] = self.lane_color(hash).to_array();
+        let dim = |c: u8| (f32::from(c) * DARKEN).round() as u8;
+        Color32::from_rgb(dim(r), dim(g), dim(b))
+    }
+
     /// Fill of the solid primary button (Commit, Open Folder…): `accent`
     /// darkened one notch — the token stays full color for its other consumers
     /// (links, active tabs, lanes). Dark presets' accents are brighter to begin
@@ -507,7 +520,21 @@ impl Palette {
             PRIMARY_BUTTON_DARKEN_LIGHT
         }
     }
+
+    /// Ink of a list row's title: `text_primary` pulled toward `text_secondary` in
+    /// dark mode — near-white on a dark card halos and reads heavier than it is, so
+    /// the medium-sized title steps down to a softer white. Light mode keeps primary.
+    pub fn text_title(&self) -> Color32 {
+        if self.dark {
+            blend(self.text_primary, self.text_secondary, TITLE_SOFTEN_DARK)
+        } else {
+            self.text_primary
+        }
+    }
 }
+
+/// How far a dark-mode title slides from primary toward secondary ink.
+const TITLE_SOFTEN_DARK: f32 = 0.4;
 
 const PRIMARY_BUTTON_DARKEN_LIGHT: f32 = 0.85;
 const PRIMARY_BUTTON_DARKEN_DARK: f32 = 0.70;
@@ -516,6 +543,14 @@ fn darken(color: Color32, factor: f32) -> Color32 {
     let [r, g, b, _] = color.to_srgba_unmultiplied();
     let d = |c: u8| (c as f32 * factor) as u8;
     Color32::from_rgb(d(r), d(g), d(b))
+}
+
+/// `from` moved `t` of the way toward `to`, per channel (`t` in 0..=1).
+fn blend(from: Color32, to: Color32, t: f32) -> Color32 {
+    let [r0, g0, b0, _] = from.to_srgba_unmultiplied();
+    let [r1, g1, b1, _] = to.to_srgba_unmultiplied();
+    let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
+    Color32::from_rgb(mix(r0, r1), mix(g0, g1), mix(b0, b1))
 }
 
 /// Installs the macOS system fonts (SF Pro UI / SF Mono) at the head of the egui

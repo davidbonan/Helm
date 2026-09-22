@@ -93,6 +93,9 @@ pub struct PullRequest {
     pub updated_at: String,
     pub checks: Checks,
     pub review: Review,
+    /// The verdict *I* left on this PR — `None` when I have not reviewed it. What
+    /// moves a PR I already approved out of **Waiting on your review** (§5).
+    pub my_review: Review,
     pub reviewers: Vec<Reviewer>,
     /// Labels on the PR. **GitHub only** — Bitbucket Cloud has no PR-label concept,
     /// so it always maps to an empty vector (pull-requests.md §10).
@@ -675,11 +678,14 @@ impl ActionGroup {
 
     /// Band a PR belongs to. First match wins, so a PR blocked on its author never
     /// masquerades as reviewable, and a review I still owe outranks an approval
-    /// someone else already gave.
+    /// someone else already gave. One I have already approved is off my plate: it
+    /// waits on its author to merge, however the other reviewers stand.
     pub fn of(pr: &PullRequest) -> ActionGroup {
+        let approved_by_me = pr.role == PrRole::ToReview && pr.my_review == Review::Approved;
         if pr.state == PrState::Draft
             || pr.review == Review::ChangesRequested
             || pr.checks == Checks::Failing
+            || approved_by_me
         {
             ActionGroup::WaitingOnAuthor
         } else if pr.role == PrRole::ToReview {
@@ -694,10 +700,12 @@ impl ActionGroup {
 
 /// The browse list's tab bar (pull-requests.md §5). Every fetched PR is open by
 /// construction (§1), so the tabs are views over the same cache — no extra query.
+/// **Inbox** is the landing tab: only what I have to act on (reviews I owe) and my
+/// own PRs still awaiting a verdict — the rest is noise there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListTab {
     #[default]
-    Open,
+    Inbox,
     ToReview,
     Mine,
     Drafts,
@@ -705,7 +713,7 @@ pub enum ListTab {
 
 impl ListTab {
     pub const ALL: [ListTab; 4] = [
-        ListTab::Open,
+        ListTab::Inbox,
         ListTab::ToReview,
         ListTab::Mine,
         ListTab::Drafts,
@@ -713,7 +721,7 @@ impl ListTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            ListTab::Open => "Open",
+            ListTab::Inbox => "Inbox",
             ListTab::ToReview => "To review",
             ListTab::Mine => "Mine",
             ListTab::Drafts => "Drafts",
@@ -722,7 +730,11 @@ impl ListTab {
 
     pub fn accepts(self, pr: &PullRequest) -> bool {
         match self {
-            ListTab::Open => true,
+            ListTab::Inbox => match ActionGroup::of(pr) {
+                ActionGroup::WaitingOnMyReview => true,
+                ActionGroup::InReview => pr.role == PrRole::Mine,
+                ActionGroup::ReadyToMerge | ActionGroup::WaitingOnAuthor => false,
+            },
             ListTab::ToReview => pr.role == PrRole::ToReview,
             ListTab::Mine => pr.role == PrRole::Mine,
             ListTab::Drafts => pr.state == PrState::Draft,
@@ -815,6 +827,7 @@ mod tests {
             updated_at: String::new(),
             checks: Checks::None,
             review: Review::None,
+            my_review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
             diffstat: None,
@@ -862,6 +875,19 @@ mod tests {
     }
 
     #[test]
+    fn a_pr_i_already_approved_waits_on_its_author() {
+        let mut p = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::ToReview);
+        p.my_review = Review::Approved;
+        p.review = Review::Approved;
+        p.checks = Checks::Passing;
+        assert_eq!(ActionGroup::of(&p), ActionGroup::WaitingOnAuthor);
+
+        // Only an approval releases me: a verdict still pending keeps the row mine.
+        p.my_review = Review::Pending;
+        assert_eq!(ActionGroup::of(&p), ActionGroup::WaitingOnMyReview);
+    }
+
+    #[test]
     fn approved_and_green_is_ready_to_merge_but_pending_ci_is_not() {
         let mut ready = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
         ready.review = Review::Approved;
@@ -886,10 +912,29 @@ mod tests {
         let mut draft = pr(ForgeKind::GitHub, "acme/web", 3, PrRole::Mine);
         draft.state = PrState::Draft;
 
-        assert!(ListTab::Open.accepts(&mine) && ListTab::Open.accepts(&to_review));
         assert!(ListTab::Mine.accepts(&mine) && !ListTab::Mine.accepts(&to_review));
         assert!(ListTab::ToReview.accepts(&to_review) && !ListTab::ToReview.accepts(&mine));
         assert!(ListTab::Drafts.accepts(&draft) && !ListTab::Drafts.accepts(&mine));
+    }
+
+    #[test]
+    fn inbox_keeps_reviews_i_owe_and_my_prs_awaiting_a_verdict_only() {
+        let mine = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
+        let to_review = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
+        assert!(ListTab::Inbox.accepts(&mine) && ListTab::Inbox.accepts(&to_review));
+
+        let mut approved_by_me = to_review.clone();
+        approved_by_me.my_review = Review::Approved;
+        assert!(!ListTab::Inbox.accepts(&approved_by_me));
+
+        let mut ready = mine.clone();
+        ready.review = Review::Approved;
+        ready.checks = Checks::Passing;
+        assert!(!ListTab::Inbox.accepts(&ready));
+
+        let mut draft = mine.clone();
+        draft.state = PrState::Draft;
+        assert!(!ListTab::Inbox.accepts(&draft));
     }
 
     #[test]

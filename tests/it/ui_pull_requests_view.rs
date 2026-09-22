@@ -58,6 +58,7 @@ fn pr(repo: &str, number: u64, title: &str, role: PrRole) -> PullRequest {
         updated_at: "2 days ago".to_owned(),
         checks: Checks::Passing,
         review: Review::Pending,
+        my_review: Review::None,
         reviewers: vec![Reviewer {
             name: "reviewer".to_owned(),
             state: Review::Pending,
@@ -306,13 +307,34 @@ fn rows_group_into_their_actionability_bands() {
 }
 
 #[test]
+fn the_inbox_hides_what_is_not_mine_to_act_on() {
+    let mut approved_by_me = pr("acme/web", 1, "Fix the login flow", PrRole::ToReview);
+    approved_by_me.my_review = Review::Approved;
+    let mut draft = pr("acme/api", 2, "Sketch the importer", PrRole::Mine);
+    draft.state = PrState::Draft;
+
+    let (mut harness, _) = harness(vec![approved_by_me, draft], None, 460.0);
+    assert!(harness.query_by_label("Fix the login flow").is_none());
+    assert!(harness.query_by_label("Sketch the importer").is_none());
+
+    // Under To review the PR I approved is back — filed with the author, not with me.
+    harness.get_by_label("To review").click();
+    harness.step();
+    harness.get_by_label("WAITING ON THE AUTHOR");
+    harness.get_by_label("Fix the login flow");
+    assert!(harness.query_by_label("WAITING ON YOUR REVIEW").is_none());
+}
+
+#[test]
 fn a_draft_and_a_red_build_fall_into_the_waiting_on_author_band() {
-    let mut draft = pr("acme/web", 1, "Sketch the importer", PrRole::Mine);
+    let mut draft = pr("acme/web", 1, "Sketch the importer", PrRole::ToReview);
     draft.state = PrState::Draft;
     let mut broken = pr("acme/api", 2, "Bump the cache TTL", PrRole::ToReview);
     broken.checks = Checks::Failing;
 
-    let (harness, _) = harness(vec![draft, broken], None, 460.0);
+    let (mut harness, _) = harness(vec![draft, broken], None, 460.0);
+    harness.get_by_label("To review").click();
+    harness.step();
     harness.get_by_label("WAITING ON THE AUTHOR");
     harness.get_by_label("Sketch the importer");
     harness.get_by_label("Bump the cache TTL");
@@ -325,6 +347,8 @@ fn an_approved_green_pr_is_ready_to_merge_and_offers_the_inline_button() {
     approved.checks = Checks::Passing;
 
     let (mut harness, cap) = harness(vec![approved], None, 460.0);
+    harness.get_by_label("Mine").click();
+    harness.step();
     harness.get_by_label("READY TO MERGE");
     harness.get_by_label("Merge").click();
     harness.step();

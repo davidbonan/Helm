@@ -433,6 +433,10 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
             });
         }
     }
+    let my_review = reviewers
+        .iter()
+        .find(|rv| !me.is_empty() && rv.name == me)
+        .map_or(Review::None, |rv| rv.state);
 
     let labels: Vec<String> = o["labels"]
         .as_array()
@@ -460,6 +464,7 @@ fn parse_pr(o: &Value, me: &str, repo_label: &str) -> Option<PullRequest> {
         updated_at: o["updatedAt"].as_str().unwrap_or_default().to_owned(),
         checks: aggregate_checks(&o["statusCheckRollup"]),
         review: map_review_decision(o["reviewDecision"].as_str().unwrap_or_default()),
+        my_review,
         reviewers,
         labels,
         // `gh pr list` returns these as scalars; Bitbucket has no equivalent (model §4).
@@ -687,6 +692,23 @@ mod tests {
         assert_eq!(detail.commits[0].author, "Alice Doe");
         // No display name → fall back to the login.
         assert_eq!(detail.commits[1].author, "bob");
+    }
+
+    #[test]
+    fn parse_pr_reads_my_own_verdict_off_the_latest_reviews() {
+        let value = json!({
+            "number": 5, "title": "T", "author": {"login": "bob"},
+            "headRefName": "f", "baseRefName": "main", "url": "u", "updatedAt": "",
+            "isDraft": false, "reviewDecision": "APPROVED",
+            "reviewRequests": [{"__typename": "User", "login": "alice"}],
+            "latestReviews": [{"author": {"login": "alice"}, "state": "APPROVED"}],
+            "statusCheckRollup": [], "labels": []
+        });
+        let pr = parse_pr(&value, "alice", "acme/web").unwrap();
+        assert_eq!(pr.my_review, Review::Approved);
+
+        let pr = parse_pr(&value, "bob", "acme/web").unwrap();
+        assert_eq!(pr.my_review, Review::None);
     }
 
     #[test]

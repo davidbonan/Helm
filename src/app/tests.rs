@@ -2996,6 +2996,7 @@ fn github_pr(repo: &str, number: u64) -> crate::pull_requests::model::PullReques
         updated_at: "today".to_owned(),
         checks: Checks::Passing,
         review: Review::Pending,
+        my_review: Review::None,
         reviewers: Vec::new(),
         labels: Vec::new(),
         diffstat: None,

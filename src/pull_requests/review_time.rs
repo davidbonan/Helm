@@ -182,6 +182,7 @@ mod tests {
             updated_at: String::new(),
             checks: Checks::None,
             review: Review::default(),
+            my_review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
             diffstat: None,

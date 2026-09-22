@@ -67,7 +67,7 @@ const DIFF_TOOLBAR_HEIGHT: f32 = 42.0;
 const COMMIT_SCOPE_W: f32 = 240.0;
 const THREAD_NAV_W: f32 = 168.0;
 
-const ROW_HEIGHT: f32 = 62.0;
+const ROW_HEIGHT: f32 = 72.0;
 const GROUP_HEADER_HEIGHT: f32 = 46.0;
 const PAD_X: f32 = 16.0;
 const PANEL_PAD_X: f32 = 18.0;
@@ -115,20 +115,23 @@ const TAB_PAD_X: f32 = 12.0;
 
 /// Row geometry for the browse list (pull-requests.md §5). The right-hand data
 /// cluster is laid out from the right edge; the title column takes what is left.
-const ROW_AVATAR: f32 = 26.0;
+const ROW_AVATAR: f32 = 32.0;
 const COL_COMMENTS_W: f32 = 50.0;
 const MERGE_BTN_W: f32 = 90.0;
 const MERGE_BTN_H: f32 = 28.0;
 const CARD_RADIUS: u8 = 10;
+/// The row's reviewer avatars: larger than the review detail's `REVIEWER_AVATAR`,
+/// since the list is read at arm's length and a verdict has to register at a glance.
+const ROW_REVIEWER_AVATAR: f32 = 28.0;
 /// Pitch of the row's reviewer cluster. Its own, not the review detail's tighter
 /// `REVIEWER_OVERLAP`: here each avatar also carries a verdict badge on the slice its
 /// neighbour laps, so the discs need to stand further apart to stay legible.
-const ROW_REVIEWER_STEP: f32 = 16.0;
+const ROW_REVIEWER_STEP: f32 = 24.0;
 /// Room the row reserves for the cluster: `REVIEWER_MAX` avatars plus the overflow
 /// disc. Fixed, so the clusters line up down the list however many reviewers a row has.
-const COL_REVIEWERS_W: f32 = REVIEWER_AVATAR + 3.0 * ROW_REVIEWER_STEP;
+const COL_REVIEWERS_W: f32 = ROW_REVIEWER_AVATAR + 3.0 * ROW_REVIEWER_STEP;
 /// Radius of the verdict badge riding a reviewer avatar's top-right corner.
-const VERDICT_BADGE_R: f32 = 5.0;
+const VERDICT_BADGE_R: f32 = 6.5;
 /// Reading measure of the list column: past this the rows stop being scannable, the
 /// eye having to travel from a title on the far left to its avatar on the far right.
 const LIST_MAX_WIDTH: f32 = 1280.0;
@@ -143,15 +146,15 @@ const ROW_GUTTER: f32 = 34.0;
 const STACK_BADGE: f32 = 19.0;
 const ROW_COL_GAP: f32 = 12.0;
 const ROW_PAD_R: f32 = 16.0;
-const LIST_TITLE_SIZE: f32 = 14.5;
-const KEY_SIZE: f32 = 12.0;
+const LIST_TITLE_SIZE: f32 = 15.5;
+const KEY_SIZE: f32 = 13.0;
 /// Half the pitch between a row's title and meta lines.
-const ROW_LINE_STEP: f32 = 9.5;
-/// Text scale of a row's second line and of the list's chips — its own step, half a
-/// point over the `CHIP_SIZE` / `COUNT_BADGE_SIZE` the review surface uses: the browse
-/// list is scanned at arm's length, not leant into like a diff.
-const LIST_META_SIZE: f32 = 12.5;
-const LIST_MONO_SIZE: f32 = 12.0;
+const ROW_LINE_STEP: f32 = 10.5;
+/// Text scale of a row's second line and of the list's chips — its own step, a point
+/// over the `CHIP_SIZE` / `COUNT_BADGE_SIZE` the review surface uses: the browse list
+/// is scanned at arm's length, not leant into like a diff.
+const LIST_META_SIZE: f32 = 13.0;
+const LIST_MONO_SIZE: f32 = 12.5;
 const REVIEWER_AVATAR: f32 = 22.0;
 const REVIEWER_OVERLAP: f32 = 8.0;
 const REVIEWER_MAX: usize = 3;
@@ -6379,7 +6382,7 @@ fn pr_row(
     let title_color = if quiet {
         palette.text_secondary
     } else {
-        palette.text_primary
+        palette.text_title()
     };
 
     row_gutter(ui, palette, rect, pr, stack);
@@ -6414,7 +6417,7 @@ fn pr_row(
     cell_text(
         ui,
         &pr.title,
-        egui::FontId::new(LIST_TITLE_SIZE, crate::theme::medium_family(ui.ctx())),
+        egui::FontId::proportional(LIST_TITLE_SIZE),
         title_color,
         x,
         title_y,
@@ -6603,23 +6606,25 @@ fn reviewer_cluster(
     let shown = ordered.len().min(REVIEWER_MAX);
     let hidden = ordered.len() - shown;
     let discs = shown + usize::from(hidden > 0);
-    let width = REVIEWER_AVATAR + (discs - 1) as f32 * ROW_REVIEWER_STEP;
-    let left = right - width + REVIEWER_AVATAR / 2.0;
+    let width = ROW_REVIEWER_AVATAR + (discs - 1) as f32 * ROW_REVIEWER_STEP;
+    let left = right - width + ROW_REVIEWER_AVATAR / 2.0;
     let at = |i: usize| egui::pos2(left + i as f32 * ROW_REVIEWER_STEP, center_y);
     // Left to right, so each disc laps the one before it the way the canvas draws it.
+    // A verdict rings the whole disc as well as badging it: the badge alone was too
+    // small a mark to tell an approval from a pending review down a list.
     for (i, reviewer) in ordered[..shown].iter().enumerate() {
         paint_avatar(
             ui.painter(),
             palette,
             &reviewer.name,
             at(i),
-            REVIEWER_AVATAR,
-            None,
+            ROW_REVIEWER_AVATAR,
+            verdict_color(palette, reviewer.state),
         );
     }
     if hidden > 0 {
         let center = at(shown);
-        let r = REVIEWER_AVATAR / 2.0;
+        let r = ROW_REVIEWER_AVATAR / 2.0;
         ui.painter()
             .circle_filled(center, r + 1.5, palette.bg_canvas);
         ui.painter()
@@ -6629,7 +6634,7 @@ fn reviewer_cluster(
             egui::Align2::CENTER_CENTER,
             format!("+{hidden}"),
             egui::FontId::new(
-                REVIEWER_AVATAR * 0.42,
+                ROW_REVIEWER_AVATAR * 0.42,
                 crate::theme::medium_family(ui.ctx()),
             ),
             palette.text_secondary,
@@ -6658,15 +6663,26 @@ fn reviewers_by_verdict(
     ordered
 }
 
-/// The small disc on a reviewer avatar's top-right saying where they stand. A reviewer
-/// who has not ruled yet wears none — an empty badge would read as a verdict.
+/// The color a reviewer's verdict paints — `None` while they have not ruled, so an
+/// undecided reviewer wears no ring and no badge (an empty mark would read as a verdict).
+fn verdict_color(palette: &Palette, state: Review) -> Option<egui::Color32> {
+    match state {
+        Review::Approved => Some(palette.git_added),
+        Review::ChangesRequested => Some(palette.git_deleted),
+        Review::Pending | Review::None => None,
+    }
+}
+
+/// The small disc on a reviewer avatar's top-right saying where they stand.
 fn verdict_badge(ui: &egui::Ui, palette: &Palette, state: Review, center: egui::Pos2) {
-    let (color, icon) = match state {
-        Review::Approved => (palette.git_added, Icon::Check),
-        Review::ChangesRequested => (palette.git_deleted, Icon::Minus),
-        Review::Pending | Review::None => return,
+    let Some(color) = verdict_color(palette, state) else {
+        return;
     };
-    let offset = REVIEWER_AVATAR / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
+    let icon = match state {
+        Review::ChangesRequested => Icon::Minus,
+        _ => Icon::Check,
+    };
+    let offset = ROW_REVIEWER_AVATAR / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
     let at = center + egui::vec2(offset, -offset);
     ui.painter()
         .circle_filled(at, VERDICT_BADGE_R + 1.2, palette.bg_canvas);
@@ -6934,22 +6950,19 @@ fn paint_avatar(
 ) {
     let r = diameter / 2.0;
     painter.circle_filled(center, r + 1.5, palette.bg_canvas);
-    let hash = name.bytes().fold(0usize, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(usize::from(byte))
-    });
-    painter.circle_filled(center, r, palette.lane_color(hash));
+    painter.circle_filled(center, r, palette.avatar_fill(name));
     let text = crate::ui::graph_view::initials(name);
     if !text.is_empty() {
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
             text,
-            egui::FontId::proportional(diameter * 0.42),
+            egui::FontId::new(diameter * 0.42, crate::theme::medium_family(painter.ctx())),
             palette.lane_node_text,
         );
     }
     if let Some(color) = ring {
-        painter.circle_stroke(center, r, egui::Stroke::new(1.5_f32, color));
+        painter.circle_stroke(center, r, egui::Stroke::new(2.0_f32, color));
     }
 }
 
@@ -6969,18 +6982,13 @@ fn reviewer_stack(
     let shown = reviewers.len().min(REVIEWER_MAX);
     let mut cx = col.min + REVIEWER_AVATAR / 2.0;
     for reviewer in &reviewers[..shown] {
-        let ring = match reviewer.state {
-            Review::Approved => Some(palette.git_added),
-            Review::ChangesRequested => Some(palette.git_deleted),
-            _ => None,
-        };
         paint_avatar(
             ui.painter(),
             palette,
             &reviewer.name,
             egui::pos2(cx, center_y),
             REVIEWER_AVATAR,
-            ring,
+            verdict_color(palette, reviewer.state),
         );
         cx += step;
     }
@@ -7073,6 +7081,7 @@ mod tests {
             updated_at: String::new(),
             checks,
             review,
+            my_review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
             diffstat: None,

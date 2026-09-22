@@ -18,8 +18,7 @@ const SNIPPET_NUM_SIZE: f32 = 11.5;
 const SNIPPET_NUM_CHAR_W: f32 = 7.0;
 
 /// Avatar dot: the author's initials (same rules as the graph bubble) on a
-/// stable color derived from the name — drawn from the lane palette, whose
-/// `lane_node_text` ink is already designed for this background.
+/// stable color derived from the name (`Palette::avatar_fill`).
 pub fn author_avatar(ui: &mut egui::Ui, palette: &Palette, author: &str) {
     avatar(ui, palette, author, AVATAR_SIZE, AVATAR_INITIALS_SIZE);
 }
@@ -70,10 +69,7 @@ fn paint_avatar(
     size: f32,
     initials_size: f32,
 ) {
-    let hash = author.bytes().fold(0usize, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(usize::from(byte))
-    });
-    painter.circle_filled(center, size / 2.0, muted_lane(palette.lane_color(hash)));
+    painter.circle_filled(center, size / 2.0, palette.avatar_fill(author));
     let text = initials(author);
     if !text.is_empty() {
         painter.text(
@@ -84,16 +80,6 @@ fn paint_avatar(
             palette.lane_node_text,
         );
     }
-}
-
-/// A calmer author dot: the lane colour pulled a quarter of the way toward its own grey,
-/// so the avatars sit on a muted detail panel without out-shouting the text (§11).
-fn muted_lane(color: egui::Color32) -> egui::Color32 {
-    const T: f32 = 0.25;
-    let [r, g, b, _] = color.to_array();
-    let grey = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
-    let mix = |c: u8| (f32::from(c) * (1.0 - T) + grey * T).round() as u8;
-    egui::Color32::from_rgb(mix(r), mix(g), mix(b))
 }
 
 /// A few lines of the code a comment was left on (pull-requests.md §5), as a compact

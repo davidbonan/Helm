@@ -1620,7 +1620,7 @@ fn fetch(
                                 match curl_get(&page_url, &header) {
                                     CurlResult::Ok(json) => {
                                         if let Ok(mut prs) =
-                                            bitbucket::parse_list(&json, &repo_label, role)
+                                            bitbucket::parse_list(&json, &repo_label, role, uuid)
                                         {
                                             rows.append(&mut prs);
                                         }
@@ -2009,6 +2009,7 @@ mod tests {
             updated_at: String::new(),
             checks: Checks::None,
             review: Review::None,
+            my_review: Review::None,
             reviewers: Vec::new(),
             labels: Vec::new(),
             diffstat: None,

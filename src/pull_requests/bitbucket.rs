@@ -141,10 +141,12 @@ pub fn parse_error_message(json: &str) -> Option<String> {
 
 /// Map a paginated `pullrequests` page onto domain PRs, all carrying `role` (the
 /// query already filtered by author/reviewer, so every entry concerns that role).
+/// `me_uuid` picks my own verdict out of each PR's participants.
 pub fn parse_list(
     json: &str,
     repo_label: &str,
     role: PrRole,
+    me_uuid: &str,
 ) -> serde_json::Result<Vec<PullRequest>> {
     let value: Value = serde_json::from_str(json)?;
     let prs = value["values"]
@@ -152,7 +154,7 @@ pub fn parse_list(
         .map(|items| {
             items
                 .iter()
-                .map(|item| parse_pr(item, repo_label, role))
+                .map(|item| parse_pr(item, repo_label, role, me_uuid))
                 .collect()
         })
         .unwrap_or_default();
@@ -287,7 +289,7 @@ pub fn next_page(json: &str) -> Option<String> {
 /// Map one PR object onto the domain. The reviewer roster and each reviewer's
 /// decision come from `participants` (requested via `fields`, see `role_filtered_url`);
 /// labels stay empty (Bitbucket has no PR labels).
-fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
+fn parse_pr(o: &Value, repo_label: &str, role: PrRole, me_uuid: &str) -> PullRequest {
     let state = if o["draft"].as_bool().unwrap_or(false) {
         PrState::Draft
     } else {
@@ -295,6 +297,7 @@ fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
     };
     let reviewers = parse_reviewers(o);
     let review = aggregate_review(&reviewers);
+    let my_review = my_participant_state(o, me_uuid);
 
     PullRequest {
         forge_kind: ForgeKind::Bitbucket,
@@ -330,6 +333,7 @@ fn parse_pr(o: &Value, repo_label: &str, role: PrRole) -> PullRequest {
         updated_at: o["updated_on"].as_str().unwrap_or_default().to_owned(),
         checks: Checks::None,
         review,
+        my_review,
         reviewers,
         labels: Vec::new(),
         // A ± tally would need one `diffstat` request per PR (model §4).
@@ -355,6 +359,18 @@ fn parse_reviewers(o: &Value) -> Vec<Reviewer> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// My own decision among the participants, matched on the account uuid (a display
+/// name is not unique); `None` when I am not a participant of the PR.
+fn my_participant_state(o: &Value, me_uuid: &str) -> Review {
+    o["participants"]
+        .as_array()
+        .and_then(|ps| {
+            ps.iter()
+                .find(|p| !me_uuid.is_empty() && p["user"]["uuid"].as_str() == Some(me_uuid))
+        })
+        .map_or(Review::None, map_participant_state)
 }
 
 /// One participant's review decision (`state`, with `approved` as a fallback).
@@ -542,7 +558,7 @@ mod tests {
     fn parse_list_maps_every_entry_under_the_query_role() {
         // The query already filtered by role, so nothing is dropped and every PR
         // carries the role passed in (here ToReview).
-        let prs = parse_list(LIST, "team/repo", PrRole::ToReview).unwrap();
+        let prs = parse_list(LIST, "team/repo", PrRole::ToReview, "{alice}").unwrap();
         assert_eq!(prs.len(), 3);
         assert!(prs.iter().all(|p| p.role == PrRole::ToReview));
 
@@ -559,13 +575,13 @@ mod tests {
             "https://bitbucket.org/team/repo/pull-requests/101"
         );
         // The same page mapped under Mine carries Mine throughout.
-        let mine = parse_list(LIST, "team/repo", PrRole::Mine).unwrap();
+        let mine = parse_list(LIST, "team/repo", PrRole::Mine, "{alice}").unwrap();
         assert!(mine.iter().all(|p| p.role == PrRole::Mine));
     }
 
     #[test]
     fn parse_list_reads_reviewers_and_review_from_participants() {
-        let prs = parse_list(LIST, "team/repo", PrRole::ToReview).unwrap();
+        let prs = parse_list(LIST, "team/repo", PrRole::ToReview, "{alice}").unwrap();
 
         // 101: Bob undecided + Carol approved ⇒ roster of two, decision Approved.
         assert_eq!(
@@ -591,6 +607,14 @@ mod tests {
         // 5: no participants ⇒ empty roster, no decision.
         assert!(prs[2].reviewers.is_empty());
         assert_eq!(prs[2].review, Review::None);
+    }
+
+    #[test]
+    fn parse_list_reads_my_verdict_off_my_participant_entry() {
+        let prs = parse_list(LIST, "team/repo", PrRole::ToReview, "{alice}").unwrap();
+        // 101: Alice is not a participant. 77: Alice requested changes.
+        assert_eq!(prs[0].my_review, Review::None);
+        assert_eq!(prs[1].my_review, Review::ChangesRequested);
     }
 
     #[test]
@@ -642,7 +666,7 @@ mod tests {
             "destination": {"branch": {"name": "main"}},
             "links": {"html": {"href": "u"}}, "updated_on": "", "draft": false
         });
-        let pr = parse_pr(&value, "team/repo", PrRole::Mine);
+        let pr = parse_pr(&value, "team/repo", PrRole::Mine, "{x}");
         assert!(pr.labels.is_empty());
     }
 

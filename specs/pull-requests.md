@@ -112,16 +112,22 @@ round was drawn on is French, but the label language is a frozen decision.
   divider, drops the outline, and carries how long ago the last fetch landed
   (*"· 2 min ago"*). No notification or theme chrome (the theme lives in
   Preferences).
-- **Tabs** — **Open · To review · Mine · Drafts** (`model::ListTab`), each with its
+- **Tabs** — **Inbox · To review · Mine · Drafts** (`model::ListTab`), each with its
   count in a pill (tinted on the open tab; a tab reading `0` is as much of an answer
-  as one reading `14`). Every fetched PR is open by construction (§1), so the tabs
-  are views over the same cache: no extra query, and **no Merged tab** (merged PRs
-  are out of the fetch's scope).
+  as one reading `14`). **Inbox** is the landing tab and carries only what the user
+  has to act on: the **Waiting on your review** band plus their own PRs still
+  **In review** — a PR they already approved, a draft, a red build or a ready-to-merge
+  one of theirs is noise there and lives under the role tabs. Every fetched PR is open
+  by construction (§1), so the tabs are views over the same cache: no extra query, and
+  **no Merged tab** (merged PRs are out of the fetch's scope).
 - **List**, grouped by **what each PR is waiting on** rather than by role or date
   (`model::ActionGroup`, in this order): **Waiting on your review** ·
   **Ready to merge** · **Waiting on the author** · **In review**. First match wins,
   so a PR blocked on its author never masquerades as reviewable and a review the
-  user still owes outranks an approval someone else already gave. Each band is a
+  user still owes outranks an approval someone else already gave. A PR the user has
+  **already approved** (`PullRequest::my_review`, read off their own review on GitHub
+  / their participant entry on Bitbucket) is off their plate: it files under **Waiting
+  on the author**, whatever the other reviewers have said. Each band is a
   colored section header (glyph + uppercase label + count pill + a rule out to the
   column edge) over the band's **blocks**. The whole list is centered in a reading
   column capped at 1280pt, and closes on a quiet **"End of list · N pull requests"**.
@@ -147,10 +153,12 @@ round was drawn on is French, but the label language is a frozen decision.
   *Review first* (the base of a stack), *Changes requested*, *Checks failing* /
   *running*, *Draft*, amber **blocks N** (`model::blocked_count`: how many listed PRs
   target this one's source branch) — then the **comment** tally and, on the right edge,
-  the **assigned reviewers**: overlapping avatars, each badged with where it stands
-  (green check approved, red minus changes requested; a reviewer who has not ruled
-  wears none, an empty badge being itself a verdict), the rest collapsing into a `+N`
-  disc. Verdicts are ordered first, changes-requested leading, so the reviewer standing
+  the **assigned reviewers**: overlapping avatars, each ringed and badged in the color
+  of where it stands (green check approved, red minus changes requested; a reviewer who
+  has not ruled wears neither, an empty mark being itself a verdict), the rest
+  collapsing into a `+N` disc. The list's avatars — author and reviewers — run larger
+  than the review detail's, with medium-weight initials: the list is read at arm's
+  length and *whose* PR this is has to register before the title does. Verdicts are ordered first, changes-requested leading, so the reviewer standing
   in the way is never the one that falls behind the overflow. The cluster is
   right-aligned in a fixed slot, so the clusters line up down the list. In
   **Ready to merge** an inline **Merge** button precedes them.

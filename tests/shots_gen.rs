@@ -2203,6 +2203,7 @@ fn gen_pr_list() {
         updated_at: "2026-06-20T10:00:00Z".to_owned(),
         checks,
         review,
+        my_review: Review::None,
         reviewers,
         labels: Vec::new(),
         diffstat: Some((number as u32 * 3, number as u32)),
@@ -2263,7 +2264,10 @@ fn gen_pr_list() {
             PrState::Open,
             Checks::Passing,
             Review::Pending,
-            vec![reviewer("octocat", Review::Pending)],
+            vec![
+                reviewer("octocat", Review::Pending),
+                reviewer("Noé Martin", Review::Approved),
+            ],
         ),
         mk(
             "acme/api",
@@ -2371,10 +2375,17 @@ fn gen_pr_files() {
         updated_at: "2026-06-20T10:00:00Z".to_owned(),
         checks: Checks::Passing,
         review: Review::Pending,
-        reviewers: vec![Reviewer {
-            name: "Camille Rey".to_owned(),
-            state: Review::Pending,
-        }],
+        my_review: Review::None,
+        reviewers: vec![
+            Reviewer {
+                name: "Camille Rey".to_owned(),
+                state: Review::Pending,
+            },
+            Reviewer {
+                name: "Noé Martin".to_owned(),
+                state: Review::Approved,
+            },
+        ],
         labels: Vec::new(),
         diffstat: Some((142, 38)),
         comment_count: None,
@@ -2589,6 +2600,7 @@ fn gen_pr_detail() {
         updated_at: "2026-06-24T08:00:00Z".to_owned(),
         checks: Checks::Passing,
         review: Review::Pending,
+        my_review: Review::None,
         reviewers: vec![
             Reviewer {
                 name: "octocat".to_owned(),

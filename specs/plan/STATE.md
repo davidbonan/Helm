@@ -6,6 +6,28 @@
 
 ---
 
+## ☑ Milestone — M-Inbox · PR list legibility + Inbox tab
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5. Per the user: rows and
+avatars too small to tell the author / an approval at a glance; PRs already approved
+shown as still owed; landing tab too noisy. Counter: **3/3**.
+
+- ☑ **T1 — `my_review`.** `PullRequest::my_review` (my own verdict — GitHub
+  `latestReviews` by login, Bitbucket participant by uuid; `parse_list` takes
+  `me_uuid`). `ActionGroup::of`: `ToReview` + `my_review == Approved` ⇒ **Waiting on
+  the author**. *Tests*: 1 model + 1 github + 1 bitbucket unit.
+- ☑ **T2 — Inbox tab.** `ListTab::Open` → `Inbox` (default): **Waiting on your
+  review** + my PRs **In review** only; the rest under To review / Mine / Drafts.
+  *Tests*: 1 model unit + 1 UI e2e (`the_inbox_hides_what_is_not_mine_to_act_on`),
+  2 UI e2e retargeted to the role tabs.
+- ☑ **T3 — Row legibility.** Row 62→72 pt, title 14.5→15.5, meta 12.5→13, author
+  avatar 26→32, reviewer avatars 22→28 (`ROW_REVIEWER_AVATAR`, step 24), verdict
+  badge r 5→6.5 + verdict-colored ring, medium-weight initials on every avatar,
+  `Palette::avatar_fill` (lane color ×0.68) so the initials read on the disc.
+  *Verified*: `gen_pr_list` shot.
+
+---
+
 ## ☑ Milestone — M-Jump · `Cmd+J` to the first finished agent
 
 Spec: [`specs/keybindings.md`](../keybindings.md) §1, §5, §6,
