@@ -1,5 +1,15 @@
 # Release notes
 
+## 2.7.0
+
+- The pull requests list opens on **Inbox**: only what needs you — PRs waiting on
+  your review, plus your own still in review. Drafts, red builds, changes
+  requested and ready-to-merge stay under the role tabs.
+- A PR you already approved moves to **Waiting on the author** — merging is their
+  move, not yours.
+- Bigger, more legible rows: taller lines, larger avatars, readable initials, and
+  a review verdict badge with a verdict-colored ring you can actually spot.
+
 ## 2.6.0
 
 - `Cmd+J` jumps straight to the first agent that has finished — the top green row
@@ -91,28 +101,3 @@
 - `helm run` works again from the installed `helm` command: the symlink in
   `/usr/local/bin` was read as an unbundled build, so every `helm run …`
   answered "helm is not running" while the app was listening on another socket.
-
-## 2.2.0
-
-- Ask helm from the terminal whether a dev server is already running:
-  `helm run status` answers for the worktree you are standing in — state, port,
-  command — and `helm run list` covers every worktree helm knows. `start` /
-  `stop` / `relaunch` drive the Run strip without touching the window, and
-  `helm run logs -n 40` tails what the server printed, so a stack trace is one
-  command away. Every one of them takes `--json`.
-- `helm init claude` teaches Claude Code those commands in one shot: the rules
-  land in `~/.claude/HELM.md`, linked from your `CLAUDE.md`. Your agent then asks
-  helm before spawning a second server on a port nobody assigned it — and reuses
-  the one already running, in the strip where you can watch it. Re-run it after
-  an update to refresh the rules.
-- The Agents wall comes in four pages: a set of terminals you arranged stays
-  arranged when you need another pair, and the four-terminal cap counts per page.
-  The pager rides the title row instead of a row of its own, which hands 30px of
-  header back to the wall.
-- Pull requests open on a redesigned browse list: stacks carry a numbered spine
-  and their own foldable header, the author's avatar leads beside the state, the
-  assigned reviewers sit on the right edge, and CI and ± fold into the row's
-  flags rather than holding always-blank columns.
-- A two-finger swipe to the right leaves a review and goes straight back to the
-  list.
-
