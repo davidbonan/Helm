@@ -15,10 +15,13 @@ pub fn oldest_notes_fragment() -> String {
         .rsplit("\n## ")
         .next()
         .expect("a bundled version section");
-    let last = oldest
+    // Longest line of the last bullet, not its last line: a wrapped bullet can end
+    // on a stub ("list.") that several other notes also end on.
+    let last_bullet = oldest.rfind("\n- ").map_or(oldest, |at| &oldest[at + 1..]);
+    let last = last_bullet
         .lines()
         .map(str::trim)
-        .rfind(|line| !line.is_empty())
+        .max_by_key(|line| line.len())
         .expect("a non-empty line in the oldest section");
     let text = last.strip_prefix("- ").unwrap_or(last);
     // Inline markdown (emphasis, code) renders as its own node: the longest run
