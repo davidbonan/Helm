@@ -153,7 +153,11 @@ label at the top of the left sidebar (mirroring the Projects section above the
 repository list) or via `Cmd+Ctrl+0` ([`keybindings.md`](keybindings.md) §1),
 shown **once the workspace has a project** — hidden on the
 first-launch empty state, where no agent can run; the entry carries the
-workspace-wide max badge (accent spinner = working, green dot = a finished turn). Opening it sets
+workspace-wide max badge (accent spinner = working, green dot = a finished turn). Under the
+entry, one indented **child row per `Done` agent** (`branch · tab`, in workspace order):
+clicking one focuses that pane, and `Cmd+J` ([`keybindings.md`](keybindings.md) §1) focuses the
+**first** of them — focusing acknowledges the green, so the row drops and the next press
+reaches the following finished agent. Opening it sets
 the central area to the dashboard while the **project sidebar stays** (the entry
 highlighted); the per-repo git panel is **hidden** (the view is cross-repo).
 

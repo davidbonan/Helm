@@ -906,28 +906,75 @@ fn app_with(names: &[&str]) -> HelmApp {
     HelmApp::with_workspace(workspace_with(names))
 }
 
+/// One agent entry as the agent watch rebuilds it each tick: pane `pane` of repo
+/// `repo`'s first tab.
+fn agent_entry(
+    app: &HelmApp,
+    repo: usize,
+    pane: u32,
+    (agent, badge): (&'static str, AgentBadge),
+) -> crate::app::git_session::AgentEntry {
+    let (repo_key, tab_id) = key_of(&app.workspace, repo, 0);
+    crate::app::git_session::AgentEntry {
+        repo_key,
+        group_name: app.workspace.repo(repo).unwrap().name.clone(),
+        branch: Some("main".to_owned()),
+        tab_id,
+        tab_name: format!("Tab {}", pane + 1),
+        pane_id: PaneId(pane),
+        agent,
+        badge,
+        last_output_ms: 0,
+        done_at_ms: (badge == AgentBadge::Done).then_some(0),
+    }
+}
+
 /// Agents dashboard fixture: `agent` entries on the first repo's first tab, one per
-/// pane id, in the order given. Mirrors what the agent watch rebuilds each tick.
+/// pane id, in the order given.
 fn app_with_agents(agents: &[(&'static str, AgentBadge)]) -> HelmApp {
     let mut app = app_with(&["a"]);
-    let (repo_key, tab_id) = key_of(&app.workspace, 0, 0);
     app.caches.agents = agents
         .iter()
         .enumerate()
-        .map(|(i, (agent, badge))| crate::app::git_session::AgentEntry {
-            repo_key: repo_key.clone(),
-            group_name: "a".to_owned(),
-            branch: Some("main".to_owned()),
-            tab_id,
-            tab_name: format!("Tab {}", i + 1),
-            pane_id: PaneId(i as u32),
-            agent,
-            badge: *badge,
-            last_output_ms: 0,
-            done_at_ms: (*badge == AgentBadge::Done).then_some(0),
-        })
+        .map(|(i, agent)| agent_entry(&app, 0, i as u32, *agent))
         .collect();
     app
+}
+
+#[test]
+fn cmd_j_focuses_the_first_finished_agent_in_workspace_order() {
+    let mut app = app_with(&["a", "b"]);
+    app.caches.agents = vec![
+        agent_entry(&app, 0, 0, ("claude", AgentBadge::Idle)),
+        agent_entry(&app, 1, 0, ("codex", AgentBadge::Done)),
+        agent_entry(&app, 0, 1, ("claude", AgentBadge::Done)),
+    ];
+    app.central_mode = CentralMode::Agents;
+    let ctx = egui::Context::default();
+
+    app.focus_first_finished_agent(&ctx);
+
+    assert_eq!(
+        app.workspace.active(),
+        Some(1),
+        "the Idle agent is skipped: the first Done one lives in repo b"
+    );
+    assert_eq!(app.central_mode, CentralMode::Terminal);
+}
+
+#[test]
+fn cmd_j_is_a_no_op_without_a_finished_agent() {
+    let mut app = app_with_agents(&[("claude", AgentBadge::Idle), ("codex", AgentBadge::Working)]);
+    app.central_mode = CentralMode::Agents;
+    let ctx = egui::Context::default();
+
+    app.focus_first_finished_agent(&ctx);
+
+    assert_eq!(
+        app.central_mode,
+        CentralMode::Agents,
+        "nothing to jump to: the view stays"
+    );
 }
 
 fn agent_keys(app: &HelmApp) -> Vec<(RepoKey, TabId, PaneId)> {

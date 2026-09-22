@@ -1148,6 +1148,7 @@ fn action_description(action: Action) -> &'static str {
         Action::ClearTerminal => "Clear the focused terminal's screen",
         Action::Commit => "Commit the staged changes",
         Action::Run => "Run the active project, or relaunch it if already running",
+        Action::FocusFinishedAgent => "Jump to the first finished agent listed under Agents",
     }
 }
 

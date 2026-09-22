@@ -48,10 +48,11 @@ pub enum Action {
     ClearTerminal,
     Commit,
     Run,
+    FocusFinishedAgent,
 }
 
 impl Action {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::OpenFolder,
         Self::NewTab,
         Self::TogglePreferences,
@@ -77,6 +78,7 @@ impl Action {
         Self::ClearTerminal,
         Self::Commit,
         Self::Run,
+        Self::FocusFinishedAgent,
     ];
 
     pub fn id(self) -> &'static str {
@@ -106,6 +108,7 @@ impl Action {
             Self::ClearTerminal => "clear-terminal",
             Self::Commit => "commit",
             Self::Run => "run",
+            Self::FocusFinishedAgent => "focus-finished-agent",
         }
     }
 
@@ -142,6 +145,7 @@ impl Action {
             Self::ClearTerminal => "Clear terminal",
             Self::Commit => "Commit",
             Self::Run => "Run / Relaunch",
+            Self::FocusFinishedAgent => "Focus finished agent",
         }
     }
 
@@ -155,7 +159,8 @@ impl Action {
             | Self::ToggleGraph
             | Self::NextRepo
             | Self::PrevRepo
-            | Self::Run => Group::Global,
+            | Self::Run
+            | Self::FocusFinishedAgent => Group::Global,
             Self::SplitRight
             | Self::SplitDown
             | Self::ClosePane
@@ -204,6 +209,7 @@ impl Action {
             Self::ClearTerminal => Shortcut::cmd(Key::K),
             Self::Commit => Shortcut::cmd(Key::Enter),
             Self::Run => Shortcut::cmd(Key::R),
+            Self::FocusFinishedAgent => Shortcut::cmd(Key::J),
         }
     }
 }

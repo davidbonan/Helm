@@ -6,6 +6,19 @@
 
 ---
 
+## ☑ Milestone — M-Jump · `Cmd+J` to the first finished agent
+
+Spec: [`specs/keybindings.md`](../keybindings.md) §1, §5, §6,
+[`specs/agents.md`](../agents.md) §5. Per the user: one keystroke to the first green
+child row under Agents; no-op when none. Counter: **1/1**.
+
+- ☑ **T1 — Rebindable `focus-finished-agent`.** `Action::FocusFinishedAgent` (Global,
+  default `Cmd+J`) → `HelmApp::focus_first_finished_agent` reuses `focus_agent` on the
+  first `Done` entry of `caches.agents`; `⌘J` badge on that row alone while Cmd is
+  held. *Tests*: 2 app unit + 1 UI e2e (sidebar badge).
+
+---
+
 ## ☑ Milestone — M-Time · Review time per PR
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §8, §12,

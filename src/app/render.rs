@@ -404,6 +404,21 @@ impl HelmApp {
         ctx.request_repaint();
     }
 
+    /// `Cmd+J` (keybindings §1): jumps to the first `Done` agent in workspace order —
+    /// the top child row under the sidebar's Agents entry. Focusing acknowledges its
+    /// green, so repeated presses walk the finished agents one by one. No-op when
+    /// none has finished.
+    pub(super) fn focus_first_finished_agent(&mut self, ctx: &egui::Context) {
+        let first_done = self
+            .caches
+            .agents
+            .iter()
+            .position(|e| e.badge == crate::agent_watch::AgentBadge::Done);
+        if let Some(index) = first_done {
+            self.focus_agent(index, ctx);
+        }
+    }
+
     /// Validates `selected_agent` against the freshly-rebuilt agent list and, when
     /// unset or stale (its tab/pane closed), auto-selects the most urgent agent
     /// (Working > Done > Idle, ties by workspace order) so the dashboard opens on
@@ -492,6 +507,9 @@ impl HelmApp {
         // dashboard and its sidebar entry do not exist (agents.md §5).
         if !self.workspace.is_empty() && open_agents_pressed(ctx) {
             self.central_mode = CentralMode::Agents;
+        }
+        if action_pressed(ctx, &self.keymap, Action::FocusFinishedAgent) {
+            self.focus_first_finished_agent(ctx);
         }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);

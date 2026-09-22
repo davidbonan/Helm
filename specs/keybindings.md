@@ -1,3 +1,6 @@
+| Global | `focus-finished-agent` | `Cmd+J` |
+| First `Done` child row under the **Agents** entry (left sidebar) | `⌘J` (for `Cmd+J`) — on that row alone, the following finished rows carry none |
+| `Cmd+J` | **Focus the first finished agent**: jumps to the pane of the top `Done` child row under the Agents entry ([`agents.md`](agents.md) §5). Focusing acknowledges its green, so repeated presses walk the finished agents in sidebar order. No-op when none has finished |
 # helm — Keyboard shortcuts
 
 Single source for shortcuts (macOS). The other specs reference this file
@@ -101,7 +104,7 @@ helm has a single **active zone** that receives the keyboard, chosen on click:
 terminal pane, left sidebar, right sidebar or commit field. The selection
 of shortcuts depends on this zone.
 
-- **Global** (`Cmd+O`, `Cmd+1..9`, `Cmd+Ctrl+0`, `Cmd+Ctrl+1..9`, `Ctrl+Tab`/`Ctrl+Shift+Tab`,
+- **Global** (`Cmd+O`, `Cmd+1..9`, `Cmd+Ctrl+0`, `Cmd+J`, `Cmd+Ctrl+1..9`, `Ctrl+Tab`/`Ctrl+Shift+Tab`,
   `Cmd+T`, `Cmd+,`, `Cmd+B`, `Cmd+G`, `Cmd+Shift+G`, `Cmd+R`):
   active whatever the active zone; `Cmd+1..9` (tabs) and `Cmd+Ctrl+1..9`
   (repos) take precedence over any terminal use of the same combinations.

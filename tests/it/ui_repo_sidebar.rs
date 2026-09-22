@@ -453,6 +453,35 @@ fn done_agents_listed_under_the_agents_entry_and_clickable() {
 }
 
 #[test]
+fn holding_cmd_badges_only_the_first_done_row_with_the_jump_shortcut() {
+    let rows = vec![
+        DoneAgentRow {
+            index: 3,
+            branch: Some("feat/login".to_owned()),
+            tab: "claude".to_owned(),
+        },
+        DoneAgentRow {
+            index: 7,
+            branch: None,
+            tab: "shell".to_owned(),
+        },
+    ];
+    let mut harness = done_agents_harness(rows);
+    harness.run();
+    assert!(
+        harness.query_by_label("⌘J").is_none(),
+        "the jump badge stays hidden until Cmd is held"
+    );
+
+    harness.input_mut().modifiers.command = true;
+    harness.input_mut().modifiers.mac_cmd = true;
+    harness.run();
+
+    // `get_by_label` fails on zero or several matches: exactly one row wears it.
+    harness.get_by_label("⌘J");
+}
+
+#[test]
 fn no_done_child_rows_when_the_list_is_empty() {
     let mut harness = done_agents_harness(vec![]);
     harness.run();

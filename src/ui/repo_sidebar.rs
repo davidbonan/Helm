@@ -346,8 +346,17 @@ pub fn repo_sidebar(
         ui.push_id("agents_entry", |ui| {
             agents_entry(ui, palette, agents_badge, agents_active, cmd_digits, out);
         });
-        for row in done_agents {
-            agent_child_row(ui, palette, row, out);
+        // Only the first Done row is one keystroke away (keybindings §1, §5): the
+        // badge sits on it alone, in the same right column as the ⌃⌘N repo badges.
+        let jump_badge = keymap
+            .shortcut_for(Action::FocusFinishedAgent)
+            .filter(|_| cmd_held)
+            .map(|s| s.display());
+        for (position, row) in done_agents.iter().enumerate() {
+            let badge = jump_badge.as_deref().filter(|_| position == 0);
+            ui.push_id(("done_agent", row.index), |ui| {
+                agent_child_row(ui, palette, row, badge, out);
+            });
         }
         pull_requests_entry(ui, palette, pr_to_review, pr_active, out);
     }
@@ -737,19 +746,7 @@ fn agents_entry(
         color,
     );
     if cmd_held {
-        let mut shortcut = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(egui::Rect::from_min_max(
-                    egui::pos2(rect.right() - ROW_PAD_X - BADGE_COL_W, rect.top()),
-                    egui::pos2(rect.right() - ROW_PAD_X, rect.bottom()),
-                ))
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        );
-        shortcut.label(
-            egui::RichText::new("⌃⌘0")
-                .size(SHORTCUT_BADGE_SIZE)
-                .color(palette.text_muted),
-        );
+        paint_shortcut_badge(ui, palette, rect, "⌃⌘0");
     } else {
         let dot_center = egui::pos2(
             rect.right() - ROW_PAD_X - AGENT_DOT_RADIUS - 2.0,
@@ -860,6 +857,7 @@ fn agent_child_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &DoneAgentRow,
+    shortcut_badge: Option<&str>,
     out: &mut SidebarAction,
 ) {
     let width = ui.available_width();
@@ -872,7 +870,12 @@ fn agent_child_row(
     paint_done_dot(ui, dot_center, AGENT_DOT_RADIUS, palette.git_added);
 
     let label_left = icon_left + ICON_SIZE + ICON_GAP;
-    let label_avail = (rect.right() - ROW_PAD_X - label_left).max(0.0);
+    let badge_w = if shortcut_badge.is_some() {
+        BADGE_COL_W
+    } else {
+        0.0
+    };
+    let label_avail = (rect.right() - ROW_PAD_X - badge_w - label_left).max(0.0);
     let text = match &row.branch {
         Some(branch) => format!("{branch} · {}", row.tab),
         None => row.tab.clone(),
@@ -895,10 +898,31 @@ fn agent_child_row(
         galley,
         palette.text_secondary,
     );
+    if let Some(badge) = shortcut_badge {
+        paint_shortcut_badge(ui, palette, rect, badge);
+    }
 
     if response.clicked() {
         out.focus_agent = Some(row.index);
     }
+}
+
+/// Shortcut hint in a Helm row's right column (keybindings §5), the same slot the
+/// ⌃⌘N repo badges use.
+fn paint_shortcut_badge(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, text: &str) {
+    let mut shortcut = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(
+                egui::pos2(rect.right() - ROW_PAD_X - BADGE_COL_W, rect.top()),
+                egui::pos2(rect.right() - ROW_PAD_X, rect.bottom()),
+            ))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    shortcut.label(
+        egui::RichText::new(text)
+            .size(SHORTCUT_BADGE_SIZE)
+            .color(palette.text_muted),
+    );
 }
 
 /// Insertion indicator drawn during a drag: an accent line at the top edge of the
