@@ -1,5 +1,14 @@
 # Release notes
 
+## 2.5.0
+
+- The PR review surface keeps track of how long you have spent on each pull
+  request: a quiet clock readout in the header, in minutes only, counts while the
+  PR is on screen and the window is focused, and picks up where it left off when
+  you come back. Totals survive restarts.
+- `helm pr time` (or `--json`) lists every PR you have reviewed with the time spent,
+  most recent first — with helm open or closed.
+
 ## 2.4.3
 
 - The diff shows *what* changed inside a line, not just that the line changed:
@@ -112,21 +121,3 @@
 - The strip is one row that scrolls sideways now, so it keeps the same height
   whether one agent runs or twenty and the wall keeps the rest of the window.
   Scroll into a project and its header stays pinned on the left.
-
-## 2.1.0
-
-- A pull request's Files tab is one continuous scroll now: every file's diff
-  stacks in a single column and the rail becomes its table of contents instead
-  of a second list. Each file opens on a full-bleed header strip, and a hunk's
-  actions sit on a hairline rather than inside a card.
-- Descriptions and comments render like the forge renders them: GFM tables come
-  out as tables, images are drawn in place — fetched off the UI thread, cached,
-  and openable full-surface with zoom and pan — and columns take the width their
-  content asks for.
-- The conversation reads as one page: prose held at its measure, the Reviewers /
-  Checks / Labels rail one gutter to the right, and body text at full contrast —
-  in dark mode everything not bold used to read as disabled.
-- `Esc` steps out one stage at a time — composer, file, list, then the cockpit —
-  instead of closing everything from anywhere.
-- Links open where you click them in the prose, and Bitbucket repo images load
-  instead of failing with a 401.
