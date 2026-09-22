@@ -2472,11 +2472,9 @@ impl HelmApp {
     /// names the URL, the app is what reaches outside (pull-requests.md §11).
     fn open_markdown_links(&mut self, ctx: &egui::Context) {
         let clicked: Vec<String> = ctx.data_mut(|d| {
-            d.get_temp_mut_or_default::<Vec<String>>(
+            std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(
                 crate::ui::pull_requests_view::md_link_clicked_id(),
-            )
-            .drain(..)
-            .collect()
+            ))
         });
         let now = ctx.input(|i| i.time);
         for url in clicked {
@@ -2500,11 +2498,9 @@ impl HelmApp {
         };
         let forge_kind = review.pr.forge_kind;
         let wanted: Vec<String> = ctx.data_mut(|d| {
-            d.get_temp_mut_or_default::<Vec<String>>(
+            std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(
                 crate::ui::pull_requests_view::md_image_wanted_id(),
-            )
-            .drain(..)
-            .collect()
+            ))
         });
         if wanted.is_empty() {
             return;
