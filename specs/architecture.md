@@ -108,6 +108,7 @@ Two thread-lifetime families, both deliberate (review finding 15):
 |---------|----------|-----|
 | Git worker (`git::worker`) | **Joined** on `Drop` (closing the command channel ends the loop) | Owns the `git2::Repository`; a clean exit point exists |
 | Agent watcher (`agent_watch::watcher`) | **Joined** on `Drop`; spawned with the first pane, dropped with the last | Holds `dup`s of the PTY master fds: none may outlive the panes |
+| Phone server (`remote::server`) | Accept thread **joined** on `Drop`; connection threads **detached**, they see the stop flag within 100 ms | A phone that stops reading must not block the UI's stop |
 | PTY readers (`terminal::emu`) | **Detached** at drop; exit on PTY EOF | A `setsid` survivor still holding the slave would block the join — and the UI thread with it |
 | One-shot runners — `ai::AiRunner`, `git::worker::SyncRunner`, `git::worktree::DeleteRunner`, `update::UpdateRunner`, `pull_requests::PrRunner` | **Detached**, one thread per request | Abandoning the session/repo lets the subprocess finish on its own; the late reply is discarded |
 
@@ -160,6 +161,7 @@ Decided (overview.md §4). Runtime foundation in `Cargo.toml`: `eframe`/`egui`,
 | `directories` | macOS paths (Application Support) |
 | `crossbeam-channel` | UI ⇄ worker channels (git, PTY) |
 | `libc` | libproc binding (`proc_pidinfo`): current `cwd` of a pane inherited on split (terminal.md §2) |
+| `tungstenite` + `httparse` | Phone access server: WebSocket framing + HTTP request heads over `std::net` ([`remote.md`](remote.md) §4) |
 
 `git2` is compiled **`default-features = false`**: no https/ssh transport —
 push/pull/fetch are out of MVP (git.md §1), so neither `openssl` nor `libssh2`

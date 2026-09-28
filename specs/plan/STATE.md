@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **3/6**.
+phone. Counter: **4/6**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -30,10 +30,12 @@ phone. Counter: **3/6**.
   2 h injected), `remote::address` (`getifaddrs`, private IPv4, `en0` first),
   `remote::awake::KeepAwake` (`NSActivityUserInitiated`). *Tests*: 11 unit + 1
   business e2e (`pmset` lists the assertion, gone on drop). spec §3, §5.
-- ☐ **T4 — Server.** `tiny_http` + `tungstenite`, thread per connection, bound to
-  the LAN address; `/pair`, `/`, `/ws`; protocol of spec §6; remote registry;
-  agents-only exposure, `writable`. *Tests*: business e2e on `127.0.0.1` (pair →
-  `agents` → `send` reaches the PTY; plain shell never listed).
+- ☑ **T4 — Server.** `remote::server` (`std::net` + `httparse` + `tungstenite`,
+  thread per connection, LAN bind, idle + address stop, `KeepAwake` held),
+  `remote::http`, `remote::socket` (read timeout ⇄ push ≤ 10/s), `remote::protocol`,
+  `remote::registry` (agents only, `writable`); `PaneHandle`, `ReadingsView`.
+  Placeholder assets. *Tests*: 4 unit + 3 business e2e (pair → cookie; unpaired →
+  401; agents only + `send` reaches the PTY).
 - ☐ **T5 — Phone page.** Embedded `index.html`/`app.js`/`app.css`: agents list,
   terminal mirror (`<pre>`, h-scroll, pinch-zoom, A−/A+, history), composer, quick
   keys, reconnect on `visibilitychange`. *Verified*: manual iPhone Safari (spec §8).

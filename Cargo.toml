@@ -56,6 +56,11 @@ serde = { version = "1.0", features = ["derive"] }
 # update::check: parsing the GitHub Releases API response (update.md §4).
 serde_json = "1.0"
 toml = "1.1"
+# Phone access (specs/remote.md §4): WebSocket framing over a plain `TcpStream`
+# (sync, a thread per connection like the rest of helm), handshake only — no
+# TLS. httparse reads the few HTTP requests the server answers.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+httparse = "1"
 # macOS path ~/Library/Application Support/helm (architecture §4).
 directories = "6.0"
 lucide-icons = "1.17"

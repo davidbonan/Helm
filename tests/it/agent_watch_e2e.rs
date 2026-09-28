@@ -16,7 +16,7 @@ use helm::agent_watch::AgentBadge;
 use helm::terminal::pane::Pane;
 use portable_pty::CommandBuilder;
 
-fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
+pub(crate) fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if predicate() {
@@ -27,19 +27,24 @@ fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
     predicate()
 }
 
-fn teardown(mut pane: Pane) {
+pub(crate) fn teardown(mut pane: Pane) {
     pane.child().kill().unwrap();
     pane.child().wait().unwrap();
     pane.join();
 }
 
 fn fake_agent_named(dir: &Path, name: &str) -> PathBuf {
-    let src = dir.join("agent.c");
-    std::fs::write(
-        &src,
+    compile_agent(
+        dir,
+        name,
         "#include <unistd.h>\nint main(void){pause();return 0;}\n",
     )
-    .unwrap();
+}
+
+/// A binary named `name` compiled from the C `source`.
+pub(crate) fn compile_agent(dir: &Path, name: &str, source: &str) -> PathBuf {
+    let src = dir.join("agent.c");
+    std::fs::write(&src, source).unwrap();
     let bin = dir.join(name);
     let status = std::process::Command::new("cc")
         .arg("-o")

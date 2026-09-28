@@ -87,10 +87,24 @@ impl AgentWatcher {
         }
     }
 
+    pub fn view(&self) -> ReadingsView {
+        ReadingsView(Arc::clone(&self.readings))
+    }
+
     /// The readings, when their generation differs from `generation`.
     pub fn changed_since(&self, generation: u64) -> Option<Readings> {
         let readings = lock(&self.readings);
         (readings.generation != generation).then(|| readings.clone())
+    }
+}
+
+/// The published readings from another thread (the phone server).
+#[derive(Clone)]
+pub struct ReadingsView(Arc<Mutex<Readings>>);
+
+impl ReadingsView {
+    pub fn get(&self, uid: PaneUid) -> Option<PaneReading> {
+        lock(&self.0).panes.get(&uid).copied()
     }
 }
 

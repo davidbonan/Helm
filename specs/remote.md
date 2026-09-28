@@ -91,9 +91,11 @@ moves to a **watcher thread** (refactor, first task):
   `Arc<PaneActivity>` clones, keyed by an opaque id minted at registration. The UI
   registers a pane when it opens and unregisters it when it drops; exposure is
   filtered by the watcher's badge.
-- **Server**: `tiny_http` + `tungstenite`, one thread per connection — the
-  threads-and-channels model of the rest of helm (architecture §3), no async
-  runtime. Assets (`index.html`, `app.js`, `app.css`) embedded with
+- **Server**: `std::net` + `httparse` for the three HTTP routes, `tungstenite`
+  for the WebSocket, one thread per connection — the threads-and-channels model
+  of the rest of helm (architecture §3), no async runtime. Not `tiny_http`: its
+  upgrade hides the `TcpStream` behind a `Box<dyn ReadWrite>`, so one thread
+  could not both read the phone (read timeout) and push frames. Assets (`index.html`, `app.js`, `app.css`) embedded with
   `include_str!`; nothing loaded from a CDN.
 
 Phone input goes through `Pane`'s write path semantics: bytes stamp
@@ -118,7 +120,7 @@ Server → phone:
 |--------|---------|------|
 | `agents` | `[{id, project, branch, tab, agent, badge}]` | on connect, then on change (watcher tick) |
 | `screen` | `{id, cols, rows, lines, cursor, writable}` | watched pane, on change, ≤ 10 /s |
-| `history` | `{id, before, lines}` | reply to `history` |
+| `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
 
 `lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
