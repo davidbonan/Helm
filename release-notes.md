@@ -1,5 +1,15 @@
 # Release notes
 
+## 2.8.0
+
+- `Cmd+P` opens the **command palette**: reach the actions spread across
+  the sidebar, git toolbar and context menus by typing, no mouse. Commands
+  that don't apply to the current worktree are hidden.
+- Sub-screens for **Running servers** (stop any live Run strip, across
+  projects), **Stashes** and **Checkout branch**; `Esc` goes back.
+- On an empty query, your last command and most used ones lead the list
+  under **Recent**.
+
 ## 2.7.0
 
 - The pull requests list opens on **Inbox**: only what needs you — PRs waiting on
@@ -95,9 +105,3 @@
   backs it for the Dingbats, where Claude Code takes its spinner.
 - The Pull Requests header stands on the page instead of over it: the tab
   baseline alone separates it from the list.
-
-## 2.2.1
-
-- `helm run` works again from the installed `helm` command: the symlink in
-  `/usr/local/bin` was read as an unbundled build, so every `helm run …`
-  answered "helm is not running" while the app was listening on another socket.
