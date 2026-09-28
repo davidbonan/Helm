@@ -1,6 +1,6 @@
 # Release notes
 
-## 3.0.0
+## 3.0.1
 
 - **Open on phone** (command palette): scan the QR code with your
   phone on the same Wi-Fi to follow your agents from anywhere in the house —
