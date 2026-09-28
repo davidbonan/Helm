@@ -2832,6 +2832,10 @@ impl HelmApp {
             self.render_command_palette(ui, &palette, ctx);
             return;
         }
+        if matches!(self.modal, Some(Modal::PhoneAccess)) {
+            self.render_phone_access_modal(ui, &palette, ctx);
+            return;
+        }
         if matches!(self.modal, Some(Modal::WhatsNew)) {
             if crate::ui::release_notes::modal(ui, &mut self.commonmark_cache) {
                 self.modal = None;
@@ -2930,6 +2934,7 @@ impl HelmApp {
                 | Modal::AiRebaseReport(_)
                 | Modal::Feedback(_)
                 | Modal::CommandPalette(_)
+                | Modal::PhoneAccess
                 | Modal::WhatsNew => {
                     unreachable!("handled above")
                 }
@@ -3064,6 +3069,7 @@ impl HelmApp {
                         | Modal::AiRebaseReport(_)
                         | Modal::Feedback(_)
                         | Modal::CommandPalette(_)
+                        | Modal::PhoneAccess
                         | Modal::WhatsNew,
                     )
                     | None => {}

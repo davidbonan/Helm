@@ -14,6 +14,8 @@
 
 use crate::terminal::activity::ActivitySnapshot;
 
+pub mod watcher;
+
 /// Recognized agent binaries (compared against the process `p_comm`, and
 /// against the script path for agents launched via an interpreter).
 pub const WATCHLIST: &[&str] = &["claude", "codex", "opencode", "gemini", "aider", "amp"];

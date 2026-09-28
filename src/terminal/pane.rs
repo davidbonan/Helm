@@ -12,7 +12,7 @@ use crate::terminal::emu::{
     lock_writer, resize_term, Emulator, PtyWriter, ReplyListener, SharedTerm,
 };
 use crate::terminal::palette::TermPalette;
-use crate::terminal::pty::Pty;
+use crate::terminal::pty::{PgidProbe, Pty};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CursorPos {
@@ -22,8 +22,27 @@ pub struct CursorPos {
 
 type OnChange = Arc<dyn Fn() + Send + Sync>;
 
+/// Process-wide identity of a pane, stable across the moves that re-key the app's
+/// maps (worktree rename, tab reorder): what the agent watcher tracks.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PaneUid(u64);
+
+impl PaneUid {
+    /// The opaque value a remote client addresses the pane by.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub struct Pane {
+    uid: PaneUid,
     pty: Pty,
+    pgid_probe: Arc<PgidProbe>,
     emu: Emulator,
     writer: PtyWriter,
     cwd: PathBuf,
@@ -92,6 +111,8 @@ impl Pane {
             callback(&on_change, &activity, &visible),
         );
         Ok(Self {
+            uid: PaneUid::mint(),
+            pgid_probe: Arc::new(pty.pgid_probe()?),
             pty,
             emu,
             writer,
@@ -113,11 +134,7 @@ impl Pane {
     }
 
     pub fn feed(&self, bytes: &[u8]) -> Result<()> {
-        self.activity.stamp_input(now_ms());
-        let mut writer = lock_writer(&self.writer);
-        writer.write_all(bytes)?;
-        writer.flush()?;
-        Ok(())
+        write_input(&self.writer, &self.activity, bytes)
     }
 
     pub fn input(&self, bytes: &[u8]) -> Result<()> {
@@ -125,12 +142,14 @@ impl Pane {
     }
 
     pub fn paste(&self, text: &str) -> Result<()> {
-        if bracketed_paste(&self.emu.term().lock()) {
-            self.feed(b"\x1b[200~")?;
-            self.feed(text.as_bytes())?;
-            self.feed(b"\x1b[201~")
-        } else {
-            self.feed(text.as_bytes())
+        paste_input(self.emu.term(), &self.writer, &self.activity, text)
+    }
+
+    pub fn handle(&self) -> PaneHandle {
+        PaneHandle {
+            term: Arc::clone(self.emu.term()),
+            writer: Arc::clone(&self.writer),
+            activity: Arc::clone(&self.activity),
         }
     }
 
@@ -180,6 +199,18 @@ impl Pane {
 
     pub fn activity(&self) -> &PaneActivity {
         &self.activity
+    }
+
+    pub fn uid(&self) -> PaneUid {
+        self.uid
+    }
+
+    pub fn shared_activity(&self) -> Arc<PaneActivity> {
+        Arc::clone(&self.activity)
+    }
+
+    pub fn shared_pgid_probe(&self) -> Arc<PgidProbe> {
+        Arc::clone(&self.pgid_probe)
     }
 
     /// The shell process id (PTY child), used to read its live cwd (terminal.md §12).
@@ -249,6 +280,52 @@ impl Pane {
 
     pub fn join(&mut self) {
         self.emu.join();
+    }
+}
+
+/// A pane's grid and input for another thread (the phone server, specs/remote.md
+/// §4): the Mac keyboard's write path, so a reply stamps the activity alike.
+#[derive(Clone)]
+pub struct PaneHandle {
+    term: SharedTerm,
+    writer: PtyWriter,
+    activity: Arc<PaneActivity>,
+}
+
+impl PaneHandle {
+    pub fn grid(&self) -> &SharedTerm {
+        &self.term
+    }
+
+    pub fn feed(&self, bytes: &[u8]) -> Result<()> {
+        write_input(&self.writer, &self.activity, bytes)
+    }
+
+    pub fn paste(&self, text: &str) -> Result<()> {
+        paste_input(&self.term, &self.writer, &self.activity, text)
+    }
+}
+
+fn write_input(writer: &PtyWriter, activity: &PaneActivity, bytes: &[u8]) -> Result<()> {
+    activity.stamp_input(now_ms());
+    let mut writer = lock_writer(writer);
+    writer.write_all(bytes)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn paste_input(
+    term: &SharedTerm,
+    writer: &PtyWriter,
+    activity: &PaneActivity,
+    text: &str,
+) -> Result<()> {
+    if bracketed_paste(&term.lock()) {
+        write_input(writer, activity, b"\x1b[200~")?;
+        write_input(writer, activity, text.as_bytes())?;
+        write_input(writer, activity, b"\x1b[201~")
+    } else {
+        write_input(writer, activity, text.as_bytes())
     }
 }
 

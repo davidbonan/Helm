@@ -28,6 +28,8 @@ pub enum Command {
     CopyPath,
     PullRequests,
     Agents,
+    OpenOnPhone,
+    StopPhoneAccess,
     ToggleTheme,
     SendFeedback,
     WhatsNew,
@@ -35,7 +37,7 @@ pub enum Command {
 
 impl Command {
     /// Listing order on the `Commands` screen.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 24] = [
         Self::SwitchTo,
         Self::RunningServers,
         Self::RunServer,
@@ -55,6 +57,8 @@ impl Command {
         Self::CopyPath,
         Self::PullRequests,
         Self::Agents,
+        Self::OpenOnPhone,
+        Self::StopPhoneAccess,
         Self::ToggleTheme,
         Self::SendFeedback,
         Self::WhatsNew,
@@ -82,6 +86,8 @@ impl Command {
             Self::CopyPath => "copy-path",
             Self::PullRequests => "pull-requests",
             Self::Agents => "agents",
+            Self::OpenOnPhone => "open-on-phone",
+            Self::StopPhoneAccess => "stop-phone-access",
             Self::ToggleTheme => "toggle-theme",
             Self::SendFeedback => "send-feedback",
             Self::WhatsNew => "whats-new",
@@ -109,6 +115,8 @@ impl Command {
             Self::CopyPath => "Copy path",
             Self::PullRequests => Screen::PullRequests.title(),
             Self::Agents => Screen::Agents.title(),
+            Self::OpenOnPhone => "Open on phone",
+            Self::StopPhoneAccess => "Stop phone access",
             Self::ToggleTheme => "Toggle light / dark theme",
             Self::SendFeedback => "Send feedback…",
             Self::WhatsNew => "What\u{2019}s new",

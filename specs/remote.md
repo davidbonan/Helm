@@ -1,0 +1,193 @@
+# helm — Phone access (follow and drive agents from a phone on the LAN)
+
+From the couch, the user follows the agents running in helm and keeps a session
+going: read what the agent printed, type the next instruction, answer a
+permission prompt. Phone browser only (iPhone Safari), same local network, no app
+to install. Module: `remote` (+ `agent_watch` off the UI thread, §4).
+
+## 1. Intent & scope
+
+| In | Out (§10) |
+|----|-----------|
+| List of the agents helm detects, with their badge | Creating a terminal / launching an agent from the phone |
+| Mirror of one agent's terminal screen (+ scrollback) | Conversation view (transcript-based) |
+| Sending an instruction, quick keys for prompts | Non-agent terminals (plain shells, Run strips) |
+| Works with the Mac locked / helm hidden | HTTPS, Tailscale, push notifications |
+
+**Agents only**: a pane is exposed while `agent_watch` sees an agent in its
+foreground (badge ≠ `None`, [`agents.md`](agents.md) §2). The phone never reaches
+a plain shell: the attack surface is the agents, not the Mac.
+
+## 2. Entry point — command palette only
+
+Two palette commands ([`keybindings.md`](keybindings.md) §6), one visible at a time:
+
+| Command | Available when | Effect |
+|---------|----------------|--------|
+| **Open on phone** | access off | Starts access (§3) and opens the **pairing modal** |
+| **Open on phone** | access on | Reopens the pairing modal (same token) |
+| **Stop phone access** | access on | Stops access (§3) |
+
+Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
+access is on — anyone with this code can type into your agents*, the connected
+device count, and a **Stop** button. No sidebar indicator: the palette is the only
+surface (user decision); the modal says plainly that access is live.
+
+## 3. Access lifecycle & security
+
+**Start**: pick the LAN address (§3.1), mint a token, bind the server, begin the
+no-sleep activity (§5). **Stop**, on whichever comes first: *Stop phone access*,
+**2 h** with no connected client, the LAN address disappearing, helm quitting.
+Stop closes every connection, frees the port, ends the no-sleep activity, and
+forgets the token.
+
+### 3.1 Address
+First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
+`getifaddrs`, `en0` preferred. The server binds **that address only** (never
+`0.0.0.0`: no exposure on a VPN or a second interface), port chosen by the OS.
+None found ⇒ the command fails with *No local network*.
+
+### 3.2 Token & session
+- **Token**: 128 random bits (`arc4random_buf`), hex. **New on every start**: a
+  phone paired before is out after a stop, and must rescan.
+- **Pairing URL** (QR): `http://<ip>:<port>/pair?t=<token>`. A valid token is
+  exchanged for a cookie `helm_session=<token>; HttpOnly; SameSite=Strict; Path=/`
+  and a `303` to `/` — the token leaves the address bar and the history.
+- Every other request needs the cookie (constant-time compare), else `401`. The
+  WebSocket upgrade also requires `Origin == http://<ip>:<port>`.
+
+### 3.3 Accepted risk
+Plain HTTP: the cookie travels in clear on the Wi-Fi. Acceptable on a home
+network, not on a shared one. The pairing modal states it; §10 lists the
+upgrade paths.
+
+## 4. Architecture — nothing waits on the UI thread
+
+**Constraint**: macOS gives a hidden or minimized app no draw callback, so
+`update` never runs (measured, [`cli.md`](cli.md) §9, `ipc.rs` `REPLY_TIMEOUT`).
+The control socket parks requests for the UI thread; the phone cannot — it must
+work precisely when helm is out of sight.
+
+Today `HelmApp::update_agent_watch` ticks the agent state on the UI thread. It
+moves to a **watcher thread** (refactor, first task):
+
+```
+[UI] --register/unregister pane, focus--> [agent watcher, 1 s tick] --snapshot--> [UI]
+                                                    |                              (reads)
+                                                    +--snapshot--> [remote server]
+[remote server] --reads grid (lock)--> [Term grid] <--feeds-- [PTY reader]
+[remote server] --paste / key bytes--> [PtyWriter]
+```
+
+- **Watcher thread** owns the per-pane `PaneAgentState` and ticks every second
+  with the same pure state machine ([`agents.md`](agents.md) §3). Per pane it
+  holds shareable handles only: `Arc<PaneActivity>`, a **pgid probe** (a `dup` of
+  the PTY master fd, `tcgetpgrp` on it — independent of the `Pane`'s lifetime),
+  the labels (project, branch, tab) the UI refreshes. The UI sends the focused
+  pane (acknowledging a green, §1 of agents.md) and reads the published snapshot
+  each frame; badges, dashboard, `Cmd+J`, and completion notifications keep their
+  behaviour.
+- **Remote registry**: per exposed pane, `SharedTerm` + `PtyWriter` +
+  `Arc<PaneActivity>` clones, keyed by an opaque id minted at registration. The UI
+  registers a pane when it opens and unregisters it when it drops; exposure is
+  filtered by the watcher's badge.
+- **Server**: `std::net` + `httparse` for the three HTTP routes, `tungstenite`
+  for the WebSocket, one thread per connection — the threads-and-channels model
+  of the rest of helm (architecture §3), no async runtime. Not `tiny_http`: its
+  upgrade hides the `TcpStream` behind a `Box<dyn ReadWrite>`, so one thread
+  could not both read the phone (read timeout) and push frames. Assets (`index.html`, `app.js`, `app.css`) embedded with
+  `include_str!`; nothing loaded from a CDN.
+
+Phone input goes through `Pane`'s write path semantics: bytes stamp
+`PaneActivity` input, so replying from the phone **acknowledges** a green exactly
+like typing on the Mac.
+
+## 5. Keeping the Mac reachable
+
+While access is on, helm holds an `NSProcessInfo` activity
+(`NSActivityUserInitiated`: idle **system** sleep disabled, App Nap off); the
+**display** may sleep and the screen may lock. Ended at stop. A lid closed on
+battery still sleeps — accepted (§9).
+
+## 6. Wire protocol
+
+HTTP: `GET /pair`, `GET /` (+ assets), `GET /ws` (upgrade). Everything else runs
+on the WebSocket, one JSON object per text frame.
+
+Server → phone:
+
+| `type` | Payload | When |
+|--------|---------|------|
+| `agents` | `[{id, project, branch, tab, agent, badge}]` | on connect, then on change (watcher tick) |
+| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable}` | watched pane, on change, ≤ 10 /s; `fg`/`bg` = the palette's own, what a blank cell shows |
+| `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
+| `ended` | `{id}` | watched pane dropped |
+
+`lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
+resolved to `#rrggbb` through the pane's `TermPalette`, dim and inverse already
+folded into the colors, trailing blanks dropped (`terminal::screen`).
+`writable = false` once no agent is in the foreground: the screen stays readable,
+input is refused (§1, agents only).
+
+Phone → server:
+
+| `type` | Payload | Effect |
+|--------|---------|--------|
+| `watch` | `{id}` | start mirroring this pane (one per connection) |
+| `send` | `{id, text}` | `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
+| `key` | `{id, key}` | one quick key (§7), encoded like the Mac keyboard |
+| `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
+
+Change detection: the server snapshots the watched grid every 100 ms under the
+short lock and sends only when the screen differs from the last frame sent. A
+`send`/`key` to an id that is not exposed or not writable is dropped.
+
+## 7. Phone UI
+
+Mobile-first, dark/light following the system, a single page:
+
+- **Agents**: rows grouped by project — agent name, branch · tab, badge (same
+  semantics and colors as the sidebar, [`design-system.md`](design-system.md)).
+  Tap ⇒ terminal view. Empty ⇒ *No agent running in helm*.
+- **Terminal**: the screen in a monospace `<pre>` at the pane's **own width** —
+  horizontal scroll and native pinch-zoom (user decision: no reflow, no resize of
+  the Mac's PTY); A−/A+ font size. Scrolling up past the top requests `history`.
+  Sticks to the bottom while new output arrives, unless the user scrolled up.
+- **Composer** (bottom, above the keyboard): multi-line field + **Send**
+  (`send`); empty text + Send = Enter alone.
+- **Quick keys** row: `Esc` · `1` · `2` · `3` · `↑` · `↓` · `⇥` · `⇧⇥` · `^C` ·
+  `⏎` — enough to answer Claude Code's permission menus and switch its mode.
+  Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
+  `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
+- **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
+  suspends background tabs), reconnect and re-`watch`; a `401` shows *Access
+  stopped — scan the QR code again*.
+
+## 8. Testing
+
+| Level | What |
+|-------|------|
+| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; token/cookie/`Origin` checks; idle-stop clock (injected); address pick over fixture interfaces; quick-key → bytes |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed |
+| UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count |
+| Manual | iPhone Safari on the LAN: pair, follow a live Claude Code turn, answer a permission prompt, lock the Mac 10 min then resume |
+
+## 9. Accepted limitations
+
+- Plain HTTP on the LAN (§3.3).
+- Wide screens read by scrolling/zooming: a ~200-column Claude Code screen is
+  cramped in portrait, comfortable in landscape.
+- Scrollback read while the agent keeps printing drifts by the lines scrolled
+  in meanwhile (history is addressed by grid line); back at the bottom, it resets.
+- No notification on the phone: the user opens the page to check.
+- Mac asleep (lid closed on battery, manual sleep) ⇒ unreachable until wake.
+- One LAN address: moving the Mac to another network stops access.
+
+## 10. Out of scope (possible follow-ups)
+
+- **New terminal + agent from the phone** — dropped by the user.
+- **Conversation view** from Claude Code's session transcript (bubbles, native
+  mobile reading), mapped to a pane through a `SessionStart` hook.
+- **HTTPS / Tailscale** (encrypted, off-LAN, prerequisite for Web Push).
+- **Push notifications** on agent completion.
+- **Fit to phone**: temporarily resizing the PTY to the phone's width.

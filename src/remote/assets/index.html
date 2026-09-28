@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#19222D" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<title>helm</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <section id="agents-view" class="view">
+    <header class="bar">
+      <h1>Agents</h1>
+      <span id="link" class="link" hidden>Reconnecting…</span>
+    </header>
+    <main id="agents" class="list"></main>
+  </section>
+
+  <section id="terminal-view" class="view" hidden>
+    <header class="bar">
+      <button id="back" class="back" type="button" aria-label="Back to agents">‹</button>
+      <div class="title">
+        <div id="term-title" class="name"></div>
+        <div id="term-subtitle" class="sub"></div>
+      </div>
+      <span id="term-badge"></span>
+      <div class="zoom">
+        <button id="font-down" type="button" aria-label="Smaller text">A−</button>
+        <button id="font-up" type="button" aria-label="Larger text">A+</button>
+      </div>
+    </header>
+    <div id="notice" class="notice" hidden></div>
+    <div id="scroller" class="scroller">
+      <pre id="history" class="grid"></pre><pre id="screen" class="grid"></pre>
+    </div>
+    <footer class="dock">
+      <div id="keys" class="keys">
+        <button type="button" data-key="escape">Esc</button>
+        <button type="button" data-key="1">1</button>
+        <button type="button" data-key="2">2</button>
+        <button type="button" data-key="3">3</button>
+        <button type="button" data-key="up" aria-label="Up">↑</button>
+        <button type="button" data-key="down" aria-label="Down">↓</button>
+        <button type="button" data-key="tab" aria-label="Tab">⇥</button>
+        <button type="button" data-key="backtab" aria-label="Shift Tab">⇧⇥</button>
+        <button type="button" data-key="ctrl_c" aria-label="Control C">^C</button>
+        <button type="button" data-key="enter" aria-label="Enter">⏎</button>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="prompt" rows="1" placeholder="Reply to the agent…" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </footer>
+  </section>
+
+  <section id="expired-view" class="view expired" hidden>
+    <h1>Access stopped</h1>
+    <p>Scan the QR code again from helm on your Mac.</p>
+  </section>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -11,6 +11,11 @@ impl Rgb {
     const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
+
+    /// `#rrggbb`, for a client that draws the grid itself (specs/remote.md §6).
+    pub fn to_hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
 }
 
 const DIM_INK_PERCENT: u16 = 55;

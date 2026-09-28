@@ -22,6 +22,7 @@ UI locked on `eframe`/`egui` (overview §4). Dependencies in place (`eframe`,
 - `specs/preferences.md` — full-window Preferences page: left nav + settings cards.
 - `specs/update.md` — distribution (.app bundle, GitHub releases) + integrated app update.
 - `specs/cli.md` — `helm <path>` + the `helm://` scheme: opening a project/worktree from outside, single instance.
+- `specs/remote.md` — phone access on the LAN: QR pairing, agents list, terminal mirror, composer + quick keys.
 - `specs/keybindings.md` — complete keybinding reference.
 - `specs/design-system.md` — tokens (colors / typography / spacing) + components.
 

@@ -4,16 +4,19 @@
 //! `/bin/cat` does not work (AMFI kills copies of arm64e platform binaries) and
 //! a shebang script takes the comm of its interpreter.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helm::agent_watch::probe;
+use helm::agent_watch::watcher::{AgentWatcher, PaneReading, WatchedPane};
+use helm::agent_watch::AgentBadge;
 use helm::terminal::pane::Pane;
 use portable_pty::CommandBuilder;
 
-fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
+pub(crate) fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if predicate() {
@@ -24,19 +27,24 @@ fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
     predicate()
 }
 
-fn teardown(mut pane: Pane) {
+pub(crate) fn teardown(mut pane: Pane) {
     pane.child().kill().unwrap();
     pane.child().wait().unwrap();
     pane.join();
 }
 
 fn fake_agent_named(dir: &Path, name: &str) -> PathBuf {
-    let src = dir.join("agent.c");
-    std::fs::write(
-        &src,
+    compile_agent(
+        dir,
+        name,
         "#include <unistd.h>\nint main(void){pause();return 0;}\n",
     )
-    .unwrap();
+}
+
+/// A binary named `name` compiled from the C `source`.
+pub(crate) fn compile_agent(dir: &Path, name: &str, source: &str) -> PathBuf {
+    let src = dir.join("agent.c");
+    std::fs::write(&src, source).unwrap();
     let bin = dir.join(name);
     let status = std::process::Command::new("cc")
         .arg("-o")
@@ -207,4 +215,50 @@ fn output_without_recent_input_is_stamped_as_spontaneous() {
 
     teardown(pane);
     assert!(stamped, "output with no input around is spontaneous");
+}
+
+fn reading_of(watcher: &AgentWatcher, pane: &Pane) -> Option<PaneReading> {
+    watcher.changed_since(0)?.panes.get(&pane.uid()).copied()
+}
+
+#[test]
+fn the_watcher_reads_an_agent_without_any_ui_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_agent(tmp.path());
+    let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
+    let watcher = AgentWatcher::spawn(|| {});
+    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+
+    let idle_agent = PaneReading {
+        agent: Some("claude"),
+        badge: AgentBadge::Idle,
+    };
+    let read = wait_until(|| reading_of(&watcher, &pane) == Some(idle_agent));
+
+    drop(watcher);
+    teardown(pane);
+    assert!(
+        read,
+        "the watcher thread alone should probe and tick the pane (specs/remote.md §4)"
+    );
+}
+
+#[test]
+fn an_untracked_pane_leaves_the_readings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_agent(tmp.path());
+    let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
+    let watcher = AgentWatcher::spawn(|| {});
+    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+    assert!(wait_until(|| reading_of(&watcher, &pane).is_some()));
+
+    watcher.track(Vec::new(), HashSet::new());
+    let gone = wait_until(|| reading_of(&watcher, &pane).is_none());
+
+    drop(watcher);
+    teardown(pane);
+    assert!(
+        gone,
+        "a pane the UI dropped must not linger in the readings"
+    );
 }

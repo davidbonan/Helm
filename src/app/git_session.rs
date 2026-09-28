@@ -71,9 +71,6 @@ pub(crate) struct RepoCaches {
     /// shared by every tab of that worktree. Spawned on demand by the Run button,
     /// dropped (killing its tree) on Stop or when the worktree leaves the workspace.
     pub(crate) run_panes: HashMap<RepoKey, TerminalState>,
-    /// Per-pane agent state machine (specs/agents.md), ticked at the poll cadence;
-    /// keys aligned on `panes`, pruned at tick.
-    pub(crate) agent_watch: HashMap<(PaneKey, PaneId), PaneAgentState>,
     /// Aggregated badge per repo (sidebar), recomputed at tick.
     pub(crate) agent_badges: HashMap<RepoKey, AgentBadge>,
     /// Flat list of agents across every repo (cross-repo dashboard), rebuilt at
@@ -136,8 +133,6 @@ impl RepoCaches {
             .collect();
         self.panes.retain(|key, _| live_tabs.contains(key));
         self.run_panes.retain(|key, _| self.keys.contains(key));
-        self.agent_watch
-            .retain(|(key, _), _| live_tabs.contains(key));
         self.agent_badges.retain(|key, _| self.keys.contains(key));
         self.branch_labels.retain(|key, _| self.keys.contains(key));
         self.dirty.retain(|key, _| self.keys.contains(key));
@@ -160,10 +155,6 @@ impl RepoCaches {
         self.panes = std::mem::take(&mut self.panes)
             .into_iter()
             .map(|((repo, tab), panes)| ((swap(repo), tab), panes))
-            .collect();
-        self.agent_watch = std::mem::take(&mut self.agent_watch)
-            .into_iter()
-            .map(|(((repo, tab), pane), state)| (((swap(repo), tab), pane), state))
             .collect();
         carry(&mut self.run_panes, from, to);
         carry(&mut self.agent_badges, from, to);

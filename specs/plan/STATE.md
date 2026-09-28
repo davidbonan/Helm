@@ -6,6 +6,57 @@
 
 ---
 
+## ☑ Milestone — M-Phone · Follow and drive agents from a phone on the LAN
+
+Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
+start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
+Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
+phone. Counter: **6/6**.
+
+- ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
+  `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
+  (`tcgetpgrp`); UI registers/unregisters panes, sends the focused pane, reads the
+  snapshot. Parity: badges, dashboard, `Cmd+J`, completion notifications.
+  *Tests*: 2 business e2e (watcher reads a fake agent with no UI frame; an
+  untracked pane leaves the readings) + 1 app unit (live agent → sidebar badge).
+  spec §4.
+- ☑ **T2 — Screen snapshot + shared key table.** `terminal::screen`: live grid →
+  rows of runs (colors via `TermPalette`, dim/inverse folded, bold/italic/underline,
+  cursor), `history` pages; `terminal::keys` (domain `Key`/`Mods` + table),
+  `ui::terminal_view::key_bytes` adapts egui. *Tests*: 6 + 3 unit (3 moved). spec
+  §6, §7.
+- ☑ **T3 — Access domain.** `remote::access` (`Token` 128-bit per start,
+  constant-time match, `Access` pairing URL / cookie / `Origin` checks, `IdleClock`
+  2 h injected), `remote::address` (`getifaddrs`, private IPv4, `en0` first),
+  `remote::awake::KeepAwake` (`NSActivityUserInitiated`). *Tests*: 11 unit + 1
+  business e2e (`pmset` lists the assertion, gone on drop). spec §3, §5.
+- ☑ **T4 — Server.** `remote::server` (`std::net` + `httparse` + `tungstenite`,
+  thread per connection, LAN bind, idle + address stop, `KeepAwake` held),
+  `remote::http`, `remote::socket` (read timeout ⇄ push ≤ 10/s), `remote::protocol`,
+  `remote::registry` (agents only, `writable`); `PaneHandle`, `ReadingsView`.
+  Placeholder assets. *Tests*: 4 unit + 3 business e2e (pair → cookie; unpaired →
+  401; agents only + `send` reaches the PTY).
+- ☑ **T5 — Phone page.** Embedded `index.html`/`app.js`/`app.css` (design-system
+  tokens, light/dark): agents list, terminal mirror (`<pre>`, h-scroll, pinch-zoom,
+  A−/A+, history paging), composer, quick keys, reconnect on `visibilitychange`,
+  *Access stopped* on 401; `screen` carries the palette `fg`/`bg`. *Verified*:
+  Chrome iPhone emulation over CDP against a live server — list, mirror, `send` +
+  quick key reach the PTY, light + dark shots in `verify-artifacts/20260928-123314-phone-page/`.
+- ☑ **T6 — Palette entry + pairing modal.** `Command::{OpenOnPhone,StopPhoneAccess}`;
+  `app::phone_access` (start on the LAN, adopt, publish panes at the agent poll,
+  self-stop noticed + toast); `ui::phone_access_modal` (QR via `remote::qr`, URL,
+  Copy link, warning, device count, Stop). *Tests*: 2 UI e2e + 1 app unit.
+  *Verified*: headless-verify `verify-artifacts/20260928_124024_31308/` (real LAN
+  bind, port reachable while on, freed after Stop).
+
+### Next actions (M-Phone)
+
+- ☐ **Live iPhone Safari.** The page was driven in Chrome's iPhone emulation only:
+  pair on a real iPhone, follow a Claude Code turn, answer a permission prompt, lock
+  the Mac 10 min then resume (spec §8 manual).
+
+---
+
 ## ☑ Milestone — M-Palette · `Cmd+P` command palette
 
 Spec: [`specs/keybindings.md`](../keybindings.md) §1, §6. Per the user: curated
