@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.1.0
+
+- A worktree's right-click menu can now delete it **together with its branch**:
+  *Delete worktree and local branch*, or *… and local + remote branch* (also
+  removed from the remote it tracks). Nothing is touched if the remote refuses.
+
 ## 3.0.1
 
 - **Open on phone** (command palette): scan the QR code with your
@@ -84,25 +90,3 @@
   fully landed — no blank in between.
 - File diffs of a review are computed by a small pool, the file you are on
   first, rather than one thread per file.
-
-## 2.3.0
-
-- Annotating a diff now sends. `Enter` still queues the note for the batch;
-  **⌘↩** — and the editor's **Send review** button — validate it *and* hand the
-  whole batch to the agent, without the detour through the recap pill. A review
-  comment destined for GitHub / Bitbucket never leaves on a keystroke: it is
-  posted publicly on submit, so it keeps `Enter` alone.
-- Every comment surface of a review now reads as one object — the note editor,
-  the reply editor, the inline threads and the Conversation blocks all wear the
-  same shape: the text, a rule, and an action bar carrying each control with its
-  own shortcut beside it.
-- An inline thread is **one block**: the comment, its replies nested on a rail,
-  and a single bar for the whole thread — instead of a card per comment with the
-  Reply and Resolve buttons floating underneath. Answering replaces the bar in
-  place rather than splitting the thread in two.
-- A **resolved** thread folds to a single line — the tally and the first words —
-  and opens when you ask it to, so what is settled no longer pushes the code
-  apart.
-- Comment cards no longer run off the right edge on a file with long lines: they
-  were as wide as the longest line in the diff, which put **Resolve** and **Send
-  review** past the window, out of reach.
