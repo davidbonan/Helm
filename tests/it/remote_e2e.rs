@@ -108,9 +108,6 @@ impl Fixture {
     fn connect(&self, cookie: &str) -> WebSocket<TcpStream> {
         let host = self.origin().trim_start_matches("http://").to_owned();
         let stream = TcpStream::connect(&host).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
         let mut request = format!("ws://{host}/ws").into_client_request().unwrap();
         request
             .headers_mut()
@@ -118,7 +115,12 @@ impl Fixture {
         request
             .headers_mut()
             .insert("Origin", self.origin().parse().unwrap());
-        tungstenite::client::client(request, stream).unwrap().0
+        let ws = tungstenite::client::client(request, stream).unwrap().0;
+        // Polling timeout set after the handshake: a loaded CI runner answers the upgrade late.
+        ws.get_ref()
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        ws
     }
 
     fn close(self) {
