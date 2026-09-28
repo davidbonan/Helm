@@ -149,9 +149,13 @@ Mobile-first, dark/light following the system, a single page:
 - **Agents**: rows grouped by project — agent name, branch · tab, badge (same
   semantics and colors as the sidebar, [`design-system.md`](design-system.md)).
   Tap ⇒ terminal view. Empty ⇒ *No agent running in helm*.
-- **Terminal**: the screen in a monospace `<pre>` at the pane's **own width** —
-  horizontal scroll and native pinch-zoom (user decision: no reflow, no resize of
-  the Mac's PTY); A−/A+ font size. Scrolling up past the top requests `history`.
+- **Terminal**: the screen in a monospace `<pre>` at the pane's **own width** (user
+  decision: no reflow, no resize of the Mac's PTY). Opens with the font fitted so
+  every column fits the phone's width (refit on rotation or a column change);
+  pinch on the terminal or A−/A+ zoom by font size — native page zoom is off, it
+  would scale the header and the dock too. Scrolling up past the top requests `history`.
+- **Keyboard**: the page is pinned to the visual viewport (height *and*
+  `offsetTop`), so the dock rides right above the iOS keyboard.
   Sticks to the bottom while new output arrives, unless the user scrolled up.
 - **Composer** (bottom, above the keyboard): multi-line field + **Send**
   (`send`); empty text + Send = Enter alone.
@@ -175,8 +179,8 @@ Mobile-first, dark/light following the system, a single page:
 ## 9. Accepted limitations
 
 - Plain HTTP on the LAN (§3.3).
-- Wide screens read by scrolling/zooming: a ~200-column Claude Code screen is
-  cramped in portrait, comfortable in landscape.
+- Wide screens open fitted to the phone's width: a ~200-column Claude Code screen
+  is an overview in portrait (~3 px font) — pinch to read, landscape is comfortable.
 - Scrollback read while the agent keeps printing drifts by the lines scrolled
   in meanwhile (history is addressed by grid line); back at the bottom, it resets.
 - No notification on the phone: the user opens the page to check.

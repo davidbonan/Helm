@@ -3,7 +3,7 @@
 
 const HISTORY_PAGE = 200;
 const RECONNECT_MS = 1500;
-const FONT_MIN = 8;
+const FONT_MIN = 3;
 const FONT_MAX = 20;
 
 const $ = (id) => document.getElementById(id);
@@ -16,20 +16,11 @@ const state = {
   historyFirst: 0,
   historyDone: false,
   historyLoading: false,
-  fontPx: loadFontPx(),
+  cols: 0,
+  fitWidth: true,
+  fontPx: 12,
+  viewportWidth: 0,
 };
-
-function loadFontPx() {
-  try {
-    const stored = Number(localStorage.getItem("helm.fontPx"));
-    if (stored >= FONT_MIN && stored <= FONT_MAX) return stored;
-  } catch (_) { /* private mode */ }
-  return 12;
-}
-
-function saveFontPx() {
-  try { localStorage.setItem("helm.fontPx", String(state.fontPx)); } catch (_) { /* private mode */ }
-}
 
 function escapeHtml(text) {
   return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -117,6 +108,8 @@ function renderAgents() {
 function openMirror(id) {
   state.watched = id;
   state.writable = false;
+  state.cols = 0;
+  state.fitWidth = true;
   resetHistory();
   $("screen").innerHTML = "";
   $("notice").hidden = true;
@@ -174,6 +167,10 @@ function isAtBottom(scroller) {
 function renderScreen(frame) {
   const scroller = $("scroller");
   const stick = isAtBottom(scroller);
+  if (frame.cols !== state.cols) {
+    state.cols = frame.cols;
+    if (state.fitWidth) fitFontToWidth();
+  }
   scroller.style.setProperty("--term-bg", frame.bg);
   scroller.style.setProperty("--term-fg", frame.fg);
   const cursor = frame.cursor;
@@ -228,14 +225,71 @@ function setDockWritable(writable) {
   $("prompt").disabled = !writable;
 }
 
-function applyFont() {
+function applyFont(fontPx) {
+  state.fontPx = Math.min(FONT_MAX, Math.max(FONT_MIN, fontPx));
   document.documentElement.style.setProperty("--term-font", `${state.fontPx}px`);
 }
 
-function zoom(step) {
-  state.fontPx = Math.min(FONT_MAX, Math.max(FONT_MIN, state.fontPx + step));
-  applyFont();
-  saveFontPx();
+function charWidthEm() {
+  const probe = document.createElement("span");
+  probe.style.fontSize = "100px";
+  probe.textContent = "0".repeat(100);
+  $("screen").appendChild(probe);
+  const width = probe.getBoundingClientRect().width / 10000;
+  probe.remove();
+  return width;
+}
+
+function fitFontToWidth() {
+  if (state.cols === 0) return;
+  const gridPadding = 16;
+  applyFont(($("scroller").clientWidth - gridPadding) / (state.cols * charWidthEm()));
+}
+
+// Zooming keeps the content point under `anchor` (scroller coordinates) in place.
+function zoomTo(fontPx, anchor) {
+  const scroller = $("scroller");
+  const before = state.fontPx;
+  state.fitWidth = false;
+  applyFont(fontPx);
+  const ratio = state.fontPx / before;
+  scroller.scrollLeft = (scroller.scrollLeft + anchor.x) * ratio - anchor.x;
+  scroller.scrollTop = (scroller.scrollTop + anchor.y) * ratio - anchor.y;
+}
+
+function zoomStep(step) {
+  const scroller = $("scroller");
+  zoomTo(Math.round(state.fontPx) + step, { x: 0, y: scroller.clientHeight });
+}
+
+const pinch = { distance: 0, fontPx: 0 };
+
+function touchDistance(touches) {
+  return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+}
+
+function touchMidpoint(touches) {
+  const rect = $("scroller").getBoundingClientRect();
+  return {
+    x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
+    y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top,
+  };
+}
+
+function startPinch(event) {
+  if (event.touches.length !== 2) return;
+  pinch.distance = touchDistance(event.touches);
+  pinch.fontPx = state.fontPx;
+}
+
+function movePinch(event) {
+  if (event.touches.length !== 2 || pinch.distance === 0) return;
+  event.preventDefault();
+  zoomTo(pinch.fontPx * touchDistance(event.touches) / pinch.distance, touchMidpoint(event.touches));
+}
+
+function endPinch(event) {
+  if (event.touches.length < 2) pinch.distance = 0;
 }
 
 // Composer
@@ -261,11 +315,22 @@ function pressKey(button) {
   send({ type: "key", id: state.watched, key: button.dataset.key });
 }
 
-// Layout: the page follows the visual viewport so the dock rides above the iOS keyboard.
+// Layout: the page is pinned to the visual viewport so the dock rides above the iOS
+// keyboard — iOS pans the page by `offsetTop` when the keyboard opens.
 
 function fitViewport() {
-  const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-  document.documentElement.style.setProperty("--app-height", `${height}px`);
+  const viewport = window.visualViewport;
+  const scroller = $("scroller");
+  const stick = isAtBottom(scroller);
+  const root = document.documentElement.style;
+  root.setProperty("--app-height", `${viewport ? viewport.height : window.innerHeight}px`);
+  root.setProperty("--app-top", `${viewport ? viewport.offsetTop : 0}px`);
+  if (stick) scroller.scrollTop = scroller.scrollHeight;
+  const width = viewport ? viewport.width : window.innerWidth;
+  if (width !== state.viewportWidth) {
+    state.viewportWidth = width;
+    if (state.fitWidth && state.watched !== null) fitFontToWidth();
+  }
 }
 
 function showExpired() {
@@ -280,8 +345,8 @@ $("agents").addEventListener("click", (event) => {
   if (row) location.hash = `#/pane/${row.dataset.id}`;
 });
 $("back").addEventListener("click", () => history.back());
-$("font-down").addEventListener("click", () => zoom(-1));
-$("font-up").addEventListener("click", () => zoom(1));
+$("font-down").addEventListener("click", () => zoomStep(-1));
+$("font-up").addEventListener("click", () => zoomStep(1));
 $("composer").addEventListener("submit", submitPrompt);
 $("prompt").addEventListener("input", autosize);
 $("keys").addEventListener("mousedown", (event) => event.preventDefault());
@@ -292,6 +357,11 @@ $("keys").addEventListener("click", (event) => {
 $("scroller").addEventListener("scroll", () => {
   if ($("scroller").scrollTop < 40) requestHistory();
 });
+$("scroller").addEventListener("touchstart", startPinch, { passive: true });
+$("scroller").addEventListener("touchmove", movePinch, { passive: false });
+$("scroller").addEventListener("touchend", endPinch);
+$("scroller").addEventListener("touchcancel", endPinch);
+document.addEventListener("gesturestart", (event) => event.preventDefault());
 
 function route() {
   const match = location.hash.match(/^#\/pane\/(\d+)$/);
@@ -303,11 +373,14 @@ window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") connect();
 });
-if (window.visualViewport) window.visualViewport.addEventListener("resize", fitViewport);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", fitViewport);
+  window.visualViewport.addEventListener("scroll", fitViewport);
+}
 window.addEventListener("resize", fitViewport);
 
 fitViewport();
-applyFont();
+applyFont(state.fontPx);
 renderAgents();
 route();
 connect();
