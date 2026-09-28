@@ -490,7 +490,7 @@ impl HelmApp {
             }
             Command::DeleteWorktree => {
                 if let Some(index) = self.workspace.active() {
-                    self.request_delete_worktree(index, ctx);
+                    self.request_delete_worktree(index, BranchCleanup::Keep, ctx);
                 }
             }
             Command::RevealInFinder => {

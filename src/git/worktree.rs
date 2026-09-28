@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::git::status;
+use crate::git::sync::{self, SyncError};
+use crate::git::{branch, status};
 
 #[derive(Debug)]
 pub enum DeleteError {
@@ -14,7 +15,26 @@ pub enum DeleteError {
     /// Clean worktree still holding ignored entries — the post-create script's
     /// `.env`, build output — that the prune wipes with the folder (worktrees.md §6).
     Ignored(usize),
+    /// Branch deletion asked on a detached worktree: no branch to name, nothing done.
+    Detached,
+    /// Remote branch deletion refused: runs first, so nothing local was touched.
+    Remote(SyncError),
+    /// Worktree deleted, but its local branch survived the deletion attempt.
+    BranchKept {
+        branch: String,
+        reason: String,
+    },
     Git(git2::Error),
+}
+
+/// What Delete worktree also removes (worktrees.md §6): the worktree's checked-out
+/// branch, locally or locally and on its upstream remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BranchCleanup {
+    #[default]
+    Keep,
+    Local,
+    LocalAndRemote,
 }
 
 impl From<git2::Error> for DeleteError {
@@ -693,22 +713,75 @@ fn unique_worktree_name(repo: &git2::Repository, branch: &str) -> String {
 }
 
 pub fn delete(root: &Path, name: &str, force: bool) -> Result<(), DeleteError> {
+    let options = DeleteOptions {
+        force,
+        branch: BranchCleanup::Keep,
+    };
+    delete_with_branch(root, name, options)
+}
+
+/// `delete` plus the worktree's branch (worktrees.md §6). Order keeps a failure
+/// harmless: every refusal (locked, dirty, detached, remote) lands before the folder
+/// goes; the local branch is deleted last, once no worktree checks it out.
+pub fn delete_with_branch(
+    root: &Path,
+    name: &str,
+    options: DeleteOptions,
+) -> Result<(), DeleteError> {
     let repo = git2::Repository::open(root)?;
     let wt = repo.find_worktree(name)?;
+    check_deletable(&wt, options.force)?;
+    if options.branch == BranchCleanup::Keep {
+        return prune(&wt);
+    }
+    let branch_name = checked_out_branch(&wt)?;
+    if options.branch == BranchCleanup::LocalAndRemote {
+        sync::delete_upstream_branch(root, &branch_name).map_err(DeleteError::Remote)?;
+    }
+    prune(&wt)?;
+    branch::delete_local(&repo, &branch_name).map_err(|err| DeleteError::BranchKept {
+        branch: branch_name,
+        reason: err.message().to_owned(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeleteOptions {
+    pub force: bool,
+    pub branch: BranchCleanup,
+}
+
+fn check_deletable(wt: &git2::Worktree, force: bool) -> Result<(), DeleteError> {
     if let git2::WorktreeLockStatus::Locked(reason) = wt.is_locked()? {
         return Err(DeleteError::Locked(reason));
     }
-    if !force {
-        let wt_repo = git2::Repository::open(wt.path())?;
-        let dirty = status::load_repo(&wt_repo)?.changed_file_count();
-        if dirty > 0 {
-            return Err(DeleteError::Dirty(dirty));
-        }
-        let ignored = ignored_count(&wt_repo)?;
-        if ignored > 0 {
-            return Err(DeleteError::Ignored(ignored));
-        }
+    if force {
+        return Ok(());
     }
+    let wt_repo = git2::Repository::open(wt.path())?;
+    let dirty = status::load_repo(&wt_repo)?.changed_file_count();
+    if dirty > 0 {
+        return Err(DeleteError::Dirty(dirty));
+    }
+    let ignored = ignored_count(&wt_repo)?;
+    if ignored > 0 {
+        return Err(DeleteError::Ignored(ignored));
+    }
+    Ok(())
+}
+
+fn checked_out_branch(wt: &git2::Worktree) -> Result<String, DeleteError> {
+    let wt_repo = git2::Repository::open(wt.path())?;
+    let head = wt_repo.head()?;
+    if !head.is_branch() {
+        return Err(DeleteError::Detached);
+    }
+    head.shorthand()
+        .map(str::to_owned)
+        .map_err(|_| DeleteError::Detached)
+}
+
+fn prune(wt: &git2::Worktree) -> Result<(), DeleteError> {
     // working_tree(true): libgit2 also removes the directory — a single path for
     // directory + metadata; valid(true) is required because the worktree is still valid.
     let mut opts = git2::WorktreePruneOptions::new();
@@ -734,7 +807,11 @@ fn ignored_count(repo: &git2::Repository) -> Result<usize, git2::Error> {
 
 /// Path-based variant of `delete`: the worktree's libgit2 name may differ from the
 /// directory name — recovered by enumerating from the root.
-pub fn delete_by_path(root: &Path, target: &Path, force: bool) -> Result<(), DeleteError> {
+pub fn delete_by_path(
+    root: &Path,
+    target: &Path,
+    options: DeleteOptions,
+) -> Result<(), DeleteError> {
     let target = canonical(target.to_path_buf());
     let listing = list(root)?;
     let Some(wt) = listing.worktrees.into_iter().find(|w| w.path == target) else {
@@ -742,7 +819,7 @@ pub fn delete_by_path(root: &Path, target: &Path, force: bool) -> Result<(), Del
             "Worktree not found in its repository",
         )));
     };
-    delete(root, &wt.name, force)
+    delete_with_branch(root, &wt.name, options)
 }
 
 #[derive(Debug)]
@@ -830,7 +907,7 @@ pub struct DeleteRequest {
     pub path: PathBuf,
     /// Name displayed in the dirty / refusal modal.
     pub label: String,
-    pub force: bool,
+    pub options: DeleteOptions,
 }
 
 #[derive(Debug)]
@@ -1046,7 +1123,7 @@ impl DeleteRunner {
         let tx = self.results_tx.clone();
         let on_event = Arc::clone(&self.on_event);
         std::thread::spawn(move || {
-            let result = delete_by_path(&request.root, &request.path, request.force);
+            let result = delete_by_path(&request.root, &request.path, request.options);
             let _ = tx.send(DeleteReply { request, result });
             on_event();
         });
@@ -1284,7 +1361,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         git2::Repository::init(tmp.path()).unwrap();
 
-        let err = delete_by_path(tmp.path(), &tmp.path().join("nope"), false).unwrap_err();
+        let err = delete_by_path(
+            tmp.path(),
+            &tmp.path().join("nope"),
+            DeleteOptions::default(),
+        )
+        .unwrap_err();
 
         assert!(
             matches!(&err, DeleteError::Git(e) if e.message().contains("not found")),
@@ -1300,7 +1382,7 @@ mod tests {
             root: tmp.path().to_path_buf(),
             path: tmp.path().join(name),
             label: name.to_owned(),
-            force: false,
+            options: DeleteOptions::default(),
         };
         assert!(!runner.is_deleting(&tmp.path().join("wt")));
 
@@ -1329,7 +1411,7 @@ mod tests {
             root: tmp.path().to_path_buf(),
             path: tmp.path().join(name),
             label: name.to_owned(),
-            force: false,
+            options: DeleteOptions::default(),
         };
 
         assert!(runner.request(request("a")));

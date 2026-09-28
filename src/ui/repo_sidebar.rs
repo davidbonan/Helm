@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::agent_watch::AgentBadge;
-use crate::git::worktree::{path_for_branch, rename_destination, WorktreeSource};
+use crate::git::worktree::{path_for_branch, rename_destination, BranchCleanup, WorktreeSource};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, SHORTCUT_BADGE_SIZE};
 use crate::ui::spinner::{paint_done_dot, paint_pinwheel, Spinner};
@@ -87,7 +87,9 @@ pub struct SidebarAction {
     pub select: Option<usize>,
     pub remove: Option<usize>,
     pub reveal: Option<usize>,
-    pub delete_worktree: Option<usize>,
+    /// Delete worktree picked on a linked row's context menu, with what it also
+    /// removes of the worktree's branch (worktrees.md §6).
+    pub delete_worktree: Option<(usize, BranchCleanup)>,
     /// Rename worktree picked on a linked row's context menu (worktrees.md §6):
     /// opens the modal that moves its folder.
     pub rename_worktree: Option<usize>,
@@ -1543,9 +1545,19 @@ fn repo_row(
                         out.rename_worktree = Some(row.index);
                         ui.close();
                     }
-                    if ui.button("Delete worktree from disk").clicked() {
-                        out.delete_worktree = Some(row.index);
-                        ui.close();
+                    let deletes = [
+                        ("Delete worktree from disk", BranchCleanup::Keep),
+                        ("Delete worktree and local branch", BranchCleanup::Local),
+                        (
+                            "Delete worktree and local + remote branch",
+                            BranchCleanup::LocalAndRemote,
+                        ),
+                    ];
+                    for (label, branch) in deletes {
+                        if ui.button(label).clicked() {
+                            out.delete_worktree = Some((row.index, branch));
+                            ui.close();
+                        }
                     }
                 }
             });

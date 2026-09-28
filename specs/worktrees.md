@@ -132,7 +132,7 @@ worktrees = ["/Users/dev/helm-studio.worktrees/feature-x"]
 |-------|------|
 | **Project header** | **+** button ⇒ **Create worktree** modal; **right-click** context menu: Reveal in Finder · Copy path · Hide project · **Remove from sidebar** ⇒ removes the **whole group** from the app (prefs included), does not touch the disk (= current Remove, [`overview.md`](overview.md) §3.1). |
 | **Main row** | Context menu: Reveal in Finder · Copy path. No Delete — the main worktree is the repository itself. |
-| **Linked worktree row** | Context menu: Reveal in Finder · Copy path · **Rename worktree…** (§6) · **Delete worktree from disk** — **actually** deletes the worktree from the disk. |
+| **Linked worktree row** | Context menu: Reveal in Finder · Copy path · **Rename worktree…** (§6) · **Delete worktree from disk** — **actually** deletes the worktree from the disk · **Delete worktree and local branch** · **Delete worktree and local + remote branch**. |
 
 **Create worktree**:
 
@@ -235,6 +235,16 @@ itself):
   count comes from a status pass that does **not** recurse into ignored
   directories (`target/` counts as one), keeping it cheap on a large worktree;
 - **locked** ⇒ refused, lock reason displayed.
+
+**Delete worktree and its branch** (the two branch entries): same checks and
+modals, then the worktree's checked-out branch goes too — force-deleted like the
+graph's Delete branch ([`git.md`](git.md) §9), no merge check. Order keeps a
+failure harmless: **detached HEAD** ⇒ refused before anything; **remote** entry ⇒
+`git push <remote> --delete` on the branch's **upstream** first — a refusal (auth,
+network) is shown and nothing local is touched; no upstream, or one already gone on
+the remote ⇒ nothing to delete there. Then the folder, then the local branch; should
+that last step fail, the worktree is gone and an error toast names the kept branch.
+A success toast confirms which branches went.
 
 Implementation: status check → folder deletion →
 `Worktree::prune` of the metadata (libgit2 has no full `git worktree remove`).

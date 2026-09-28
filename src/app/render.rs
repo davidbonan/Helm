@@ -2634,8 +2634,8 @@ impl HelmApp {
             self.persist(move |_| next);
             self.request_group_refresh(ctx);
         }
-        if let Some(index) = sidebar.delete_worktree {
-            self.request_delete_worktree(index, ctx);
+        if let Some((index, branch)) = sidebar.delete_worktree {
+            self.request_delete_worktree(index, branch, ctx);
         }
         if let Some(index) = sidebar.rename_worktree {
             self.open_rename_worktree_modal(index);
@@ -2939,13 +2939,20 @@ impl HelmApp {
             if modal_action.confirm {
                 match self.modal.take() {
                     Some(Modal::DeleteWorktree(PendingDelete {
-                        root, path, label, ..
+                        root,
+                        path,
+                        label,
+                        branch,
+                        ..
                     })) => {
                         self.delete_runner(ctx).request(DeleteRequest {
                             root,
                             path,
                             label,
-                            force: true,
+                            options: DeleteOptions {
+                                force: true,
+                                branch,
+                            },
                         });
                     }
                     // Branch deletion (graph context menu, git.md §9): local to the

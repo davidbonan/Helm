@@ -1,7 +1,8 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use helm::git::worktree::{self, DeleteError, WorktreeSourceKind};
+use helm::git::cli;
+use helm::git::worktree::{self, BranchCleanup, DeleteError, DeleteOptions, WorktreeSourceKind};
 
 fn init_repo_with_identity(dir: &Path) -> git2::Repository {
     fs::create_dir_all(dir).unwrap();
@@ -636,7 +637,7 @@ fn delete_by_path_resolves_the_libgit2_name_from_the_directory() {
     let wt_path = tmp.path().join("feature-dir");
     repo.worktree("feature-name", &wt_path, None).unwrap();
 
-    worktree::delete_by_path(&root_dir, &wt_path, false).unwrap();
+    worktree::delete_by_path(&root_dir, &wt_path, DeleteOptions::default()).unwrap();
 
     assert!(!wt_path.exists(), "worktree directory should be deleted");
     assert!(worktree::list(&root_dir).unwrap().worktrees.is_empty());
@@ -657,7 +658,7 @@ fn delete_runner_reports_dirty_off_thread_then_force_deletes() {
         root: root_dir.clone(),
         path: wt_path.clone(),
         label: "feature-x".to_owned(),
-        force: false,
+        options: DeleteOptions::default(),
     };
     assert!(runner.request(request.clone()));
     let reply = runner.recv().unwrap();
@@ -670,7 +671,10 @@ fn delete_runner_reports_dirty_off_thread_then_force_deletes() {
     assert!(!runner.is_deleting(&wt_path));
 
     assert!(runner.request(worktree::DeleteRequest {
-        force: true,
+        options: DeleteOptions {
+            force: true,
+            ..request.options
+        },
         ..request
     }));
     let reply = runner.recv().unwrap();
@@ -681,6 +685,158 @@ fn delete_runner_reports_dirty_off_thread_then_force_deletes() {
     );
     assert!(!wt_path.exists());
     assert!(worktree::list(&root_dir).unwrap().worktrees.is_empty());
+}
+
+fn delete_options(branch: BranchCleanup) -> DeleteOptions {
+    DeleteOptions {
+        force: false,
+        branch,
+    }
+}
+
+/// Root with an `origin` bare remote and a `feature-x` worktree whose branch is
+/// pushed with upstream tracking.
+fn pushed_worktree_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let bare = tmp.path().join("remote.git");
+    git2::Repository::init_bare(&bare).unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_file(&repo, "a.txt");
+    repo.remote("origin", &format!("file://{}", bare.display()))
+        .unwrap();
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+    assert!(cli::run(&root_dir, &["push", "-u", "origin", "feature-x"])
+        .unwrap()
+        .success());
+    (tmp, root_dir, wt_path, bare)
+}
+
+fn has_branch(repo_dir: &Path, reference: &str) -> bool {
+    git2::Repository::open(repo_dir)
+        .unwrap()
+        .find_reference(reference)
+        .is_ok()
+}
+
+#[test]
+fn delete_with_local_branch_removes_worktree_and_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_file(&repo, "a.txt");
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+
+    worktree::delete_with_branch(&root_dir, "feature-x", delete_options(BranchCleanup::Local))
+        .unwrap();
+
+    assert!(!wt_path.exists());
+    assert!(!has_branch(&root_dir, "refs/heads/feature-x"));
+}
+
+#[test]
+fn delete_with_remote_branch_removes_it_from_origin_too() {
+    let (_tmp, root_dir, wt_path, bare) = pushed_worktree_fixture();
+
+    worktree::delete_with_branch(
+        &root_dir,
+        "feature-x",
+        delete_options(BranchCleanup::LocalAndRemote),
+    )
+    .unwrap();
+
+    assert!(!wt_path.exists());
+    assert!(!has_branch(&root_dir, "refs/heads/feature-x"));
+    assert!(
+        !has_branch(&bare, "refs/heads/feature-x"),
+        "origin lost the branch"
+    );
+}
+
+#[test]
+fn delete_with_remote_branch_already_gone_on_origin_still_succeeds() {
+    let (_tmp, root_dir, wt_path, bare) = pushed_worktree_fixture();
+    // Merged and deleted on the forge: the local tracking ref is stale.
+    git2::Repository::open(&bare)
+        .unwrap()
+        .find_reference("refs/heads/feature-x")
+        .unwrap()
+        .delete()
+        .unwrap();
+
+    worktree::delete_with_branch(
+        &root_dir,
+        "feature-x",
+        delete_options(BranchCleanup::LocalAndRemote),
+    )
+    .unwrap();
+
+    assert!(!wt_path.exists());
+    assert!(!has_branch(&root_dir, "refs/heads/feature-x"));
+}
+
+#[test]
+fn delete_with_remote_branch_without_upstream_deletes_locally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    commit_file(&repo, "a.txt");
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+
+    worktree::delete_with_branch(
+        &root_dir,
+        "feature-x",
+        delete_options(BranchCleanup::LocalAndRemote),
+    )
+    .unwrap();
+
+    assert!(!wt_path.exists());
+    assert!(!has_branch(&root_dir, "refs/heads/feature-x"));
+}
+
+#[test]
+fn delete_with_remote_branch_refused_by_the_remote_touches_nothing() {
+    let (tmp, root_dir, wt_path, _bare) = pushed_worktree_fixture();
+    let unreachable = format!("file://{}", tmp.path().join("gone.git").display());
+    git2::Repository::open(&root_dir)
+        .unwrap()
+        .remote_set_url("origin", &unreachable)
+        .unwrap();
+
+    let err = worktree::delete_with_branch(
+        &root_dir,
+        "feature-x",
+        delete_options(BranchCleanup::LocalAndRemote),
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, DeleteError::Remote(_)), "got {err:?}");
+    assert!(wt_path.exists(), "the folder waits on the remote deletion");
+    assert!(has_branch(&root_dir, "refs/heads/feature-x"));
+}
+
+#[test]
+fn delete_with_branch_on_a_detached_worktree_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_dir = tmp.path().join("main");
+    let repo = init_repo_with_identity(&root_dir);
+    let oid = commit_file(&repo, "a.txt");
+    let wt_path = tmp.path().join("feature-x");
+    repo.worktree("feature-x", &wt_path, None).unwrap();
+    git2::Repository::open(&wt_path)
+        .unwrap()
+        .set_head_detached(oid)
+        .unwrap();
+
+    let err =
+        worktree::delete_with_branch(&root_dir, "feature-x", delete_options(BranchCleanup::Local))
+            .unwrap_err();
+
+    assert!(matches!(err, DeleteError::Detached), "got {err:?}");
+    assert!(wt_path.exists());
 }
 
 #[test]

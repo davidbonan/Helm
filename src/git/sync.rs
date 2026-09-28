@@ -130,7 +130,12 @@ fn current_upstream(repo: &git2::Repository) -> Option<(String, String)> {
     if !head.is_branch() {
         return None;
     }
-    let name = head.shorthand().ok()?;
+    branch_upstream(repo, head.shorthand().ok()?)
+}
+
+/// `(remote, branch)` the local branch `name` tracks, read from its config
+/// (`branch.<name>.remote` / `.merge`) — present even when the tracking ref is gone.
+fn branch_upstream(repo: &git2::Repository, name: &str) -> Option<(String, String)> {
     let config = repo.config().ok()?;
     let remote = config.get_string(&format!("branch.{name}.remote")).ok()?;
     let merge = config.get_string(&format!("branch.{name}.merge")).ok()?;
@@ -598,6 +603,26 @@ pub fn delete_remote_branch(workdir: &Path, name: &str) -> Result<SyncOutcome, S
     let out = exec(workdir, &["push", &remote, "--delete", &refspec])?;
     if out.success() {
         Ok(SyncOutcome::Updated)
+    } else {
+        Err(classify_failure(&out))
+    }
+}
+
+/// Deletes the remote branch the local branch `local` tracks (Delete worktree and
+/// its branches, worktrees.md §6). No upstream, a local one (`.`), or one already
+/// gone on the remote (merged and deleted there) ⇒ `UpToDate`: nothing to delete.
+pub fn delete_upstream_branch(workdir: &Path, local: &str) -> Result<SyncOutcome, SyncError> {
+    let repo = git2::Repository::open(workdir).map_err(|err| git_err(&err))?;
+    let Some((remote, branch)) = branch_upstream(&repo, local).filter(|(remote, _)| remote != ".")
+    else {
+        return Ok(SyncOutcome::UpToDate);
+    };
+    let refspec = format!("refs/heads/{branch}");
+    let out = exec(workdir, &["push", &remote, "--delete", &refspec])?;
+    if out.success() {
+        Ok(SyncOutcome::Updated)
+    } else if out.stderr.contains("remote ref does not exist") {
+        Ok(SyncOutcome::UpToDate)
     } else {
         Err(classify_failure(&out))
     }

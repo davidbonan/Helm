@@ -17,7 +17,9 @@ use crate::git::worker::{
     self, FetchRunner, GitCommand, GitResult, GitWorker, MutationLock, RepoRefs, RepoSnapshot,
     ResultKind, SyncCommand, SyncRunner,
 };
-use crate::git::worktree::{DeleteReply, DeleteRequest, DeleteRunner};
+use crate::git::worktree::{
+    BranchCleanup, DeleteOptions, DeleteReply, DeleteRequest, DeleteRunner,
+};
 use crate::keybindings::{Action, Keymap, Shortcut};
 use crate::persistence::Prefs;
 use crate::terminal::emu::FontZoom;
@@ -277,6 +279,7 @@ struct PendingDelete {
     root: PathBuf,
     path: PathBuf,
     label: String,
+    branch: BranchCleanup,
     prompt: DeletePrompt,
 }
 
@@ -3210,7 +3213,12 @@ impl HelmApp {
         }
     }
 
-    fn request_delete_worktree(&mut self, index: usize, ctx: &egui::Context) {
+    fn request_delete_worktree(
+        &mut self,
+        index: usize,
+        branch: BranchCleanup,
+        ctx: &egui::Context,
+    ) {
         let Some(root) = self.workspace.parent_root(index).map(Path::to_path_buf) else {
             return;
         };
@@ -3221,7 +3229,10 @@ impl HelmApp {
             root,
             path: repo.path.clone(),
             label: repo.name.clone(),
-            force: false,
+            options: DeleteOptions {
+                force: false,
+                branch,
+            },
         };
         self.delete_runner(ctx).request(request);
     }
@@ -3417,6 +3428,20 @@ impl HelmApp {
                         self.modal = None;
                     }
                     self.run_group_sync(ctx);
+                    if let Some(message) = branch_deleted_toast(&request) {
+                        self.toasts.success(message, ctx.input(|i| i.time));
+                    }
+                    continue;
+                }
+                Err(DeleteError::BranchKept { branch, reason }) => {
+                    if matches!(self.modal, Some(Modal::DeleteWorktree(_))) {
+                        self.modal = None;
+                    }
+                    self.run_group_sync(ctx);
+                    self.toasts.error(
+                        format!("Deleted {} — branch {branch} kept: {reason}", request.label),
+                        ctx.input(|i| i.time),
+                    );
                     continue;
                 }
                 Err(DeleteError::Dirty(files)) => DeletePrompt::Dirty {
@@ -3431,16 +3456,39 @@ impl HelmApp {
                     &request.label,
                     reason.unwrap_or_else(|| "Worktree is locked".to_owned()),
                 ),
+                Err(DeleteError::Detached) => refused(
+                    &request.label,
+                    "Detached HEAD — no branch to delete".to_owned(),
+                ),
+                Err(DeleteError::Remote(err)) => refused(
+                    &request.label,
+                    format!(
+                        "Remote branch not deleted — {}",
+                        crate::ui::graph_toolbar::sync_failure_message(&err)
+                    ),
+                ),
                 Err(DeleteError::Git(err)) => refused(&request.label, err.message().to_owned()),
             };
             self.modal = Some(Modal::DeleteWorktree(PendingDelete {
                 root: request.root,
                 path: request.path,
                 label: request.label,
+                branch: request.options.branch,
                 prompt,
             }));
         }
     }
+}
+
+/// Success toast of a Delete worktree that also removed its branch; a plain delete
+/// stays silent — the row leaving the sidebar says it.
+fn branch_deleted_toast(request: &DeleteRequest) -> Option<String> {
+    let scope = match request.options.branch {
+        BranchCleanup::Keep => return None,
+        BranchCleanup::Local => "its local branch",
+        BranchCleanup::LocalAndRemote => "its local and remote branch",
+    };
+    Some(format!("Deleted {} and {scope}", request.label))
 }
 
 /// Returns the chosen folders refused because they are not git repositories (§2), for

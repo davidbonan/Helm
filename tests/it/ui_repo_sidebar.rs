@@ -6,7 +6,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use helm::agent_watch::AgentBadge;
-use helm::git::worktree::{WorktreeSource, WorktreeSourceKind};
+use helm::git::worktree::{BranchCleanup, WorktreeSource, WorktreeSourceKind};
 use helm::keybindings::Keymap;
 use helm::theme::palette;
 use helm::ui::repo_sidebar::{
@@ -1062,8 +1062,36 @@ fn child_row_menu_offers_delete_worktree_never_remove() {
     harness.get_by_label("Delete worktree from disk").click();
     harness.run();
 
-    assert_eq!(harness.state().delete_worktree, Some(1));
+    assert_eq!(
+        harness.state().delete_worktree,
+        Some((1, BranchCleanup::Keep))
+    );
     assert_eq!(harness.state().remove, None);
+}
+
+#[test]
+fn child_row_menu_offers_delete_worktree_with_its_branches() {
+    for (label, branch) in [
+        ("Delete worktree and local branch", BranchCleanup::Local),
+        (
+            "Delete worktree and local + remote branch",
+            BranchCleanup::LocalAndRemote,
+        ),
+    ] {
+        let mut harness = grouped_harness();
+        harness.run();
+        harness.get_by_label("feature-x").click_secondary();
+        harness.run();
+
+        harness.get_by_label(label).click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().delete_worktree,
+            Some((1, branch)),
+            "{label}"
+        );
+    }
 }
 
 #[test]
