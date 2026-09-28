@@ -214,6 +214,9 @@ impl Action {
     }
 }
 
+/// Opens the command palette (keybindings.md §1): fixed, hence reserved.
+pub const COMMAND_PALETTE: Shortcut = Shortcut::cmd(egui::Key::P);
+
 /// One non-modifier key plus modifiers (keybindings.md §6 binding rules).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shortcut {
@@ -350,14 +353,15 @@ impl Shortcut {
     }
 
     /// Refused at capture and ignored at resolution (keybindings.md §6): the
-    /// positional ranges `Cmd+1..9` / `Cmd+Ctrl+1..9`, `Esc`, and combos without
-    /// `Cmd`/`Ctrl`/`Alt` (`Shift` alone would swallow typing).
+    /// positional ranges `Cmd+1..9` / `Cmd+Ctrl+1..9`, `Esc`, the command palette's
+    /// `Cmd+P`, and combos without `Cmd`/`Ctrl`/`Alt` (`Shift` alone would swallow
+    /// typing).
     pub fn is_reserved(&self) -> bool {
         use egui::Key;
         if !(self.cmd || self.ctrl || self.alt) {
             return true;
         }
-        if self.key == Key::Escape {
+        if self.key == Key::Escape || *self == COMMAND_PALETTE {
             return true;
         }
         let digit = matches!(
@@ -615,6 +619,7 @@ mod tests {
         assert!(Shortcut::cmd(Key::Num9).is_reserved());
         assert!(Shortcut::cmd_ctrl(Key::Num5).is_reserved());
         assert!(Shortcut::cmd(Key::Escape).is_reserved());
+        assert!(Shortcut::cmd(Key::P).is_reserved());
         let shift_only = Shortcut {
             cmd: false,
             ctrl: false,

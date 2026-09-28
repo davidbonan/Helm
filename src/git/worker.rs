@@ -165,6 +165,9 @@ pub enum GitCommand {
         target: git2::Oid,
         mode: git2::ResetType,
     },
+    /// Branches the worktree can check out + its stashes (command palette,
+    /// keybindings.md §1): read, answered by `GitResult::Refs`.
+    Refs,
 }
 
 impl GitCommand {
@@ -181,6 +184,7 @@ impl GitCommand {
                 | GitCommand::CommitDetail(_)
                 | GitCommand::CommitFileDiff { .. }
                 | GitCommand::ReadConflicts
+                | GitCommand::Refs
         )
     }
 
@@ -220,6 +224,7 @@ impl GitCommand {
             GitCommand::CommitDetail(_) => ResultKind::CommitDetail,
             GitCommand::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
             GitCommand::ReadConflicts => ResultKind::Conflicts,
+            GitCommand::Refs => ResultKind::Refs,
             _ => ResultKind::Status,
         }
     }
@@ -238,9 +243,10 @@ pub enum ResultKind {
     CommitFileDiff,
     Conflicts,
     Edit,
+    Refs,
 }
 
-const RESULT_KINDS: usize = 8;
+const RESULT_KINDS: usize = 9;
 
 #[derive(Debug)]
 pub enum GitResult {
@@ -285,6 +291,20 @@ pub enum GitResult {
         request: EditRequest,
         result: Result<Landing, EditError>,
     },
+    Refs(Result<RepoRefs, git2::Error>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoRefs {
+    pub checkout_targets: Vec<branch::CheckoutTarget>,
+    pub stashes: Vec<stash::StashEntry>,
+}
+
+fn load_refs(repo: &git2::Repository) -> Result<RepoRefs, git2::Error> {
+    Ok(RepoRefs {
+        checkout_targets: branch::checkout_targets(repo)?,
+        stashes: stash::list(repo)?,
+    })
 }
 
 impl GitResult {
@@ -298,6 +318,7 @@ impl GitResult {
             GitResult::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
             GitResult::Conflicts { .. } => ResultKind::Conflicts,
             GitResult::Edit { .. } => ResultKind::Edit,
+            GitResult::Refs(_) => ResultKind::Refs,
         }
     }
 
@@ -316,6 +337,7 @@ impl GitResult {
             GitResult::CommitDetail(result) => result.is_ok(),
             GitResult::CommitFileDiff { result, .. } => result.is_ok(),
             GitResult::Conflicts { result } => result.is_ok(),
+            GitResult::Refs(result) => result.is_ok(),
             // Never state: a save's outcome reports on the command that ran it, and
             // must reach the editor even with a newer flush already in flight.
             GitResult::Edit { .. } => false,
@@ -644,6 +666,7 @@ fn dispatch(
         GitCommand::ReadConflicts => GitResult::Conflicts {
             result: repo.and_then(conflict::read_conflicts),
         },
+        GitCommand::Refs => GitResult::Refs(repo.and_then(load_refs)),
         // The only mutation answered by its own variant: the editor needs the typed
         // outcome, not a snapshot (`GitResult::Edit`). It still takes the mutation
         // lock — hence a git failure mapped into `EditError`, whose `Io` prints the
@@ -754,6 +777,7 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         | GitCommand::CommitDetail(_)
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
+        | GitCommand::Refs
         | GitCommand::EditFile(_) => {
             unreachable!("commands with their own reply variant never reach apply")
         }

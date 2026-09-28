@@ -34,6 +34,7 @@ mod ui_agents_view;
 mod ui_ai_rebase_modal;
 mod ui_app_keys;
 mod ui_central_switch;
+mod ui_command_palette;
 mod ui_commit_detail;
 mod ui_conflict_view;
 mod ui_diff_view;

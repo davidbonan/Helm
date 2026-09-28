@@ -993,3 +993,30 @@ fn worker_rename_responds_with_the_new_current_branch() {
         other => panic!("expected a refreshed snapshot, got {other:?}"),
     }
 }
+
+#[test]
+fn checkout_targets_offer_free_locals_then_untracked_remotes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    let oid = commit_file(&repo, tmp.path(), "a.txt");
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feature", &head, false).unwrap();
+    repo.remote("origin", "https://example.invalid/repo.git")
+        .unwrap();
+    for name in ["feature", "other", "HEAD"] {
+        repo.reference(&format!("refs/remotes/origin/{name}"), oid, false, "remote")
+            .unwrap();
+    }
+
+    let targets = branch::checkout_targets(&repo).unwrap();
+
+    let listed: Vec<(&str, bool)> = targets
+        .iter()
+        .map(|t| (t.name.as_str(), t.remote))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![("feature", false), ("origin/other", true)],
+        "the checked-out branch, a remote with a local namesake and origin/HEAD are left out"
+    );
+}

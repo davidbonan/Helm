@@ -13,6 +13,61 @@ impl Branch {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutTarget {
+    /// What [`checkout`] takes: `feat/x`, or `origin/feat/x` for a remote.
+    pub name: String,
+    pub remote: bool,
+}
+
+/// Branches [`checkout`] can switch this worktree to, most recently committed
+/// first: the local ones no worktree has checked out, then the remote ones
+/// without a local namesake (`<remote>/HEAD` skipped).
+pub fn checkout_targets(repo: &git2::Repository) -> Result<Vec<CheckoutTarget>, git2::Error> {
+    let checked_out = crate::git::worktree::checked_out_branches(repo)?;
+    let locals = branches_by_recency(repo, git2::BranchType::Local)?;
+    let remotes = branches_by_recency(repo, git2::BranchType::Remote)?;
+    let local_names: std::collections::HashSet<&str> = locals.iter().map(String::as_str).collect();
+    let free_locals = locals
+        .iter()
+        .filter(|name| !checked_out.contains(*name))
+        .map(|name| CheckoutTarget {
+            name: name.clone(),
+            remote: false,
+        });
+    let untracked_remotes = remotes
+        .iter()
+        .filter(|name| {
+            name.split_once('/')
+                .is_some_and(|(_, branch)| branch != "HEAD" && !local_names.contains(branch))
+        })
+        .map(|name| CheckoutTarget {
+            name: name.clone(),
+            remote: true,
+        });
+    Ok(free_locals.chain(untracked_remotes).collect())
+}
+
+fn branches_by_recency(
+    repo: &git2::Repository,
+    kind: git2::BranchType,
+) -> Result<Vec<String>, git2::Error> {
+    let mut named = Vec::new();
+    for branch in repo.branches(Some(kind))? {
+        let (branch, _) = branch?;
+        let Some(name) = branch.name()? else {
+            continue;
+        };
+        let time = branch
+            .get()
+            .peel_to_commit()
+            .map_or(0, |commit| commit.time().seconds());
+        named.push((time, name.to_owned()));
+    }
+    named.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(named.into_iter().map(|(_, name)| name).collect())
+}
+
 /// Checks out a branch from a graph chip. Local branch ⇒ direct checkout; remote
 /// ref `<remote>/x` ⇒ git DWIM: the local `x` as is if it points at the remote's
 /// commit, **fast-forwarded** onto it if it is simply behind, **detached** checkout

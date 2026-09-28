@@ -319,6 +319,33 @@ fn is_stash_commit(repo: &git2::Repository, oid: git2::Oid) -> Result<bool, git2
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// Stash commit — what `apply_at` / `pop_at` / `drop_at` address.
+    pub oid: git2::Oid,
+    pub message: String,
+    /// Seconds since the Unix epoch.
+    pub time: i64,
+}
+
+/// Every stash, most recent first (`stash@{0}` first); missing ref ⇒ none.
+pub fn list(repo: &git2::Repository) -> Result<Vec<StashEntry>, git2::Error> {
+    let log = match repo.reflog("refs/stash") {
+        Ok(log) => log,
+        Err(err) if err.code() == git2::ErrorCode::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    Ok(log
+        .iter()
+        .map(|entry| StashEntry {
+            oid: entry.id_new(),
+            message: String::from_utf8_lossy(entry.message_bytes().unwrap_or_default())
+                .into_owned(),
+            time: entry.committer().when().seconds(),
+        })
+        .collect())
+}
+
 /// Number of stashes (enables/disables **Pop**). Stashes live in the `refs/stash`
 /// reflog; missing ref ⇒ 0.
 pub fn count(repo: &git2::Repository) -> Result<usize, git2::Error> {

@@ -3,6 +3,7 @@ pub mod agents_wall;
 pub mod ai;
 pub mod app;
 pub mod cli;
+pub mod command_palette;
 pub mod feedback;
 pub mod frame_log;
 pub mod git;

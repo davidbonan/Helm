@@ -1,5 +1,6 @@
 pub mod agents_view;
 pub mod ai_rebase_modal;
+pub mod command_palette;
 pub mod commit_detail;
 pub mod conflict_view;
 pub mod detail;

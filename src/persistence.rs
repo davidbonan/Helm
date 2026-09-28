@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::AiProvider;
+use crate::command_palette::CommandUsage;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
 use crate::terminal::links::Editor;
@@ -41,6 +42,10 @@ pub struct Project {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_unused(usage: &CommandUsage) -> bool {
+    *usage == CommandUsage::default()
 }
 
 fn default_review_agent_command() -> String {
@@ -147,6 +152,10 @@ pub struct Prefs {
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keybindings: BTreeMap<String, String>,
+    /// Command palette runs, heading its *Recent* section (keybindings.md §1). A
+    /// table of tables: after `keybindings`, before the arrays-of-tables.
+    #[serde(skip_serializing_if = "is_unused")]
+    pub command_usage: CommandUsage,
     pub projects: Vec<Project>,
     /// Per-project settings (worktrees.md §6); array-of-tables like `projects`,
     /// so it stays after every scalar field.
@@ -180,6 +189,7 @@ impl Default for Prefs {
             pr_detail_width: DEFAULT_PR_DETAIL_WIDTH,
             pr_rail_collapsed: false,
             keybindings: BTreeMap::new(),
+            command_usage: CommandUsage::default(),
             projects: Vec::new(),
             project_settings: Vec::new(),
         }
@@ -464,6 +474,7 @@ pub fn support_file(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_palette::Command;
 
     fn project(root: &str, worktrees: &[&str]) -> Project {
         Project {
@@ -539,6 +550,12 @@ mod tests {
             pr_detail_width: 480.0,
             pr_rail_collapsed: true,
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
+            command_usage: {
+                let mut usage = CommandUsage::default();
+                usage.record(Command::Push, 1_790_000_000);
+                usage.record(Command::Push, 1_790_100_000);
+                usage
+            },
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),
                 project("/Users/dev/beta", &[]),

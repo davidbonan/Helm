@@ -387,7 +387,7 @@ impl HelmApp {
     /// Activates an agent's repo/tab/pane from the dashboard and returns to the
     /// terminal — the stable `AgentEntry` identity survives reorders, so resolve
     /// the live positions here (`set_active`/`set_active_tab` are index-based).
-    fn focus_agent(&mut self, index: usize, ctx: &egui::Context) {
+    pub(super) fn focus_agent(&mut self, index: usize, ctx: &egui::Context) {
         let Some(entry) = self.caches.agents.get(index).cloned() else {
             return;
         };
@@ -474,6 +474,24 @@ impl HelmApp {
         }
     }
 
+    /// Opens the active worktree (and the file of the open diff) with `opener`,
+    /// remembered as the one the header button uses next.
+    pub(super) fn open_active_in(&mut self, opener: WorkspaceOpener) {
+        if let Some(repo) = self.workspace.active_repo() {
+            // Both diff sources travel to the IDE: a commit preview opens the
+            // file's current on-disk content, not the historical snapshot.
+            let file = self.diff.as_ref().map(|diff| repo.path.join(&diff.path));
+            let _ = launch_workspace(opener, &repo.path, file.as_deref());
+        }
+        if self.workspace_opener != opener {
+            self.workspace_opener = opener;
+            self.persist(move |prefs| Prefs {
+                workspace_opener: opener,
+                ..prefs
+            });
+        }
+    }
+
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) -> FrameKeys {
         if action_pressed(ctx, &self.keymap, Action::ToggleWorkspaceSidebar) {
             self.sidebars.workspace = !self.sidebars.workspace;
@@ -502,6 +520,9 @@ impl HelmApp {
             self.sidebars.git = true;
         }
         let open_dialog = action_pressed(ctx, &self.keymap, Action::OpenFolder);
+        if command_palette_pressed(ctx) {
+            self.toggle_command_palette();
+        }
         // Cmd+Ctrl+0 opens the Agents dashboard — slot 0 of the positional repo
         // family (keybindings §1). No-op on the empty workspace, where the
         // dashboard and its sidebar entry do not exist (agents.md §5).
@@ -1606,16 +1627,7 @@ impl HelmApp {
                 }
                 if let (Some(branch), Some(git)) = (graph_action.checkout.take(), self.git.as_mut())
                 {
-                    // Double-click on a local branch chip: checkout (automatic stash if
-                    // the tree is dirty), then graph reload — the status snapshot
-                    // already comes back from the mutating command itself. Pagination
-                    // restarts at the first page: extending to the **new** HEAD
-                    // re-covers the target branch (the clicked row stays in page), and a
-                    // limit inflated by an old deep branch is not paid on every poll
-                    // after returning to a recent branch.
-                    git.graph_limit = graph::PAGE_SIZE;
-                    git.graph_fresh = false;
-                    git.send_then_reload_graph(GitCommand::Checkout(branch));
+                    git.checkout(branch);
                     ctx.request_repaint();
                 }
                 // Graph toolbar intents (M12-6, git.md §10): network ops to the
@@ -2428,19 +2440,7 @@ impl HelmApp {
         }
 
         if let Some(opener) = open_workspace_request {
-            if let Some(repo) = self.workspace.active_repo() {
-                // Both diff sources travel to the IDE: a commit preview opens the
-                // file's current on-disk content, not the historical snapshot.
-                let file = self.diff.as_ref().map(|diff| repo.path.join(&diff.path));
-                let _ = launch_workspace(opener, &repo.path, file.as_deref());
-            }
-            if self.workspace_opener != opener {
-                self.workspace_opener = opener;
-                self.persist(move |prefs| Prefs {
-                    workspace_opener: opener,
-                    ..prefs
-                });
-            }
+            self.open_active_in(opener);
         }
         if let Some(index) = sidebar.select {
             self.workspace.set_active(index);
@@ -2828,6 +2828,10 @@ impl HelmApp {
             }
             return;
         }
+        if matches!(self.modal, Some(Modal::CommandPalette(_))) {
+            self.render_command_palette(ui, &palette, ctx);
+            return;
+        }
         if matches!(self.modal, Some(Modal::WhatsNew)) {
             if crate::ui::release_notes::modal(ui, &mut self.commonmark_cache) {
                 self.modal = None;
@@ -2925,6 +2929,7 @@ impl HelmApp {
                 | Modal::AiRebase(_)
                 | Modal::AiRebaseReport(_)
                 | Modal::Feedback(_)
+                | Modal::CommandPalette(_)
                 | Modal::WhatsNew => {
                     unreachable!("handled above")
                 }
@@ -3058,6 +3063,7 @@ impl HelmApp {
                         | Modal::AiRebase(_)
                         | Modal::AiRebaseReport(_)
                         | Modal::Feedback(_)
+                        | Modal::CommandPalette(_)
                         | Modal::WhatsNew,
                     )
                     | None => {}

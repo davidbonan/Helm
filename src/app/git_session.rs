@@ -307,6 +307,9 @@ pub(crate) struct GitSession {
     /// Pop / Pull / Push states of the graph toolbar.
     pub(crate) stash_count: usize,
     pub(crate) has_remote: bool,
+    /// Checkout targets + stashes, read on demand (`GitCommand::Refs`) by the
+    /// command palette; `None` until the first reply.
+    pub(crate) refs: Option<RepoRefs>,
     /// Remote name of the current branch's upstream (worker snapshot, git.md §10):
     /// `None` ⇒ force push greyed out; otherwise names the remote in its modal.
     pub(crate) upstream_remote: Option<String>,
@@ -395,6 +398,7 @@ impl GitSession {
             status: RepoStatus::default(),
             branch: Branch::Named(String::new()),
             stash_count: 0,
+            refs: None,
             has_remote: false,
             upstream_remote: None,
             upstream_oid: None,
@@ -482,6 +486,17 @@ impl GitSession {
         self.reload_graph();
     }
 
+    /// Checkout (automatic stash if the tree is dirty), then graph reload — the
+    /// status snapshot comes back from the mutating command itself. Pagination
+    /// restarts at the first page: extending to the **new** HEAD re-covers the
+    /// target branch, and a limit inflated by an old deep branch is not paid on
+    /// every poll after returning to a recent branch.
+    pub(crate) fn checkout(&mut self, branch: String) {
+        self.graph_limit = graph::PAGE_SIZE;
+        self.graph_fresh = false;
+        self.send_then_reload_graph(GitCommand::Checkout(branch));
+    }
+
     /// Hands a CLI-git op to the runner (one at a time, git.md §10): busy ⇒
     /// the shared refusal toast, nothing queued. `true` when accepted.
     pub(crate) fn request_sync(
@@ -546,6 +561,7 @@ impl GitSession {
                 GitResult::Edit { request, result } => {
                     self.on_edit(request, result, diff, toasts, now)
                 }
+                GitResult::Refs(result) => self.on_refs(result, toasts, now),
             }
         }
     }
@@ -887,6 +903,19 @@ impl GitSession {
 
     /// Detail of the selected commit (M9-2) rendered in the right sidebar
     /// (M9-6); we adopt only the detail of the still-selected commit.
+    fn on_refs(&mut self, result: Result<RepoRefs, git2::Error>, toasts: &mut Toasts, now: f64) {
+        match result {
+            Ok(refs) => self.refs = Some(refs),
+            Err(err) => {
+                self.refs = Some(RepoRefs::default());
+                toasts.error(
+                    format!("Failed to list branches and stashes — {}", err.message()),
+                    now,
+                );
+            }
+        }
+    }
+
     fn on_commit_detail(
         &mut self,
         result: Result<CommitDetail, git2::Error>,
@@ -1080,6 +1109,7 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
         | GitCommand::CommitDetail(_)
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
+        | GitCommand::Refs
         | GitCommand::EditFile { .. } => "Git command failed",
     };
     format!("{action} — {}", err.message())

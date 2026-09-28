@@ -217,6 +217,18 @@ pub(crate) fn action_pressed(ctx: &egui::Context, keymap: &Keymap, action: Actio
     })
 }
 
+pub(crate) fn command_palette_pressed(ctx: &egui::Context) -> bool {
+    ctx.input(|i| {
+        i.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key, pressed: true, modifiers, .. }
+                    if crate::keybindings::COMMAND_PALETTE.matches(*key, *modifiers)
+            )
+        })
+    })
+}
+
 /// Number-row shortcuts are positional (keybindings §1: "sidebar order"). Prefer
 /// the physical key so a layout whose Nth top-row key emits punctuation —
 /// AZERTY-FR types `'` (logical `Key::Quote`) on the physical `Num4` — still

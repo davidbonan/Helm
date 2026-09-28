@@ -6,6 +6,30 @@
 
 ---
 
+## ☑ Milestone — M-Palette · `Cmd+P` command palette
+
+Spec: [`specs/keybindings.md`](../keybindings.md) §1, §6. Per the user: curated
+commands, fuzzy filter, sub-screens in the same window with a breadcrumb, commands
+that do not apply hidden, most used first. Counter: **3/3**.
+
+- ☑ **T1 — Palette + Running servers.** `command_palette` (domain: `Command`,
+  `Screen`, navigation, fuzzy `rank`), `ui::command_palette` (render → intents),
+  `app::command_palette` (availability, rows, dispatch). `Cmd+P` fixed + reserved.
+  **Running servers ›** lists live Run strips across projects, ✕ stops one.
+  *Tests*: 8 unit + 6 UI e2e + 3 app unit.
+- ☑ **T2 — Commands.** Switch to › · Run / Relaunch / Stop server · Stash changes ·
+  Stashes › · Pull / Push / Fetch / Force push… · Checkout branch › · Create
+  worktree… · Delete worktree from disk · Open in editor › · Reveal in Finder · Copy
+  path · Pull requests › · Agents › · Toggle theme · Send feedback… · What’s new.
+  `GitCommand::Refs` read (checkout targets + stashes). Active worktree shown once
+  beside the query; row-specific `↵` hint. *Tests*: 2 business e2e + 2 app unit.
+- ☑ **T3 — Recent section.** `CommandUsage` (7-day half-life) persisted in
+  `prefs.command_usage`; blank query heads the root list with *Recent* (last run +
+  most used, ≤ 5) then *Other commands*; a fuzzy tie goes to the recent one.
+  *Tests*: 5 unit + 1 UI e2e + 1 app unit. *Verified*: headless shots.
+
+---
+
 ## ☑ Milestone — M-Inbox · PR list legibility + Inbox tab
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §5. Per the user: rows and

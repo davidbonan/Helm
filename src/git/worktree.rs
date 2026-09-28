@@ -526,7 +526,9 @@ fn source_if_creatable(
     }))
 }
 
-fn checked_out_branches(repo: &git2::Repository) -> Result<HashSet<String>, git2::Error> {
+pub(crate) fn checked_out_branches(
+    repo: &git2::Repository,
+) -> Result<HashSet<String>, git2::Error> {
     let mut checked_out = HashSet::new();
     if !repo.is_bare() {
         checked_out.extend(current_local_branch(repo));

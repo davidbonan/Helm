@@ -577,3 +577,20 @@ fn worker_apply_responds_with_the_restored_diff_and_keeps_the_stash() {
         other => panic!("expected snapshot after apply, got {other:?}"),
     }
 }
+
+#[test]
+fn list_names_every_stash_most_recent_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_identity(tmp.path());
+    commit_file(&repo, tmp.path(), "a.txt", "base\n");
+    for message in ["first", "second"] {
+        fs::write(tmp.path().join("a.txt"), format!("{message}\n")).unwrap();
+        stash::save(&repo, message).unwrap();
+    }
+
+    let stashes = stash::list(&repo).unwrap();
+
+    assert_eq!(stashes.len(), 2);
+    assert!(stashes[0].message.ends_with("second"), "{:?}", stashes[0]);
+    assert!(stashes[1].message.ends_with("first"), "{:?}", stashes[1]);
+}

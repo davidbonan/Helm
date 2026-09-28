@@ -2804,6 +2804,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         pr_detail_width: 460.0,
         pr_rail_collapsed: false,
         keybindings: std::collections::BTreeMap::new(),
+        command_usage: Default::default(),
         project_settings: Vec::new(),
     };
 
@@ -3810,4 +3811,161 @@ fn ipc_adopts_a_worktree_created_outside_helm_before_refusing() {
         runs[0].worktree.canonicalize().unwrap(),
         worktree.canonicalize().unwrap()
     );
+}
+
+/// Two worktrees `api` and `web` with a run command, only `api` started.
+fn app_with_one_running_server(tmp: &Path) -> (HelmApp, RepoKey) {
+    let mut ws = Workspace::new();
+    for name in ["api", "web"] {
+        let repo = tmp.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        ws.add(Repo::new(repo));
+    }
+    let mut app = HelmApp::with_workspace(ws);
+    for name in ["api", "web"] {
+        app.prefs
+            .set_project_settings(tmp.join(name), None, String::new(), "sleep 30".to_owned());
+    }
+    let ctx = egui::Context::default();
+    app.handle_ipc(
+        crate::ipc::Request::Start {
+            path: tmp.join("api"),
+        },
+        &ctx,
+    );
+    app.workspace.set_active(1);
+    (app, RepoKey::of(&tmp.join("api")))
+}
+
+fn palette_harness(
+    app: HelmApp,
+    screen: crate::command_palette::Screen,
+) -> egui_kittest::Harness<'static, HelmApp> {
+    let mut palette = crate::command_palette::CommandPalette::default();
+    if screen != crate::command_palette::Screen::Commands {
+        palette.enter(screen);
+    }
+    let mut app = app;
+    app.modal = Some(Modal::CommandPalette(palette));
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_modals(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        )
+}
+
+#[test]
+fn the_palette_lists_live_servers_and_stops_one_from_its_cross() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, api) = app_with_one_running_server(tmp.path());
+    let mut harness = palette_harness(app, crate::command_palette::Screen::RunningServers);
+    harness.run();
+
+    harness.get_by_label("api");
+    assert!(
+        harness.query_by_label("web").is_none(),
+        "a stopped server is not listed"
+    );
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Stop server")
+        .click();
+    harness.run();
+
+    assert!(
+        !harness.state().caches.run_panes.contains_key(&api),
+        "stopping drops the pane, killing its process tree"
+    );
+    harness.get_by_label("No server is running.");
+}
+
+#[test]
+fn picking_a_server_selects_its_worktree_with_the_run_strip_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut app, api) = app_with_one_running_server(tmp.path());
+    app.run_collapsed.insert(api.clone(), true);
+    let mut harness = palette_harness(app, crate::command_palette::Screen::RunningServers);
+    harness.run();
+
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let app = harness.state();
+    assert!(app.modal.is_none());
+    assert_eq!(app.workspace.active(), Some(0));
+    assert!(app.sidebars.git);
+    assert!(!app.is_run_collapsed(&api));
+}
+
+#[test]
+fn cmd_p_never_replaces_another_modal() {
+    let mut app = app_with(&["a"]);
+    app.modal = Some(Modal::AbortOp);
+
+    app.toggle_command_palette();
+
+    assert!(matches!(app.modal, Some(Modal::AbortOp)));
+}
+
+#[test]
+fn deleting_a_worktree_is_offered_on_a_linked_worktree_only() {
+    use egui_kittest::kittest::Queryable;
+    let mut ws = Workspace::new();
+    ws.add_group(
+        Repo::new(PathBuf::from("/tmp/api")),
+        vec![Repo::new(PathBuf::from("/tmp/api.worktrees/feat"))],
+    );
+    let mut app = HelmApp::with_workspace(ws);
+    app.workspace.set_active(0);
+    let mut harness = palette_harness(app, crate::command_palette::Screen::Commands);
+    harness.run();
+    assert!(harness
+        .query_by_label("Delete worktree from disk")
+        .is_none());
+
+    harness.state_mut().workspace.set_active(1);
+    harness.run();
+    harness.get_by_label("Delete worktree from disk");
+}
+
+#[test]
+fn switching_selects_the_picked_worktree() {
+    let mut app = app_with(&["a", "b"]);
+    app.workspace.set_active(0);
+    let mut harness = palette_harness(app, crate::command_palette::Screen::SwitchTo);
+    harness.run();
+
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert_eq!(harness.state().workspace.active(), Some(1));
+    assert!(harness.state().modal.is_none());
+}
+
+#[test]
+fn the_command_last_run_from_the_palette_leads_it_next_time() {
+    use crate::command_palette::Screen;
+    use egui_kittest::kittest::Queryable;
+    let mut harness = palette_harness(app_with(&["a"]), Screen::Commands);
+    harness.run();
+    harness.get_by_label("Running servers").click();
+    harness.run();
+
+    harness.state_mut().modal = None;
+    harness.state_mut().toggle_command_palette();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let Some(Modal::CommandPalette(palette)) = &harness.state().modal else {
+        panic!("the palette stays open on its screen");
+    };
+    assert_eq!(palette.screen(), Screen::RunningServers);
 }

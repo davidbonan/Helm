@@ -13,8 +13,8 @@ use crate::git::graph::{self, Graph, LaneCache};
 use crate::git::rebase::RebaseCommit;
 use crate::git::status::RepoStatus;
 use crate::git::worker::{
-    self, FetchRunner, GitCommand, GitResult, GitWorker, MutationLock, RepoSnapshot, ResultKind,
-    SyncCommand, SyncRunner,
+    self, FetchRunner, GitCommand, GitResult, GitWorker, MutationLock, RepoRefs, RepoSnapshot,
+    ResultKind, SyncCommand, SyncRunner,
 };
 use crate::git::worktree::{DeleteReply, DeleteRequest, DeleteRunner};
 use crate::keybindings::{Action, Keymap, Shortcut};
@@ -131,7 +131,7 @@ pub fn should_refresh_pr(
 
 mod keys;
 use keys::route_wall_keys;
-use keys::{action_pressed, open_agents_pressed, overlay_or_command};
+use keys::{action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command};
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
     route_zoom_keys,
@@ -144,6 +144,7 @@ use git_session::{
     RepoKey,
 };
 
+mod command_palette;
 mod render;
 
 pub mod url_scheme;
@@ -431,6 +432,8 @@ enum Modal {
     /// Merge of a PR on its forge (pull-requests.md §5): outward-facing and not
     /// undoable from helm, so it is confirmed before `PrMergeRunner` posts.
     MergePr(Box<crate::pull_requests::model::PullRequest>),
+    /// `Cmd+P` palette (keybindings.md §1): commands and the screens they open.
+    CommandPalette(crate::command_palette::CommandPalette),
 }
 
 impl Modal {
@@ -455,6 +458,7 @@ impl Modal {
             | Modal::CreateWorktree(_)
             | Modal::Feedback(_)
             | Modal::MergePr(_)
+            | Modal::CommandPalette(_)
             | Modal::WhatsNew => false,
         }
     }
@@ -1740,18 +1744,7 @@ impl HelmApp {
             };
         }
         if action.any() {
-            self.apply_run_intent(
-                RunIntent {
-                    key: target.key.clone(),
-                    cwd: target.path.clone(),
-                    root: target.root.clone(),
-                    command: target.command.clone(),
-                    launch_command: target.launch_command.clone(),
-                    port: target.port,
-                    action,
-                },
-                ctx,
-            );
+            self.apply_run_intent(target.intent(action), ctx);
         }
         Response::Runs {
             runs: vec![self.run_entry_of(&target)],
@@ -3814,6 +3807,20 @@ struct RunTarget {
     command: String,
     launch_command: String,
     port: Option<u16>,
+}
+
+impl RunTarget {
+    fn intent(&self, action: crate::ui::run_panel::RunPanelAction) -> RunIntent {
+        RunIntent {
+            key: self.key.clone(),
+            cwd: self.path.clone(),
+            root: self.root.clone(),
+            command: self.command.clone(),
+            launch_command: self.launch_command.clone(),
+            port: self.port,
+            action,
+        }
+    }
 }
 
 /// Maps a worktree's run pane to the status the strip displays (git.md §3).
