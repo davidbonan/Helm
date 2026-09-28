@@ -133,8 +133,9 @@ impl PhoneSocket {
             self.sent_screen = None;
             return self.push(&ToPhone::Ended { id });
         };
-        let grid = screen(&pane.handle.grid().lock(), &self.registry.palette());
-        let frame = ToPhone::screen(id, &grid, self.registry.is_writable(id));
+        let palette = self.registry.palette();
+        let grid = screen(&pane.handle.grid().lock(), &palette);
+        let frame = ToPhone::screen(id, &grid, &palette, self.registry.is_writable(id));
         if self.sent_screen.as_ref() != Some(&frame) {
             self.push(&frame)?;
             self.sent_screen = Some(frame);

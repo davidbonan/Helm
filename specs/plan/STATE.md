@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **4/6**.
+phone. Counter: **5/6**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -36,11 +36,20 @@ phone. Counter: **4/6**.
   `remote::registry` (agents only, `writable`); `PaneHandle`, `ReadingsView`.
   Placeholder assets. *Tests*: 4 unit + 3 business e2e (pair → cookie; unpaired →
   401; agents only + `send` reaches the PTY).
-- ☐ **T5 — Phone page.** Embedded `index.html`/`app.js`/`app.css`: agents list,
-  terminal mirror (`<pre>`, h-scroll, pinch-zoom, A−/A+, history), composer, quick
-  keys, reconnect on `visibilitychange`. *Verified*: manual iPhone Safari (spec §8).
+- ☑ **T5 — Phone page.** Embedded `index.html`/`app.js`/`app.css` (design-system
+  tokens, light/dark): agents list, terminal mirror (`<pre>`, h-scroll, pinch-zoom,
+  A−/A+, history paging), composer, quick keys, reconnect on `visibilitychange`,
+  *Access stopped* on 401; `screen` carries the palette `fg`/`bg`. *Verified*:
+  Chrome iPhone emulation over CDP against a live server — list, mirror, `send` +
+  quick key reach the PTY, light + dark shots in `verify-artifacts/20260928-123314-phone-page/`.
 - ☐ **T6 — Palette entry + pairing modal.** *Open on phone* / *Stop phone access*;
   modal: QR (`qrcode`), URL, warning, device count, Stop. *Tests*: UI e2e.
+
+### Next actions (M-Phone)
+
+- ☐ **Live iPhone Safari.** The page was driven in Chrome's iPhone emulation only:
+  pair on a real iPhone, follow a Claude Code turn, answer a permission prompt, lock
+  the Mac 10 min then resume (spec §8 manual).
 
 ---
 

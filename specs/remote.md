@@ -119,7 +119,7 @@ Server → phone:
 | `type` | Payload | When |
 |--------|---------|------|
 | `agents` | `[{id, project, branch, tab, agent, badge}]` | on connect, then on change (watcher tick) |
-| `screen` | `{id, cols, rows, lines, cursor, writable}` | watched pane, on change, ≤ 10 /s |
+| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable}` | watched pane, on change, ≤ 10 /s; `fg`/`bg` = the palette's own, what a blank cell shows |
 | `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
 
@@ -177,6 +177,8 @@ Mobile-first, dark/light following the system, a single page:
 - Plain HTTP on the LAN (§3.3).
 - Wide screens read by scrolling/zooming: a ~200-column Claude Code screen is
   cramped in portrait, comfortable in landscape.
+- Scrollback read while the agent keeps printing drifts by the lines scrolled
+  in meanwhile (history is addressed by grid line); back at the bottom, it resets.
 - No notification on the phone: the user opens the page to check.
 - Mac asleep (lid closed on battery, manual sleep) ⇒ unreachable until wake.
 - One LAN address: moving the Mac to another network stops access.

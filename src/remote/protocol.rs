@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent_watch::{display_name, AgentBadge};
 use crate::remote::registry::ExposedAgent;
 use crate::terminal::keys::{key_bytes, Key, Mods};
+use crate::terminal::palette::TermPalette;
 use crate::terminal::screen::{HistoryPage, Run, Screen, ScreenLine};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -77,6 +78,9 @@ pub enum ToPhone {
         id: u64,
         cols: usize,
         rows: usize,
+        /// The palette's own ink and background: what a blank cell shows.
+        fg: String,
+        bg: String,
         lines: Vec<Vec<WireRun>>,
         cursor: Option<(usize, usize)>,
         writable: bool,
@@ -92,11 +96,13 @@ pub enum ToPhone {
 }
 
 impl ToPhone {
-    pub fn screen(id: u64, screen: &Screen, writable: bool) -> Self {
+    pub fn screen(id: u64, screen: &Screen, palette: &TermPalette, writable: bool) -> Self {
         Self::Screen {
             id,
             cols: screen.cols,
             rows: screen.lines.len(),
+            fg: palette.foreground.to_hex(),
+            bg: palette.background.to_hex(),
             lines: wire_lines(&screen.lines),
             cursor: screen.cursor,
             writable,
