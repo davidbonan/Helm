@@ -11,14 +11,15 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **0/6**.
+phone. Counter: **1/6**.
 
-- ☐ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
+- ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
   (`tcgetpgrp`); UI registers/unregisters panes, sends the focused pane, reads the
   snapshot. Parity: badges, dashboard, `Cmd+J`, completion notifications.
-  *Tests*: existing agent tests green + 1 business e2e (fake agent badge moves with
-  no UI frame). spec §4.
+  *Tests*: 2 business e2e (watcher reads a fake agent with no UI frame; an
+  untracked pane leaves the readings) + 1 app unit (live agent → sidebar badge).
+  spec §4.
 - ☐ **T2 — Screen snapshot + shared key table.** `terminal` domain: grid → rows of
   runs (colors via `TermPalette`, attributes, cursor), scrollback page;
   `key_bytes` moved out of `ui::terminal_view`. *Tests*: unit. spec §6, §7.

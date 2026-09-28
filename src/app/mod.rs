@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::agent_watch::{AgentBadge, PaneAgentState};
+use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPane};
+use crate::agent_watch::AgentBadge;
 use crate::ai::{AiProvider, AiRunner};
 use crate::git::ai_rebase::{AiRebaseReport, AiRebaseRequest, AiRebaseRunner};
 use crate::git::branch::Branch;
@@ -23,7 +24,7 @@ use crate::terminal::emu::FontZoom;
 use crate::terminal::layout::{Dir, Layout, Orient, PaneId, Rect};
 use crate::terminal::links::{Editor, LinkAction};
 use crate::terminal::palette::TermPalette;
-use crate::terminal::pane::Pane;
+use crate::terminal::pane::{Pane, PaneUid};
 use crate::theme::{self, ThemeMode};
 use crate::ui::ai_rebase_modal::{ai_rebase_modal, ai_rebase_report_modal, AiRebasePage};
 use crate::ui::conflict_view::{
@@ -634,6 +635,10 @@ pub struct HelmApp {
     /// modes — the old banner was only visible in Graph.
     toasts: Toasts,
     last_agent_poll: f64,
+    /// Agent state machine off the UI thread (specs/remote.md §4); spawned with the
+    /// first pane (it carries the `ctx` repaint), dropped with the last.
+    agent_watcher: Option<AgentWatcher>,
+    agent_readings: Readings,
     last_group_poll: f64,
     /// Workspace PR fetch running off the UI thread (pull-requests.md §6): `gh`
     /// and `curl` calls plus libgit2 remote resolution must not freeze rendering.
@@ -833,6 +838,8 @@ impl HelmApp {
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             toasts: Toasts::default(),
             last_agent_poll: 0.0,
+            agent_watcher: None,
+            agent_readings: Readings::default(),
             last_group_poll: 0.0,
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
@@ -1061,31 +1068,85 @@ impl HelmApp {
         if self.caches.panes.is_empty() {
             self.caches.agent_badges.clear();
             self.caches.agents.clear();
+            self.agent_watcher = None;
+            self.agent_readings = Readings::default();
             return;
         }
-        // Idle wake-up: transitions to the green state / disappearance happen on
-        // **silence** — no output would trigger the repaint.
+        // Idle wake-up: the watched set and the focus reach the watcher at this
+        // cadence, and the tab auto-naming follows it.
         ctx.request_repaint_after(GIT_POLL_INTERVAL);
         let now = ctx.input(|i| i.time);
-        if now - self.last_agent_poll < GIT_POLL_INTERVAL.as_secs_f64() {
-            return;
+        let poll_due = now - self.last_agent_poll >= GIT_POLL_INTERVAL.as_secs_f64();
+        if poll_due {
+            self.last_agent_poll = now;
+            let focused = self.focused_pane_uids(ctx);
+            let watched = self.watched_panes();
+            self.agent_watcher
+                .get_or_insert_with(|| {
+                    let ctx = ctx.clone();
+                    AgentWatcher::spawn(move || ctx.request_repaint())
+                })
+                .track(watched, focused);
         }
-        self.last_agent_poll = now;
+        let changed = self
+            .agent_watcher
+            .as_ref()
+            .and_then(|watcher| watcher.changed_since(self.agent_readings.generation));
+        let readings_moved = changed.is_some();
+        if let Some(readings) = changed {
+            self.agent_readings = readings;
+        }
+        // Also on the poll: the rows carry labels (tab, branch) that move on their own.
+        if readings_moved || poll_due {
+            self.rebuild_agent_entries();
+        }
+        if poll_due {
+            self.auto_name_tabs();
+        }
+    }
 
-        // Seeing a pane acknowledges its green — but only on the terminal view: the
-        // dashboard lists completions, so reading it must not auto-ack them.
-        let focused_key = (self.page == Page::Main
+    fn watched_panes(&self) -> Vec<WatchedPane> {
+        self.caches
+            .panes
+            .values()
+            .flat_map(|panes| panes.values())
+            .filter_map(|state| match state {
+                TerminalState::Live(pane) => Some(WatchedPane::of(pane)),
+                TerminalState::Failed(_) => None,
+            })
+            .collect()
+    }
+
+    /// Seeing a pane acknowledges its green — but only on the terminal view: the
+    /// dashboard lists completions, so reading it must not auto-ack them.
+    fn focused_pane_uids(&self, ctx: &egui::Context) -> HashSet<PaneUid> {
+        let on_terminal_view = self.page == Page::Main
             && !matches!(
                 self.central_mode,
                 CentralMode::Agents | CentralMode::PullRequests
             )
-            && ctx.input(|i| i.focused))
-        .then(|| {
-            let index = self.workspace.active()?;
-            let tab = self.workspace.active_tab()?;
-            self.caches.pane_key(&self.workspace, index, tab)
-        })
-        .flatten();
+            && ctx.input(|i| i.focused);
+        if !on_terminal_view {
+            return HashSet::new();
+        }
+        self.workspace
+            .active()
+            .zip(self.workspace.active_tab())
+            .and_then(|(index, tab)| self.caches.pane_key(&self.workspace, index, tab))
+            .and_then(|key| self.caches.panes.get(&key))
+            .into_iter()
+            .flat_map(|panes| panes.values())
+            .filter_map(|state| match state {
+                TerminalState::Live(pane) => Some(pane.uid()),
+                TerminalState::Failed(_) => None,
+            })
+            .collect()
+    }
+
+    /// Rebuilds the sidebar badges and the cross-repo agent list from the watcher's
+    /// readings, and posts the completion notifications.
+    fn rebuild_agent_entries(&mut self) {
+        let readings = &self.agent_readings.panes;
         let now_ms = crate::terminal::activity::now_ms();
         // Previous tick's per-pane badge, agent name and completion stamp: the rising
         // edge into `Done` fires the notification and stamps the flash, a green that
@@ -1116,12 +1177,6 @@ impl HelmApp {
             .enumerate()
             .filter_map(|(i, key)| Some((key.clone(), self.workspace.project_name(i)?)))
             .collect();
-        self.caches.agent_watch.retain(|(key, pane), _| {
-            self.caches
-                .panes
-                .get(key)
-                .is_some_and(|panes| panes.contains_key(pane))
-        });
         let mut badges: HashMap<RepoKey, AgentBadge> = HashMap::new();
         let mut entries: Vec<AgentEntry> = Vec::new();
         let mut notifications: Vec<(String, String)> = Vec::new();
@@ -1130,21 +1185,10 @@ impl HelmApp {
                 let TerminalState::Live(pane) = state else {
                     continue;
                 };
+                let Some(&PaneReading { agent, badge }) = readings.get(&pane.uid()) else {
+                    continue;
+                };
                 let snapshot = pane.activity().snapshot();
-                let agent = pane
-                    .foreground_pgid()
-                    .and_then(crate::agent_watch::probe::foreground_agent);
-                let badge = self
-                    .caches
-                    .agent_watch
-                    .entry((key.clone(), *pane_id))
-                    .or_default()
-                    .tick(
-                        agent.is_some(),
-                        &snapshot,
-                        focused_key.as_ref() == Some(key),
-                        now_ms,
-                    );
                 let slot = badges.entry(key.0.clone()).or_insert(AgentBadge::None);
                 *slot = (*slot).max(badge);
                 if badge == AgentBadge::None {
@@ -1207,9 +1251,11 @@ impl HelmApp {
         for (title, body) in notifications {
             crate::notify::post(&title, &body);
         }
+    }
 
-        // Tab auto-naming (terminal.md §4): name each tab after the current
-        // activity of its focused pane; the workspace keeps it sticky.
+    /// Tab auto-naming (terminal.md §4): name each tab after the current activity of
+    /// its focused pane; the workspace keeps it sticky.
+    fn auto_name_tabs(&mut self) {
         for (key, panes) in &self.caches.panes {
             let tab_id = key.1;
             let candidate = self
@@ -1217,7 +1263,7 @@ impl HelmApp {
                 .tab_focus(tab_id)
                 .and_then(|pane_id| panes.get(&pane_id))
                 .and_then(|state| match state {
-                    TerminalState::Live(pane) => Some(pane),
+                    TerminalState::Live(pane) => Some(&**pane),
                     _ => None,
                 })
                 .and_then(name_candidate);
@@ -3775,7 +3821,7 @@ fn reveal_in_finder(path: Option<&Path>) {
 }
 
 enum TerminalState {
-    Live(Pane),
+    Live(Box<Pane>),
     Failed(String),
 }
 
@@ -3950,7 +3996,7 @@ fn open_terminal_with_env(
         cmd.env(key, value);
     }
     match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
-        Ok(pane) => TerminalState::Live(pane),
+        Ok(pane) => TerminalState::Live(Box::new(pane)),
         Err(err) => TerminalState::Failed(err.to_string()),
     }
 }
@@ -3962,7 +4008,7 @@ fn open_run_terminal(ctx: &egui::Context, cwd: &Path, command: &str) -> Terminal
     let cmd =
         crate::terminal::pty::run_command(crate::terminal::pty::shell_program(), cwd, command);
     match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
-        Ok(pane) => TerminalState::Live(pane),
+        Ok(pane) => TerminalState::Live(Box::new(pane)),
         Err(err) => TerminalState::Failed(err.to_string()),
     }
 }
@@ -4012,7 +4058,7 @@ fn open_agent_terminal(
     match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
         Ok(pane) => {
             let _ = pane.feed(crate::terminal::pty::agent_invocation(program).as_bytes());
-            TerminalState::Live(pane)
+            TerminalState::Live(Box::new(pane))
         }
         Err(err) => TerminalState::Failed(err.to_string()),
     }

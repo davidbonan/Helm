@@ -12,7 +12,7 @@ use crate::terminal::emu::{
     lock_writer, resize_term, Emulator, PtyWriter, ReplyListener, SharedTerm,
 };
 use crate::terminal::palette::TermPalette;
-use crate::terminal::pty::Pty;
+use crate::terminal::pty::{PgidProbe, Pty};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CursorPos {
@@ -22,8 +22,22 @@ pub struct CursorPos {
 
 type OnChange = Arc<dyn Fn() + Send + Sync>;
 
+/// Process-wide identity of a pane, stable across the moves that re-key the app's
+/// maps (worktree rename, tab reorder): what the agent watcher tracks.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PaneUid(u64);
+
+impl PaneUid {
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub struct Pane {
+    uid: PaneUid,
     pty: Pty,
+    pgid_probe: Arc<PgidProbe>,
     emu: Emulator,
     writer: PtyWriter,
     cwd: PathBuf,
@@ -92,6 +106,8 @@ impl Pane {
             callback(&on_change, &activity, &visible),
         );
         Ok(Self {
+            uid: PaneUid::mint(),
+            pgid_probe: Arc::new(pty.pgid_probe()?),
             pty,
             emu,
             writer,
@@ -180,6 +196,18 @@ impl Pane {
 
     pub fn activity(&self) -> &PaneActivity {
         &self.activity
+    }
+
+    pub fn uid(&self) -> PaneUid {
+        self.uid
+    }
+
+    pub fn shared_activity(&self) -> Arc<PaneActivity> {
+        Arc::clone(&self.activity)
+    }
+
+    pub fn shared_pgid_probe(&self) -> Arc<PgidProbe> {
+        Arc::clone(&self.pgid_probe)
     }
 
     /// The shell process id (PTY child), used to read its live cwd (terminal.md §12).

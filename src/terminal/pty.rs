@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 use anyhow::Result;
@@ -54,6 +55,20 @@ pub fn agent_invocation(program: &str) -> String {
     format!("{program} \"${REVIEW_PROMPT_ENV}\"\n")
 }
 
+/// `tcgetpgrp` on a duplicate of a PTY master fd (agent watcher thread).
+pub struct PgidProbe {
+    fd: OwnedFd,
+}
+
+impl PgidProbe {
+    pub fn foreground_pgid(&self) -> Option<i32> {
+        match unsafe { libc::tcgetpgrp(self.fd.as_raw_fd()) } {
+            pgid if pgid > 0 => Some(pgid),
+            _ => None,
+        }
+    }
+}
+
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -95,6 +110,22 @@ impl Pty {
     /// job the shell brought to the foreground, or the shell itself at the prompt.
     pub fn foreground_pgid(&self) -> Option<i32> {
         self.master.process_group_leader()
+    }
+
+    /// Foreground-group probe for another thread: its own `dup` of the master fd,
+    /// independent of the `Pty`'s lifetime.
+    pub fn pgid_probe(&self) -> Result<PgidProbe> {
+        let fd = self
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| anyhow::anyhow!("PTY master has no fd"))?;
+        let dup = unsafe { libc::dup(fd) };
+        if dup < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(PgidProbe {
+            fd: unsafe { OwnedFd::from_raw_fd(dup) },
+        })
     }
 
     pub fn child(&mut self) -> &mut (dyn Child + Send + Sync) {

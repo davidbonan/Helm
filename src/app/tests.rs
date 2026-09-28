@@ -941,6 +941,54 @@ fn app_with_agents(agents: &[(&'static str, AgentBadge)]) -> HelmApp {
     app
 }
 
+/// A pane running a binary compiled under a watchlist name (copying a platform
+/// binary does not work: AMFI kills the copy).
+fn fake_agent_pane(dir: &Path) -> Pane {
+    let src = dir.join("agent.c");
+    std::fs::write(
+        &src,
+        "#include <unistd.h>\nint main(void){pause();return 0;}\n",
+    )
+    .unwrap();
+    let bin = dir.join("claude");
+    let built = std::process::Command::new("cc")
+        .arg("-o")
+        .arg(&bin)
+        .arg(&src)
+        .status()
+        .unwrap();
+    assert!(built.success(), "fake agent compilation failed");
+    Pane::from_command(portable_pty::CommandBuilder::new(&bin), 24, 80, || {}).unwrap()
+}
+
+#[test]
+fn a_live_agent_reaches_the_sidebar_through_the_watcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = app_with(&["a"]);
+    let key = key_of(&app.workspace, 0, 0);
+    let mut panes = Panes::new();
+    panes.insert(
+        PaneId(0),
+        TerminalState::Live(Box::new(fake_agent_pane(tmp.path()))),
+    );
+    app.caches.panes.insert(key.clone(), panes);
+    let ctx = egui::Context::default();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.caches.agents.is_empty() && std::time::Instant::now() < deadline {
+        app.last_agent_poll = f64::NEG_INFINITY;
+        app.update_agent_watch(&ctx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert_eq!(
+        app.caches.agent_badges.get(&key.0),
+        Some(&AgentBadge::Idle),
+        "the watcher's reading should light the worktree row"
+    );
+    assert_eq!(app.caches.agents.first().map(|e| e.agent), Some("claude"));
+}
+
 #[test]
 fn cmd_j_focuses_the_first_finished_agent_in_workspace_order() {
     let mut app = app_with(&["a", "b"]);

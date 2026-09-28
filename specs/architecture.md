@@ -68,6 +68,11 @@ Anticipated submodules: `terminal::{pty, emu, layout}`, `git::{status, diff, sta
 - **Git worker thread**: **owns** the `git2` `Repository` (not `Sync`) and
   runs the blocking calls (status, diff, apply, commit) off the UI thread;
   returns the results over a channel.
+- **Agent watcher thread** (`agent_watch::watcher`): ticks the per-pane agent
+  state machine every second from shared handles (activity stamps, a `dup` of
+  the PTY master fd for `tcgetpgrp`), so badges move while the app gets no
+  frame ([`remote.md`](remote.md) §4). The UI sends the live panes + focus and
+  reads the published readings.
 - **Git refresh**: the cadence and functional rules are defined in
   [`git.md`](git.md) §7. On the architecture side, the worker **wakes the UI**
   after each result (`request_repaint` callback) and the UI schedules its wakeup
@@ -102,6 +107,7 @@ Two thread-lifetime families, both deliberate (review finding 15):
 | Threads | Lifetime | Why |
 |---------|----------|-----|
 | Git worker (`git::worker`) | **Joined** on `Drop` (closing the command channel ends the loop) | Owns the `git2::Repository`; a clean exit point exists |
+| Agent watcher (`agent_watch::watcher`) | **Joined** on `Drop`; spawned with the first pane, dropped with the last | Holds `dup`s of the PTY master fds: none may outlive the panes |
 | PTY readers (`terminal::emu`) | **Detached** at drop; exit on PTY EOF | A `setsid` survivor still holding the slave would block the join — and the UI thread with it |
 | One-shot runners — `ai::AiRunner`, `git::worker::SyncRunner`, `git::worktree::DeleteRunner`, `update::UpdateRunner`, `pull_requests::PrRunner` | **Detached**, one thread per request | Abandoning the session/repo lets the subprocess finish on its own; the late reply is discarded |
 

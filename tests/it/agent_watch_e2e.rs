@@ -4,12 +4,15 @@
 //! `/bin/cat` does not work (AMFI kills copies of arm64e platform binaries) and
 //! a shebang script takes the comm of its interpreter.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helm::agent_watch::probe;
+use helm::agent_watch::watcher::{AgentWatcher, PaneReading, WatchedPane};
+use helm::agent_watch::AgentBadge;
 use helm::terminal::pane::Pane;
 use portable_pty::CommandBuilder;
 
@@ -207,4 +210,50 @@ fn output_without_recent_input_is_stamped_as_spontaneous() {
 
     teardown(pane);
     assert!(stamped, "output with no input around is spontaneous");
+}
+
+fn reading_of(watcher: &AgentWatcher, pane: &Pane) -> Option<PaneReading> {
+    watcher.changed_since(0)?.panes.get(&pane.uid()).copied()
+}
+
+#[test]
+fn the_watcher_reads_an_agent_without_any_ui_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_agent(tmp.path());
+    let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
+    let watcher = AgentWatcher::spawn(|| {});
+    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+
+    let idle_agent = PaneReading {
+        agent: Some("claude"),
+        badge: AgentBadge::Idle,
+    };
+    let read = wait_until(|| reading_of(&watcher, &pane) == Some(idle_agent));
+
+    drop(watcher);
+    teardown(pane);
+    assert!(
+        read,
+        "the watcher thread alone should probe and tick the pane (specs/remote.md §4)"
+    );
+}
+
+#[test]
+fn an_untracked_pane_leaves_the_readings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_agent(tmp.path());
+    let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
+    let watcher = AgentWatcher::spawn(|| {});
+    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+    assert!(wait_until(|| reading_of(&watcher, &pane).is_some()));
+
+    watcher.track(Vec::new(), HashSet::new());
+    let gone = wait_until(|| reading_of(&watcher, &pane).is_none());
+
+    drop(watcher);
+    teardown(pane);
+    assert!(
+        gone,
+        "a pane the UI dropped must not linger in the readings"
+    );
 }
