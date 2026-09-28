@@ -6,7 +6,7 @@
 
 ---
 
-## ☐ Milestone — M-Phone · Follow and drive agents from a phone on the LAN
+## ☑ Milestone — M-Phone · Follow and drive agents from a phone on the LAN
 
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
