@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **1/6**.
+phone. Counter: **2/6**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -20,9 +20,11 @@ phone. Counter: **1/6**.
   *Tests*: 2 business e2e (watcher reads a fake agent with no UI frame; an
   untracked pane leaves the readings) + 1 app unit (live agent → sidebar badge).
   spec §4.
-- ☐ **T2 — Screen snapshot + shared key table.** `terminal` domain: grid → rows of
-  runs (colors via `TermPalette`, attributes, cursor), scrollback page;
-  `key_bytes` moved out of `ui::terminal_view`. *Tests*: unit. spec §6, §7.
+- ☑ **T2 — Screen snapshot + shared key table.** `terminal::screen`: live grid →
+  rows of runs (colors via `TermPalette`, dim/inverse folded, bold/italic/underline,
+  cursor), `history` pages; `terminal::keys` (domain `Key`/`Mods` + table),
+  `ui::terminal_view::key_bytes` adapts egui. *Tests*: 6 + 3 unit (3 moved). spec
+  §6, §7.
 - ☐ **T3 — Access domain.** `remote`: token, cookie + `Origin` checks, idle-stop
   clock (2 h, injected), LAN address pick (`getifaddrs`, private IPv4, `en0`
   first), `NSProcessInfo` activity held while on. *Tests*: unit. spec §3, §5.

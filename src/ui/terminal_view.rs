@@ -9,6 +9,7 @@ use crate::terminal::emu::{
     mouse_protocol, mouse_report, wheel_bytes, MouseButton, MouseKind, MouseMods, MouseProtocol,
     ScrollKind, SharedTerm,
 };
+use crate::terminal::keys::{Key, Mods};
 use crate::terminal::layout::{
     first_leaf, split_rects, Dir, Layout, Node, Orient, PaneId, Rect as PaneRect, MIN_COLS,
     MIN_LINES,
@@ -99,105 +100,33 @@ pub struct TerminalInput {
 
 pub const PROCESS_ENDED_BANNER: &str = "[process exited]";
 
-/// Normalized modifier signature, compared exactly by the chords. `cmd` merges
-/// egui's `command`/`mac_cmd` into a single flag.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Mods {
-    cmd: bool,
-    alt: bool,
-    ctrl: bool,
-    shift: bool,
-}
-
-impl Mods {
-    const CMD: Self = Self {
-        cmd: true,
-        alt: false,
-        ctrl: false,
-        shift: false,
-    };
-    const ALT: Self = Self {
-        cmd: false,
-        alt: true,
-        ctrl: false,
-        shift: false,
-    };
-    const SHIFT: Self = Self {
-        cmd: false,
-        alt: false,
-        ctrl: false,
-        shift: true,
-    };
-
-    fn of(m: egui::Modifiers) -> Self {
-        Self {
-            cmd: m.command || m.mac_cmd,
-            alt: m.alt,
-            ctrl: m.ctrl,
-            shift: m.shift,
-        }
-    }
-}
-
-/// Chords forwarded to the PTY, selected by exact modifier match. Adding a line
-/// is enough to bind a new shortcut.
-const CHORDS: &[(Mods, egui::Key, &[u8])] = &[
-    (Mods::SHIFT, egui::Key::Tab, b"\x1b[Z"), // backtab (CSI Z)
-    // Shift+Enter: CSI u **without negotiation** (kitty/Ghostty convention for
-    // combos without a legacy encoding). Claude Code never pushes the kitty
-    // protocol: it parses `CSI 13;2u` unconditionally and relies on the terminal
-    // to emit it by default — gating on the push breaks it.
-    (Mods::SHIFT, egui::Key::Enter, b"\x1b[13;2u"),
-    (Mods::ALT, egui::Key::Enter, b"\x1b\r"), // meta+enter: Claude Code newline (/terminal-setup)
-    (Mods::ALT, egui::Key::ArrowLeft, b"\x1bb"), // previous word
-    (Mods::ALT, egui::Key::ArrowRight, b"\x1bf"), // next word
-    (Mods::ALT, egui::Key::Backspace, b"\x1b\x7f"), // delete previous word
-    (Mods::CMD, egui::Key::ArrowLeft, b"\x01"), // start of line
-    (Mods::CMD, egui::Key::ArrowRight, b"\x05"), // end of line
-    (Mods::CMD, egui::Key::Backspace, b"\x15"), // delete to start of line
-];
-
-/// Special keys without a chord; residual modifiers are ignored.
-const SPECIAL: &[(egui::Key, &[u8])] = &[
-    (egui::Key::Enter, b"\r"),
-    (egui::Key::Tab, b"\t"),
-    (egui::Key::Backspace, b"\x7f"),
-    (egui::Key::Escape, b"\x1b"),
-    (egui::Key::Delete, b"\x1b[3~"),
-    (egui::Key::ArrowUp, b"\x1b[A"),
-    (egui::Key::ArrowDown, b"\x1b[B"),
-    (egui::Key::ArrowRight, b"\x1b[C"),
-    (egui::Key::ArrowLeft, b"\x1b[D"),
-];
-
+/// The egui key event in the terminal domain's terms (`terminal::keys`).
 pub fn key_bytes(key: egui::Key, modifiers: egui::Modifiers) -> Option<Vec<u8>> {
-    let mods = Mods::of(modifiers);
-    if let Some((_, _, seq)) = CHORDS.iter().find(|(m, k, _)| *m == mods && *k == key) {
-        return Some(seq.to_vec());
-    }
-    // Other Cmd combinations belong to the app (split, zoom, sidebar).
-    if mods.cmd {
-        return None;
-    }
-    if mods.ctrl {
-        return ctrl_byte(key).map(|b| vec![b]);
-    }
-    SPECIAL
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, seq)| seq.to_vec())
+    let mods = Mods {
+        cmd: modifiers.command || modifiers.mac_cmd,
+        alt: modifiers.alt,
+        ctrl: modifiers.ctrl,
+        shift: modifiers.shift,
+    };
+    crate::terminal::keys::key_bytes(domain_key(key)?, mods)
 }
 
-fn ctrl_byte(key: egui::Key) -> Option<u8> {
-    let name = key.name();
-    let bytes = name.as_bytes();
-    if bytes.len() == 1 {
-        let c = bytes[0].to_ascii_uppercase();
-        if c.is_ascii_uppercase() {
-            return Some(c - b'A' + 1);
-        }
-    }
-    None
+fn domain_key(key: egui::Key) -> Option<Key> {
+    Some(match key {
+        egui::Key::Enter => Key::Enter,
+        egui::Key::Tab => Key::Tab,
+        egui::Key::Backspace => Key::Backspace,
+        egui::Key::Escape => Key::Escape,
+        egui::Key::Delete => Key::Delete,
+        egui::Key::ArrowUp => Key::ArrowUp,
+        egui::Key::ArrowDown => Key::ArrowDown,
+        egui::Key::ArrowLeft => Key::ArrowLeft,
+        egui::Key::ArrowRight => Key::ArrowRight,
+        other => match other.name().as_bytes() {
+            [c] if c.is_ascii_alphabetic() => Key::Letter(c.to_ascii_uppercase() as char),
+            _ => return None,
+        },
+    })
 }
 
 struct CellView {
@@ -2304,44 +2233,6 @@ mod tests {
     fn cursor_shape_follows_focus() {
         assert_eq!(cursor_shape(true), CursorShape::Block);
         assert_eq!(cursor_shape(false), CursorShape::Outline);
-    }
-
-    #[test]
-    fn ctrl_letters_map_to_control_bytes() {
-        let ctrl = egui::Modifiers {
-            ctrl: true,
-            ..Default::default()
-        };
-        assert_eq!(key_bytes(egui::Key::C, ctrl), Some(vec![0x03]));
-        assert_eq!(key_bytes(egui::Key::D, ctrl), Some(vec![0x04]));
-        assert_eq!(key_bytes(egui::Key::Z, ctrl), Some(vec![0x1a]));
-    }
-
-    #[test]
-    fn shift_tab_sends_backtab_and_plain_tab_a_tab() {
-        let shift = egui::Modifiers {
-            shift: true,
-            ..Default::default()
-        };
-        assert_eq!(key_bytes(egui::Key::Tab, shift), Some(b"\x1b[Z".to_vec()));
-        assert_eq!(
-            key_bytes(egui::Key::Tab, egui::Modifiers::default()),
-            Some(b"\t".to_vec())
-        );
-    }
-
-    #[test]
-    fn special_keys_map_to_terminal_sequences() {
-        let none = egui::Modifiers::default();
-        assert_eq!(key_bytes(egui::Key::Enter, none), Some(b"\r".to_vec()));
-        assert_eq!(
-            key_bytes(egui::Key::Backspace, none),
-            Some(b"\x7f".to_vec())
-        );
-        assert_eq!(
-            key_bytes(egui::Key::ArrowUp, none),
-            Some(b"\x1b[A".to_vec())
-        );
     }
 
     fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {

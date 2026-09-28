@@ -121,8 +121,9 @@ Server → phone:
 | `history` | `{id, before, lines}` | reply to `history` |
 | `ended` | `{id}` | watched pane dropped |
 
-`lines` = rows of **runs** `{t, fg, bg, bold, italic, underline, dim}`, colors
-resolved to `#rrggbb` through the pane's `TermPalette`, inverse already applied.
+`lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
+resolved to `#rrggbb` through the pane's `TermPalette`, dim and inverse already
+folded into the colors, trailing blanks dropped (`terminal::screen`).
 `writable = false` once no agent is in the foreground: the screen stays readable,
 input is refused (§1, agents only).
 
