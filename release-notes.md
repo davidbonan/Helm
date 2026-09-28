@@ -1,5 +1,18 @@
 # Release notes
 
+## 3.0.0
+
+- **Open on phone** (command palette): scan the QR code with your
+  phone on the same Wi-Fi to follow your agents from anywhere in the house —
+  the list with their badges, the live terminal, a reply field and quick keys
+  (`Esc`, `1`–`3`, arrows, `⇥`, `^C`, `⏎`) to answer permission prompts.
+  Keeps working with the Mac locked.
+- While you drive an agent from the phone, it redraws at the phone's size; a
+  pill on the Mac pane says so, and a click there takes the size back. Pinch
+  or A−/A+ on the phone picks the reading size.
+- Plain HTTP on your local network: use it on a trusted Wi-Fi. *Stop phone
+  access* ends it; it also stops after 2 h with no phone connected.
+
 ## 2.8.0
 
 - `Cmd+P` opens the **command palette**: reach the actions spread across
@@ -93,15 +106,3 @@
 - Comment cards no longer run off the right edge on a file with long lines: they
   were as wide as the longest line in the diff, which put **Resolve** and **Send
   review** past the window, out of reach.
-
-## 2.2.2
-
-- Terminal glyphs stay in their cell: Claude Code's ✻ spinner, its ⏺ bullets and
-  the emoji were drawn at their own size and spilled ink over the characters
-  next to them. Anything wider than the grid is now shrunk into it.
-- The bundled terminal face is JetBrains Mono **Nerd Font** — the statusline
-  private-use icons and the braille spinners are drawn by the mono face itself,
-  on the grid, instead of being borrowed oversized from a symbol font. Menlo
-  backs it for the Dingbats, where Claude Code takes its spinner.
-- The Pull Requests header stands on the page instead of over it: the tab
-  baseline alone separates it from the list.
