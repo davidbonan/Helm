@@ -10,7 +10,7 @@ to install. Module: `remote` (+ `agent_watch` off the UI thread, §4).
 | In | Out (§10) |
 |----|-----------|
 | List of the agents helm detects, with their badge | Creating a terminal / launching an agent from the phone |
-| Mirror of one agent's terminal screen (+ scrollback) | Conversation view (transcript-based) |
+| One agent's terminal at the phone's own size (+ scrollback) | Conversation view (transcript-based) |
 | Sending an instruction, quick keys for prompts | Non-agent terminals (plain shells, Run strips) |
 | Works with the Mac locked / helm hidden | HTTPS, Tailscale, push notifications |
 
@@ -77,6 +77,7 @@ moves to a **watcher thread** (refactor, first task):
                                                     +--snapshot--> [remote server]
 [remote server] --reads grid (lock)--> [Term grid] <--feeds-- [PTY reader]
 [remote server] --paste / key bytes--> [PtyWriter]
+[remote server] --claim / release size--> [PaneSizing] <--widget size, claim-- [UI]
 ```
 
 - **Watcher thread** owns the per-pane `PaneAgentState` and ticks every second
@@ -88,7 +89,7 @@ moves to a **watcher thread** (refactor, first task):
   each frame; badges, dashboard, `Cmd+J`, and completion notifications keep their
   behaviour.
 - **Remote registry**: per exposed pane, `SharedTerm` + `PtyWriter` +
-  `Arc<PaneActivity>` clones, keyed by an opaque id minted at registration. The UI
+  `Arc<PaneActivity>` + `Arc<PaneSizing>` clones, keyed by an opaque id minted at registration. The UI
   registers a pane when it opens and unregisters it when it drops; exposure is
   filtered by the watcher's badge.
 - **Server**: `std::net` + `httparse` for the three HTTP routes, `tungstenite`
@@ -133,9 +134,11 @@ Phone → server:
 
 | `type` | Payload | Effect |
 |--------|---------|--------|
-| `watch` | `{id}` | start mirroring this pane (one per connection) |
-| `send` | `{id, text}` | `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
-| `key` | `{id, key}` | one quick key (§7), encoded like the Mac keyboard |
+| `watch` | `{id, rows, cols}` | start mirroring this pane (one per connection) and claim its size (§7.1) |
+| `resize` | `{id, rows, cols}` | the phone's screen changed (zoom, rotation): claim that size |
+| `unwatch` | — | back to the list: release the size |
+| `send` | `{id, text}` | re-claims the size, then `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
+| `key` | `{id, key}` | re-claims the size, then one quick key (§7), encoded like the Mac keyboard |
 | `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
 
 Change detection: the server snapshots the watched grid every 100 ms under the
@@ -149,11 +152,13 @@ Mobile-first, dark/light following the system, a single page:
 - **Agents**: rows grouped by project — agent name, branch · tab, badge (same
   semantics and colors as the sidebar, [`design-system.md`](design-system.md)).
   Tap ⇒ terminal view. Empty ⇒ *No agent running in helm*.
-- **Terminal**: the screen in a monospace `<pre>` at the pane's **own width** (user
-  decision: no reflow, no resize of the Mac's PTY). Opens with the font fitted so
-  every column fits the phone's width (refit on rotation or a column change);
-  pinch on the terminal or A−/A+ zoom by font size — native page zoom is off, it
-  would scale the header and the dock too. Scrolling up past the top requests `history`.
+- **Terminal**: the screen in a monospace `<pre>`, **sized for the phone** (§7.1):
+  the agent draws its TUI for the phone's width, no reflow. The reading font
+  (12 px by default) sets the size in cells; pinch on the terminal or A−/A+ changes
+  it, and once the gesture settles the phone asks for the matching size (`resize`)
+  — native page zoom is off, it would scale the header and the dock too. A frame
+  wider than the phone (the Mac took the size back) shows fitted to the width until
+  the phone claims again. Scrolling up past the top requests `history`.
 - **Keyboard**: the page is pinned to the visual viewport (height *and*
   `offsetTop`), so the dock rides right above the iOS keyboard.
   Sticks to the bottom while new output arrives, unless the user scrolled up.
@@ -165,7 +170,25 @@ Mobile-first, dark/light following the system, a single page:
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
 - **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
   suspends background tabs), reconnect and re-`watch`; a `401` shows *Access
-  stopped — scan the QR code again*.
+  stopped — scan the QR code again*. Hidden, the page closes its socket: the
+  phone stops driving (§7.1).
+
+### 7.1 One PTY, two screens — the latest to act sizes it
+
+A PTY has a single size and the agent draws for it, so the Mac and the phone
+**take turns** (tmux's `window-size latest`), arbitrated by `terminal::sizing`:
+
+| Event | PTY size |
+|-------|----------|
+| Phone `watch` / `resize` / `send` / `key` | the phone's rows × cols (bounded 8–300 × 20–500) |
+| Click, keystroke, paste or mouse input on the pane **on the Mac** | the Mac widget's size |
+| Phone `unwatch`, socket closed, page hidden | the Mac widget's size |
+| Mac window or split resized while the phone drives | recorded, applied when the Mac gets the turn back |
+
+The phone thread resizes itself (`TIOCSWINSZ` on a `dup` of the master fd): it
+works while helm draws no frame (§4). The rows ignore the iOS keyboard, so
+opening it does not resize the agent. While the phone drives, the Mac shows the
+narrower grid in its pane, the rest blank.
 
 ## 8. Testing
 
@@ -179,8 +202,11 @@ Mobile-first, dark/light following the system, a single page:
 ## 9. Accepted limitations
 
 - Plain HTTP on the LAN (§3.3).
-- Wide screens open fitted to the phone's width: a ~200-column Claude Code screen
-  is an overview in portrait (~3 px font) — pinch to read, landscape is comfortable.
+- Every turn change is a SIGWINCH: the agent redraws, and what it had already
+  printed at the other width stays in the scrollback at that width (history lines
+  wider than the phone scroll sideways).
+- Two phones on one agent: the last to act sizes it; one leaving hands the size to
+  the Mac until the other acts.
 - Scrollback read while the agent keeps printing drifts by the lines scrolled
   in meanwhile (history is addressed by grid line); back at the bottom, it resets.
 - No notification on the phone: the user opens the page to check.
@@ -194,4 +220,3 @@ Mobile-first, dark/light following the system, a single page:
   mobile reading), mapped to a pane through a `SessionStart` hook.
 - **HTTPS / Tailscale** (encrypted, off-LAN, prerequisite for Web Push).
 - **Push notifications** on agent completion.
-- **Fit to phone**: temporarily resizing the PTY to the phone's width.

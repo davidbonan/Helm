@@ -12,6 +12,7 @@ use crate::remote::protocol::{AgentRow, FromPhone, ToPhone};
 use crate::remote::registry::Registry;
 use crate::terminal::pane::PaneHandle;
 use crate::terminal::screen::{history, screen};
+use crate::terminal::sizing::GridSize;
 
 pub const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -24,6 +25,8 @@ pub struct PhoneSocket {
     ws: WebSocket<TcpStream>,
     registry: Registry,
     watched: Option<u64>,
+    /// The phone's screen in cells: the watched pane takes it while the phone drives.
+    phone_size: GridSize,
     sent_agents: Option<Vec<AgentRow>>,
     sent_screen: Option<ToPhone>,
     last_push: Option<Instant>,
@@ -35,6 +38,7 @@ impl PhoneSocket {
             ws,
             registry,
             watched: None,
+            phone_size: GridSize { rows: 0, cols: 0 },
             sent_agents: None,
             sent_screen: None,
             last_push: None,
@@ -43,6 +47,13 @@ impl PhoneSocket {
 
     /// Runs until the phone leaves, the connection fails or `stopped` turns true.
     pub fn run(mut self, stopped: impl Fn() -> bool) {
+        self.serve(stopped);
+        self.unwatch();
+        let _ = self.ws.close(None);
+        let _ = self.ws.flush();
+    }
+
+    fn serve(&mut self, stopped: impl Fn() -> bool) {
         while !stopped() {
             match self.ws.read() {
                 Ok(Message::Text(text)) => {
@@ -65,24 +76,32 @@ impl PhoneSocket {
                 }
             }
         }
-        let _ = self.ws.close(None);
-        let _ = self.ws.flush();
     }
 
     fn answer(&mut self, message: FromPhone) -> tungstenite::Result<()> {
         match message {
-            FromPhone::Watch { id } => {
+            FromPhone::Watch { id, rows, cols } => {
                 let listed = self
                     .registry
                     .agents()
                     .iter()
                     .any(|agent| agent.pane.uid.get() == id);
                 if listed {
+                    if self.watched != Some(id) {
+                        self.unwatch();
+                    }
                     self.watched = Some(id);
                     self.sent_screen = None;
                     self.last_push = None;
+                    self.resize_watched(GridSize { rows, cols });
                 }
             }
+            FromPhone::Resize { id, rows, cols } => {
+                if self.watched == Some(id) {
+                    self.resize_watched(GridSize { rows, cols });
+                }
+            }
+            FromPhone::Unwatch => self.unwatch(),
             FromPhone::Send { id, text } => self.type_into(id, |pane| {
                 pane.paste(&text)?;
                 pane.feed(b"\r")
@@ -107,13 +126,31 @@ impl PhoneSocket {
         Ok(())
     }
 
-    /// Input goes only to a listed pane with an agent in its foreground.
+    /// Input goes only to a listed pane with an agent in its foreground. Typing takes
+    /// the size back from the Mac, which may have claimed it since the phone did.
     fn type_into(&self, id: u64, write: impl FnOnce(&PaneHandle) -> anyhow::Result<()>) {
         if !self.registry.is_writable(id) {
             return;
         }
         if let Some(pane) = self.registry.pane(id) {
+            if self.watched == Some(id) {
+                let _ = pane.handle.claim_phone(self.phone_size);
+            }
             let _ = write(&pane.handle);
+        }
+    }
+
+    fn resize_watched(&mut self, size: GridSize) {
+        self.phone_size = size;
+        if let Some(pane) = self.watched.and_then(|id| self.registry.pane(id)) {
+            let _ = pane.handle.claim_phone(size);
+        }
+    }
+
+    /// The phone stops driving the watched pane: the Mac gets its size back.
+    fn unwatch(&mut self) {
+        if let Some(pane) = self.watched.take().and_then(|id| self.registry.pane(id)) {
+            let _ = pane.handle.release_phone();
         }
     }
 

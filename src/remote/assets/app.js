@@ -5,6 +5,11 @@ const HISTORY_PAGE = 200;
 const RECONNECT_MS = 1500;
 const FONT_MIN = 3;
 const FONT_MAX = 20;
+const READING_FONT_MIN = 7;
+const RESIZE_DEBOUNCE_MS = 250;
+const GRID_PADDING_X = 16;
+const GRID_PADDING_BOTTOM = 8;
+const LINE_HEIGHT = 1.25;
 
 const $ = (id) => document.getElementById(id);
 
@@ -17,9 +22,12 @@ const state = {
   historyDone: false,
   historyLoading: false,
   cols: 0,
-  fitWidth: true,
+  // The font the user reads at: it sets the phone's screen size in cells.
   fontPx: 12,
+  // The font on screen: smaller while the Mac holds a wider size.
+  displayPx: 12,
   viewportWidth: 0,
+  resizeTimer: 0,
 };
 
 function escapeHtml(text) {
@@ -29,12 +37,13 @@ function escapeHtml(text) {
 // Socket
 
 function connect() {
+  if (document.visibilityState === "hidden") return;
   if (state.socket && state.socket.readyState <= WebSocket.OPEN) return;
   const socket = new WebSocket(`ws://${location.host}/ws`);
   state.socket = socket;
   socket.onopen = () => {
     $("link").hidden = true;
-    if (state.watched !== null) send({ type: "watch", id: state.watched });
+    if (state.watched !== null) send({ type: "watch", id: state.watched, ...phoneSize() });
   };
   socket.onmessage = (event) => receive(JSON.parse(event.data));
   socket.onclose = () => {
@@ -109,17 +118,17 @@ function openMirror(id) {
   state.watched = id;
   state.writable = false;
   state.cols = 0;
-  state.fitWidth = true;
   resetHistory();
   $("screen").innerHTML = "";
   $("notice").hidden = true;
   $("agents-view").hidden = true;
   $("terminal-view").hidden = false;
   renderHeader();
-  send({ type: "watch", id });
+  send({ type: "watch", id, ...phoneSize() });
 }
 
 function closeMirror() {
+  if (state.watched !== null) send({ type: "unwatch" });
   state.watched = null;
   $("terminal-view").hidden = true;
   $("agents-view").hidden = false;
@@ -169,7 +178,7 @@ function renderScreen(frame) {
   const stick = isAtBottom(scroller);
   if (frame.cols !== state.cols) {
     state.cols = frame.cols;
-    if (state.fitWidth) fitFontToWidth();
+    fitDisplay();
   }
   scroller.style.setProperty("--term-bg", frame.bg);
   scroller.style.setProperty("--term-fg", frame.fg);
@@ -226,8 +235,8 @@ function setDockWritable(writable) {
 }
 
 function applyFont(fontPx) {
-  state.fontPx = Math.min(FONT_MAX, Math.max(FONT_MIN, fontPx));
-  document.documentElement.style.setProperty("--term-font", `${state.fontPx}px`);
+  state.displayPx = Math.min(FONT_MAX, Math.max(FONT_MIN, fontPx));
+  document.documentElement.style.setProperty("--term-font", `${state.displayPx}px`);
 }
 
 function charWidthEm() {
@@ -240,26 +249,50 @@ function charWidthEm() {
   return width;
 }
 
-function fitFontToWidth() {
-  if (state.cols === 0) return;
-  const gridPadding = 16;
-  applyFont(($("scroller").clientWidth - gridPadding) / (state.cols * charWidthEm()));
+// The screen the phone offers at the reading font. Rows ignore the iOS keyboard:
+// opening it must not resize the agent.
+function phoneSize() {
+  const scroller = $("scroller");
+  const viewport = window.visualViewport;
+  const keyboard = viewport ? Math.max(0, window.innerHeight - viewport.height) : 0;
+  const width = scroller.clientWidth - GRID_PADDING_X;
+  const height = scroller.clientHeight + keyboard - GRID_PADDING_BOTTOM;
+  return {
+    cols: Math.floor(width / (state.fontPx * charWidthEm())),
+    rows: Math.floor(height / (state.fontPx * LINE_HEIGHT)),
+  };
 }
 
-// Zooming keeps the content point under `anchor` (scroller coordinates) in place.
+function requestResize() {
+  clearTimeout(state.resizeTimer);
+  state.resizeTimer = setTimeout(() => {
+    if (state.watched !== null) send({ type: "resize", id: state.watched, ...phoneSize() });
+  }, RESIZE_DEBOUNCE_MS);
+}
+
+// A frame wider than the phone (the Mac took the size back) shows fitted to the width.
+function fitDisplay() {
+  if (state.cols === 0) return;
+  const fitted = ($("scroller").clientWidth - GRID_PADDING_X) / (state.cols * charWidthEm());
+  applyFont(Math.min(state.fontPx, fitted));
+}
+
+// Zooming keeps the content point under `anchor` (scroller coordinates) in place;
+// once it settles, the agent is asked for the screen that fits at the new font.
 function zoomTo(fontPx, anchor) {
   const scroller = $("scroller");
-  const before = state.fontPx;
-  state.fitWidth = false;
-  applyFont(fontPx);
-  const ratio = state.fontPx / before;
+  const before = state.displayPx;
+  state.fontPx = Math.min(FONT_MAX, Math.max(READING_FONT_MIN, fontPx));
+  applyFont(state.fontPx);
+  const ratio = state.displayPx / before;
   scroller.scrollLeft = (scroller.scrollLeft + anchor.x) * ratio - anchor.x;
   scroller.scrollTop = (scroller.scrollTop + anchor.y) * ratio - anchor.y;
 }
 
 function zoomStep(step) {
   const scroller = $("scroller");
-  zoomTo(Math.round(state.fontPx) + step, { x: 0, y: scroller.clientHeight });
+  zoomTo(Math.round(state.displayPx) + step, { x: 0, y: scroller.clientHeight });
+  requestResize();
 }
 
 const pinch = { distance: 0, fontPx: 0 };
@@ -279,7 +312,7 @@ function touchMidpoint(touches) {
 function startPinch(event) {
   if (event.touches.length !== 2) return;
   pinch.distance = touchDistance(event.touches);
-  pinch.fontPx = state.fontPx;
+  pinch.fontPx = state.displayPx;
 }
 
 function movePinch(event) {
@@ -289,7 +322,9 @@ function movePinch(event) {
 }
 
 function endPinch(event) {
-  if (event.touches.length < 2) pinch.distance = 0;
+  if (event.touches.length >= 2 || pinch.distance === 0) return;
+  pinch.distance = 0;
+  requestResize();
 }
 
 // Composer
@@ -329,7 +364,7 @@ function fitViewport() {
   const width = viewport ? viewport.width : window.innerWidth;
   if (width !== state.viewportWidth) {
     state.viewportWidth = width;
-    if (state.fitWidth && state.watched !== null) fitFontToWidth();
+    if (state.watched !== null) requestResize();
   }
 }
 
@@ -370,8 +405,10 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
+// Hidden, the phone stops driving: closing the socket gives the Mac its size back.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") connect();
+  else if (state.socket) state.socket.close();
 });
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", fitViewport);

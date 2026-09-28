@@ -121,7 +121,9 @@ impl ToPhone {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromPhone {
-    Watch { id: u64 },
+    Watch { id: u64, rows: u16, cols: u16 },
+    Resize { id: u64, rows: u16, cols: u16 },
+    Unwatch,
     Send { id: u64, text: String },
     Key { id: u64, key: QuickKey },
     History { id: u64, before: i32, count: usize },
@@ -182,6 +184,8 @@ mod tests {
         let key: FromPhone = serde_json::from_str(r#"{"type":"key","id":7,"key":"1"}"#).unwrap();
         let send: FromPhone =
             serde_json::from_str(r#"{"type":"send","id":7,"text":"go"}"#).unwrap();
+        let watch: FromPhone =
+            serde_json::from_str(r#"{"type":"watch","id":7,"rows":40,"cols":52}"#).unwrap();
 
         assert_eq!(
             key,
@@ -195,6 +199,14 @@ mod tests {
             FromPhone::Send {
                 id: 7,
                 text: "go".to_owned()
+            }
+        );
+        assert_eq!(
+            watch,
+            FromPhone::Watch {
+                id: 7,
+                rows: 40,
+                cols: 52
             }
         );
     }

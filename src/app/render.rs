@@ -1260,10 +1260,7 @@ impl HelmApp {
                                     if let Some(scroll) = out.scroll {
                                         pane.scroll(scroll);
                                     }
-                                    if out.size.rows != pane.rows() || out.size.cols != pane.cols()
-                                    {
-                                        let _ = pane.resize(out.size.rows, out.size.cols);
-                                    }
+                                    let _ = pane.fit_desktop(out.size);
                                 }
                                 Some(TerminalState::Failed(err)) => {
                                     ui.label(
@@ -3269,6 +3266,13 @@ fn render_pane(
                 if let Some(scroll) = input.scroll {
                     pane.scroll(scroll);
                 }
+                let acted = input.clicked
+                    || input.paste.is_some()
+                    || !input.bytes.is_empty()
+                    || !input.mouse_bytes.is_empty();
+                if acted {
+                    let _ = pane.claim_desktop();
+                }
                 if !input.scroll_bytes.is_empty() {
                     let _ = pane.input(&input.scroll_bytes);
                 }
@@ -3281,9 +3285,7 @@ fn render_pane(
                 if let Some(text) = &input.paste {
                     let _ = pane.paste(text);
                 }
-                if input.size.rows != pane.rows() || input.size.cols != pane.cols() {
-                    let _ = pane.resize(input.size.rows, input.size.cols);
-                }
+                let _ = pane.fit_desktop(input.size);
             }
             input.clicked
         }

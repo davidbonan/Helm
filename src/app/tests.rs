@@ -989,6 +989,64 @@ fn a_live_agent_reaches_the_sidebar_through_the_watcher() {
     assert_eq!(app.caches.agents.first().map(|e| e.agent), Some("claude"));
 }
 
+fn columns(handle: &crate::terminal::pane::PaneHandle) -> usize {
+    use alacritty_terminal::grid::Dimensions;
+    handle.grid().lock().grid().columns()
+}
+
+fn click(harness: &egui_kittest::Harness<'_, HelmApp>, pos: egui::Pos2) {
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+}
+
+#[test]
+fn clicking_the_mac_terminal_takes_the_size_back_from_the_phone() {
+    let mut app = app_with(&["a"]);
+    let key = key_of(&app.workspace, 0, 0);
+    let pane = Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
+    let phone = pane.handle();
+    let mut panes = Panes::new();
+    panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
+    app.caches.panes.insert(key, panes);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        );
+    harness.run();
+    let mac_columns = columns(&phone);
+
+    phone
+        .claim_phone(crate::terminal::sizing::GridSize { rows: 30, cols: 50 })
+        .unwrap();
+    harness.run();
+    let while_phone_drives = columns(&phone);
+    harness.hover_at(egui::pos2(450.0, 350.0));
+    click(&harness, egui::pos2(450.0, 350.0));
+    harness.run();
+
+    assert_ne!(mac_columns, 50, "the widget sizes the grid to the window");
+    assert_eq!(
+        while_phone_drives, 50,
+        "the Mac's widget leaves the phone's size alone"
+    );
+    assert_eq!(
+        columns(&phone),
+        mac_columns,
+        "a click on the Mac takes it back"
+    );
+}
+
 #[test]
 fn cmd_j_focuses_the_first_finished_agent_in_workspace_order() {
     let mut app = app_with(&["a", "b"]);

@@ -17,6 +17,7 @@ use crate::terminal::layout::{
 use crate::terminal::links::{link_at, LinkAction};
 use crate::terminal::palette::{Rgb, TermPalette};
 use crate::terminal::selection::{covers, selected_text, Cell, Selection, SelectionMode};
+use crate::terminal::sizing::GridSize;
 use crate::theme::Palette;
 use crate::ui::{paint_icon, with_alpha};
 
@@ -71,12 +72,6 @@ pub fn cursor_shape(focused: bool) -> CursorShape {
     } else {
         CursorShape::Outline
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GridSize {
-    pub rows: u16,
-    pub cols: u16,
 }
 
 pub struct TerminalInput {
