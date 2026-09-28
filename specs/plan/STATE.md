@@ -6,6 +6,37 @@
 
 ---
 
+## ☐ Milestone — M-Phone · Follow and drive agents from a phone on the LAN
+
+Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
+start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
+Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
+phone. Counter: **0/6**.
+
+- ☐ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
+  `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
+  (`tcgetpgrp`); UI registers/unregisters panes, sends the focused pane, reads the
+  snapshot. Parity: badges, dashboard, `Cmd+J`, completion notifications.
+  *Tests*: existing agent tests green + 1 business e2e (fake agent badge moves with
+  no UI frame). spec §4.
+- ☐ **T2 — Screen snapshot + shared key table.** `terminal` domain: grid → rows of
+  runs (colors via `TermPalette`, attributes, cursor), scrollback page;
+  `key_bytes` moved out of `ui::terminal_view`. *Tests*: unit. spec §6, §7.
+- ☐ **T3 — Access domain.** `remote`: token, cookie + `Origin` checks, idle-stop
+  clock (2 h, injected), LAN address pick (`getifaddrs`, private IPv4, `en0`
+  first), `NSProcessInfo` activity held while on. *Tests*: unit. spec §3, §5.
+- ☐ **T4 — Server.** `tiny_http` + `tungstenite`, thread per connection, bound to
+  the LAN address; `/pair`, `/`, `/ws`; protocol of spec §6; remote registry;
+  agents-only exposure, `writable`. *Tests*: business e2e on `127.0.0.1` (pair →
+  `agents` → `send` reaches the PTY; plain shell never listed).
+- ☐ **T5 — Phone page.** Embedded `index.html`/`app.js`/`app.css`: agents list,
+  terminal mirror (`<pre>`, h-scroll, pinch-zoom, A−/A+, history), composer, quick
+  keys, reconnect on `visibilitychange`. *Verified*: manual iPhone Safari (spec §8).
+- ☐ **T6 — Palette entry + pairing modal.** *Open on phone* / *Stop phone access*;
+  modal: QR (`qrcode`), URL, warning, device count, Stop. *Tests*: UI e2e.
+
+---
+
 ## ☑ Milestone — M-Palette · `Cmd+P` command palette
 
 Spec: [`specs/keybindings.md`](../keybindings.md) §1, §6. Per the user: curated
