@@ -28,6 +28,7 @@ mod links_e2e;
 mod notify_e2e;
 mod pty_e2e;
 mod pull_requests_e2e;
+mod remote_e2e;
 mod term_emu_e2e;
 mod term_pane_e2e;
 mod ui_agents_view;

@@ -97,12 +97,15 @@ objc2 = "0.5"
 # NSAppleEvent*: the `helm://` URL arrives as a kAEGetURL Apple Event
 # (specs/cli.md §4), claimed on the event manager before any NSApplication
 # exists — a cold launch must not miss the URL that caused it.
+# NSProcessInfo: phone access holds an activity that keeps the Mac awake
+# (specs/remote.md §5).
 objc2-foundation = { version = "0.2", features = [
     "NSAppleEventDescriptor",
     "NSAppleEventManager",
     "NSArray",
     "NSBundle",
     "NSGeometry",
+    "NSProcessInfo",
     "NSString",
     "NSThread",
 ] }

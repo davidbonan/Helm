@@ -14,6 +14,7 @@ pub mod notify;
 pub mod persistence;
 pub mod pull_requests;
 pub mod release_notes;
+pub mod remote;
 pub mod review;
 pub mod run;
 pub mod terminal;

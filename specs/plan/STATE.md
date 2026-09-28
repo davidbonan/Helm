@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **2/6**.
+phone. Counter: **3/6**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -25,9 +25,11 @@ phone. Counter: **2/6**.
   cursor), `history` pages; `terminal::keys` (domain `Key`/`Mods` + table),
   `ui::terminal_view::key_bytes` adapts egui. *Tests*: 6 + 3 unit (3 moved). spec
   §6, §7.
-- ☐ **T3 — Access domain.** `remote`: token, cookie + `Origin` checks, idle-stop
-  clock (2 h, injected), LAN address pick (`getifaddrs`, private IPv4, `en0`
-  first), `NSProcessInfo` activity held while on. *Tests*: unit. spec §3, §5.
+- ☑ **T3 — Access domain.** `remote::access` (`Token` 128-bit per start,
+  constant-time match, `Access` pairing URL / cookie / `Origin` checks, `IdleClock`
+  2 h injected), `remote::address` (`getifaddrs`, private IPv4, `en0` first),
+  `remote::awake::KeepAwake` (`NSActivityUserInitiated`). *Tests*: 11 unit + 1
+  business e2e (`pmset` lists the assertion, gone on drop). spec §3, §5.
 - ☐ **T4 — Server.** `tiny_http` + `tungstenite`, thread per connection, bound to
   the LAN address; `/pair`, `/`, `/ws`; protocol of spec §6; remote registry;
   agents-only exposure, `writable`. *Tests*: business e2e on `127.0.0.1` (pair →
