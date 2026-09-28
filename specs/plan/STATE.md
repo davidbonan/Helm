@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **5/6**.
+phone. Counter: **6/6**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -42,8 +42,12 @@ phone. Counter: **5/6**.
   *Access stopped* on 401; `screen` carries the palette `fg`/`bg`. *Verified*:
   Chrome iPhone emulation over CDP against a live server — list, mirror, `send` +
   quick key reach the PTY, light + dark shots in `verify-artifacts/20260928-123314-phone-page/`.
-- ☐ **T6 — Palette entry + pairing modal.** *Open on phone* / *Stop phone access*;
-  modal: QR (`qrcode`), URL, warning, device count, Stop. *Tests*: UI e2e.
+- ☑ **T6 — Palette entry + pairing modal.** `Command::{OpenOnPhone,StopPhoneAccess}`;
+  `app::phone_access` (start on the LAN, adopt, publish panes at the agent poll,
+  self-stop noticed + toast); `ui::phone_access_modal` (QR via `remote::qr`, URL,
+  Copy link, warning, device count, Stop). *Tests*: 2 UI e2e + 1 app unit.
+  *Verified*: headless-verify `verify-artifacts/20260928_124024_31308/` (real LAN
+  bind, port reachable while on, freed after Stop).
 
 ### Next actions (M-Phone)
 

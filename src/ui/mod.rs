@@ -10,6 +10,7 @@ pub mod file_list;
 pub mod git_panel;
 pub mod graph_toolbar;
 pub mod graph_view;
+pub mod phone_access_modal;
 pub mod preferences;
 pub mod pull_requests_view;
 pub mod rebase_view;

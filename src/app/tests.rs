@@ -3951,6 +3951,30 @@ fn picking_a_server_selects_its_worktree_with_the_run_strip_open() {
 }
 
 #[test]
+fn stop_phone_access_is_offered_while_on_and_ends_it() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = palette_harness(app_with(&["a"]), crate::command_palette::Screen::Commands);
+    harness.run();
+    harness.get_by_label("Open on phone");
+    assert!(harness.query_by_label("Stop phone access").is_none());
+
+    let registry = crate::remote::registry::Registry::default();
+    let server = crate::remote::server::PhoneServer::start_on_address(
+        [127, 0, 0, 1].into(),
+        registry.clone(),
+    )
+    .unwrap();
+    let app = harness.state_mut();
+    app.adopt_phone_server(server, registry);
+    app.modal = Some(Modal::CommandPalette(Default::default()));
+    harness.run();
+    harness.get_by_label("Stop phone access").click();
+    harness.run();
+
+    assert!(!harness.state().is_phone_access_on());
+}
+
+#[test]
 fn cmd_p_never_replaces_another_modal() {
     let mut app = app_with(&["a"]);
     app.modal = Some(Modal::AbortOp);

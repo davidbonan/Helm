@@ -159,7 +159,9 @@ impl HelmApp {
             Command::RunningServers
             | Command::ToggleTheme
             | Command::SendFeedback
-            | Command::WhatsNew => true,
+            | Command::WhatsNew
+            | Command::OpenOnPhone => true,
+            Command::StopPhoneAccess => self.is_phone_access_on(),
             Command::RunServer => run_status.is_some_and(|s| *s != RunStatus::Running),
             Command::RelaunchServer | Command::StopServer => {
                 run_status == Some(&RunStatus::Running)
@@ -505,6 +507,8 @@ impl HelmApp {
                 self.modal = Some(Modal::Feedback(FeedbackPage::default()));
             }
             Command::WhatsNew => self.modal = Some(Modal::WhatsNew),
+            Command::OpenOnPhone => self.open_on_phone(now),
+            Command::StopPhoneAccess => self.stop_phone_access(),
             Command::SwitchTo
             | Command::RunningServers
             | Command::Stashes
@@ -601,6 +605,8 @@ fn command_icon(command: Command) -> Icon {
         Command::CopyPath => Icon::Copy,
         Command::PullRequests => Icon::GitPullRequest,
         Command::Agents => Icon::Bot,
+        Command::OpenOnPhone => Icon::QrCode,
+        Command::StopPhoneAccess => Icon::PhoneOff,
         Command::ToggleTheme => Icon::SunMoon,
         Command::SendFeedback => Icon::MessageSquare,
         Command::WhatsNew => Icon::Sparkles,

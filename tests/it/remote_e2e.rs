@@ -217,12 +217,18 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
     assert_eq!(screen["writable"], true);
 }
 
+/// This process's power assertions: a helm running beside the tests holds its own.
 fn power_assertions() -> String {
     let out = std::process::Command::new("pmset")
         .args(["-g", "assertions"])
         .output()
         .expect("pmset ships with macOS");
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    let ours = format!("pid {}(", std::process::id());
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(&ours))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]

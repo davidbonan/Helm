@@ -146,6 +146,7 @@ use git_session::{
 };
 
 mod command_palette;
+mod phone_access;
 mod render;
 
 pub mod url_scheme;
@@ -435,6 +436,9 @@ enum Modal {
     MergePr(Box<crate::pull_requests::model::PullRequest>),
     /// `Cmd+P` palette (keybindings.md §1): commands and the screens they open.
     CommandPalette(crate::command_palette::CommandPalette),
+    /// Pairing QR code of phone access (specs/remote.md §2); the server it shows
+    /// lives in `HelmApp::phone`.
+    PhoneAccess,
 }
 
 impl Modal {
@@ -460,6 +464,7 @@ impl Modal {
             | Modal::Feedback(_)
             | Modal::MergePr(_)
             | Modal::CommandPalette(_)
+            | Modal::PhoneAccess
             | Modal::WhatsNew => false,
         }
     }
@@ -639,6 +644,10 @@ pub struct HelmApp {
     /// first pane (it carries the `ctx` repaint), dropped with the last.
     agent_watcher: Option<AgentWatcher>,
     agent_readings: Readings,
+    /// Phone access (specs/remote.md), `None` while off.
+    phone: Option<phone_access::PhoneAccess>,
+    /// The terminal palette of the last frame: what the phone mirror paints with.
+    term_palette: TermPalette,
     last_group_poll: f64,
     /// Workspace PR fetch running off the UI thread (pull-requests.md §6): `gh`
     /// and `curl` calls plus libgit2 remote resolution must not freeze rendering.
@@ -840,6 +849,8 @@ impl HelmApp {
             last_agent_poll: 0.0,
             agent_watcher: None,
             agent_readings: Readings::default(),
+            phone: None,
+            term_palette: TermPalette::dark(),
             last_group_poll: 0.0,
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
@@ -1070,6 +1081,7 @@ impl HelmApp {
             self.caches.agents.clear();
             self.agent_watcher = None;
             self.agent_readings = Readings::default();
+            self.sync_phone_access(ctx.input(|i| i.time));
             return;
         }
         // Idle wake-up: the watched set and the focus reach the watcher at this
@@ -1087,6 +1099,7 @@ impl HelmApp {
                     AgentWatcher::spawn(move || ctx.request_repaint())
                 })
                 .track(watched, focused);
+            self.sync_phone_access(now);
         }
         let changed = self
             .agent_watcher
@@ -4215,6 +4228,7 @@ impl eframe::App for HelmApp {
         );
         let palette = preset.palette;
         let term_palette = preset.term;
+        self.term_palette = term_palette;
 
         let ctx = ui.ctx().clone();
         // Reset every pane's "painted this frame" flag; the render path re-sets it
