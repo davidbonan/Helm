@@ -6,6 +6,8 @@ use std::path::Path;
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::terminal::sizing::GridSize;
+
 const DEFAULT_SHELL: &str = "/bin/zsh";
 const TERM: &str = "xterm-256color";
 const COLORTERM: &str = "truecolor";
@@ -69,6 +71,27 @@ impl PgidProbe {
     }
 }
 
+/// `TIOCSWINSZ` on a duplicate of a PTY master fd: the phone server resizes a pane
+/// from its own thread (specs/remote.md §7). The kernel sends the SIGWINCH.
+pub struct PtyResizer {
+    fd: OwnedFd,
+}
+
+impl PtyResizer {
+    pub fn resize(&self, size: GridSize) -> Result<()> {
+        let winsize = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        if unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::TIOCSWINSZ, &winsize) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -97,15 +120,6 @@ impl Pty {
         self.master.try_clone_reader()
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-    }
-
     /// Pgid of the terminal's foreground group (`tcgetpgrp` on the master fd): the
     /// job the shell brought to the foreground, or the shell itself at the prompt.
     pub fn foreground_pgid(&self) -> Option<i32> {
@@ -115,6 +129,18 @@ impl Pty {
     /// Foreground-group probe for another thread: its own `dup` of the master fd,
     /// independent of the `Pty`'s lifetime.
     pub fn pgid_probe(&self) -> Result<PgidProbe> {
+        Ok(PgidProbe {
+            fd: self.dup_master()?,
+        })
+    }
+
+    pub fn resizer(&self) -> Result<PtyResizer> {
+        Ok(PtyResizer {
+            fd: self.dup_master()?,
+        })
+    }
+
+    fn dup_master(&self) -> Result<OwnedFd> {
         let fd = self
             .master
             .as_raw_fd()
@@ -123,9 +149,7 @@ impl Pty {
         if dup < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        Ok(PgidProbe {
-            fd: unsafe { OwnedFd::from_raw_fd(dup) },
-        })
+        Ok(unsafe { OwnedFd::from_raw_fd(dup) })
     }
 
     pub fn child(&mut self) -> &mut (dyn Child + Send + Sync) {

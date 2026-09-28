@@ -1260,10 +1260,7 @@ impl HelmApp {
                                     if let Some(scroll) = out.scroll {
                                         pane.scroll(scroll);
                                     }
-                                    if out.size.rows != pane.rows() || out.size.cols != pane.cols()
-                                    {
-                                        let _ = pane.resize(out.size.rows, out.size.cols);
-                                    }
+                                    let _ = pane.fit_desktop(out.size);
                                 }
                                 Some(TerminalState::Failed(err)) => {
                                     ui.label(
@@ -3241,6 +3238,7 @@ fn render_pane(
                     .and_then(crate::terminal::cwd::live_cwd)
                     .unwrap_or_else(|| pane.spawn_cwd().to_path_buf())
             });
+            let pane_rect = ui.available_rect_before_wrap();
             let input = terminal_view(
                 ui,
                 pane.grid(),
@@ -3269,6 +3267,16 @@ fn render_pane(
                 if let Some(scroll) = input.scroll {
                     pane.scroll(scroll);
                 }
+                let take_back =
+                    pane.is_sized_by_phone() && phone_sized_banner(ui, pane_rect, palette);
+                let acted = take_back
+                    || input.clicked
+                    || input.paste.is_some()
+                    || !input.bytes.is_empty()
+                    || !input.mouse_bytes.is_empty();
+                if acted {
+                    let _ = pane.claim_desktop();
+                }
                 if !input.scroll_bytes.is_empty() {
                     let _ = pane.input(&input.scroll_bytes);
                 }
@@ -3281,9 +3289,7 @@ fn render_pane(
                 if let Some(text) = &input.paste {
                     let _ = pane.paste(text);
                 }
-                if input.size.rows != pane.rows() || input.size.cols != pane.cols() {
-                    let _ = pane.resize(input.size.rows, input.size.cols);
-                }
+                let _ = pane.fit_desktop(input.size);
             }
             input.clicked
         }

@@ -8,11 +8,10 @@ use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, PtySize};
 
 use crate::terminal::activity::{now_ms, PaneActivity};
-use crate::terminal::emu::{
-    lock_writer, resize_term, Emulator, PtyWriter, ReplyListener, SharedTerm,
-};
+use crate::terminal::emu::{lock_writer, Emulator, PtyWriter, ReplyListener, SharedTerm};
 use crate::terminal::palette::TermPalette;
 use crate::terminal::pty::{PgidProbe, Pty};
+use crate::terminal::sizing::{GridSize, PaneSizing};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CursorPos {
@@ -54,8 +53,7 @@ pub struct Pane {
     /// on screen. Gates the reader's repaint wakeup so a pane in a background
     /// repo/tab updates its grid in memory without pacing the whole event loop.
     visible: Arc<AtomicBool>,
-    rows: u16,
-    cols: u16,
+    sizing: Arc<PaneSizing>,
     reply_palette: TermPalette,
     /// Exit code, kept from the reaping `try_wait` that first saw it.
     exit_code: Option<u32>,
@@ -110,6 +108,12 @@ impl Pane {
             Arc::clone(&writer),
             callback(&on_change, &activity, &visible),
         );
+        let sizing = PaneSizing::new(
+            GridSize { rows, cols },
+            pty.resizer()?,
+            Arc::clone(emu.term()),
+            Arc::clone(&activity),
+        );
         Ok(Self {
             uid: PaneUid::mint(),
             pgid_probe: Arc::new(pty.pgid_probe()?),
@@ -120,8 +124,7 @@ impl Pane {
             on_change,
             activity,
             visible,
-            rows,
-            cols,
+            sizing: Arc::new(sizing),
             reply_palette,
             exit_code: None,
         })
@@ -150,6 +153,7 @@ impl Pane {
             term: Arc::clone(self.emu.term()),
             writer: Arc::clone(&self.writer),
             activity: Arc::clone(&self.activity),
+            sizing: Arc::clone(&self.sizing),
         }
     }
 
@@ -169,14 +173,6 @@ impl Pane {
         cursor_pos(&self.emu.term().lock())
     }
 
-    pub fn rows(&self) -> u16 {
-        self.rows
-    }
-
-    pub fn cols(&self) -> u16 {
-        self.cols
-    }
-
     pub fn set_reply_palette(&mut self, palette: TermPalette) {
         if self.reply_palette == palette {
             return;
@@ -185,16 +181,18 @@ impl Pane {
         self.emu.set_reply_palette(palette);
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
-        // Stamp before the PTY resize so the window is open when the program's
-        // SIGWINCH repaint lands: that burst is helm's doing, not agent work,
-        // and must not re-arm the activity badge (specs/agents.md).
-        self.activity.stamp_resize(now_ms());
-        self.pty.resize(rows, cols)?;
-        resize_term(&mut self.emu.term().lock(), rows, cols);
-        self.rows = rows;
-        self.cols = cols;
-        Ok(())
+    /// The widget's measured size, applied unless a phone holds the turn.
+    pub fn fit_desktop(&self, size: GridSize) -> Result<()> {
+        self.sizing.fit_desktop(size)
+    }
+
+    pub fn is_sized_by_phone(&self) -> bool {
+        self.sizing.is_sized_by_phone()
+    }
+
+    /// The user acted on this pane on the Mac: the PTY goes back to the widget's size.
+    pub fn claim_desktop(&self) -> Result<()> {
+        self.sizing.claim_desktop()
     }
 
     pub fn activity(&self) -> &PaneActivity {
@@ -256,12 +254,14 @@ impl Pane {
     }
 
     pub fn relaunch(&mut self) -> Result<()> {
-        let pty = Pty::open_login_shell(&self.cwd, pty_size(self.rows, self.cols))?;
+        let size = self.sizing.size();
+        let pty = Pty::open_login_shell(&self.cwd, pty_size(size.rows, size.cols))?;
+        let resizer = pty.resizer()?;
         let writer: PtyWriter = Arc::new(Mutex::new(pty.take_writer()?));
         let emu = Emulator::spawn_with_palette(
             pty.reader()?,
-            self.rows,
-            self.cols,
+            size.rows,
+            size.cols,
             Arc::clone(&writer),
             self.reply_palette,
             callback(&self.on_change, &self.activity, &self.visible),
@@ -270,6 +270,12 @@ impl Pane {
         // and a detached survivor (setsid, disowned job) still holding the slave
         // would block the UI thread indefinitely. Once replaced, the thread shuts
         // itself down on EOF (same tradeoff as dropping a pane, emu.rs).
+        self.sizing = Arc::new(PaneSizing::new(
+            size,
+            resizer,
+            Arc::clone(emu.term()),
+            Arc::clone(&self.activity),
+        ));
         self.pty = pty;
         self.emu = emu;
         self.writer = writer;
@@ -290,6 +296,7 @@ pub struct PaneHandle {
     term: SharedTerm,
     writer: PtyWriter,
     activity: Arc<PaneActivity>,
+    sizing: Arc<PaneSizing>,
 }
 
 impl PaneHandle {
@@ -303,6 +310,15 @@ impl PaneHandle {
 
     pub fn paste(&self, text: &str) -> Result<()> {
         paste_input(&self.term, &self.writer, &self.activity, text)
+    }
+
+    /// The phone drives the agent: the PTY takes the phone's screen size.
+    pub fn claim_phone(&self, size: GridSize) -> Result<()> {
+        self.sizing.claim_phone(size)
+    }
+
+    pub fn release_phone(&self) -> Result<()> {
+        self.sizing.release_phone()
     }
 }
 

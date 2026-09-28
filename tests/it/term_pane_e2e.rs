@@ -8,6 +8,7 @@ use alacritty_terminal::term::Term;
 use helm::terminal::cwd::live_cwd;
 use helm::terminal::emu::{line_text, ReplyListener};
 use helm::terminal::pane::{CursorPos, Pane};
+use helm::terminal::sizing::GridSize;
 use portable_pty::CommandBuilder;
 
 fn wait_for<F: Fn() -> bool>(predicate: F) -> bool {
@@ -94,9 +95,13 @@ fn cursor_advances_with_input() {
 
 #[test]
 fn resize_reflows_grid_and_pty() {
-    let mut pane = Pane::from_command(CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
+    let pane = Pane::from_command(CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
 
-    pane.resize(40, 120).unwrap();
+    pane.fit_desktop(GridSize {
+        rows: 40,
+        cols: 120,
+    })
+    .unwrap();
 
     let term = Arc::clone(pane.grid());
     {

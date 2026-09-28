@@ -9,3 +9,4 @@ pub mod pane;
 pub mod pty;
 pub mod screen;
 pub mod selection;
+pub mod sizing;

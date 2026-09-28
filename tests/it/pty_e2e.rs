@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 use helm::terminal::pty::{login_shell_command, run_command, shell_program, Pty};
+use helm::terminal::sizing::GridSize;
 use portable_pty::{CommandBuilder, PtySize};
 
 fn size() -> PtySize {
@@ -51,7 +52,13 @@ fn resize_propagates_new_winsize_to_the_child() {
     cmd.arg("read x; stty size");
     let mut pty = Pty::spawn(cmd, size()).unwrap();
 
-    pty.resize(40, 120).unwrap();
+    pty.resizer()
+        .unwrap()
+        .resize(GridSize {
+            rows: 40,
+            cols: 120,
+        })
+        .unwrap();
     pty.take_writer().unwrap().write_all(b"\n").unwrap();
 
     let output = read_all(&pty);

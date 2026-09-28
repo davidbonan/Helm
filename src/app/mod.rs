@@ -52,7 +52,7 @@ use crate::ui::repo_sidebar::{
 };
 use crate::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 use crate::ui::terminal_view::{
-    cell_metrics, terminal_tree, terminal_view, terminal_view_readonly,
+    cell_metrics, phone_sized_banner, terminal_tree, terminal_view, terminal_view_readonly,
 };
 use crate::ui::toast::{toast_overlay, ToastAction, Toasts};
 use crate::ui::{central_empty_state, central_switch, root_layout, TITLEBAR_HEIGHT};

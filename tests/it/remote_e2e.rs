@@ -8,6 +8,8 @@ use std::net::TcpStream;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use alacritty_terminal::grid::Dimensions;
+
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::remote::awake::{KeepAwake, REASON};
 use helm::remote::registry::{ExposedPane, Registry};
@@ -196,7 +198,7 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
         m["agents"].as_array().is_some_and(|a| !a.is_empty())
     });
     ws.send(Message::text(
-        json!({"type": "watch", "id": agent_id}).to_string(),
+        json!({"type": "watch", "id": agent_id, "rows": 30, "cols": 50}).to_string(),
     ))
     .unwrap();
     ws.send(Message::text(
@@ -215,6 +217,42 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
     assert_eq!(listed, [agent_id], "the plain `cat` pane is never exposed");
     let screen = echoed.expect("the typed text reaches the agent's PTY and its screen");
     assert_eq!(screen["writable"], true);
+}
+
+fn columns(pane: &Pane) -> usize {
+    pane.grid().lock().grid().columns()
+}
+
+#[test]
+fn a_watching_phone_sizes_the_agent_until_it_leaves() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    let agent_id = fixture.agent.uid().get();
+    wait_for(&mut ws, "agents", |m| {
+        m["agents"].as_array().is_some_and(|a| !a.is_empty())
+    });
+
+    ws.send(Message::text(
+        json!({"type": "watch", "id": agent_id, "rows": 30, "cols": 50}).to_string(),
+    ))
+    .unwrap();
+    let phone_frame = wait_for(&mut ws, "screen", |m| m["cols"] == 50);
+    let phone_columns = columns(&fixture.agent);
+    ws.close(None).unwrap();
+    let _ = ws.flush();
+    let given_back = wait_until(|| columns(&fixture.agent) == 80);
+
+    fixture.close();
+    assert!(
+        phone_frame.is_some(),
+        "the phone gets frames at its own width"
+    );
+    assert_eq!(phone_columns, 50, "the agent's PTY takes the phone's size");
+    assert!(
+        given_back,
+        "the Mac gets its size back once the phone leaves"
+    );
 }
 
 /// This process's power assertions: a helm running beside the tests holds its own.
