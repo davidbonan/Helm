@@ -188,7 +188,10 @@ A PTY has a single size and the agent draws for it, so the Mac and the phone
 The phone thread resizes itself (`TIOCSWINSZ` on a `dup` of the master fd): it
 works while helm draws no frame (§4). The rows ignore the iOS keyboard, so
 opening it does not resize the agent. While the phone drives, the Mac shows the
-narrower grid in its pane, the rest blank.
+narrower grid in its pane and a pill at the pane's top right — Smartphone icon +
+*Sized for your phone — click to take it back* (`bg.surface`, `border.subtle`,
+`text.secondary`, radius 8) — so the narrow grid does not read as a glitch.
+Clicking it, like any click in the pane, takes the size back.
 
 ## 8. Testing
 

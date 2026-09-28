@@ -47,6 +47,10 @@ impl SizeOwnership {
         self.applied
     }
 
+    pub fn is_sized_by_phone(&self) -> bool {
+        self.phone.is_some()
+    }
+
     /// The Mac widget's measured size: applied only while the Mac holds the turn.
     pub fn fit_desktop(&mut self, size: GridSize) -> Option<GridSize> {
         self.desktop = size;
@@ -103,6 +107,10 @@ impl PaneSizing {
 
     pub fn size(&self) -> GridSize {
         self.ownership().size()
+    }
+
+    pub fn is_sized_by_phone(&self) -> bool {
+        self.ownership().is_sized_by_phone()
     }
 
     pub fn fit_desktop(&self, size: GridSize) -> Result<()> {

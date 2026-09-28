@@ -186,6 +186,10 @@ impl Pane {
         self.sizing.fit_desktop(size)
     }
 
+    pub fn is_sized_by_phone(&self) -> bool {
+        self.sizing.is_sized_by_phone()
+    }
+
     /// The user acted on this pane on the Mac: the PTY goes back to the widget's size.
     pub fn claim_desktop(&self) -> Result<()> {
         self.sizing.claim_desktop()

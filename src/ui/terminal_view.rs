@@ -95,6 +95,70 @@ pub struct TerminalInput {
 
 pub const PROCESS_ENDED_BANNER: &str = "[process exited]";
 
+pub const PHONE_SIZED_BANNER: &str = "Sized for your phone — click to take it back";
+
+const PHONE_BANNER_MARGIN: f32 = 10.0;
+const PHONE_BANNER_PAD: egui::Vec2 = egui::vec2(10.0, 5.0);
+const PHONE_BANNER_ICON_SIZE: f32 = 13.0;
+const PHONE_BANNER_GAP: f32 = 6.0;
+const PHONE_BANNER_TEXT_SIZE: f32 = 12.5;
+
+/// Pill at the top right of a pane whose PTY a phone sizes (specs/remote.md §7.1):
+/// the narrow grid is not a glitch. Returns `true` when clicked.
+pub fn phone_sized_banner(ui: &mut egui::Ui, pane_rect: egui::Rect, palette: &Palette) -> bool {
+    let galley = ui.painter().layout_no_wrap(
+        PHONE_SIZED_BANNER.to_owned(),
+        egui::FontId::proportional(PHONE_BANNER_TEXT_SIZE),
+        palette.text_secondary,
+    );
+    let size = egui::vec2(
+        PHONE_BANNER_PAD.x * 2.0 + PHONE_BANNER_ICON_SIZE + PHONE_BANNER_GAP + galley.size().x,
+        PHONE_BANNER_PAD.y * 2.0 + galley.size().y.max(PHONE_BANNER_ICON_SIZE),
+    );
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            pane_rect.right() - PHONE_BANNER_MARGIN - size.x,
+            pane_rect.top() + PHONE_BANNER_MARGIN,
+        ),
+        size,
+    );
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with("phone_sized_banner"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, PHONE_SIZED_BANNER)
+    });
+    let fill = if response.hovered() {
+        palette.bg_surface_hover
+    } else {
+        palette.bg_surface
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(8),
+        fill,
+        egui::Stroke::new(1.0_f32, palette.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let icon_x = rect.left() + PHONE_BANNER_PAD.x + PHONE_BANNER_ICON_SIZE / 2.0;
+    paint_icon(
+        painter,
+        egui::pos2(icon_x, rect.center().y),
+        PHONE_BANNER_ICON_SIZE,
+        lucide_icons::Icon::Smartphone,
+        palette.text_secondary,
+    );
+    let text_x = rect.left() + PHONE_BANNER_PAD.x + PHONE_BANNER_ICON_SIZE + PHONE_BANNER_GAP;
+    let text_pos = egui::pos2(text_x, rect.center().y - galley.size().y / 2.0);
+    painter.galley(text_pos, galley, palette.text_secondary);
+    response.clicked()
+}
+
 /// The egui key event in the terminal domain's terms (`terminal::keys`).
 pub fn key_bytes(key: egui::Key, modifiers: egui::Modifiers) -> Option<Vec<u8>> {
     let mods = Mods {

@@ -3238,6 +3238,7 @@ fn render_pane(
                     .and_then(crate::terminal::cwd::live_cwd)
                     .unwrap_or_else(|| pane.spawn_cwd().to_path_buf())
             });
+            let pane_rect = ui.available_rect_before_wrap();
             let input = terminal_view(
                 ui,
                 pane.grid(),
@@ -3266,7 +3267,10 @@ fn render_pane(
                 if let Some(scroll) = input.scroll {
                     pane.scroll(scroll);
                 }
-                let acted = input.clicked
+                let take_back =
+                    pane.is_sized_by_phone() && phone_sized_banner(ui, pane_rect, palette);
+                let acted = take_back
+                    || input.clicked
                     || input.paste.is_some()
                     || !input.bytes.is_empty()
                     || !input.mouse_bytes.is_empty();

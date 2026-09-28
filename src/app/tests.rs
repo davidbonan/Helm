@@ -1005,8 +1005,13 @@ fn click(harness: &egui_kittest::Harness<'_, HelmApp>, pos: egui::Pos2) {
     }
 }
 
-#[test]
-fn clicking_the_mac_terminal_takes_the_size_back_from_the_phone() {
+/// A `cat` pane on screen in the full page, sized by a phone that claimed 50 columns;
+/// also returns the width the Mac's widget gave it first.
+fn phone_driven_page() -> (
+    egui_kittest::Harness<'static, HelmApp>,
+    crate::terminal::pane::PaneHandle,
+    usize,
+) {
     let mut app = app_with(&["a"]);
     let key = key_of(&app.workspace, 0, 0);
     let pane = Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
@@ -1025,12 +1030,18 @@ fn clicking_the_mac_terminal_takes_the_size_back_from_the_phone() {
         );
     harness.run();
     let mac_columns = columns(&phone);
-
     phone
         .claim_phone(crate::terminal::sizing::GridSize { rows: 30, cols: 50 })
         .unwrap();
     harness.run();
+    (harness, phone, mac_columns)
+}
+
+#[test]
+fn clicking_the_mac_terminal_takes_the_size_back_from_the_phone() {
+    let (mut harness, phone, mac_columns) = phone_driven_page();
     let while_phone_drives = columns(&phone);
+
     harness.hover_at(egui::pos2(450.0, 350.0));
     click(&harness, egui::pos2(450.0, 350.0));
     harness.run();
@@ -1044,6 +1055,22 @@ fn clicking_the_mac_terminal_takes_the_size_back_from_the_phone() {
         columns(&phone),
         mac_columns,
         "a click on the Mac takes it back"
+    );
+}
+
+#[test]
+fn the_phone_banner_shows_while_the_phone_sizes_the_pane_and_takes_it_back() {
+    use crate::ui::terminal_view::PHONE_SIZED_BANNER;
+    use egui_kittest::kittest::Queryable;
+    let (mut harness, phone, mac_columns) = phone_driven_page();
+
+    harness.get_by_label(PHONE_SIZED_BANNER).click();
+    harness.run();
+
+    assert_eq!(columns(&phone), mac_columns);
+    assert!(
+        harness.query_by_label(PHONE_SIZED_BANNER).is_none(),
+        "the banner leaves with the phone's turn"
     );
 }
 
