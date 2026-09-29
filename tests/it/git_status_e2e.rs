@@ -218,6 +218,27 @@ fn line_stats_cover_untracked_modified_and_staged_deltas() {
 }
 
 #[test]
+fn line_stats_reach_changes_nested_in_subdirectories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    fs::create_dir_all(tmp.path().join("src/app")).unwrap();
+    commit_file(&repo, "src/app/main.rs", "one\ntwo\n", "init");
+
+    fs::write(tmp.path().join("src/app/main.rs"), "one\nTWO\nthree\n").unwrap();
+    fs::create_dir_all(tmp.path().join("docs/guide")).unwrap();
+    fs::write(tmp.path().join("docs/guide/intro.md"), "a\nb\nc\n").unwrap();
+
+    let st = status::load(tmp.path()).unwrap();
+
+    let stats = |path: &str| {
+        let file = st.unstaged.iter().find(|f| f.path == path).unwrap();
+        (file.additions, file.deletions)
+    };
+    assert_eq!(stats("src/app/main.rs"), (2, 1));
+    assert_eq!(stats("docs/guide/intro.md"), (3, 0));
+}
+
+#[test]
 fn line_stats_split_a_partially_staged_file_per_section() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(tmp.path()).unwrap();

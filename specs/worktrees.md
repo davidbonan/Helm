@@ -96,6 +96,11 @@ ways, and **persisted** on every change:
   without a defocus/refocus round-trip) · after a **Delete worktree** (§6). The
   tick is gated on focus: off-focus, the focus-regain trigger covers the user
   coming back and the app sleeps. No FS watcher for discovery (v1).
+- **Branch/dirty probe** (sidebar branch line + `+N −M` chip): every trigger except
+  the periodic tick re-probes the whole workspace; the tick does so only when its
+  discovery changed the membership or the last probe is **30 s** old
+  (`GROUP_PROBE_INTERVAL`) — one status walk per repo is far costlier than discovery.
+  The active repo stays live through its own 1 s status poll (git.md §7).
 - **Discovery**: a worktree created outside the app (terminal, another tool) appears in
   the group (**appended** after the existing manual order, since there is no
   alphabetical slot to honour anymore) and is added to the prefs.

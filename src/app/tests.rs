@@ -3199,6 +3199,19 @@ fn should_refresh_pr_throttles_focus_regain_but_not_cold_or_repo_change() {
 }
 
 #[test]
+fn group_probe_due_spaces_the_tick_but_not_focus_regain_or_membership_change() {
+    let fresh = GROUP_PROBE_INTERVAL.as_secs_f64() - 0.1;
+    assert!(!group_probe_due(false, false, fresh));
+    assert!(group_probe_due(
+        false,
+        false,
+        GROUP_PROBE_INTERVAL.as_secs_f64()
+    ));
+    assert!(group_probe_due(true, false, 0.0));
+    assert!(group_probe_due(false, true, 0.0));
+}
+
+#[test]
 fn review_time_accrues_to_the_open_pr_and_is_written_once_counting_stops() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("web");

@@ -73,6 +73,10 @@ const GIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1)
 /// a 4th sync trigger so a worktree created from a terminal appears without a
 /// defocus/refocus round-trip. Off-focus the focus-regain trigger already covers it.
 const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Workspace branch/dirty probe cadence on that tick (worktrees.md §4): a status walk
+/// per repo, far costlier than discovery, while the active repo is kept fresh by its
+/// own 1 s status poll.
+const GROUP_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 /// Workspace PR refresh cadence while the cockpit is open and focused
 /// (pull-requests.md §6): network-bound (`gh`/`curl`), so far coarser than the
 /// git/worktree ticks.
@@ -130,6 +134,13 @@ pub fn should_refresh_pr(
     min_age_secs: f64,
 ) -> bool {
     cold || repos_changed || (focus_regained && age_secs >= min_age_secs)
+}
+
+/// Whether a group-sync trigger also re-probes the workspace (worktrees.md §4): a focus
+/// regain or a membership change always does, the periodic tick only once the last
+/// probe is `GROUP_PROBE_INTERVAL` old.
+fn group_probe_due(focus_regained: bool, membership_changed: bool, age_secs: f64) -> bool {
+    focus_regained || membership_changed || age_secs >= GROUP_PROBE_INTERVAL.as_secs_f64()
 }
 
 mod keys;
@@ -652,6 +663,7 @@ pub struct HelmApp {
     /// The terminal palette of the last frame: what the phone mirror paints with.
     term_palette: TermPalette,
     last_group_poll: f64,
+    last_group_probe: f64,
     /// Workspace PR fetch running off the UI thread (pull-requests.md §6): `gh`
     /// and `curl` calls plus libgit2 remote resolution must not freeze rendering.
     /// Created lazily on the first refresh (it carries the `ctx` repaint).
@@ -855,6 +867,7 @@ impl HelmApp {
             phone: None,
             term_palette: TermPalette::dark(),
             last_group_poll: 0.0,
+            last_group_probe: 0.0,
             pr_runner: None,
             pr_cache: crate::pull_requests::runner::PrCache::default(),
             pr_user_github: None,
@@ -1414,13 +1427,20 @@ impl HelmApp {
     /// Sync trigger (worktrees.md §4): startup, window focus regain, after a Delete
     /// worktree (M11-7).
     fn run_group_sync(&mut self, ctx: &egui::Context) {
+        self.sync_groups_with_disk();
+        self.request_group_refresh(ctx);
+    }
+
+    /// Discovery + purge (worktrees.md §4), persisted on change; returns whether the
+    /// workspace membership changed.
+    fn sync_groups_with_disk(&mut self) -> bool {
         let outcome = sync_workspace_groups(&mut self.workspace);
         self.caches.sync(&self.workspace);
         if outcome.changed {
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
         }
-        self.request_group_refresh(ctx);
+        outcome.changed
     }
 
     /// Applies a target handed over by the CLI or a `helm://` URL (specs/cli.md §4):
@@ -1450,6 +1470,7 @@ impl HelmApp {
     /// `poll_group_refresh` adopts the reply.
     fn request_group_refresh(&mut self, ctx: &egui::Context) {
         let probes = workspace_probes(&self.workspace);
+        self.last_group_probe = ctx.input(|i| i.time);
         self.group_refresh
             .get_or_insert_with(|| GroupRefreshRunner::new(repainter(ctx)))
             .request(probes);
@@ -4320,7 +4341,14 @@ impl eframe::App for HelmApp {
         }
         let tick_due = focused && now - self.last_group_poll >= GROUP_POLL_INTERVAL.as_secs_f64();
         if focus_regained || tick_due {
-            self.run_group_sync(&ctx);
+            let membership_changed = self.sync_groups_with_disk();
+            if group_probe_due(
+                focus_regained,
+                membership_changed,
+                now - self.last_group_probe,
+            ) {
+                self.request_group_refresh(&ctx);
+            }
             self.last_group_poll = now;
         }
 

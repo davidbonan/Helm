@@ -265,6 +265,7 @@ pub fn load_repo(repo: &git2::Repository) -> Result<RepoStatus, git2::Error> {
     let statuses = work_statuses(repo)?;
     let nested = crate::git::worktree::nested_in_workdir(repo);
     let mut out = RepoStatus::default();
+    let mut unstaged_paths = Vec::new();
     for entry in statuses.iter() {
         let status = entry.status();
         let path = entry_path(&entry);
@@ -280,6 +281,9 @@ pub fn load_repo(repo: &git2::Repository) -> Result<RepoStatus, git2::Error> {
             });
         }
         if let Some(kind) = unstaged_kind(status) {
+            if kind != ChangeKind::Conflicted {
+                unstaged_paths.extend(workdir_delta_paths(&entry));
+            }
             out.unstaged.push(FileEntry {
                 path,
                 kind,
@@ -288,17 +292,17 @@ pub fn load_repo(repo: &git2::Repository) -> Result<RepoStatus, git2::Error> {
             });
         }
     }
-    // Line stats only for non-empty sections: the unstaged pass re-walks the
-    // whole working tree (`statuses` already paid one walk) — on a clean or
-    // staged-only repo the 1 s poll skips that second scan entirely.
+    // Line stats only for non-empty sections; the unstaged diff is narrowed to the
+    // paths `statuses` just reported, so it never re-walks the whole working tree.
     if !out.staged.is_empty() {
         let stats = staged_line_stats(repo)?;
         for file in &mut out.staged {
             (file.additions, file.deletions) = line_stats_for(&stats, &file.path);
         }
     }
-    if !out.unstaged.is_empty() {
-        let stats = unstaged_line_stats(repo)?;
+    // An empty pathspec would match everything: a conflicts-only section skips the diff.
+    if !unstaged_paths.is_empty() {
+        let stats = unstaged_line_stats(repo, &unstaged_paths)?;
         for file in &mut out.unstaged {
             if file.kind != ChangeKind::Conflicted {
                 (file.additions, file.deletions) = line_stats_for(&stats, &file.path);
@@ -332,9 +336,18 @@ fn staged_line_stats(repo: &git2::Repository) -> Result<LineStats, git2::Error> 
     diff_line_stats(&diff)
 }
 
-fn unstaged_line_stats(repo: &git2::Repository) -> Result<LineStats, git2::Error> {
+/// `paths` holds both sides of each index→workdir delta: a rename's old path must
+/// stay in the diff or `find_renames` cannot pair it with its new one.
+fn unstaged_line_stats(
+    repo: &git2::Repository,
+    paths: &[String],
+) -> Result<LineStats, git2::Error> {
     let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
+    for path in paths {
+        opts.pathspec(path);
+    }
+    opts.disable_pathspec_match(true)
+        .include_untracked(true)
         .recurse_untracked_dirs(true)
         // Without this flag libgit2 does not load an untracked file's lines —
         // its delta would stay at 0/0 (cf. git::diff::untracked_file_diff).
@@ -379,6 +392,20 @@ fn diff_line_stats(diff: &git2::Diff) -> Result<LineStats, git2::Error> {
         out.insert(path.to_string(), (additions, deletions));
     }
     Ok(out)
+}
+
+fn workdir_delta_paths(entry: &git2::StatusEntry) -> Vec<String> {
+    let Some(delta) = entry.index_to_workdir() else {
+        return Vec::new();
+    };
+    let mut paths: Vec<String> = [delta.old_file().path(), delta.new_file().path()]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.to_str())
+        .map(str::to_owned)
+        .collect();
+    paths.dedup();
+    paths
 }
 
 fn entry_path(entry: &git2::StatusEntry) -> String {
