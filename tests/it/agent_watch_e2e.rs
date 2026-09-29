@@ -16,8 +16,12 @@ use helm::agent_watch::AgentBadge;
 use helm::terminal::pane::Pane;
 use portable_pty::CommandBuilder;
 
-pub(crate) fn wait_until<F: FnMut() -> bool>(mut predicate: F) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
+pub(crate) fn wait_until<F: FnMut() -> bool>(predicate: F) -> bool {
+    wait_until_within(Duration::from_secs(5), predicate)
+}
+
+pub(crate) fn wait_until_within<F: FnMut() -> bool>(timeout: Duration, mut predicate: F) -> bool {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if predicate() {
             return true;

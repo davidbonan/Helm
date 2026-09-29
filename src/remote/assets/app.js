@@ -18,6 +18,8 @@ const state = {
   agents: [],
   watched: null,
   writable: false,
+  // Full-screen TUI (Claude Code): it scrolls its own view, a swipe goes to it.
+  appScrolls: false,
   historyFirst: 0,
   historyDone: false,
   historyLoading: false,
@@ -180,6 +182,7 @@ function renderScreen(frame) {
     state.cols = frame.cols;
     fitDisplay();
   }
+  state.appScrolls = frame.app_scrolls;
   scroller.style.setProperty("--term-bg", frame.bg);
   scroller.style.setProperty("--term-fg", frame.fg);
   const cursor = frame.cursor;
@@ -327,6 +330,51 @@ function endPinch(event) {
   requestResize();
 }
 
+// A swipe the mirror cannot scroll any further goes on: to the app as the wheel
+// (full-screen TUI), else to the history above the screen.
+const swipe = { id: null, y: 0, pending: 0 };
+
+function startSwipe(event) {
+  if (event.touches.length !== 1) return;
+  swipe.id = event.touches[0].identifier;
+  swipe.y = event.touches[0].clientY;
+  swipe.pending = 0;
+}
+
+function isAtEdge(scroller, upward) {
+  if (upward) return scroller.scrollTop <= 0;
+  return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
+}
+
+function screenCell(touch) {
+  const rect = $("screen").getBoundingClientRect();
+  return {
+    line: Math.max(0, Math.floor((touch.clientY - rect.top) / (state.displayPx * LINE_HEIGHT))),
+    col: Math.max(0, Math.floor((touch.clientX - rect.left - GRID_PADDING_X / 2) / (state.displayPx * charWidthEm()))),
+  };
+}
+
+function moveSwipe(event) {
+  if (event.touches.length !== 1 || pinch.distance !== 0) return;
+  const touch = event.touches[0];
+  if (touch.identifier !== swipe.id) return startSwipe(event);
+  const dy = touch.clientY - swipe.y;
+  swipe.y = touch.clientY;
+  const upward = dy > 0;
+  if (dy === 0 || !isAtEdge($("scroller"), upward)) return;
+  if (!state.appScrolls) {
+    if (upward) requestHistory();
+    return;
+  }
+  event.preventDefault();
+  if (state.watched === null || !state.writable) return;
+  swipe.pending += dy;
+  const lines = Math.trunc(swipe.pending / (state.displayPx * LINE_HEIGHT));
+  if (lines === 0) return;
+  swipe.pending -= lines * state.displayPx * LINE_HEIGHT;
+  send({ type: "scroll", id: state.watched, lines, ...screenCell(touch) });
+}
+
 // Composer
 
 function autosize() {
@@ -392,8 +440,14 @@ $("keys").addEventListener("click", (event) => {
 $("scroller").addEventListener("scroll", () => {
   if ($("scroller").scrollTop < 40) requestHistory();
 });
-$("scroller").addEventListener("touchstart", startPinch, { passive: true });
-$("scroller").addEventListener("touchmove", movePinch, { passive: false });
+$("scroller").addEventListener("touchstart", (event) => {
+  startPinch(event);
+  startSwipe(event);
+}, { passive: true });
+$("scroller").addEventListener("touchmove", (event) => {
+  movePinch(event);
+  moveSwipe(event);
+}, { passive: false });
 $("scroller").addEventListener("touchend", endPinch);
 $("scroller").addEventListener("touchcancel", endPinch);
 document.addEventListener("gesturestart", (event) => event.preventDefault());

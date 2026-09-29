@@ -21,11 +21,17 @@ use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message, WebSocket};
 
-use crate::agent_watch_e2e::{compile_agent, teardown, wait_until};
+use crate::agent_watch_e2e::{compile_agent, teardown, wait_until, wait_until_within};
 
-/// An agent that echoes its input: what the phone types shows up on its screen.
+/// A full-screen agent (alt screen, like Claude Code) that echoes its input: what
+/// the phone types shows up on its screen.
 const ECHO_AGENT: &str = "#include <unistd.h>\nint main(void){char b[256];ssize_t n;\
-while((n=read(0,b,sizeof b))>0)write(1,b,n);return 0;}\n";
+write(1,\"\\033[?1049h\",8);while((n=read(0,b,sizeof b))>0)write(1,b,n);return 0;}\n";
+
+/// An agent that works for ~3 s then falls silent: a finished turn, not yet seen.
+const TURN_AGENT: &str = "#include <unistd.h>\nint main(void){static const char s[]=\
+\"working on the answer...\\r\\n\";for(int i=0;i<30;i++){write(1,s,sizeof s-1);\
+usleep(100000);}pause();return 0;}\n";
 
 /// Every server holds the same sleep assertion: the `pmset` check must run alone.
 static AWAKE: Mutex<()> = Mutex::new(());
@@ -46,11 +52,16 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// An echo agent and a plain `cat`, both published, served on the loopback.
     fn new() -> Self {
+        Self::with_agent(ECHO_AGENT)
+    }
+
+    /// An agent compiled from `source` and a plain `cat`, both published, served on
+    /// the loopback.
+    fn with_agent(source: &str) -> Self {
         let awake = awake_lock();
         let dir = tempfile::tempdir().unwrap();
-        let bin = compile_agent(dir.path(), "claude", ECHO_AGENT);
+        let bin = compile_agent(dir.path(), "claude", source);
         let agent = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
         let shell = Pane::from_command(CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
         let watcher = AgentWatcher::spawn(|| {});
@@ -61,7 +72,7 @@ impl Fixture {
         let registry = Registry::default();
         registry.publish(
             vec![exposed(&agent, "Tab 1"), exposed(&shell, "Tab 2")],
-            Some(watcher.view()),
+            Some(watcher.link()),
             TermPalette::dark(),
         );
         let server = PhoneServer::start_on_address([127, 0, 0, 1].into(), registry).unwrap();
@@ -146,8 +157,17 @@ fn wait_for(
     kind: &str,
     accept: impl Fn(&Value) -> bool,
 ) -> Option<Value> {
+    wait_for_within(ws, Duration::from_secs(5), kind, accept)
+}
+
+fn wait_for_within(
+    ws: &mut WebSocket<TcpStream>,
+    timeout: Duration,
+    kind: &str,
+    accept: impl Fn(&Value) -> bool,
+) -> Option<Value> {
     let mut found = None;
-    wait_until(|| {
+    wait_until_within(timeout, || {
         if let Ok(Message::Text(text)) = ws.read() {
             let message: Value = serde_json::from_str(&text).unwrap();
             if message["type"] == kind && accept(&message) {
@@ -219,6 +239,64 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
     assert_eq!(listed, [agent_id], "the plain `cat` pane is never exposed");
     let screen = echoed.expect("the typed text reaches the agent's PTY and its screen");
     assert_eq!(screen["writable"], true);
+}
+
+fn watch(ws: &mut WebSocket<TcpStream>, agent_id: u64) {
+    wait_for(ws, "agents", |m| {
+        m["agents"].as_array().is_some_and(|a| !a.is_empty())
+    });
+    ws.send(Message::text(
+        json!({"type": "watch", "id": agent_id, "rows": 30, "cols": 50}).to_string(),
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_swipe_reaches_a_full_screen_agent_as_the_wheel() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    let agent_id = fixture.agent.uid().get();
+
+    watch(&mut ws, agent_id);
+    let full_screen = wait_for(&mut ws, "screen", |m| m["app_scrolls"] == true);
+    ws.send(Message::text(
+        json!({"type": "scroll", "id": agent_id, "lines": 2, "line": 3, "col": 4}).to_string(),
+    ))
+    .unwrap();
+    // The PTY echoes the control bytes it receives as `^[`.
+    let scrolled = wait_for(&mut ws, "screen", |m| m.to_string().contains("^[[A^[[A"));
+
+    fixture.close();
+    assert!(
+        full_screen.is_some(),
+        "the frame tells the phone the app scrolls"
+    );
+    assert!(
+        scrolled.is_some(),
+        "two lines up reach the agent as two ↑ arrows"
+    );
+}
+
+#[test]
+fn watching_a_done_agent_on_the_phone_acknowledges_it() {
+    let fixture = Fixture::with_agent(TURN_AGENT);
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    let agent_id = fixture.agent.uid().get();
+    let done = wait_for_within(&mut ws, Duration::from_secs(20), "agents", |m| {
+        m["agents"][0]["badge"] == "done"
+    });
+
+    watch(&mut ws, agent_id);
+    let seen = wait_for(&mut ws, "agents", |m| m["agents"][0]["badge"] == "idle");
+
+    fixture.close();
+    assert!(done.is_some(), "the finished turn turns green");
+    assert!(
+        seen.is_some(),
+        "the phone showing the agent acknowledges its green"
+    );
 }
 
 fn columns(pane: &Pane) -> usize {

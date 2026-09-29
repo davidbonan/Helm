@@ -222,6 +222,12 @@ pub fn display_offset(term: &Term<ReplyListener>) -> usize {
     term.grid().display_offset()
 }
 
+/// The app scrolls its own view: [`wheel_bytes`] forwards the wheel to it.
+pub fn wheel_goes_to_app(mode: TermMode) -> bool {
+    mode.intersects(TermMode::MOUSE_MODE)
+        || mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+}
+
 /// Translates a wheel notch according to the terminal's modes (terminal.md §8):
 /// an app in **mouse reporting** receives mouse wheel events (SGR or normal
 /// encoding), a full-screen TUI (**alt screen + alternate scroll**, e.g. Claude
@@ -236,7 +242,7 @@ pub fn wheel_bytes(
 ) -> Option<Vec<u8>> {
     let mode = *term.mode();
     let count = lines.unsigned_abs() as usize;
-    if count == 0 {
+    if count == 0 || !wheel_goes_to_app(mode) {
         return None;
     }
     if mode.intersects(TermMode::MOUSE_MODE) {
@@ -258,16 +264,13 @@ pub fn wheel_bytes(
         };
         return Some(event.repeat(count));
     }
-    if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-        let arrow: &[u8] = match (mode.contains(TermMode::APP_CURSOR), lines > 0) {
-            (true, true) => b"\x1bOA",
-            (true, false) => b"\x1bOB",
-            (false, true) => b"\x1b[A",
-            (false, false) => b"\x1b[B",
-        };
-        return Some(arrow.repeat(count));
-    }
-    None
+    let arrow: &[u8] = match (mode.contains(TermMode::APP_CURSOR), lines > 0) {
+        (true, true) => b"\x1bOA",
+        (true, false) => b"\x1bOB",
+        (false, true) => b"\x1b[A",
+        (false, false) => b"\x1b[B",
+    };
+    Some(arrow.repeat(count))
 }
 
 /// The app's mouse-tracking state for a frame (terminal.md §7), read from the

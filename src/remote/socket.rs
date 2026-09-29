@@ -10,7 +10,8 @@ use tungstenite::{Message, WebSocket};
 
 use crate::remote::protocol::{AgentRow, FromPhone, ToPhone};
 use crate::remote::registry::Registry;
-use crate::terminal::pane::PaneHandle;
+use crate::terminal::emu::wheel_bytes;
+use crate::terminal::pane::{PaneHandle, PaneUid};
 use crate::terminal::screen::{history, screen};
 use crate::terminal::sizing::GridSize;
 
@@ -21,10 +22,15 @@ const FRAME: Duration = Duration::from_millis(100);
 /// Scrollback lines a single `history` request may ask for.
 const MAX_HISTORY_PAGE: usize = 500;
 
+/// Wheel lines a single `scroll` may send.
+const MAX_SCROLL_LINES: i32 = 100;
+
 pub struct PhoneSocket {
     ws: WebSocket<TcpStream>,
     registry: Registry,
     watched: Option<u64>,
+    /// The watched pane, as the agent watcher counts it seen.
+    seen: Option<PaneUid>,
     /// The phone's screen in cells: the watched pane takes it while the phone drives.
     phone_size: GridSize,
     sent_agents: Option<Vec<AgentRow>>,
@@ -38,6 +44,7 @@ impl PhoneSocket {
             ws,
             registry,
             watched: None,
+            seen: None,
             phone_size: GridSize { rows: 0, cols: 0 },
             sent_agents: None,
             sent_screen: None,
@@ -84,11 +91,12 @@ impl PhoneSocket {
                 let listed = self
                     .registry
                     .agents()
-                    .iter()
-                    .any(|agent| agent.pane.uid.get() == id);
-                if listed {
+                    .into_iter()
+                    .find(|agent| agent.pane.uid.get() == id);
+                if let Some(agent) = listed {
                     if self.watched != Some(id) {
                         self.unwatch();
+                        self.see(agent.pane.uid);
                     }
                     self.watched = Some(id);
                     self.sent_screen = None;
@@ -107,6 +115,16 @@ impl PhoneSocket {
                 pane.feed(b"\r")
             }),
             FromPhone::Key { id, key } => self.type_into(id, |pane| pane.feed(&key.bytes())),
+            FromPhone::Scroll {
+                id,
+                lines,
+                line,
+                col,
+            } => self.type_into(id, |pane| {
+                let lines = lines.clamp(-MAX_SCROLL_LINES, MAX_SCROLL_LINES);
+                let wheel = wheel_bytes(&pane.grid().lock(), lines, line, col);
+                wheel.map_or(Ok(()), |bytes| pane.feed(&bytes))
+            }),
             FromPhone::History { id, before, count } => {
                 if self.watched != Some(id) {
                     return Ok(());
@@ -147,8 +165,20 @@ impl PhoneSocket {
         }
     }
 
+    fn see(&mut self, uid: PaneUid) {
+        self.registry.phone_sees(uid);
+        self.seen = Some(uid);
+    }
+
+    fn stop_seeing(&mut self) {
+        if let Some(uid) = self.seen.take() {
+            self.registry.phone_leaves(uid);
+        }
+    }
+
     /// The phone stops driving the watched pane: the Mac gets its size back.
     fn unwatch(&mut self) {
+        self.stop_seeing();
         if let Some(pane) = self.watched.take().and_then(|id| self.registry.pane(id)) {
             let _ = pane.handle.release_phone();
         }
@@ -166,6 +196,7 @@ impl PhoneSocket {
             return Ok(());
         };
         let Some(pane) = self.registry.pane(id) else {
+            self.stop_seeing();
             self.watched = None;
             self.sent_screen = None;
             return self.push(&ToPhone::Ended { id });

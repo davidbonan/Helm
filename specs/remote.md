@@ -120,7 +120,7 @@ Server → phone:
 | `type` | Payload | When |
 |--------|---------|------|
 | `agents` | `[{id, project, branch, tab, agent, badge}]` | on connect, then on change (watcher tick) |
-| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable}` | watched pane, on change, ≤ 10 /s; `fg`/`bg` = the palette's own, what a blank cell shows |
+| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable, app_scrolls}` | watched pane, on change, ≤ 10 /s; `fg`/`bg` = the palette's own, what a blank cell shows; `app_scrolls` = the app takes the wheel ([`terminal.md`](terminal.md) §8) |
 | `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
 
@@ -134,16 +134,17 @@ Phone → server:
 
 | `type` | Payload | Effect |
 |--------|---------|--------|
-| `watch` | `{id, rows, cols}` | start mirroring this pane (one per connection) and claim its size (§7.1) |
+| `watch` | `{id, rows, cols}` | start mirroring this pane (one per connection), claim its size (§7.1); while watched, the pane counts as **seen** — acknowledges its green ([`agents.md`](agents.md) §1) |
 | `resize` | `{id, rows, cols}` | the phone's screen changed (zoom, rotation): claim that size |
 | `unwatch` | — | back to the list: release the size |
 | `send` | `{id, text}` | re-claims the size, then `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
 | `key` | `{id, key}` | re-claims the size, then one quick key (§7), encoded like the Mac keyboard |
 | `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
+| `scroll` | `{id, lines, line, col}` | re-claims the size, then the Mac wheel's bytes (`wheel_bytes`: `lines > 0` = up, cell under the finger, ≤ 100 lines); nothing when the app does not take the wheel |
 
 Change detection: the server snapshots the watched grid every 100 ms under the
 short lock and sends only when the screen differs from the last frame sent. A
-`send`/`key` to an id that is not exposed or not writable is dropped.
+`send`/`key`/`scroll` to an id that is not exposed or not writable is dropped.
 
 ## 7. Phone UI
 
@@ -158,7 +159,10 @@ Mobile-first, dark/light following the system, a single page:
   it, and once the gesture settles the phone asks for the matching size (`resize`)
   — native page zoom is off, it would scale the header and the dock too. A frame
   wider than the phone (the Mac took the size back) shows fitted to the width until
-  the phone claims again. Scrolling up past the top requests `history`.
+  the phone claims again. A one-finger swipe the mirror cannot scroll any further
+  goes on: to the app as the wheel (`scroll`, one line per text line of travel)
+  when `app_scrolls` — a full-screen TUI like Claude Code has no local scrollback —
+  else, upward, it requests `history`.
 - **Keyboard**: the page is pinned to the visual viewport (height *and*
   `offsetTop`), so the dock rides right above the iOS keyboard.
   Sticks to the bottom while new output arrives, unless the user scrolled up.
@@ -180,7 +184,7 @@ A PTY has a single size and the agent draws for it, so the Mac and the phone
 
 | Event | PTY size |
 |-------|----------|
-| Phone `watch` / `resize` / `send` / `key` | the phone's rows × cols (bounded 8–300 × 20–500) |
+| Phone `watch` / `resize` / `send` / `key` / `scroll` | the phone's rows × cols (bounded 8–300 × 20–500) |
 | Click, keystroke, paste or mouse input on the pane **on the Mac** | the Mac widget's size |
 | Phone `unwatch`, socket closed, page hidden | the Mac widget's size |
 | Mac window or split resized while the phone drives | recorded, applied when the Mac gets the turn back |

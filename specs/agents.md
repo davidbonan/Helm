@@ -26,8 +26,8 @@ app at the animation frame rate for as long as the completion lingered, never
 letting the app return to idle. Only `Working` — genuine transient activity — animates.
 
 The green one is an **unread completion signal**: it clears on **tab focus**
-(active entry + active tab + focused window — seeing = acknowledging)
-or on **typing in the pane** (replying = acknowledging). An acknowledged episode
+(active entry + active tab + focused window — seeing = acknowledging), on the
+**phone showing it** ([`remote.md`](remote.md) §6 `watch`), or on **typing in the pane** (replying = acknowledging). An acknowledged episode
 never re-arms the green one; only a **new** work episode can. Use case: send a
 prompt, switch workspace — spinner during the turn, green at the end, gray on
 returning to the workspace.

@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::agent_watch::watcher::{PaneReading, ReadingsView};
+use crate::agent_watch::watcher::{PaneReading, WatcherLink};
 use crate::agent_watch::AgentBadge;
 use crate::terminal::palette::TermPalette;
 use crate::terminal::pane::{PaneHandle, PaneUid};
@@ -30,7 +30,7 @@ pub struct Registry(Arc<Mutex<Published>>);
 
 struct Published {
     panes: Vec<ExposedPane>,
-    readings: Option<ReadingsView>,
+    watcher: Option<WatcherLink>,
     palette: TermPalette,
 }
 
@@ -38,7 +38,7 @@ impl Default for Registry {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(Published {
             panes: Vec::new(),
-            readings: None,
+            watcher: None,
             palette: TermPalette::dark(),
         })))
     }
@@ -48,12 +48,12 @@ impl Registry {
     pub fn publish(
         &self,
         panes: Vec<ExposedPane>,
-        readings: Option<ReadingsView>,
+        watcher: Option<WatcherLink>,
         palette: TermPalette,
     ) {
         *self.lock() = Published {
             panes,
-            readings,
+            watcher,
             palette,
         };
     }
@@ -64,7 +64,7 @@ impl Registry {
             .panes
             .iter()
             .filter_map(|pane| {
-                let reading = published.readings.as_ref()?.get(pane.uid)?;
+                let reading = published.watcher.as_ref()?.get(pane.uid)?;
                 (reading.badge != AgentBadge::None).then(|| ExposedAgent {
                     pane: pane.clone(),
                     reading,
@@ -87,6 +87,19 @@ impl Registry {
         self.agents()
             .iter()
             .any(|agent| agent.pane.uid.get() == id && agent.reading.agent.is_some())
+    }
+
+    /// Seeing an agent on the phone acknowledges its green (specs/agents.md §1).
+    pub fn phone_sees(&self, uid: PaneUid) {
+        if let Some(watcher) = &self.lock().watcher {
+            watcher.phone_sees(uid);
+        }
+    }
+
+    pub fn phone_leaves(&self, uid: PaneUid) {
+        if let Some(watcher) = &self.lock().watcher {
+            watcher.phone_leaves(uid);
+        }
     }
 
     pub fn palette(&self) -> TermPalette {

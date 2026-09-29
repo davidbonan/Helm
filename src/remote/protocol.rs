@@ -84,6 +84,7 @@ pub enum ToPhone {
         lines: Vec<Vec<WireRun>>,
         cursor: Option<(usize, usize)>,
         writable: bool,
+        app_scrolls: bool,
     },
     History {
         id: u64,
@@ -106,6 +107,7 @@ impl ToPhone {
             lines: wire_lines(&screen.lines),
             cursor: screen.cursor,
             writable,
+            app_scrolls: screen.app_scrolls,
         }
     }
 
@@ -121,12 +123,37 @@ impl ToPhone {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromPhone {
-    Watch { id: u64, rows: u16, cols: u16 },
-    Resize { id: u64, rows: u16, cols: u16 },
+    Watch {
+        id: u64,
+        rows: u16,
+        cols: u16,
+    },
+    Resize {
+        id: u64,
+        rows: u16,
+        cols: u16,
+    },
     Unwatch,
-    Send { id: u64, text: String },
-    Key { id: u64, key: QuickKey },
-    History { id: u64, before: i32, count: usize },
+    Send {
+        id: u64,
+        text: String,
+    },
+    Key {
+        id: u64,
+        key: QuickKey,
+    },
+    History {
+        id: u64,
+        before: i32,
+        count: usize,
+    },
+    /// `lines > 0` = upward, at the cell under the finger — the Mac wheel's encoding.
+    Scroll {
+        id: u64,
+        lines: i32,
+        line: usize,
+        col: usize,
+    },
 }
 
 /// The phone's quick-key row (specs/remote.md §7).

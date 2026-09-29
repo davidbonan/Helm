@@ -7,6 +7,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Term, TermMode};
 
+use crate::terminal::emu::wheel_goes_to_app;
 use crate::terminal::palette::{Rgb, TermPalette};
 
 /// Resolved look of a run: palette applied, dim and inverse folded into the colors.
@@ -34,6 +35,8 @@ pub struct Screen {
     pub lines: Vec<ScreenLine>,
     /// `(line, col)`, `None` while the program hides the cursor.
     pub cursor: Option<(usize, usize)>,
+    /// The app scrolls its own view (full-screen TUI): a swipe goes to it as the wheel.
+    pub app_scrolls: bool,
 }
 
 /// Scrollback lines `first..before` in grid coordinates (0 = top of the screen,
@@ -59,6 +62,7 @@ pub fn screen<T>(term: &Term<T>, palette: &TermPalette) -> Screen {
         cols,
         lines,
         cursor,
+        app_scrolls: wheel_goes_to_app(*term.mode()),
     }
 }
 

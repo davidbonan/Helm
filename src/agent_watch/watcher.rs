@@ -55,9 +55,16 @@ struct Track {
     focused: HashSet<PaneUid>,
 }
 
+enum Command {
+    Track(Track),
+    /// A phone shows the pane: seeing it there acknowledges, like the Mac focus.
+    PhoneSees(PaneUid),
+    PhoneLeaves(PaneUid),
+}
+
 /// Joined on drop (closing the channel ends the loop), like the git worker.
 pub struct AgentWatcher {
-    track: Option<Sender<Track>>,
+    commands: Option<Sender<Command>>,
     readings: Arc<Mutex<Readings>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -65,7 +72,7 @@ pub struct AgentWatcher {
 impl AgentWatcher {
     /// `on_change` runs on the watcher thread whenever a reading changes.
     pub fn spawn(on_change: impl Fn() + Send + 'static) -> Self {
-        let (track, commands) = crossbeam_channel::unbounded();
+        let (sender, commands) = crossbeam_channel::unbounded();
         let readings = Arc::new(Mutex::new(Readings::default()));
         let published = Arc::clone(&readings);
         let thread = std::thread::Builder::new()
@@ -73,7 +80,7 @@ impl AgentWatcher {
             .spawn(move || run(&commands, &published, &on_change))
             .expect("spawn the agent watcher thread");
         Self {
-            track: Some(track),
+            commands: Some(sender),
             readings,
             thread: Some(thread),
         }
@@ -82,13 +89,16 @@ impl AgentWatcher {
     /// Replaces the watched set. `focused`: panes the user is looking at —
     /// seeing acknowledges a green (specs/agents.md §1).
     pub fn track(&self, panes: Vec<WatchedPane>, focused: HashSet<PaneUid>) {
-        if let Some(track) = &self.track {
-            let _ = track.send(Track { panes, focused });
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(Command::Track(Track { panes, focused }));
         }
     }
 
-    pub fn view(&self) -> ReadingsView {
-        ReadingsView(Arc::clone(&self.readings))
+    pub fn link(&self) -> WatcherLink {
+        WatcherLink {
+            readings: Arc::clone(&self.readings),
+            commands: self.commands.clone().expect("the channel lives until drop"),
+        }
     }
 
     /// The readings, when their generation differs from `generation`.
@@ -98,19 +108,31 @@ impl AgentWatcher {
     }
 }
 
-/// The published readings from another thread (the phone server).
+/// The watcher as another thread (the phone server) reaches it: the published
+/// readings, and which panes a phone shows.
 #[derive(Clone)]
-pub struct ReadingsView(Arc<Mutex<Readings>>);
+pub struct WatcherLink {
+    readings: Arc<Mutex<Readings>>,
+    commands: Sender<Command>,
+}
 
-impl ReadingsView {
+impl WatcherLink {
     pub fn get(&self, uid: PaneUid) -> Option<PaneReading> {
-        lock(&self.0).panes.get(&uid).copied()
+        lock(&self.readings).panes.get(&uid).copied()
+    }
+
+    pub fn phone_sees(&self, uid: PaneUid) {
+        let _ = self.commands.send(Command::PhoneSees(uid));
+    }
+
+    pub fn phone_leaves(&self, uid: PaneUid) {
+        let _ = self.commands.send(Command::PhoneLeaves(uid));
     }
 }
 
 impl Drop for AgentWatcher {
     fn drop(&mut self) {
-        self.track.take();
+        self.commands.take();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -123,27 +145,44 @@ fn lock(readings: &Mutex<Readings>) -> MutexGuard<'_, Readings> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn run(commands: &Receiver<Track>, published: &Mutex<Readings>, on_change: &dyn Fn()) {
+fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dyn Fn()) {
     let mut watched: Vec<WatchedPane> = Vec::new();
     let mut focused: HashSet<PaneUid> = HashSet::new();
+    // Phones showing each pane: two phones on one agent both count.
+    let mut phone_seen: HashMap<PaneUid, usize> = HashMap::new();
     let mut states: HashMap<PaneUid, PaneAgentState> = HashMap::new();
     let mut next_tick = Instant::now();
     loop {
-        match commands.recv_deadline(next_tick) {
-            Ok(track) => {
+        let sight_moved = match commands.recv_deadline(next_tick) {
+            Ok(Command::Track(track)) => {
                 let focus_moved = track.focused != focused;
                 watched = track.panes;
                 focused = track.focused;
                 states.retain(|uid, _| watched.iter().any(|pane| pane.uid == *uid));
-                // A focus change acknowledges a green now rather than at the next tick.
-                if !focus_moved {
-                    continue;
-                }
+                focus_moved
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::PhoneSees(uid)) => {
+                *phone_seen.entry(uid).or_default() += 1;
+                true
+            }
+            Ok(Command::PhoneLeaves(uid)) => {
+                if let Some(count) = phone_seen.get_mut(&uid) {
+                    *count -= 1;
+                    if *count == 0 {
+                        phone_seen.remove(&uid);
+                    }
+                }
+                false
+            }
+            Err(RecvTimeoutError::Timeout) => true,
             Err(RecvTimeoutError::Disconnected) => return,
+        };
+        // A new sight acknowledges a green now rather than at the next tick.
+        if !sight_moved {
+            continue;
         }
-        let panes = tick(&watched, &focused, &mut states, now_ms());
+        let seen: HashSet<PaneUid> = focused.iter().chain(phone_seen.keys()).copied().collect();
+        let panes = tick(&watched, &seen, &mut states, now_ms());
         next_tick = Instant::now() + TICK;
         let mut readings = lock(published);
         if readings.panes != panes {
