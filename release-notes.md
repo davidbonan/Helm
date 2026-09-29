@@ -1,5 +1,12 @@
 # Release notes
 
+## 3.1.1
+
+- Much lighter on CPU with large repositories and big workspaces: the git status
+  refresh no longer scans the whole working tree twice per second. Change counts
+  of the inactive repos in the sidebar now refresh every 30 s (instantly when you
+  come back to the app); the active repo stays live.
+
 ## 3.1.0
 
 - A worktree's right-click menu can now delete it **together with its branch**:
@@ -74,19 +81,3 @@
   to count its lines. It read it whole — every second, for every repository of
   the group — only to throw the result away, and a build rewriting that file
   underneath killed the app on the spot.
-
-## 2.4.0
-
-- A pull request opens at once. The changed files come from the repository
-  itself when the listed head and base commits are already there — a PR opened
-  before, a branch you work on — with no round trip to the remote at all
-  (≈ 3.4 s → 35 ms); when they are not, a single fetch brings both tips instead
-  of two in a row.
-- The PR body, checks and conversation paint as soon as the forge returns them;
-  inline comments, review threads and commits load beside them and fill in a
-  moment later, under a *Loading comments…* row — instead of everything waiting
-  for the last call (first paint ≈ 2.5 s → 0.9 s on GitHub).
-- Refreshing an open PR keeps its threads on screen until the fresh detail has
-  fully landed — no blank in between.
-- File diffs of a review are computed by a small pool, the file you are on
-  first, rather than one thread per file.
