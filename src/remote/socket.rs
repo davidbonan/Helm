@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use tungstenite::{Message, WebSocket};
 
-use crate::remote::protocol::{AgentRow, FromPhone, ToPhone};
+use crate::remote::protocol::{AgentRow, FromPhone, PageTheme, ToPhone};
 use crate::remote::registry::Registry;
 use crate::terminal::emu::wheel_bytes;
 use crate::terminal::pane::{PaneHandle, PaneUid};
@@ -18,6 +18,13 @@ use crate::terminal::sizing::GridSize;
 pub const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 const FRAME: Duration = Duration::from_millis(100);
+
+/// While the phone drives the pane (swipe, keys), its frames follow at display pace:
+/// a swipe answered at [`FRAME`] reads as a slideshow.
+const DRIVEN_FRAME: Duration = Duration::from_millis(16);
+
+/// How long after the phone's last input the frames keep that pace.
+const DRIVEN_FOR: Duration = Duration::from_millis(600);
 
 /// Scrollback lines a single `history` request may ask for.
 const MAX_HISTORY_PAGE: usize = 500;
@@ -33,9 +40,12 @@ pub struct PhoneSocket {
     seen: Option<PaneUid>,
     /// The phone's screen in cells: the watched pane takes it while the phone drives.
     phone_size: GridSize,
+    sent_theme: Option<PageTheme>,
     sent_agents: Option<Vec<AgentRow>>,
     sent_screen: Option<ToPhone>,
     last_push: Option<Instant>,
+    driven_until: Option<Instant>,
+    read_timeout: Duration,
 }
 
 impl PhoneSocket {
@@ -46,9 +56,12 @@ impl PhoneSocket {
             watched: None,
             seen: None,
             phone_size: GridSize { rows: 0, cols: 0 },
+            sent_theme: None,
             sent_agents: None,
             sent_screen: None,
             last_push: None,
+            driven_until: None,
+            read_timeout: READ_TIMEOUT,
         }
     }
 
@@ -62,6 +75,11 @@ impl PhoneSocket {
 
     fn serve(&mut self, stopped: impl Fn() -> bool) {
         while !stopped() {
+            let frame = self.frame();
+            if frame != self.read_timeout && self.ws.get_ref().set_read_timeout(Some(frame)).is_ok()
+            {
+                self.read_timeout = frame;
+            }
             match self.ws.read() {
                 Ok(Message::Text(text)) => {
                     if let Ok(message) = serde_json::from_str::<FromPhone>(&text) {
@@ -76,7 +94,7 @@ impl PhoneSocket {
                     if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
                 Err(_) => return,
             }
-            if self.last_push.is_none_or(|at| at.elapsed() >= FRAME) {
+            if self.last_push.is_none_or(|at| at.elapsed() >= frame) {
                 self.last_push = Some(Instant::now());
                 if self.push_changes().is_err() {
                     return;
@@ -146,15 +164,23 @@ impl PhoneSocket {
 
     /// Input goes only to a listed pane with an agent in its foreground. Typing takes
     /// the size back from the Mac, which may have claimed it since the phone did.
-    fn type_into(&self, id: u64, write: impl FnOnce(&PaneHandle) -> anyhow::Result<()>) {
+    fn type_into(&mut self, id: u64, write: impl FnOnce(&PaneHandle) -> anyhow::Result<()>) {
         if !self.registry.is_writable(id) {
             return;
         }
+        self.driven_until = Some(Instant::now() + DRIVEN_FOR);
         if let Some(pane) = self.registry.pane(id) {
             if self.watched == Some(id) {
                 let _ = pane.handle.claim_phone(self.phone_size);
             }
             let _ = write(&pane.handle);
+        }
+    }
+
+    fn frame(&self) -> Duration {
+        match self.driven_until {
+            Some(until) if Instant::now() < until => DRIVEN_FRAME,
+            _ => FRAME,
         }
     }
 
@@ -185,6 +211,11 @@ impl PhoneSocket {
     }
 
     fn push_changes(&mut self) -> tungstenite::Result<()> {
+        let theme = self.registry.page_theme();
+        if self.sent_theme.as_ref() != Some(&theme) {
+            self.push(&ToPhone::Theme(theme.clone()))?;
+            self.sent_theme = Some(theme);
+        }
         let agents: Vec<AgentRow> = self.registry.agents().iter().map(AgentRow::of).collect();
         if self.sent_agents.as_ref() != Some(&agents) {
             self.push(&ToPhone::Agents {

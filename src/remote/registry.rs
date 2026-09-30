@@ -6,8 +6,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::agent_watch::watcher::{PaneReading, WatcherLink};
 use crate::agent_watch::AgentBadge;
+use crate::remote::protocol::PageTheme;
 use crate::terminal::palette::TermPalette;
 use crate::terminal::pane::{PaneHandle, PaneUid};
+use crate::theme::{self, ThemePreset};
 
 #[derive(Clone)]
 pub struct ExposedPane {
@@ -31,7 +33,7 @@ pub struct Registry(Arc<Mutex<Published>>);
 struct Published {
     panes: Vec<ExposedPane>,
     watcher: Option<WatcherLink>,
-    palette: TermPalette,
+    theme: &'static ThemePreset,
 }
 
 impl Default for Registry {
@@ -39,7 +41,7 @@ impl Default for Registry {
         Self(Arc::new(Mutex::new(Published {
             panes: Vec::new(),
             watcher: None,
-            palette: TermPalette::dark(),
+            theme: theme::preset("helm", true),
         })))
     }
 }
@@ -49,12 +51,12 @@ impl Registry {
         &self,
         panes: Vec<ExposedPane>,
         watcher: Option<WatcherLink>,
-        palette: TermPalette,
+        theme: &'static ThemePreset,
     ) {
         *self.lock() = Published {
             panes,
             watcher,
-            palette,
+            theme,
         };
     }
 
@@ -103,7 +105,11 @@ impl Registry {
     }
 
     pub fn palette(&self) -> TermPalette {
-        self.lock().palette
+        self.lock().theme.term
+    }
+
+    pub fn page_theme(&self) -> PageTheme {
+        PageTheme::of(&self.lock().theme.palette)
     }
 
     fn lock(&self) -> MutexGuard<'_, Published> {

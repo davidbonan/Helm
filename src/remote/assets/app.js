@@ -10,6 +10,7 @@ const RESIZE_DEBOUNCE_MS = 250;
 const GRID_PADDING_X = 16;
 const GRID_PADDING_BOTTOM = 8;
 const LINE_HEIGHT = 1.25;
+const PAN_GUARD_MS = 150;
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,6 +31,8 @@ const state = {
   displayPx: 12,
   viewportWidth: 0,
   resizeTimer: 0,
+  // The mirror follows new output while the user has not scrolled away from the bottom.
+  pinned: true,
 };
 
 function escapeHtml(text) {
@@ -77,6 +80,7 @@ function send(message) {
 
 function receive(message) {
   switch (message.type) {
+    case "theme": applyTheme(message); break;
     case "agents": state.agents = message.agents; renderAgents(); renderHeader(); break;
     case "screen": if (message.id === state.watched) renderScreen(message); break;
     case "history": if (message.id === state.watched) prependHistory(message); break;
@@ -84,32 +88,62 @@ function receive(message) {
   }
 }
 
-// Agents list
+// Theme: helm's own, sent on connect and whenever the Mac switches it.
 
-function badge(kind) {
-  return `<span class="badge ${kind}" aria-label="${kind}"></span>`;
+function applyTheme(theme) {
+  const root = document.documentElement;
+  root.dataset.theme = theme.dark ? "dark" : "light";
+  for (const [name, color] of Object.entries(theme.tokens)) root.style.setProperty(`--${name}`, color);
+  $("theme-color").content = theme.tokens.sidebar;
 }
 
+// Agents list
+
+const STATE_LABELS = { working: "Working", done: "Done", idle: "Idle" };
+
+function icon(name) {
+  return `<svg class="icon"><use href="#i-${name}"/></svg>`;
+}
+
+function statePill(kind) {
+  return `<span class="state ${kind}"><span class="badge ${kind}"></span>${STATE_LABELS[kind]}</span>`;
+}
+
+const SEPARATOR = `<span class="sep">·</span>`;
+
 function subtitle(agent) {
-  return [agent.branch, agent.tab].filter(Boolean).map(escapeHtml).join(" · ");
+  const branch = agent.branch
+    ? `${icon("branch")}<span class="branch">${escapeHtml(agent.branch)}</span>${SEPARATOR}`
+    : "";
+  return `${branch}<span>${escapeHtml(agent.tab)}</span>`;
+}
+
+function rowLines(agent) {
+  if (!agent.branch) return `<div class="name">${escapeHtml(agent.tab)}</div>`;
+  return `<div class="name">${escapeHtml(agent.branch)}</div><div class="sub"><span>${escapeHtml(agent.tab)}</span></div>`;
 }
 
 function renderAgents() {
   const list = $("agents");
   if (state.agents.length === 0) {
-    list.innerHTML = `<div class="empty">No agent running in helm</div>`;
+    list.innerHTML = `<div class="empty">${icon("terminal")}<p class="empty-title">No agent running</p>
+      <p>Start Claude Code or Codex in a helm terminal: it shows up here.</p></div>`;
     return;
   }
-  let html = "";
-  let project = null;
+  const groups = new Map();
   for (const agent of state.agents) {
-    if (agent.project !== project) {
-      project = agent.project;
-      html += `<div class="group">${escapeHtml(project)}</div>`;
+    if (!groups.has(agent.project)) groups.set(agent.project, []);
+    groups.get(agent.project).push(agent);
+  }
+  let html = "";
+  for (const [project, agents] of groups) {
+    html += `<section class="group"><h2 class="group-name">${escapeHtml(project)}</h2><div class="card">`;
+    for (const agent of agents) {
+      html += `<button class="row" type="button" data-id="${agent.id}">
+        <span class="who">${rowLines(agent)}</span>
+        ${statePill(agent.badge)}${icon("chevron")}</button>`;
     }
-    html += `<button class="row" type="button" data-id="${agent.id}">
-      <span class="who"><div class="name">${escapeHtml(agent.agent)}</div>
-      <div class="sub">${subtitle(agent)}</div></span>${badge(agent.badge)}</button>`;
+    html += `</div></section>`;
   }
   list.innerHTML = html;
 }
@@ -149,9 +183,9 @@ function renderHeader() {
     $("term-badge").innerHTML = "";
     return;
   }
-  $("term-title").textContent = `${agent.agent} · ${agent.project}`;
+  $("term-title").textContent = agent.project;
   $("term-subtitle").innerHTML = subtitle(agent);
-  $("term-badge").innerHTML = badge(agent.badge);
+  $("term-badge").innerHTML = statePill(agent.badge);
 }
 
 function lineHtml(runs, cursorCol) {
@@ -183,6 +217,7 @@ function renderScreen(frame) {
     fitDisplay();
   }
   state.appScrolls = frame.app_scrolls;
+  scroller.classList.toggle("app-scrolls", frame.app_scrolls);
   scroller.style.setProperty("--term-bg", frame.bg);
   scroller.style.setProperty("--term-fg", frame.fg);
   const cursor = frame.cursor;
@@ -330,20 +365,48 @@ function endPinch(event) {
   requestResize();
 }
 
-// A swipe the mirror cannot scroll any further goes on: to the app as the wheel
-// (full-screen TUI), else to the history above the screen.
-const swipe = { id: null, y: 0, pending: 0 };
+// A full-screen TUI takes every swipe as the wheel: its screen has nothing to scroll
+// locally. Released while moving, that scroll glides on and slows down like a native
+// one. Elsewhere, a swipe past the top requests the history above the screen.
+const GLIDE_DECAY_PER_MS = 0.998;
+const GLIDE_MIN_SPEED = 0.03;
+const GLIDE_MAX_PAUSE_MS = 80;
+const swipe = { id: null, y: 0, time: 0, pending: 0, speed: 0, cell: null, toApp: false, glide: 0 };
 
 function startSwipe(event) {
   if (event.touches.length !== 1) return;
+  cancelAnimationFrame(swipe.glide);
   swipe.id = event.touches[0].identifier;
   swipe.y = event.touches[0].clientY;
+  swipe.time = event.timeStamp;
   swipe.pending = 0;
+  swipe.speed = 0;
+  swipe.toApp = false;
 }
 
-function isAtEdge(scroller, upward) {
-  if (upward) return scroller.scrollTop <= 0;
-  return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
+function scrollApp(dy) {
+  const lineHeight = state.displayPx * LINE_HEIGHT;
+  swipe.pending += dy;
+  const lines = Math.trunc(swipe.pending / lineHeight);
+  if (lines === 0) return;
+  swipe.pending -= lines * lineHeight;
+  send({ type: "scroll", id: state.watched, lines, ...swipe.cell });
+}
+
+function glide(event) {
+  if (event.touches.length !== 0 || !swipe.toApp) return;
+  swipe.toApp = false;
+  if (event.timeStamp - swipe.time > GLIDE_MAX_PAUSE_MS) return;
+  let last = performance.now();
+  const step = (now) => {
+    const elapsed = now - last;
+    last = now;
+    swipe.speed *= GLIDE_DECAY_PER_MS ** elapsed;
+    if (Math.abs(swipe.speed) < GLIDE_MIN_SPEED || state.watched === null || !state.writable) return;
+    scrollApp(swipe.speed * elapsed);
+    swipe.glide = requestAnimationFrame(step);
+  };
+  swipe.glide = requestAnimationFrame(step);
 }
 
 function screenCell(touch) {
@@ -359,20 +422,19 @@ function moveSwipe(event) {
   const touch = event.touches[0];
   if (touch.identifier !== swipe.id) return startSwipe(event);
   const dy = touch.clientY - swipe.y;
+  const elapsed = event.timeStamp - swipe.time;
   swipe.y = touch.clientY;
-  const upward = dy > 0;
-  if (dy === 0 || !isAtEdge($("scroller"), upward)) return;
+  swipe.time = event.timeStamp;
   if (!state.appScrolls) {
-    if (upward) requestHistory();
+    if (dy > 0 && $("scroller").scrollTop <= 0) requestHistory();
     return;
   }
   event.preventDefault();
-  if (state.watched === null || !state.writable) return;
-  swipe.pending += dy;
-  const lines = Math.trunc(swipe.pending / (state.displayPx * LINE_HEIGHT));
-  if (lines === 0) return;
-  swipe.pending -= lines * state.displayPx * LINE_HEIGHT;
-  send({ type: "scroll", id: state.watched, lines, ...screenCell(touch) });
+  if (dy === 0 || state.watched === null || !state.writable) return;
+  if (elapsed > 0) swipe.speed = 0.7 * (dy / elapsed) + 0.3 * swipe.speed;
+  swipe.toApp = true;
+  swipe.cell = screenCell(touch);
+  scrollApp(dy);
 }
 
 // Composer
@@ -399,16 +461,25 @@ function pressKey(button) {
 }
 
 // Layout: the page is pinned to the visual viewport so the dock rides above the iOS
-// keyboard — iOS pans the page by `offsetTop` when the keyboard opens.
+// keyboard.
+
+// iOS skips its reveal pan for a field still transparent as the keyboard rises; that pan raced the viewport shrink.
+function focusWithoutPan() {
+  const prompt = $("prompt");
+  prompt.style.opacity = "0";
+  setTimeout(() => { prompt.style.opacity = ""; }, PAN_GUARD_MS);
+}
+
+// iOS reports the keyboard leaving only once it is gone: the page grows back with it instead.
+function followKeyboardOut() {
+  document.documentElement.style.setProperty("--app-height", `${document.documentElement.clientHeight}px`);
+}
 
 function fitViewport() {
   const viewport = window.visualViewport;
-  const scroller = $("scroller");
-  const stick = isAtBottom(scroller);
   const root = document.documentElement.style;
   root.setProperty("--app-height", `${viewport ? viewport.height : window.innerHeight}px`);
   root.setProperty("--app-top", `${viewport ? viewport.offsetTop : 0}px`);
-  if (stick) scroller.scrollTop = scroller.scrollHeight;
   const width = viewport ? viewport.width : window.innerWidth;
   if (width !== state.viewportWidth) {
     state.viewportWidth = width;
@@ -432,14 +503,20 @@ $("font-down").addEventListener("click", () => zoomStep(-1));
 $("font-up").addEventListener("click", () => zoomStep(1));
 $("composer").addEventListener("submit", submitPrompt);
 $("prompt").addEventListener("input", autosize);
+$("prompt").addEventListener("focus", focusWithoutPan);
+$("prompt").addEventListener("blur", followKeyboardOut);
 $("keys").addEventListener("mousedown", (event) => event.preventDefault());
 $("keys").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (button) pressKey(button);
 });
 $("scroller").addEventListener("scroll", () => {
+  state.pinned = isAtBottom($("scroller"));
   if ($("scroller").scrollTop < 40) requestHistory();
 });
+new ResizeObserver(() => {
+  if (state.pinned) $("scroller").scrollTop = $("scroller").scrollHeight;
+}).observe($("scroller"));
 $("scroller").addEventListener("touchstart", (event) => {
   startPinch(event);
   startSwipe(event);
@@ -448,7 +525,10 @@ $("scroller").addEventListener("touchmove", (event) => {
   movePinch(event);
   moveSwipe(event);
 }, { passive: false });
-$("scroller").addEventListener("touchend", endPinch);
+$("scroller").addEventListener("touchend", (event) => {
+  endPinch(event);
+  glide(event);
+});
 $("scroller").addEventListener("touchcancel", endPinch);
 document.addEventListener("gesturestart", (event) => event.preventDefault());
 

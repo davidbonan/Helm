@@ -16,6 +16,7 @@ use crate::remote::access::{Access, IdleClock, Token};
 use crate::remote::address::{interfaces, lan_address};
 use crate::remote::awake::KeepAwake;
 use crate::remote::http::{read_head, RequestHead, Response};
+use crate::remote::protocol::PageTheme;
 use crate::remote::registry::Registry;
 use crate::remote::socket::{PhoneSocket, READ_TIMEOUT};
 use crate::terminal::activity::now_ms;
@@ -181,12 +182,29 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
             "text/html; charset=utf-8",
             EXPIRED_HTML.as_bytes(),
         ),
-        "/" => Response::new("200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes()),
+        "/" => return index(&mut stream, &shared.registry),
         "/app.js" => Response::new("200 OK", "text/javascript", APP_JS.as_bytes()),
         "/app.css" => Response::new("200 OK", "text/css", APP_CSS.as_bytes()),
         _ => Response::new("404 Not Found", "text/plain", b""),
     };
     let _ = response.write_to(&mut stream);
+}
+
+fn index(stream: &mut TcpStream, registry: &Registry) {
+    let page = index_page(&registry.page_theme());
+    let _ = Response::new("200 OK", "text/html; charset=utf-8", page.as_bytes()).write_to(stream);
+}
+
+fn index_page(theme: &PageTheme) -> String {
+    let scheme = if theme.dark { "dark" } else { "light" };
+    INDEX_HTML.replacen(
+        "<html lang=\"en\">",
+        &format!(
+            "<html lang=\"en\" data-theme=\"{scheme}\" style=\"{}\">",
+            theme.css()
+        ),
+        1,
+    )
 }
 
 /// A valid token becomes the session cookie; the token leaves the address bar.

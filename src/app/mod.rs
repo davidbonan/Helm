@@ -660,8 +660,8 @@ pub struct HelmApp {
     agent_readings: Readings,
     /// Phone access (specs/remote.md), `None` while off.
     phone: Option<phone_access::PhoneAccess>,
-    /// The terminal palette of the last frame: what the phone mirror paints with.
-    term_palette: TermPalette,
+    /// The theme of the last frame: what the phone page and mirror paint with.
+    theme_preset: &'static theme::ThemePreset,
     last_group_poll: f64,
     last_group_probe: f64,
     /// Workspace PR fetch running off the UI thread (pull-requests.md §6): `gh`
@@ -865,7 +865,7 @@ impl HelmApp {
             agent_watcher: None,
             agent_readings: Readings::default(),
             phone: None,
-            term_palette: TermPalette::dark(),
+            theme_preset: theme::preset("helm", true),
             last_group_poll: 0.0,
             last_group_probe: 0.0,
             pr_runner: None,
@@ -4297,7 +4297,7 @@ impl eframe::App for HelmApp {
         );
         let palette = preset.palette;
         let term_palette = preset.term;
-        self.term_palette = term_palette;
+        self.theme_preset = preset;
 
         let ctx = ui.ctx().clone();
         // Reset every pane's "painted this frame" flag; the render path re-sets it

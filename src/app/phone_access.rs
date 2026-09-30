@@ -103,7 +103,7 @@ impl HelmApp {
         phone.registry.publish(
             panes,
             self.agent_watcher.as_ref().map(AgentWatcher::link),
-            self.term_palette,
+            self.theme_preset,
         );
     }
 

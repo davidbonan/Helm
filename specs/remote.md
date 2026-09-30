@@ -112,15 +112,18 @@ battery still sleeps — accepted (§9).
 
 ## 6. Wire protocol
 
-HTTP: `GET /pair`, `GET /` (+ assets), `GET /ws` (upgrade). Everything else runs
+HTTP: `GET /pair`, `GET /` (+ assets), `GET /ws` (upgrade). `GET /` inlines helm's
+active theme on `<html>` (`data-theme` + the tokens as CSS variables): the first
+paint already wears it. Everything else runs
 on the WebSocket, one JSON object per text frame.
 
 Server → phone:
 
 | `type` | Payload | When |
 |--------|---------|------|
-| `agents` | `[{id, project, branch, tab, agent, badge}]` | on connect, then on change (watcher tick) |
-| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable, app_scrolls}` | watched pane, on change, ≤ 10 /s; `fg`/`bg` = the palette's own, what a blank cell shows; `app_scrolls` = the app takes the wheel ([`terminal.md`](terminal.md) §8) |
+| `theme` | `{dark, tokens}` — helm's chrome colors (`accent`, `sidebar`, `canvas`, `surface`, `border`, `text`… as `#rrggbb`) | on connect, then when helm switches theme or preset |
+| `agents` | `[{id, project, branch, tab, badge}]` | on connect, then on change (watcher tick) |
+| `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable, app_scrolls}` | watched pane, on change, ≤ 10 /s — ≤ 60 /s for 600 ms after a phone `send`/`key`/`scroll`, so a swipe reads as motion; `fg`/`bg` = the palette's own, what a blank cell shows; `app_scrolls` = the app takes the wheel ([`terminal.md`](terminal.md) §8) |
 | `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
 
@@ -142,17 +145,22 @@ Phone → server:
 | `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
 | `scroll` | `{id, lines, line, col}` | re-claims the size, then the Mac wheel's bytes (`wheel_bytes`: `lines > 0` = up, cell under the finger, ≤ 100 lines); nothing when the app does not take the wheel |
 
-Change detection: the server snapshots the watched grid every 100 ms under the
-short lock and sends only when the screen differs from the last frame sent. A
+Change detection: the server snapshots the watched grid every 100 ms (16 ms while
+the phone drives) under the short lock and sends only when the screen differs from
+the last frame sent. A
 `send`/`key`/`scroll` to an id that is not exposed or not writable is dropped.
 
 ## 7. Phone UI
 
-Mobile-first, dark/light following the system, a single page:
+Mobile-first, a single page wearing **helm's active theme** (mode and preset, not
+the phone's scheme): chrome on `bg.sidebar`, content on `bg.canvas` / the terminal
+palette ([`design-system.md`](design-system.md) §1).
 
-- **Agents**: rows grouped by project — agent name, branch · tab, badge (same
-  semantics and colors as the sidebar, [`design-system.md`](design-system.md)).
-  Tap ⇒ terminal view. Empty ⇒ *No agent running in helm*.
+- **Agents**: large title, blurred when the list scrolls under it; one rounded card
+  per project — branch over tab (the tab alone when detached; the agent's name tells
+  nothing, every one is *Claude*), a state pill (badge +
+  *Working* / *Done* / *Idle*, same semantics and colors as the sidebar), chevron.
+  Tap ⇒ terminal view. Empty ⇒ *No agent running*.
 - **Terminal**: the screen in a monospace `<pre>`, **sized for the phone** (§7.1):
   the agent draws its TUI for the phone's width, no reflow. The reading font
   (12 px by default) sets the size in cells; pinch on the terminal or A−/A+ changes
@@ -162,13 +170,32 @@ Mobile-first, dark/light following the system, a single page:
   the phone claims again. A one-finger swipe the mirror cannot scroll any further
   goes on: to the app as the wheel (`scroll`, one line per text line of travel)
   when `app_scrolls` — a full-screen TUI like Claude Code has no local scrollback —
-  else, upward, it requests `history`.
+  else, upward, it requests `history`. With `app_scrolls` the mirror never scrolls
+  natively (`overflow-y: hidden`, `touch-action: none`): a few pixels of native
+  scroll would have taken the whole gesture from the page. Its lines take no touch
+  (`pointer-events: none`): every frame replaces them, and a touch whose target left
+  the DOM stops reaching the mirror. Released while moving, the scroll **glides**
+  on, slowing down like iOS's own (0.998 / ms). Claude Code scrolls one line per
+  wheel event, so the content follows the finger 1:1.
 - **Keyboard**: the page is pinned to the visual viewport (height *and*
-  `offsetTop`), so the dock rides right above the iOS keyboard.
-  Sticks to the bottom while new output arrives, unless the user scrolled up.
-- **Composer** (bottom, above the keyboard): multi-line field + **Send**
-  (`send`); empty text + Send = Enter alone.
-- **Quick keys** row: `Esc` · `1` · `2` · `3` · `↑` · `↓` · `⇥` · `⇧⇥` · `^C` ·
+  `offsetTop`), so the dock rides right above the iOS keyboard. Measured on the
+  simulator (iOS 27): WebKit reports the final viewport the moment the keyboard
+  starts rising, while it animates its own pan to reveal the field — applied at
+  once, the page jumped by the keyboard's height then slid back. So the prompt
+  stays transparent 150 ms on focus (iOS skips the pan for it; a single tick no
+  longer suffices), and the page height **transitions** (250 ms, the keyboard's
+  curve) instead of snapping. Closing, iOS reports the viewport only once the
+  keyboard is gone: the prompt's `blur` starts the growth instead.
+  Sticks to the bottom while new output arrives, unless the user scrolled up — also
+  through the height transition (`ResizeObserver`).
+- **Terminal header**: back chevron, project over branch · tab, state
+  pill, A−/A+ segmented.
+- **Composer** (bottom, above the keyboard): an input card (`border.input`, accent
+  when focused) holding the multi-line field and a round **Send** (`send`); empty
+  text + Send = Enter alone. **Dictation** = the iOS keyboard's own mic: Web Speech
+  is gated on a secure context, which a `http://` LAN page is not (checked on the
+  simulator, §8).
+- **Quick keys** row: `Esc` · `↑` · `↓` · `⇥` · `⇧⇥` · `^C` ·
   `⏎` — enough to answer Claude Code's permission menus and switch its mode.
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
@@ -204,6 +231,7 @@ Clicking it, like any click in the pane, takes the size back.
 | Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; token/cookie/`Origin` checks; idle-stop clock (injected); address pick over fixture interfaces; quick-key → bytes |
 | Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count |
+| Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |
 | Manual | iPhone Safari on the LAN: pair, follow a live Claude Code turn, answer a permission prompt, lock the Mac 10 min then resume |
 
 ## 9. Accepted limitations

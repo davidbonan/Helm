@@ -49,6 +49,19 @@ phone. Counter: **6/6**.
   *Verified*: headless-verify `verify-artifacts/20260928_124024_31308/` (real LAN
   bind, port reachable while on, freed after Stop).
 
+- ☑ **Phone page wears helm's theme + redesign.** `theme` message + `<html>` inlined
+  tokens (`PageTheme`), live on switch; cards per project (branch over tab, no agent
+  name), state pills, input card; quick keys without `1`/`2`/`3`.
+  *Tests*: 1 business e2e (first paint + socket theme). *Verified*: iOS simulator
+  (`.claude/skills/mobile`, `examples/phone_preview`), dark + light. Dictation =
+  keyboard mic (Web Speech absent on the `http://` LAN page, present on loopback).
+- ☑ **Phone swipe + keyboard, measured.** Swipe on a full-screen agent: frames at
+  display pace while the phone drives, no native scroll in that mode, lines take no
+  touch (the replaced target killed the gesture after one frame), glide on release.
+  Keyboard: 150 ms pan guard, height transition, growth on `blur`. *Verified*: iOS
+  simulator video (AXe tap/drag), Chrome CDP swipe replay on a real Claude Code
+  (23 lines sent = 23 moved); feel on a real iPhone still to confirm.
+
 ### Next actions (M-Phone)
 
 - ☐ **Live iPhone Safari.** The page was driven in Chrome's iPhone emulation only:

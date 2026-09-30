@@ -14,8 +14,8 @@ use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::remote::awake::{KeepAwake, REASON};
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::PhoneServer;
-use helm::terminal::palette::TermPalette;
 use helm::terminal::pane::Pane;
+use helm::theme;
 use portable_pty::CommandBuilder;
 use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
@@ -73,7 +73,7 @@ impl Fixture {
         registry.publish(
             vec![exposed(&agent, "Tab 1"), exposed(&shell, "Tab 2")],
             Some(watcher.link()),
-            TermPalette::dark(),
+            theme::preset("helm", true),
         );
         let server = PhoneServer::start_on_address([127, 0, 0, 1].into(), registry).unwrap();
         Self {
@@ -207,6 +207,25 @@ fn an_unpaired_phone_gets_the_access_stopped_page() {
     assert!(page.starts_with("HTTP/1.1 401"), "{page}");
     assert!(page.contains("Access stopped"));
     assert!(wrong_token.starts_with("HTTP/1.1 401"));
+}
+
+#[test]
+fn the_page_wears_helm_theme_from_its_first_paint() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+
+    let page = fixture.get("/", Some(&cookie));
+    let mut ws = fixture.connect(&cookie);
+    let theme = wait_for(&mut ws, "theme", |_| true);
+
+    fixture.close();
+    assert!(page.contains("data-theme=\"dark\""), "{page}");
+    assert!(
+        page.contains("--canvas:#19222d;"),
+        "the palette is inlined, not left to the phone's scheme"
+    );
+    let theme = theme.expect("the socket sends helm's theme on connect");
+    assert_eq!(theme["tokens"]["canvas"], "#19222d");
 }
 
 #[test]

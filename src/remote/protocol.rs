@@ -1,12 +1,16 @@
 //! The WebSocket messages (specs/remote.md §6), one JSON object per text frame.
 
+use std::collections::BTreeMap;
+
+use egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::agent_watch::{display_name, AgentBadge};
+use crate::agent_watch::AgentBadge;
 use crate::remote::registry::ExposedAgent;
 use crate::terminal::keys::{key_bytes, Key, Mods};
 use crate::terminal::palette::TermPalette;
 use crate::terminal::screen::{HistoryPage, Run, Screen, ScreenLine};
+use crate::theme::Palette;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentRow {
@@ -14,7 +18,6 @@ pub struct AgentRow {
     pub project: String,
     pub branch: Option<String>,
     pub tab: String,
-    pub agent: String,
     pub badge: &'static str,
 }
 
@@ -25,7 +28,6 @@ impl AgentRow {
             project: exposed.pane.project.clone(),
             branch: exposed.pane.branch.clone(),
             tab: exposed.pane.tab.clone(),
-            agent: display_name(exposed.reading.agent.unwrap_or("agent")),
             badge: match exposed.reading.badge {
                 AgentBadge::Working => "working",
                 AgentBadge::Done => "done",
@@ -33,6 +35,50 @@ impl AgentRow {
             },
         }
     }
+}
+
+/// helm's chrome colors under the page's token names (app.css `:root`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PageTheme {
+    pub dark: bool,
+    pub tokens: BTreeMap<&'static str, String>,
+}
+
+impl PageTheme {
+    pub fn of(palette: &Palette) -> Self {
+        let tokens = [
+            ("accent", palette.accent),
+            ("sidebar", palette.bg_sidebar),
+            ("canvas", palette.bg_canvas),
+            ("surface", palette.bg_surface),
+            ("surface-hover", palette.bg_surface_hover),
+            ("border", palette.border_subtle),
+            ("border-input", palette.border_input),
+            ("text", palette.text_primary),
+            ("text-secondary", palette.text_secondary),
+            ("muted", palette.text_muted),
+            ("added", palette.git_added),
+        ];
+        Self {
+            dark: palette.dark,
+            tokens: tokens
+                .into_iter()
+                .map(|(name, color)| (name, hex(color)))
+                .collect(),
+        }
+    }
+
+    /// Declarations for the page's `<html style>`: its first paint already wears helm's theme.
+    pub fn css(&self) -> String {
+        self.tokens
+            .iter()
+            .map(|(name, color)| format!("--{name}:{color};"))
+            .collect()
+    }
+}
+
+fn hex(color: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -71,6 +117,7 @@ pub fn wire_lines(lines: &[ScreenLine]) -> Vec<Vec<WireRun>> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToPhone {
+    Theme(PageTheme),
     Agents {
         agents: Vec<AgentRow>,
     },
@@ -161,12 +208,6 @@ pub enum FromPhone {
 #[serde(rename_all = "snake_case")]
 pub enum QuickKey {
     Escape,
-    #[serde(rename = "1")]
-    One,
-    #[serde(rename = "2")]
-    Two,
-    #[serde(rename = "3")]
-    Three,
     Up,
     Down,
     Tab,
@@ -179,9 +220,6 @@ impl QuickKey {
     /// Encoded by the Mac keyboard's own table (`terminal::keys`).
     pub fn bytes(self) -> Vec<u8> {
         let chord = match self {
-            Self::One => return b"1".to_vec(),
-            Self::Two => return b"2".to_vec(),
-            Self::Three => return b"3".to_vec(),
             Self::Escape => (Key::Escape, Mods::NONE),
             Self::Up => (Key::ArrowUp, Mods::NONE),
             Self::Down => (Key::ArrowDown, Mods::NONE),
@@ -203,12 +241,11 @@ mod tests {
         assert_eq!(QuickKey::Backtab.bytes(), b"\x1b[Z");
         assert_eq!(QuickKey::CtrlC.bytes(), [0x03]);
         assert_eq!(QuickKey::Escape.bytes(), b"\x1b");
-        assert_eq!(QuickKey::Two.bytes(), b"2");
     }
 
     #[test]
     fn phone_messages_parse_from_their_json() {
-        let key: FromPhone = serde_json::from_str(r#"{"type":"key","id":7,"key":"1"}"#).unwrap();
+        let key: FromPhone = serde_json::from_str(r#"{"type":"key","id":7,"key":"down"}"#).unwrap();
         let send: FromPhone =
             serde_json::from_str(r#"{"type":"send","id":7,"text":"go"}"#).unwrap();
         let watch: FromPhone =
@@ -218,7 +255,7 @@ mod tests {
             key,
             FromPhone::Key {
                 id: 7,
-                key: QuickKey::One
+                key: QuickKey::Down
             }
         );
         assert_eq!(

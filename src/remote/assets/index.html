@@ -4,30 +4,38 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#19222D" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta id="theme-color" name="theme-color" content="#10171F">
 <title>helm</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-branch" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.75"/><circle cx="4.5" cy="12.5" r="1.75"/><circle cx="11.5" cy="5" r="1.75"/><path d="M4.5 5.25v5.5M11.5 6.75c0 3-7 2-7 4"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="m4.75 6.25 2 1.75-2 1.75M8.5 10h2.75"/></symbol>
+</svg>
 <div id="app">
   <section id="agents-view" class="view">
-    <header class="bar">
-      <h1>Agents</h1>
-      <span id="link" class="link" hidden>Reconnecting…</span>
-    </header>
-    <main id="agents" class="list"></main>
+    <main class="list">
+      <header class="bar large">
+        <h1>Agents</h1>
+        <span id="link" class="link" hidden>Reconnecting…</span>
+      </header>
+      <div id="agents"></div>
+    </main>
   </section>
 
   <section id="terminal-view" class="view" hidden>
     <header class="bar">
-      <button id="back" class="back" type="button" aria-label="Back to agents">‹</button>
+      <button id="back" class="icon-button back" type="button" aria-label="Back to agents"><svg class="icon"><use href="#i-back"/></svg></button>
       <div class="title">
         <div id="term-title" class="name"></div>
         <div id="term-subtitle" class="sub"></div>
       </div>
       <span id="term-badge"></span>
-      <div class="zoom">
+      <div class="zoom" role="group" aria-label="Text size">
         <button id="font-down" type="button" aria-label="Smaller text">A−</button>
         <button id="font-up" type="button" aria-label="Larger text">A+</button>
       </div>
@@ -39,9 +47,6 @@
     <footer class="dock">
       <div id="keys" class="keys">
         <button type="button" data-key="escape">Esc</button>
-        <button type="button" data-key="1">1</button>
-        <button type="button" data-key="2">2</button>
-        <button type="button" data-key="3">3</button>
         <button type="button" data-key="up" aria-label="Up">↑</button>
         <button type="button" data-key="down" aria-label="Down">↓</button>
         <button type="button" data-key="tab" aria-label="Tab">⇥</button>
@@ -51,7 +56,7 @@
       </div>
       <form id="composer" class="composer">
         <textarea id="prompt" rows="1" placeholder="Reply to the agent…" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-        <button id="send" type="submit">Send</button>
+        <button id="send" class="send" type="submit" aria-label="Send"><svg class="icon"><use href="#i-send"/></svg></button>
       </form>
     </footer>
   </section>
