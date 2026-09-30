@@ -507,7 +507,7 @@ impl HelmApp {
                 self.modal = Some(Modal::Feedback(FeedbackPage::default()));
             }
             Command::WhatsNew => self.modal = Some(Modal::WhatsNew),
-            Command::OpenOnPhone => self.open_on_phone(now),
+            Command::OpenOnPhone => self.open_on_phone(ctx, now),
             Command::StopPhoneAccess => self.stop_phone_access(),
             Command::SwitchTo
             | Command::RunningServers

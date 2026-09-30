@@ -2,13 +2,15 @@
 //! reading its messages (short read timeout) and pushing what changed — the agent
 //! list and the watched screen, at most every [`FRAME`].
 
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use tungstenite::{Message, WebSocket};
 
-use crate::remote::protocol::{AgentRow, FromPhone, PageTheme, ToPhone};
+use crate::remote::launch::Launcher;
+use crate::remote::protocol::{AgentRow, FromPhone, PageTheme, Targets, ToPhone};
 use crate::remote::registry::Registry;
 use crate::terminal::emu::wheel_bytes;
 use crate::terminal::pane::{PaneHandle, PaneUid};
@@ -35,6 +37,9 @@ const MAX_SCROLL_LINES: i32 = 100;
 pub struct PhoneSocket {
     ws: WebSocket<TcpStream>,
     registry: Registry,
+    launcher: Launcher,
+    /// Panes this phone launched: watchable before their agent shows (§7.2).
+    launched: HashSet<u64>,
     watched: Option<u64>,
     /// The watched pane, as the agent watcher counts it seen.
     seen: Option<PaneUid>,
@@ -42,6 +47,7 @@ pub struct PhoneSocket {
     phone_size: GridSize,
     sent_theme: Option<PageTheme>,
     sent_agents: Option<Vec<AgentRow>>,
+    sent_targets: Option<Targets>,
     sent_screen: Option<ToPhone>,
     last_push: Option<Instant>,
     driven_until: Option<Instant>,
@@ -49,15 +55,18 @@ pub struct PhoneSocket {
 }
 
 impl PhoneSocket {
-    pub fn new(ws: WebSocket<TcpStream>, registry: Registry) -> Self {
+    pub fn new(ws: WebSocket<TcpStream>, registry: Registry, launcher: Launcher) -> Self {
         Self {
             ws,
             registry,
+            launcher,
+            launched: HashSet::new(),
             watched: None,
             seen: None,
             phone_size: GridSize { rows: 0, cols: 0 },
             sent_theme: None,
             sent_agents: None,
+            sent_targets: None,
             sent_screen: None,
             last_push: None,
             driven_until: None,
@@ -110,11 +119,18 @@ impl PhoneSocket {
                     .registry
                     .agents()
                     .into_iter()
-                    .find(|agent| agent.pane.uid.get() == id);
-                if let Some(agent) = listed {
+                    .find(|agent| agent.pane.uid.get() == id)
+                    .map(|agent| agent.pane);
+                let watchable = listed.or_else(|| {
+                    self.launched
+                        .contains(&id)
+                        .then(|| self.registry.pane(id))
+                        .flatten()
+                });
+                if let Some(pane) = watchable {
                     if self.watched != Some(id) {
                         self.unwatch();
-                        self.see(agent.pane.uid);
+                        self.see(pane.uid);
                     }
                     self.watched = Some(id);
                     self.sent_screen = None;
@@ -128,6 +144,22 @@ impl PhoneSocket {
                 }
             }
             FromPhone::Unwatch => self.unwatch(),
+            FromPhone::Launch {
+                entry,
+                agent,
+                rows,
+                cols,
+            } => {
+                let size = GridSize { rows, cols };
+                let reply = match self.launcher.launch(&self.registry, entry, agent, size) {
+                    Ok(id) => {
+                        self.launched.insert(id);
+                        ToPhone::Launched { id }
+                    }
+                    Err(message) => ToPhone::LaunchFailed { message },
+                };
+                return self.push(&reply);
+            }
             FromPhone::Send { id, text } => self.type_into(id, |pane| {
                 pane.paste(&text)?;
                 pane.feed(b"\r")
@@ -222,6 +254,11 @@ impl PhoneSocket {
                 agents: agents.clone(),
             })?;
             self.sent_agents = Some(agents);
+        }
+        let targets = Targets::of(&self.registry.targets());
+        if self.sent_targets.as_ref() != Some(&targets) {
+            self.push(&ToPhone::Targets(targets.clone()))?;
+            self.sent_targets = Some(targets);
         }
         let Some(id) = self.watched else {
             return Ok(());

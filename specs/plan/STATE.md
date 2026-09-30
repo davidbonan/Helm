@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md) §4, §6, §7.2 +
 [`specs/preferences.md`](../preferences.md) *Agents*. Per the user: new tab (not
 active), no initial prompt, agent list configurable in Preferences, no worktree
-creation. Counter: **1/3**.
+creation. Counter: **2/3**.
 
 - ☑ **PL1 — Agent list pref + Preferences *Agents*.** `launch_agents`
   (`name` + `command`, defaults Claude Code / Codex / opencode, absent ⇒ defaults);
@@ -19,12 +19,13 @@ creation. Counter: **1/3**.
   *Tests*: 2 unit (detected / offered) + persistence (absent → defaults, cleared
   stays empty, full round-trip) + 3 UI e2e (remove, add + focus, warning).
   *Verified*: headless-verify `verify-artifacts/20260930_183404_67069/`.
-- ☐ **PL2 — Launch off the UI thread.** Server spawns the `Pane` (login shell +
+- ☑ **PL2 — Launch off the UI thread.** Server spawns the `Pane` (login shell +
   typed command, phone size); registry pending panes + published targets (entries,
   agents); watcher extras; channel → UI adopts as a new non-active tab
   (`Workspace` add-tab-to-entry). *Tests*: unit (registry pending/forget), app unit
   (adoption, entry gone), business e2e (`launch` with no UI frame → listed with its
-  badge → `send` reaches; unknown entry/agent → `launch_failed`).
+  badge → `send` reaches; unknown entry/agent → `launch_failed`). *Tests*: 2 unit
+  (registry) + 2 app unit + 2 business e2e.
 - ☐ **PL3 — Phone page.** `targets` / `launch` / `launched` / `launch_failed`;
   **+** on the *Agents* title (hidden when no agent), sheet project/worktree +
   agent chips + Start, last choice remembered, lands on the new pane.

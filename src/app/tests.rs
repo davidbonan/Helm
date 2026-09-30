@@ -4058,19 +4058,108 @@ fn stop_phone_access_is_offered_while_on_and_ends_it() {
     assert!(harness.query_by_label("Stop phone access").is_none());
 
     let registry = crate::remote::registry::Registry::default();
+    let (launcher, launches) = crate::remote::launch::Launcher::channel(|| {});
     let server = crate::remote::server::PhoneServer::start_on_address(
         [127, 0, 0, 1].into(),
         registry.clone(),
+        launcher,
     )
     .unwrap();
     let app = harness.state_mut();
-    app.adopt_phone_server(server, registry);
+    app.adopt_phone_server(server, registry, launches);
     app.modal = Some(Modal::CommandPalette(Default::default()));
     harness.run();
     harness.get_by_label("Stop phone access").click();
     harness.run();
 
     assert!(!harness.state().is_phone_access_on());
+}
+
+/// Phone access on, with the UI end of the launch channel in the test's hands.
+fn phone_on(
+    app: &mut HelmApp,
+) -> (
+    crate::remote::registry::Registry,
+    crossbeam_channel::Sender<crate::remote::launch::LaunchedPane>,
+) {
+    let registry = crate::remote::registry::Registry::default();
+    let (launcher, _) = crate::remote::launch::Launcher::channel(|| {});
+    let server = crate::remote::server::PhoneServer::start_on_address(
+        [127, 0, 0, 1].into(),
+        registry.clone(),
+        launcher,
+    )
+    .unwrap();
+    let (adopt, launches) = crossbeam_channel::unbounded();
+    app.adopt_phone_server(server, registry.clone(), launches);
+    (registry, adopt)
+}
+
+fn cat_pane() -> Pane {
+    Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap()
+}
+
+#[test]
+fn a_phone_launched_pane_lands_as_a_background_tab_of_its_entry() {
+    let mut app = app_with(&["a", "b"]);
+    let (_registry, adopt) = phone_on(&mut app);
+    let pane = cat_pane();
+    let uid = pane.uid();
+    adopt
+        .send(crate::remote::launch::LaunchedPane {
+            entry: PathBuf::from("/tmp/b"),
+            pane,
+        })
+        .unwrap();
+
+    app.adopt_launched_panes();
+
+    assert_eq!(
+        app.workspace.active(),
+        Some(0),
+        "the Mac stays where it was"
+    );
+    app.workspace.set_active(1);
+    assert_eq!(app.workspace.tab_count(), Some(2));
+    assert_eq!(
+        app.workspace.active_tab(),
+        Some(0),
+        "the new tab is not activated"
+    );
+    let tab_id = app.workspace.tab_id(1, 1).unwrap();
+    let adopted = app.caches.panes[&(app.caches.keys[1].clone(), tab_id)]
+        .values()
+        .any(|state| matches!(state, TerminalState::Live(pane) if pane.uid() == uid));
+    assert!(adopted);
+}
+
+#[test]
+fn a_phone_launched_pane_whose_entry_left_is_dropped_and_forgotten() {
+    let mut app = app_with(&["a"]);
+    let (registry, adopt) = phone_on(&mut app);
+    let pane = cat_pane();
+    let id = pane.uid().get();
+    registry.add_launched(
+        crate::remote::registry::ExposedPane {
+            uid: pane.uid(),
+            project: "gone".to_owned(),
+            branch: None,
+            tab: "Claude Code".to_owned(),
+            handle: pane.handle(),
+        },
+        crate::agent_watch::watcher::WatchedPane::of(&pane),
+    );
+    adopt
+        .send(crate::remote::launch::LaunchedPane {
+            entry: PathBuf::from("/tmp/gone"),
+            pane,
+        })
+        .unwrap();
+
+    app.adopt_launched_panes();
+
+    assert!(registry.pane(id).is_none());
+    assert_eq!(app.workspace.tab_count(), Some(1));
 }
 
 #[test]

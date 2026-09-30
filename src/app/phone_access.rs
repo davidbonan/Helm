@@ -2,6 +2,7 @@
 //! the server, the agent poll publishes the live panes to it.
 
 use super::*;
+use crate::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use crate::remote::qr::QrMatrix;
 use crate::remote::registry::{ExposedPane, Registry};
 use crate::remote::server::{PhoneServer, StartError};
@@ -15,6 +16,7 @@ pub(super) struct PhoneAccess {
     server: PhoneServer,
     qr: Option<QrMatrix>,
     registry: Registry,
+    launches: crossbeam_channel::Receiver<LaunchedPane>,
 }
 
 impl HelmApp {
@@ -23,10 +25,11 @@ impl HelmApp {
     }
 
     /// *Open on phone*: starts access when off, then shows the pairing modal.
-    pub(super) fn open_on_phone(&mut self, now: f64) {
+    pub(super) fn open_on_phone(&mut self, ctx: &egui::Context, now: f64) {
         if self.phone.is_none() {
             let registry = Registry::default();
-            let server = match PhoneServer::start(registry.clone()) {
+            let (launcher, launches) = Launcher::channel(repaint_pacer(ctx));
+            let server = match PhoneServer::start(registry.clone(), launcher) {
                 Ok(server) => server,
                 Err(StartError::NoLocalNetwork) => {
                     self.toasts
@@ -39,17 +42,23 @@ impl HelmApp {
                     return;
                 }
             };
-            self.adopt_phone_server(server, registry);
+            self.adopt_phone_server(server, registry, launches);
         }
         self.modal = Some(Modal::PhoneAccess);
     }
 
-    /// `registry` is the one the server was started with.
-    pub(super) fn adopt_phone_server(&mut self, server: PhoneServer, registry: Registry) {
+    /// `registry` and `launches` are the ones the server was started with.
+    pub(super) fn adopt_phone_server(
+        &mut self,
+        server: PhoneServer,
+        registry: Registry,
+        launches: crossbeam_channel::Receiver<LaunchedPane>,
+    ) {
         self.phone = Some(PhoneAccess {
             qr: QrMatrix::encode(server.pairing_url()),
             server,
             registry,
+            launches,
         });
         self.publish_phone_panes();
     }
@@ -105,6 +114,67 @@ impl HelmApp {
             self.agent_watcher.as_ref().map(AgentWatcher::link),
             self.theme_preset,
         );
+        phone.registry.publish_targets(self.launch_targets());
+    }
+
+    /// Every entry of a visible project, bare roots aside (remote.md §7.2).
+    fn launch_targets(&self) -> LaunchTargets {
+        let entries = (0..self.workspace.len())
+            .filter(|&index| !self.workspace.is_in_hidden_project(index))
+            .filter_map(|index| {
+                let repo = self.workspace.repo(index).filter(|repo| !repo.bare)?;
+                let branch = self
+                    .caches
+                    .keys
+                    .get(index)
+                    .and_then(|key| self.caches.branch_labels.get(key))
+                    .cloned();
+                Some(LaunchTarget::new(
+                    repo.path.clone(),
+                    self.workspace.project_name(index)?,
+                    branch,
+                    self.workspace.parent_root(index).is_some(),
+                ))
+            })
+            .collect();
+        let agents = self
+            .launch_agents
+            .iter()
+            .filter(|agent| agent.is_offered())
+            .cloned()
+            .collect();
+        LaunchTargets { entries, agents }
+    }
+
+    /// Panes the phone launched become tabs of their entry, not activated; one
+    /// whose entry left the workspace meanwhile is dropped.
+    pub(super) fn adopt_launched_panes(&mut self) {
+        let Some(phone) = &self.phone else {
+            return;
+        };
+        let launched: Vec<LaunchedPane> = phone.launches.try_iter().collect();
+        for LaunchedPane { entry, pane } in launched {
+            let index = (0..self.workspace.len())
+                .find(|&i| self.workspace.repo(i).is_some_and(|r| r.path == entry));
+            let slot = index.and_then(|index| {
+                let key = self.caches.keys.get(index)?.clone();
+                Some((key, self.workspace.append_tab(index)?))
+            });
+            match slot {
+                Some((key, (tab_id, pane_id))) => {
+                    self.caches
+                        .panes
+                        .entry((key, tab_id))
+                        .or_default()
+                        .insert(pane_id, TerminalState::Live(Box::new(pane)));
+                }
+                None => {
+                    if let Some(phone) = &self.phone {
+                        phone.registry.forget(pane.uid());
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn render_phone_access_modal(

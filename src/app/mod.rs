@@ -1095,6 +1095,7 @@ impl HelmApp {
     /// group of each live pane, advances its state machine, then aggregates per
     /// workspace entry for the sidebar badge.
     fn update_agent_watch(&mut self, ctx: &egui::Context) {
+        self.adopt_launched_panes();
         if self.caches.panes.is_empty() {
             self.caches.agent_badges.clear();
             self.caches.agents.clear();

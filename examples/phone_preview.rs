@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
+use helm::remote::launch::Launcher;
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::PhoneServer;
 use helm::terminal::pane::Pane;
@@ -89,10 +90,12 @@ fn main() {
         Some(watcher.link()),
         theme::preset("helm", !has("--light")),
     );
+    let (launcher, _launches) = Launcher::channel(|| {});
     let server = if has("--loopback") {
-        PhoneServer::start_on_address([127, 0, 0, 1].into(), registry).expect("bind the loopback")
+        PhoneServer::start_on_address([127, 0, 0, 1].into(), registry, launcher)
+            .expect("bind the loopback")
     } else {
-        PhoneServer::start(registry).expect("a LAN address, like the real phone")
+        PhoneServer::start(registry, launcher).expect("a LAN address, like the real phone")
     };
     println!("{}", server.pairing_url());
     for pane in &panes {

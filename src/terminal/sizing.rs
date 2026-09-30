@@ -18,7 +18,7 @@ pub struct GridSize {
 impl GridSize {
     /// A phone's screen, bounded: below the floor an agent's TUI is unusable, above
     /// the ceiling the grid would only cost memory.
-    fn phone(self) -> Self {
+    pub fn phone(self) -> Self {
         Self {
             rows: self.rows.clamp(8, 300),
             cols: self.cols.clamp(20, 500),

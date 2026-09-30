@@ -6,6 +6,7 @@ use egui::Color32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_watch::AgentBadge;
+use crate::remote::launch::LaunchTargets;
 use crate::remote::registry::ExposedAgent;
 use crate::terminal::keys::{key_bytes, Key, Mods};
 use crate::terminal::palette::TermPalette;
@@ -33,6 +34,53 @@ impl AgentRow {
                 AgentBadge::Done => "done",
                 AgentBadge::Idle | AgentBadge::None => "idle",
             },
+        }
+    }
+}
+
+/// A workspace entry as the phone picks it: no path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryChoice {
+    pub id: u64,
+    pub project: String,
+    pub branch: Option<String>,
+    pub worktree: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentChoice {
+    pub id: usize,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Targets {
+    pub entries: Vec<EntryChoice>,
+    pub agents: Vec<AgentChoice>,
+}
+
+impl Targets {
+    pub fn of(targets: &LaunchTargets) -> Self {
+        Self {
+            entries: targets
+                .entries
+                .iter()
+                .map(|entry| EntryChoice {
+                    id: entry.id,
+                    project: entry.project.clone(),
+                    branch: entry.branch.clone(),
+                    worktree: entry.worktree,
+                })
+                .collect(),
+            agents: targets
+                .agents
+                .iter()
+                .enumerate()
+                .map(|(id, agent)| AgentChoice {
+                    id,
+                    name: agent.name.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -141,6 +189,13 @@ pub enum ToPhone {
     Ended {
         id: u64,
     },
+    Targets(Targets),
+    Launched {
+        id: u64,
+    },
+    LaunchFailed {
+        message: String,
+    },
 }
 
 impl ToPhone {
@@ -193,6 +248,12 @@ pub enum FromPhone {
         id: u64,
         before: i32,
         count: usize,
+    },
+    Launch {
+        entry: u64,
+        agent: usize,
+        rows: u16,
+        cols: u16,
     },
     /// `lines > 0` = upward, at the cell under the finger — the Mac wheel's encoding.
     Scroll {

@@ -16,6 +16,7 @@ use crate::remote::access::{Access, IdleClock, Token};
 use crate::remote::address::{interfaces, lan_address};
 use crate::remote::awake::KeepAwake;
 use crate::remote::http::{read_head, RequestHead, Response};
+use crate::remote::launch::Launcher;
 use crate::remote::protocol::PageTheme;
 use crate::remote::registry::Registry;
 use crate::remote::socket::{PhoneSocket, READ_TIMEOUT};
@@ -47,6 +48,7 @@ pub struct PhoneServer {
 struct Shared {
     access: Access,
     registry: Registry,
+    launcher: Launcher,
     idle: Mutex<IdleClock>,
     stopped: AtomicBool,
     awake: Mutex<Option<KeepAwake>>,
@@ -74,17 +76,26 @@ impl Shared {
 
 impl PhoneServer {
     /// On the machine's LAN address; access stops if that address disappears.
-    pub fn start(registry: Registry) -> Result<Self, StartError> {
+    pub fn start(registry: Registry, launcher: Launcher) -> Result<Self, StartError> {
         let ip = lan_address(&interfaces()).ok_or(StartError::NoLocalNetwork)?;
-        Self::start_on(ip, registry, true).map_err(StartError::Bind)
+        Self::start_on(ip, registry, launcher, true).map_err(StartError::Bind)
     }
 
     /// On `ip`, the address left unwatched (tests bind the loopback).
-    pub fn start_on_address(ip: Ipv4Addr, registry: Registry) -> io::Result<Self> {
-        Self::start_on(ip, registry, false)
+    pub fn start_on_address(
+        ip: Ipv4Addr,
+        registry: Registry,
+        launcher: Launcher,
+    ) -> io::Result<Self> {
+        Self::start_on(ip, registry, launcher, false)
     }
 
-    fn start_on(ip: Ipv4Addr, registry: Registry, watch_address: bool) -> io::Result<Self> {
+    fn start_on(
+        ip: Ipv4Addr,
+        registry: Registry,
+        launcher: Launcher,
+        watch_address: bool,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind((ip, 0))?;
         listener.set_nonblocking(true)?;
         let access = Access::new(Token::mint(), listener.local_addr()?);
@@ -92,6 +103,7 @@ impl PhoneServer {
         let shared = Arc::new(Shared {
             access,
             registry,
+            launcher,
             idle: Mutex::new(IdleClock::started(now_ms())),
             stopped: AtomicBool::new(false),
             awake: Mutex::new(Some(KeepAwake::begin())),
@@ -243,6 +255,7 @@ fn upgrade(mut stream: TcpStream, head: &RequestHead, shared: &Shared) {
     }
     let ws = WebSocket::from_raw_socket(stream, Role::Server, None);
     shared.idle().connect();
-    PhoneSocket::new(ws, shared.registry.clone()).run(|| shared.is_stopped());
+    PhoneSocket::new(ws, shared.registry.clone(), shared.launcher.clone())
+        .run(|| shared.is_stopped());
     shared.idle().disconnect(now_ms());
 }

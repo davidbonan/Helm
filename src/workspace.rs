@@ -256,6 +256,16 @@ impl Workspace {
         Some(e.active_tab)
     }
 
+    /// Appends a fresh tab to entry `index` **without** activating it (a phone
+    /// launch, remote.md §7.2): its id and its single pane.
+    pub fn append_tab(&mut self, index: usize) -> Option<(TabId, PaneId)> {
+        self.entries.get(index)?;
+        let fresh = self.mint_tab();
+        let slot = (fresh.id, fresh.layout.focus());
+        self.entries[index].tabs.push(fresh);
+        Some(slot)
+    }
+
     pub fn close_tab(&mut self, tab: usize) -> bool {
         let Some(len) = self.active_entry().map(|e| e.tabs.len()) else {
             return false;

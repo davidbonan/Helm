@@ -12,6 +12,7 @@ use alacritty_terminal::grid::Dimensions;
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::remote::awake::{KeepAwake, REASON};
+use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::PhoneServer;
 use helm::terminal::pane::Pane;
@@ -46,9 +47,12 @@ struct Fixture {
     _awake: MutexGuard<'static, ()>,
     agent: Pane,
     shell: Pane,
+    /// Dropped before the watcher: it holds a link that keeps the watcher's thread alive.
+    registry: Registry,
     _watcher: AgentWatcher,
     server: PhoneServer,
-    _dir: tempfile::TempDir,
+    launches: crossbeam_channel::Receiver<LaunchedPane>,
+    dir: tempfile::TempDir,
 }
 
 impl Fixture {
@@ -75,14 +79,19 @@ impl Fixture {
             Some(watcher.link()),
             theme::preset("helm", true),
         );
-        let server = PhoneServer::start_on_address([127, 0, 0, 1].into(), registry).unwrap();
+        let (launcher, launches) = Launcher::channel(|| {});
+        let server =
+            PhoneServer::start_on_address([127, 0, 0, 1].into(), registry.clone(), launcher)
+                .unwrap();
         Self {
             _awake: awake,
             agent,
             shell,
+            registry,
             _watcher: watcher,
             server,
-            _dir: dir,
+            launches,
+            dir,
         }
     }
 
@@ -258,6 +267,96 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
     assert_eq!(listed, [agent_id], "the plain `cat` pane is never exposed");
     let screen = echoed.expect("the typed text reaches the agent's PTY and its screen");
     assert_eq!(screen["writable"], true);
+}
+
+/// The fixture's directory as the only entry, the echo agent (named `claude`, so
+/// the watcher knows it) as the only agent.
+fn offer_the_echo_agent(fixture: &Fixture) -> u64 {
+    let entry = LaunchTarget::new(
+        fixture.dir.path().to_path_buf(),
+        "api".to_owned(),
+        Some("main".to_owned()),
+        false,
+    );
+    let entry_id = entry.id;
+    let command = fixture.dir.path().join("claude").display().to_string();
+    fixture.registry.publish_targets(LaunchTargets {
+        entries: vec![entry],
+        agents: vec![LaunchAgent::new("Claude Code", &command)],
+    });
+    entry_id
+}
+
+#[test]
+fn a_phone_launch_runs_the_agent_with_no_ui_frame() {
+    let fixture = Fixture::new();
+    let entry_id = offer_the_echo_agent(&fixture);
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+
+    let targets = wait_for(&mut ws, "targets", |m| m["entries"][0]["id"] == entry_id);
+    ws.send(Message::text(
+        json!({"type": "launch", "entry": entry_id, "agent": 0, "rows": 30, "cols": 50})
+            .to_string(),
+    ))
+    .unwrap();
+    let launched = wait_for(&mut ws, "launched", |_| true).expect("the launch answers its id");
+    let id = launched["id"].as_u64().unwrap();
+    ws.send(Message::text(
+        json!({"type": "watch", "id": id, "rows": 30, "cols": 50}).to_string(),
+    ))
+    .unwrap();
+    let listed =
+        wait_for_within(&mut ws, Duration::from_secs(15), "agents", |m| {
+            m["agents"].as_array().unwrap().iter().any(|row| {
+                row["id"] == id && row["tab"] == "Claude Code" && row["project"] == "api"
+            })
+        });
+    ws.send(Message::text(
+        json!({"type": "send", "id": id, "text": "hello launch"}).to_string(),
+    ))
+    .unwrap();
+    let echoed = wait_for(&mut ws, "screen", |m| {
+        m["id"] == id && m.to_string().contains("hello launch")
+    });
+    let adopted = fixture.launches.try_recv();
+
+    let entry = targets.expect("the phone receives what it may launch")["entries"][0].clone();
+    assert!(entry.get("path").is_none(), "the phone never sees a path");
+    assert!(
+        listed.is_some(),
+        "the launched agent is listed with its badge"
+    );
+    assert!(echoed.is_some(), "the phone types into the launched agent");
+    let adopted = adopted.expect("the pane is handed to the UI");
+    assert_eq!(adopted.entry, fixture.dir.path());
+    assert_eq!(adopted.pane.uid().get(), id);
+    teardown(adopted.pane);
+    fixture.close();
+}
+
+#[test]
+fn a_launch_of_an_unknown_entry_or_agent_fails() {
+    let fixture = Fixture::new();
+    let entry_id = offer_the_echo_agent(&fixture);
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+
+    let mut failures = Vec::new();
+    for (entry, agent) in [(entry_id.wrapping_add(1), 0), (entry_id, 1)] {
+        ws.send(Message::text(
+            json!({"type": "launch", "entry": entry, "agent": agent, "rows": 30, "cols": 50})
+                .to_string(),
+        ))
+        .unwrap();
+        failures.push(wait_for(&mut ws, "launch_failed", |_| true));
+    }
+
+    let nothing_spawned = fixture.launches.try_recv().is_err();
+
+    fixture.close();
+    assert!(failures.iter().all(Option::is_some), "{failures:?}");
+    assert!(nothing_spawned);
 }
 
 fn watch(ws: &mut WebSocket<TcpStream>, agent_id: u64) {
