@@ -1,5 +1,14 @@
 # Release notes
 
+## 3.2.0
+
+- Start a new agent from the phone: the **+** on the Agents screen
+  picks a project or worktree and an agent, then opens it in a new tab on
+  the Mac — even with helm hidden or the Mac locked.
+- Choose which agents the phone can start (Claude Code, Codex and opencode
+  by default) in Preferences › Agents › Phone launch.
+- Fixed a freeze when the last terminal closed while phone access was on.
+
 ## 3.1.3
 
 - New `/` button next to the phone's quick keys: a menu that sends
@@ -75,10 +84,3 @@
   you come back. Totals survive restarts.
 - `helm pr time` (or `--json`) lists every PR you have reviewed with the time spent,
   most recent first — with helm open or closed.
-
-## 2.4.3
-
-- The diff shows *what* changed inside a line, not just that the line changed:
-  a rewritten line and the one it replaces are aligned word by word, and the
-  parts that actually differ take a stronger tint. Two lines too far apart to be
-  one rewrite keep their plain red/green, as before.
