@@ -64,9 +64,12 @@ enum Command {
     /// it) or it is forgotten (dropped unadopted).
     Launched(WatchedPane),
     Forget(PaneUid),
+    /// Sent on drop: the phone's links keep the channel open, so its closing
+    /// cannot end the loop.
+    Stop,
 }
 
-/// Joined on drop (closing the channel ends the loop), like the git worker.
+/// Joined on drop, like the git worker.
 pub struct AgentWatcher {
     commands: Option<Sender<Command>>,
     readings: Arc<Mutex<Readings>>,
@@ -144,7 +147,9 @@ impl WatcherLink {
 
 impl Drop for AgentWatcher {
     fn drop(&mut self) {
-        self.commands.take();
+        if let Some(commands) = self.commands.take() {
+            let _ = commands.send(Command::Stop);
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -198,8 +203,8 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dy
                 states.remove(&uid);
                 true
             }
+            Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => true,
-            Err(RecvTimeoutError::Disconnected) => return,
         };
         // A new sight acknowledges a green now rather than at the next tick.
         if !sight_moved {
@@ -244,4 +249,23 @@ fn tick<'a>(
             (pane.uid, PaneReading { agent, badge })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_the_watcher_ends_its_thread_while_a_phone_link_lives() {
+        let watcher = AgentWatcher::spawn(|| {});
+        let _phone = watcher.link();
+        let (done, dropped) = crossbeam_channel::bounded(1);
+
+        std::thread::spawn(move || {
+            drop(watcher);
+            let _ = done.send(());
+        });
+
+        assert!(dropped.recv_timeout(Duration::from_secs(5)).is_ok());
+    }
 }

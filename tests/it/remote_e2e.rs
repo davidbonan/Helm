@@ -47,7 +47,6 @@ struct Fixture {
     _awake: MutexGuard<'static, ()>,
     agent: Pane,
     shell: Pane,
-    /// Dropped before the watcher: it holds a link that keeps the watcher's thread alive.
     registry: Registry,
     _watcher: AgentWatcher,
     server: PhoneServer,
