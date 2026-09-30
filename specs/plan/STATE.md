@@ -6,7 +6,7 @@
 
 ---
 
-## ◐ Milestone — M-PhoneLaunch · Launch an agent from the phone
+## ☑ Milestone — M-PhoneLaunch · Launch an agent from the phone
 
 Spec: [`specs/remote.md`](../remote.md) §4, §6, §7.2 +
 [`specs/preferences.md`](../preferences.md) *Agents*. Per the user: new tab (not
