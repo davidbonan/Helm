@@ -6,17 +6,19 @@
 
 ---
 
-## ☐ Milestone — M-PhoneLaunch · Launch an agent from the phone
+## ◐ Milestone — M-PhoneLaunch · Launch an agent from the phone
 
 Spec: [`specs/remote.md`](../remote.md) §4, §6, §7.2 +
 [`specs/preferences.md`](../preferences.md) *Agents*. Per the user: new tab (not
 active), no initial prompt, agent list configurable in Preferences, no worktree
-creation. Counter: **0/3**.
+creation. Counter: **1/3**.
 
-- ☐ **PL1 — Agent list pref + Preferences *Agents*.** `launch_agents`
+- ☑ **PL1 — Agent list pref + Preferences *Agents*.** `launch_agents`
   (`name` + `command`, defaults Claude Code / Codex / opencode, absent ⇒ defaults);
   Preferences section: rows name + command + trash, *Add agent*, watchlist warning.
-  *Tests*: persistence round-trip (absent / empty / custom) + UI e2e on the section.
+  *Tests*: 2 unit (detected / offered) + persistence (absent → defaults, cleared
+  stays empty, full round-trip) + 3 UI e2e (remove, add + focus, warning).
+  *Verified*: headless-verify `verify-artifacts/20260930_183404_67069/`.
 - ☐ **PL2 — Launch off the UI thread.** Server spawns the `Pane` (login shell +
   typed command, phone size); registry pending panes + published targets (entries,
   agents); watcher extras; channel → UI adopts as a new non-active tab

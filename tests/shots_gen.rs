@@ -2155,6 +2155,7 @@ fn gen_preferences() {
                 &mut bitbucket_token,
                 &pr_sources,
                 &mut notify,
+                &mut helm::remote::launch::LaunchAgent::defaults(),
                 &mut keymap,
                 &mut keyboard,
                 &updates,

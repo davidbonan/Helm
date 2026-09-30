@@ -8,6 +8,7 @@ use crate::ai::AiProvider;
 use crate::command_palette::CommandUsage;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
+use crate::remote::launch::LaunchAgent;
 use crate::terminal::links::Editor;
 use crate::theme::ThemeMode;
 use crate::ui::file_list::FileViewMode;
@@ -156,6 +157,9 @@ pub struct Prefs {
     /// table of tables: after `keybindings`, before the arrays-of-tables.
     #[serde(skip_serializing_if = "is_unused")]
     pub command_usage: CommandUsage,
+    /// Agents the phone can launch (remote.md §7.2). Absent ⇒ the defaults;
+    /// present, even empty ⇒ verbatim.
+    pub launch_agents: Vec<LaunchAgent>,
     pub projects: Vec<Project>,
     /// Per-project settings (worktrees.md §6); array-of-tables like `projects`,
     /// so it stays after every scalar field.
@@ -190,6 +194,7 @@ impl Default for Prefs {
             pr_rail_collapsed: false,
             keybindings: BTreeMap::new(),
             command_usage: CommandUsage::default(),
+            launch_agents: LaunchAgent::defaults(),
             projects: Vec::new(),
             project_settings: Vec::new(),
         }
@@ -556,6 +561,7 @@ mod tests {
                 usage.record(Command::Push, 1_790_100_000);
                 usage
             },
+            launch_agents: vec![LaunchAgent::new("Claude", "claude --model opus")],
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),
                 project("/Users/dev/beta", &[]),
@@ -577,6 +583,22 @@ mod tests {
             "unexpected format:\n{text}"
         );
         assert_eq!(Prefs::from_toml(&text).unwrap(), prefs);
+    }
+
+    #[test]
+    fn launch_agents_default_when_absent_and_stay_empty_once_cleared() {
+        assert_eq!(
+            Prefs::from_toml("").unwrap().launch_agents,
+            LaunchAgent::defaults()
+        );
+        let cleared = Prefs {
+            keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+x".to_owned())]),
+            launch_agents: Vec::new(),
+            projects: vec![project("/Users/dev/alpha", &[])],
+            ..Prefs::default()
+        };
+        let text = cleared.to_toml().unwrap();
+        assert_eq!(Prefs::from_toml(&text).unwrap(), cleared, "{text}");
     }
 
     #[test]

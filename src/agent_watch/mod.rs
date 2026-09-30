@@ -85,6 +85,12 @@ pub fn classify(comm: &str, argv: &[String]) -> Option<&'static str> {
     agent_name(argv.first()?.rsplit('/').next()?)
 }
 
+/// True when launching `program` (a command's first word, possibly a path) runs
+/// an agent the watcher recognizes by its invoked name.
+pub fn is_watched_program(program: &str) -> bool {
+    program.rsplit('/').next().and_then(agent_name).is_some()
+}
+
 /// True for an interactive shell process name: a pane whose foreground is just
 /// its shell is idle, not running a named activity (tab auto-naming).
 pub fn is_shell(comm: &str) -> bool {

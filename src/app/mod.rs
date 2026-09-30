@@ -638,6 +638,8 @@ pub struct HelmApp {
     /// Native banner on agent completion (specs/agents.md), persisted in
     /// `prefs.toml`: loaded at boot, toggled in Preferences.
     notify_on_agent_completion: bool,
+    /// Agents the phone can launch (remote.md §7.2), edited in Preferences.
+    launch_agents: Vec<crate::remote::launch::LaunchAgent>,
     /// Branch editor (M12-6): opened by the toolbar button, rendered by `graph_view`
     /// on the HEAD row; stays open while waiting for the worker, which writes the
     /// inline error into it or closes it on success.
@@ -857,6 +859,7 @@ impl HelmApp {
             review: HashMap::new(),
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
+            launch_agents: prefs.launch_agents,
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),

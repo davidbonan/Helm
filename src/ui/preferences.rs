@@ -2,6 +2,7 @@ use crate::ai::AiProvider;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Group, Keymap, Shortcut};
 use crate::pull_requests::runner::SourceStatus;
+use crate::remote::launch::LaunchAgent;
 use crate::terminal::links::Editor;
 use crate::theme::{self, Palette, ThemeMode, RADIUS_PILL};
 use crate::ui::spinner::Spinner;
@@ -166,6 +167,8 @@ pub struct PreferencesAction {
     /// The agent completion-notification toggle flipped — the app persists it
     /// (specs/agents.md).
     pub agent_notify_changed: bool,
+    /// A phone-launchable agent was edited, added or removed (remote.md §7.2).
+    pub launch_agents_changed: bool,
     /// The Bitbucket email field was edited — the app persists it
     /// (pull-requests.md §3); the token stays out of `prefs`.
     pub bitbucket_email_changed: bool,
@@ -214,6 +217,7 @@ pub fn preferences_page(
     bitbucket_token: &mut String,
     pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
+    launch_agents: &mut Vec<LaunchAgent>,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
     updates: &UpdatesView,
@@ -431,6 +435,10 @@ pub fn preferences_page(
                         },
                     );
                 });
+                ui.add_space(CARD_GAP);
+                if launch_agents_card(ui, palette, launch_agents) {
+                    action.launch_agents_changed = true;
+                }
             }
             PreferencesSection::PullRequests => {
                 pull_requests_section(
@@ -938,6 +946,136 @@ fn run_command_row(
             changed = response.changed();
         });
     changed
+}
+
+const LAUNCH_NAME_WIDTH: f32 = 140.0;
+const LAUNCH_ROW_GAP: f32 = 8.0;
+const WARNING_ICON_SIZE: f32 = 12.0;
+
+/// Agents the phone's **+** can launch (remote.md §7.2), one editable row each,
+/// then *Add agent*. Returns `true` on every edit, addition or removal.
+fn launch_agents_card(ui: &mut egui::Ui, palette: &Palette, agents: &mut Vec<LaunchAgent>) -> bool {
+    let mut changed = false;
+    let mut removed = None;
+    settings_card(ui, palette, |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = LABEL_GAP;
+                ui.label(
+                    egui::RichText::new("Phone launch")
+                        .size(LABEL_SIZE)
+                        .family(theme::medium_family(ui.ctx()))
+                        .color(palette.text_primary),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Agents the phone can start in a new tab; the command is typed into a login shell",
+                    )
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
+                );
+            });
+        for (index, agent) in agents.iter_mut().enumerate() {
+            setting_divider(ui, palette);
+            let row = launch_agent_row(ui, palette, index, agent);
+            changed |= row.edited;
+            if row.removed {
+                removed = Some(index);
+            }
+        }
+    });
+    if let Some(index) = removed {
+        agents.remove(index);
+        changed = true;
+    }
+    ui.add_space(LAUNCH_ROW_GAP);
+    if pill_button(ui, palette, "Add agent", true, false) {
+        agents.push(LaunchAgent::new("", ""));
+        // The new row is drawn next frame: focusing an id absent from this one's
+        // accessibility tree panics accesskit.
+        let added = agents.len() - 1;
+        ui.data_mut(|data| data.insert_temp(launch_focus_id(), added));
+        changed = true;
+    }
+    changed
+}
+
+struct LaunchRowOutcome {
+    edited: bool,
+    removed: bool,
+}
+
+fn launch_focus_id() -> egui::Id {
+    egui::Id::new("launch-agent-focus")
+}
+
+fn launch_agent_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    index: usize,
+    agent: &mut LaunchAgent,
+) -> LaunchRowOutcome {
+    let mut outcome = LaunchRowOutcome {
+        edited: false,
+        removed: false,
+    };
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 12))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = LABEL_GAP;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = LAUNCH_ROW_GAP;
+                let name = ui.add_sized(
+                    [LAUNCH_NAME_WIDTH, SEGMENT_SIZE.y],
+                    egui::TextEdit::singleline(&mut agent.name)
+                        .hint_text(egui::RichText::new("Name").color(palette.text_muted)),
+                );
+                if ui.data(|data| data.get_temp::<usize>(launch_focus_id())) == Some(index) {
+                    ui.data_mut(|data| data.remove::<usize>(launch_focus_id()));
+                    name.request_focus();
+                }
+                let command_width =
+                    (ui.available_width() - AFFORDANCE_SIZE - LAUNCH_ROW_GAP).max(120.0);
+                let command = ui.add_sized(
+                    [command_width, SEGMENT_SIZE.y],
+                    egui::TextEdit::singleline(&mut agent.command)
+                        .font(egui::TextStyle::Monospace)
+                        .hint_text(egui::RichText::new("command").color(palette.text_muted)),
+                );
+                outcome.edited = name.changed() || command.changed();
+                outcome.removed = affordance(
+                    ui,
+                    palette,
+                    lucide_icons::Icon::Trash2,
+                    &format!("Remove agent {}", agent.name),
+                );
+            });
+            let undetected = agent.program().filter(|_| !agent.is_detected());
+            if let Some(program) = undetected {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::splat(WARNING_ICON_SIZE),
+                        egui::Sense::hover(),
+                    );
+                    paint_icon(
+                        ui.painter(),
+                        rect.center(),
+                        WARNING_ICON_SIZE,
+                        lucide_icons::Icon::AlertTriangle,
+                        palette.text_muted,
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "helm won't detect {program} as an agent — the phone won't list it"
+                        ))
+                        .size(DESCRIPTION_SIZE)
+                        .color(palette.text_muted),
+                    );
+                });
+            }
+        });
+    outcome
 }
 
 /// Pull Requests section (pull-requests.md §3): GitHub authenticates through the

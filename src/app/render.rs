@@ -224,6 +224,7 @@ impl HelmApp {
             &mut self.bitbucket_token_input,
             &pr_sources,
             &mut self.notify_on_agent_completion,
+            &mut self.launch_agents,
             &mut self.keymap,
             &mut self.keyboard_prefs,
             &updates,
@@ -280,6 +281,13 @@ impl HelmApp {
             let notify_on_agent_completion = self.notify_on_agent_completion;
             self.persist(move |prefs| Prefs {
                 notify_on_agent_completion,
+                ..prefs
+            });
+        }
+        if action.launch_agents_changed {
+            let launch_agents = self.launch_agents.clone();
+            self.persist(move |prefs| Prefs {
+                launch_agents,
                 ..prefs
             });
         }

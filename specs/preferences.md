@@ -119,8 +119,9 @@ action shows a muted `unbound` placeholder.
 
 ### Agents
 
-The agents the phone can launch ([`remote.md`](remote.md) §7.2). One card, one
-row per agent, in the order the phone shows them.
+Below the *Completion notifications* card, a **Phone launch** card: the agents
+the phone can launch ([`remote.md`](remote.md) §7.2), one row per agent, in the
+order the phone shows them.
 
 | Setting | Description (UI) | Control | Behavior |
 |---------|------------------|----------|--------------|

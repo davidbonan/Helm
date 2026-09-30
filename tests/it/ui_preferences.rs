@@ -8,6 +8,7 @@ use helm::ai::AiProvider;
 use helm::git::sync::PullDefault;
 use helm::keybindings::{Action, Keymap, Shortcut};
 use helm::pull_requests::runner::SourceStatus;
+use helm::remote::launch::LaunchAgent;
 use helm::terminal::links::Editor;
 use helm::theme::{Palette, ThemeMode};
 use helm::ui::preferences::{
@@ -31,6 +32,7 @@ struct PageProbe {
     review_agent: Rc<RefCell<String>>,
     editor: Rc<RefCell<Editor>>,
     notify: Rc<RefCell<bool>>,
+    launch_agents: Rc<RefCell<Vec<LaunchAgent>>>,
     keymap: Rc<RefCell<Keymap>>,
     keyboard: Rc<RefCell<KeyboardState>>,
     theme_changes: Rc<RefCell<usize>>,
@@ -38,6 +40,7 @@ struct PageProbe {
     ai_changes: Rc<RefCell<usize>>,
     editor_changes: Rc<RefCell<usize>>,
     notify_changes: Rc<RefCell<usize>>,
+    launch_agent_changes: Rc<RefCell<usize>>,
     keymap_changes: Rc<RefCell<usize>>,
     backs: Rc<RefCell<usize>>,
     update_checks: Rc<RefCell<usize>>,
@@ -98,6 +101,7 @@ fn page_harness_full(
         review_agent: Rc::new(RefCell::new(String::new())),
         editor: Rc::new(RefCell::new(Editor::default())),
         notify: Rc::new(RefCell::new(true)),
+        launch_agents: Rc::new(RefCell::new(LaunchAgent::defaults())),
         keymap: Rc::new(RefCell::new(Keymap::default())),
         keyboard: Rc::new(RefCell::new(KeyboardState::default())),
         theme_changes: Rc::new(RefCell::new(0)),
@@ -105,6 +109,7 @@ fn page_harness_full(
         ai_changes: Rc::new(RefCell::new(0)),
         editor_changes: Rc::new(RefCell::new(0)),
         notify_changes: Rc::new(RefCell::new(0)),
+        launch_agent_changes: Rc::new(RefCell::new(0)),
         keymap_changes: Rc::new(RefCell::new(0)),
         backs: Rc::new(RefCell::new(0)),
         update_checks: Rc::new(RefCell::new(0)),
@@ -121,6 +126,7 @@ fn page_harness_full(
     let review_agent = probe.review_agent.clone();
     let editor = probe.editor.clone();
     let notify = probe.notify.clone();
+    let launch_agents = probe.launch_agents.clone();
     let keymap = probe.keymap.clone();
     let keyboard = probe.keyboard.clone();
     let theme_changes = probe.theme_changes.clone();
@@ -128,6 +134,7 @@ fn page_harness_full(
     let ai_changes = probe.ai_changes.clone();
     let editor_changes = probe.editor_changes.clone();
     let notify_changes = probe.notify_changes.clone();
+    let launch_agent_changes = probe.launch_agent_changes.clone();
     let keymap_changes = probe.keymap_changes.clone();
     let backs = probe.backs.clone();
     let update_checks = probe.update_checks.clone();
@@ -155,6 +162,7 @@ fn page_harness_full(
             &mut bitbucket_token,
             &pr_sources,
             &mut notify.borrow_mut(),
+            &mut launch_agents.borrow_mut(),
             &mut keymap.borrow_mut(),
             &mut keyboard.borrow_mut(),
             &updates,
@@ -176,6 +184,9 @@ fn page_harness_full(
         }
         if action.agent_notify_changed {
             *notify_changes.borrow_mut() += 1;
+        }
+        if action.launch_agents_changed {
+            *launch_agent_changes.borrow_mut() += 1;
         }
         if action.keymap_changed {
             *keymap_changes.borrow_mut() += 1;
@@ -261,6 +272,60 @@ fn toggling_completion_notifications_flips_the_pref_and_signals() {
 
     assert!(!*probe.notify.borrow(), "the toggle flips the pref off");
     assert_eq!(*probe.notify_changes.borrow(), 1);
+}
+
+fn agents_section() -> (Harness<'static>, PageProbe) {
+    let (mut harness, probe) = page_harness(ThemeMode::Auto);
+    harness.get_by_label("Agents").click();
+    harness.run();
+    (harness, probe)
+}
+
+fn launch_agent_names(probe: &PageProbe) -> Vec<String> {
+    probe
+        .launch_agents
+        .borrow()
+        .iter()
+        .map(|agent| agent.name.clone())
+        .collect()
+}
+
+#[test]
+fn removing_a_phone_agent_drops_its_row_and_reports_a_change() {
+    let (mut harness, probe) = agents_section();
+    harness.get_by_label("Remove agent Codex").click();
+    harness.run();
+
+    assert_eq!(launch_agent_names(&probe), ["Claude Code", "opencode"]);
+    assert_eq!(*probe.launch_agent_changes.borrow(), 1);
+}
+
+#[test]
+fn an_added_phone_agent_takes_the_typed_name_in_its_focused_row() {
+    let (mut harness, probe) = agents_section();
+    harness.get_by_label("Add agent").click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput" && n.is_focused())
+        .type_text("Aider");
+    harness.run();
+
+    assert_eq!(
+        launch_agent_names(&probe),
+        ["Claude Code", "Codex", "opencode", "Aider"]
+    );
+    assert!(*probe.launch_agent_changes.borrow() >= 2);
+}
+
+#[test]
+fn a_phone_agent_the_watcher_cannot_detect_is_flagged() {
+    let (mut harness, probe) = agents_section();
+    assert!(harness.query_by_label_contains("won't detect").is_none());
+
+    probe.launch_agents.borrow_mut()[1].command = "cursor-agent --fast".to_owned();
+    harness.run();
+
+    harness.get_by_label("helm won't detect cursor-agent as an agent — the phone won't list it");
 }
 
 #[test]
@@ -961,6 +1026,7 @@ fn project_harness(
                 &mut String::new(),
                 &idle_pr_sources(),
                 &mut notify,
+                &mut LaunchAgent::defaults(),
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
@@ -1079,6 +1145,7 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                 &mut token.borrow_mut(),
                 &pr_sources,
                 &mut true,
+                &mut LaunchAgent::defaults(),
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
@@ -1553,6 +1620,7 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut String::new(),
                 &idle_pr_sources(),
                 &mut true,
+                &mut LaunchAgent::defaults(),
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &updates,
