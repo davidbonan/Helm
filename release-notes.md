@@ -1,5 +1,14 @@
 # Release notes
 
+## 3.1.2
+
+- The phone page now wears helm's theme (dark or light, following the Mac) with a
+  cleaner layout: one card per project, state pills, branch over tab.
+- Swiping scrolls a full-screen agent like Claude Code smoothly on the iPhone, and
+  watching an agent on the phone acknowledges its green badge.
+- Opening the keyboard on the phone no longer makes the page jump.
+- New `⌫` quick key, repeating while held, to clear a prompt `⇥` filled in.
+
 ## 3.1.1
 
 - Much lighter on CPU with large repositories and big workspaces: the git status
@@ -74,10 +83,3 @@
 - The Run panel's inline command field survives `Cmd+V`: holding Cmd made the
   `⌘R` hint appear and the field quietly lost its focus, cancelling the edit
   before the paste could land. Paste a launch command, press Enter, done.
-
-## 2.4.1
-
-- Fixes the crashes: the file list no longer reads a large file of the worktree
-  to count its lines. It read it whole — every second, for every repository of
-  the group — only to throw the result away, and a build rewriting that file
-  underneath killed the app on the spot.
