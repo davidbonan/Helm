@@ -3,6 +3,7 @@
 
 const HISTORY_PAGE = 200;
 const RECONNECT_MS = 1500;
+const LAUNCH_ROUTE = "#/new";
 const FONT_MIN = 3;
 const FONT_MAX = 20;
 const READING_FONT_MIN = 7;
@@ -554,8 +555,7 @@ function startLaunch() {
 
 function launched(id) {
   state.launchedLabels.set(id, state.launchLabel);
-  closeLaunch();
-  location.hash = `#/pane/${id}`;
+  if (location.hash === LAUNCH_ROUTE) location.replace(`#/pane/${id}`);
 }
 
 function launchFailed(message) {
@@ -660,10 +660,10 @@ $("agents").addEventListener("click", (event) => {
   if (row) location.hash = `#/pane/${row.dataset.id}`;
 });
 $("back").addEventListener("click", () => history.back());
-$("new-agent").addEventListener("click", openLaunch);
-$("launch-cancel").addEventListener("click", closeLaunch);
+$("new-agent").addEventListener("click", () => { location.hash = LAUNCH_ROUTE; });
+$("launch-cancel").addEventListener("click", () => history.back());
 $("launch").addEventListener("click", (event) => {
-  if (event.target === $("launch")) closeLaunch();
+  if (event.target === $("launch")) history.back();
 });
 $("launch-entries").addEventListener("click", (event) => {
   const row = event.target.closest(".row");
@@ -727,10 +727,13 @@ $("scroller").addEventListener("touchend", (event) => {
 $("scroller").addEventListener("touchcancel", endPinch);
 document.addEventListener("gesturestart", (event) => event.preventDefault());
 
+// The sheet is a history entry: Safari's back-swipe snapshot of the list is then taken without it.
 function route() {
   const match = location.hash.match(/^#\/pane\/(\d+)$/);
+  if (location.hash !== LAUNCH_ROUTE) closeLaunch();
   if (match) openMirror(Number(match[1]));
   else closeMirror();
+  if (location.hash === LAUNCH_ROUTE) openLaunch();
 }
 window.addEventListener("hashchange", route);
 

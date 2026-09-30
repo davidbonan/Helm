@@ -258,6 +258,9 @@ Clicking it, like any click in the pane, takes the size back.
   phone); a vanished one falls back to the first.
 - **Start** ⇒ `launch`; on `launched` the sheet closes on the terminal view of the
   new pane (`watch` right away); on `launch_failed` the message shows in the sheet.
+- **History**: the sheet is its own entry (`#/new`); *Cancel*, a backdrop tap or a
+  back swipe close it; `launched` replaces it with the pane, so back from the new
+  pane lands on the agents list.
 - **On the Mac**: a login shell in the entry's directory, into which the agent's
   command is typed (as `Send to agent` does: exiting the agent leaves a shell). The
   new tab joins the entry's tabs **without** becoming active; its label follows the
