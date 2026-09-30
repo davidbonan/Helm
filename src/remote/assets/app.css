@@ -105,6 +105,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .back:active { background: var(--surface-hover); }
 .title { flex: 1; min-width: 0; }
 .title .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title > div { min-height: 1.4em; }
 .zoom { display: flex; flex: none; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); overflow: hidden; }
 .zoom button {
   border: 0; background: none; padding: 5px 9px; font-size: 12px; font-weight: 600;
@@ -148,6 +149,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   flex: none; min-width: 40px; height: 32px; padding: 0 10px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
   font-size: 13px; font-weight: 500; color: var(--text-secondary); touch-action: manipulation;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
 .keys button:active { background: var(--surface-hover); color: var(--text); transform: scale(.96); }
 .composer {

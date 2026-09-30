@@ -11,6 +11,8 @@ const GRID_PADDING_X = 16;
 const GRID_PADDING_BOTTOM = 8;
 const LINE_HEIGHT = 1.25;
 const PAN_GUARD_MS = 150;
+const REPEAT_DELAY_MS = 400;
+const REPEAT_EVERY_MS = 60;
 
 const $ = (id) => document.getElementById(id);
 
@@ -460,6 +462,24 @@ function pressKey(button) {
   send({ type: "key", id: state.watched, key: button.dataset.key });
 }
 
+const hold = { timer: 0, repeated: false };
+
+function startRepeat(event) {
+  const button = event.target.closest("button[data-repeat]");
+  if (!button) return;
+  stopRepeat();
+  hold.repeated = false;
+  hold.timer = setTimeout(function repeat() {
+    hold.repeated = true;
+    pressKey(button);
+    hold.timer = setTimeout(repeat, REPEAT_EVERY_MS);
+  }, REPEAT_DELAY_MS);
+}
+
+function stopRepeat() {
+  clearTimeout(hold.timer);
+}
+
 // Layout: the page is pinned to the visual viewport so the dock rides above the iOS
 // keyboard.
 
@@ -508,8 +528,13 @@ $("prompt").addEventListener("blur", followKeyboardOut);
 $("keys").addEventListener("mousedown", (event) => event.preventDefault());
 $("keys").addEventListener("click", (event) => {
   const button = event.target.closest("button");
-  if (button) pressKey(button);
+  if (!button) return;
+  if (button.hasAttribute("data-repeat") && hold.repeated) return;
+  pressKey(button);
 });
+$("keys").addEventListener("pointerdown", startRepeat);
+$("keys").addEventListener("pointerup", stopRepeat);
+$("keys").addEventListener("pointercancel", stopRepeat);
 $("scroller").addEventListener("scroll", () => {
   state.pinned = isAtBottom($("scroller"));
   if ($("scroller").scrollTop < 40) requestHistory();

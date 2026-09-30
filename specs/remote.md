@@ -189,14 +189,16 @@ palette ([`design-system.md`](design-system.md) §1).
   Sticks to the bottom while new output arrives, unless the user scrolled up — also
   through the height transition (`ResizeObserver`).
 - **Terminal header**: back chevron, project over branch · tab, state
-  pill, A−/A+ segmented.
+  pill, A−/A+ segmented. Both lines keep their height while empty: on a direct
+  load the rows are sized before the agents list fills them.
 - **Composer** (bottom, above the keyboard): an input card (`border.input`, accent
   when focused) holding the multi-line field and a round **Send** (`send`); empty
   text + Send = Enter alone. **Dictation** = the iOS keyboard's own mic: Web Speech
   is gated on a secure context, which a `http://` LAN page is not (checked on the
   simulator, §8).
-- **Quick keys** row: `Esc` · `↑` · `↓` · `⇥` · `⇧⇥` · `^C` ·
+- **Quick keys** row: `Esc` · `↑` · `↓` · `⇥` · `⇧⇥` · `⌫` · `^C` ·
   `⏎` — enough to answer Claude Code's permission menus and switch its mode.
+  `⌫` repeats while held: it clears a prompt `⇥` filled in.
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
 - **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS

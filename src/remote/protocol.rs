@@ -212,6 +212,7 @@ pub enum QuickKey {
     Down,
     Tab,
     Backtab,
+    Backspace,
     CtrlC,
     Enter,
 }
@@ -225,6 +226,7 @@ impl QuickKey {
             Self::Down => (Key::ArrowDown, Mods::NONE),
             Self::Tab => (Key::Tab, Mods::NONE),
             Self::Backtab => (Key::Tab, Mods::SHIFT),
+            Self::Backspace => (Key::Backspace, Mods::NONE),
             Self::CtrlC => (Key::Letter('C'), Mods::CTRL),
             Self::Enter => (Key::Enter, Mods::NONE),
         };
