@@ -1,5 +1,10 @@
 # Release notes
 
+## 3.1.3
+
+- New `/` button next to the phone's quick keys: a menu that sends
+  Claude Code's `/clear`, `/compact` and `/model` in one tap.
+
 ## 3.1.2
 
 - The phone page now wears helm's theme (dark or light, following the Mac) with a
@@ -77,9 +82,3 @@
   a rewritten line and the one it replaces are aligned word by word, and the
   parts that actually differ take a stronger tint. Two lines too far apart to be
   one rewrite keep their plain red/green, as before.
-
-## 2.4.2
-
-- The Run panel's inline command field survives `Cmd+V`: holding Cmd made the
-  `⌘R` hint appear and the field quietly lost its focus, cancelling the edit
-  before the paste could land. Paste a launch command, press Enter, done.
