@@ -14,6 +14,8 @@
   <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5"/></symbol>
   <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></symbol>
   <symbol id="i-terminal" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="m4.75 6.25 2 1.75-2 1.75M8.5 10h2.75"/></symbol>
 </svg>
 <div id="app">
@@ -22,9 +24,28 @@
       <header class="bar large">
         <h1>Agents</h1>
         <span id="link" class="link" hidden>Reconnecting…</span>
+        <button id="new-agent" class="icon-button add" type="button" aria-label="New agent" hidden><svg class="icon"><use href="#i-plus"/></svg></button>
       </header>
       <div id="agents"></div>
     </main>
+    <div id="launch" class="sheet-backdrop" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="launch-title">
+        <header class="sheet-bar">
+          <h2 id="launch-title">New agent</h2>
+          <button id="launch-cancel" class="text-button" type="button">Cancel</button>
+        </header>
+        <div class="sheet-body">
+          <h3 class="group-name">Project</h3>
+          <div id="launch-entries"></div>
+          <h3 class="group-name">Agent</h3>
+          <div id="launch-agents" class="chips" role="radiogroup" aria-label="Agent"></div>
+        </div>
+        <footer class="sheet-foot">
+          <p id="launch-error" class="launch-error" role="alert" hidden></p>
+          <button id="launch-start" class="primary" type="button">Start</button>
+        </footer>
+      </div>
+    </div>
   </section>
 
   <section id="terminal-view" class="view" hidden>

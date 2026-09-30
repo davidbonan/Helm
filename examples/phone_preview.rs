@@ -1,12 +1,13 @@
 //! The phone page against a fake agent, for the iOS simulator (.claude/skills/mobile):
 //! `cargo run --example phone_preview -- [--light] [--loopback] [-- <agent command>...]` prints
 //! the pairing URL; a command after `--` runs in the first pane, e.g. `claude --resume <id>`.
+//! The **+** sheet launches the fake agent (as *Claude Code*) in a throwaway directory.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
-use helm::remote::launch::Launcher;
+use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::PhoneServer;
 use helm::terminal::pane::Pane;
@@ -90,6 +91,24 @@ fn main() {
         Some(watcher.link()),
         theme::preset("helm", !has("--light")),
     );
+    let target = |name: &str, project: &str, branch: &str, worktree: bool| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        LaunchTarget::new(path, project.to_owned(), Some(branch.to_owned()), worktree)
+    };
+    let fake_command = bin.display().to_string();
+    registry.publish_targets(LaunchTargets {
+        entries: vec![
+            target("helm-studio", "helm-studio", "main", false),
+            target("phone-launch", "helm-studio", "feat/phone-launch", true),
+            target("avoda", "avoda", "develop", false),
+        ],
+        agents: vec![
+            LaunchAgent::new("Claude Code", &fake_command),
+            LaunchAgent::new("Codex", &fake_command),
+        ],
+    });
+    // Launched panes wait here forever: no UI adopts them in the preview.
     let (launcher, _launches) = Launcher::channel(|| {});
     let server = if has("--loopback") {
         PhoneServer::start_on_address([127, 0, 0, 1].into(), registry, launcher)

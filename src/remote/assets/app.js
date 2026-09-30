@@ -1,4 +1,4 @@
-// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer.
+// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer, launch sheet.
 "use strict";
 
 const HISTORY_PAGE = 200;
@@ -13,6 +13,11 @@ const LINE_HEIGHT = 1.25;
 const PAN_GUARD_MS = 150;
 const REPEAT_DELAY_MS = 400;
 const REPEAT_EVERY_MS = 60;
+const CHOICE_KEY = "helm.launch";
+// The terminal view is hidden behind the sheet, so the launch size is estimated; the
+// watch that follows claims the real one.
+const CELL_WIDTH_EM = 0.6;
+const DOCK_ESTIMATE_PX = 160;
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,7 +40,28 @@ const state = {
   resizeTimer: 0,
   // The mirror follows new output while the user has not scrolled away from the bottom.
   pinned: true,
+  targets: { entries: [], agents: [] },
+  // Last entry id and agent name picked on this phone.
+  choice: loadChoice(),
+  launching: false,
+  launchLabel: null,
+  // Panes this phone launched, labelled until the agents list names them.
+  launchedLabels: new Map(),
 };
+
+function loadChoice() {
+  try {
+    return JSON.parse(localStorage.getItem(CHOICE_KEY)) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveChoice() {
+  try {
+    localStorage.setItem(CHOICE_KEY, JSON.stringify(state.choice));
+  } catch (_) { /* private browsing: the choice is not remembered */ }
+}
 
 function escapeHtml(text) {
   return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -57,6 +83,7 @@ function connect() {
     if (state.socket !== socket) return;
     state.socket = null;
     $("link").hidden = false;
+    if (state.launching) launchFailed("The connection to the Mac dropped — try again.");
     checkAccess().then((granted) => {
       if (granted) setTimeout(connect, RECONNECT_MS);
     });
@@ -87,6 +114,9 @@ function receive(message) {
     case "screen": if (message.id === state.watched) renderScreen(message); break;
     case "history": if (message.id === state.watched) prependHistory(message); break;
     case "ended": if (message.id === state.watched) endMirror(); break;
+    case "targets": receiveTargets(message); break;
+    case "launched": launched(message.id); break;
+    case "launch_failed": launchFailed(message.message); break;
   }
 }
 
@@ -125,6 +155,15 @@ function rowLines(agent) {
   return `<div class="name">${escapeHtml(agent.branch)}</div><div class="sub"><span>${escapeHtml(agent.tab)}</span></div>`;
 }
 
+function byProject(items) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.project)) groups.set(item.project, []);
+    groups.get(item.project).push(item);
+  }
+  return groups;
+}
+
 function renderAgents() {
   const list = $("agents");
   if (state.agents.length === 0) {
@@ -132,11 +171,7 @@ function renderAgents() {
       <p>Start Claude Code or Codex in a helm terminal: it shows up here.</p></div>`;
     return;
   }
-  const groups = new Map();
-  for (const agent of state.agents) {
-    if (!groups.has(agent.project)) groups.set(agent.project, []);
-    groups.get(agent.project).push(agent);
-  }
+  const groups = byProject(state.agents);
   let html = "";
   for (const [project, agents] of groups) {
     html += `<section class="group"><h2 class="group-name">${escapeHtml(project)}</h2><div class="card">`;
@@ -162,6 +197,8 @@ function openMirror(id) {
   $("agents-view").hidden = true;
   $("terminal-view").hidden = false;
   renderHeader();
+  const launchedHere = state.launchedLabels.get(id);
+  if (launchedHere && !state.agents.some((a) => a.id === id)) showNotice(`Starting ${launchedHere.tab}…`);
   send({ type: "watch", id, ...phoneSize() });
 }
 
@@ -181,14 +218,15 @@ function endMirror() {
 
 function renderHeader() {
   if (state.watched === null) return;
-  const agent = state.agents.find((a) => a.id === state.watched);
+  const agent = state.agents.find((a) => a.id === state.watched)
+    || state.launchedLabels.get(state.watched);
   if (!agent) {
     $("term-badge").innerHTML = "";
     return;
   }
   $("term-title").textContent = agent.project;
   $("term-subtitle").innerHTML = subtitle(agent);
-  $("term-badge").innerHTML = statePill(agent.badge);
+  $("term-badge").innerHTML = agent.badge ? statePill(agent.badge) : "";
 }
 
 function lineHtml(runs, cursorCol) {
@@ -440,6 +478,93 @@ function moveSwipe(event) {
   scrollApp(dy);
 }
 
+// Launch sheet (specs/remote.md §7.2): an entry and an agent of the Mac's own lists.
+
+function receiveTargets(targets) {
+  state.targets = targets;
+  $("new-agent").hidden = targets.entries.length === 0 || targets.agents.length === 0;
+  if (!$("launch").hidden) renderLaunch();
+}
+
+function chosenEntry() {
+  const { entries } = state.targets;
+  return entries.find((entry) => entry.id === state.choice.entry) || entries[0];
+}
+
+function chosenAgent() {
+  const { agents } = state.targets;
+  return agents.find((agent) => agent.name === state.choice.agent) || agents[0];
+}
+
+function entryRow(entry, chosen) {
+  const lines = entry.worktree
+    ? `<div class="name">${escapeHtml(entry.branch || "Worktree")}</div><div class="sub"><span>Worktree</span></div>`
+    : `<div class="name">${escapeHtml(entry.project)}</div>` +
+      (entry.branch ? `<div class="sub">${icon("branch")}<span class="branch">${escapeHtml(entry.branch)}</span></div>` : "");
+  return `<button class="row choice${entry.worktree ? " nested" : ""}" type="button" role="radio"
+    aria-checked="${chosen}" data-entry="${entry.id}"><span class="who">${lines}</span>${chosen ? icon("check") : ""}</button>`;
+}
+
+function renderLaunch() {
+  const entry = chosenEntry();
+  const agent = chosenAgent();
+  let html = "";
+  for (const entries of byProject(state.targets.entries).values()) {
+    html += `<div class="card">${entries.map((e) => entryRow(e, e === entry)).join("")}</div>`;
+  }
+  $("launch-entries").innerHTML = html;
+  $("launch-agents").innerHTML = state.targets.agents
+    .map((a) => `<button class="chip" type="button" role="radio" aria-checked="${a === agent}"
+      data-agent="${a.id}">${escapeHtml(a.name)}</button>`)
+    .join("");
+  $("launch-start").disabled = state.launching || !entry || !agent;
+  $("launch-start").textContent = state.launching ? "Starting…" : "Start";
+}
+
+function openLaunch() {
+  $("launch-error").hidden = true;
+  renderLaunch();
+  $("launch").hidden = false;
+}
+
+function closeLaunch() {
+  state.launching = false;
+  $("launch").hidden = true;
+}
+
+function launchSize() {
+  return {
+    cols: Math.floor((window.innerWidth - GRID_PADDING_X) / (state.fontPx * CELL_WIDTH_EM)),
+    rows: Math.floor((window.innerHeight - DOCK_ESTIMATE_PX) / (state.fontPx * LINE_HEIGHT)),
+  };
+}
+
+function startLaunch() {
+  const entry = chosenEntry();
+  const agent = chosenAgent();
+  if (!entry || !agent || state.launching) return;
+  state.choice = { entry: entry.id, agent: agent.name };
+  saveChoice();
+  state.launching = true;
+  state.launchLabel = { project: entry.project, branch: entry.branch, tab: agent.name };
+  $("launch-error").hidden = true;
+  renderLaunch();
+  send({ type: "launch", entry: entry.id, agent: agent.id, ...launchSize() });
+}
+
+function launched(id) {
+  state.launchedLabels.set(id, state.launchLabel);
+  closeLaunch();
+  location.hash = `#/pane/${id}`;
+}
+
+function launchFailed(message) {
+  state.launching = false;
+  renderLaunch();
+  $("launch-error").textContent = message;
+  $("launch-error").hidden = false;
+}
+
 // Composer
 
 function autosize() {
@@ -535,6 +660,25 @@ $("agents").addEventListener("click", (event) => {
   if (row) location.hash = `#/pane/${row.dataset.id}`;
 });
 $("back").addEventListener("click", () => history.back());
+$("new-agent").addEventListener("click", openLaunch);
+$("launch-cancel").addEventListener("click", closeLaunch);
+$("launch").addEventListener("click", (event) => {
+  if (event.target === $("launch")) closeLaunch();
+});
+$("launch-entries").addEventListener("click", (event) => {
+  const row = event.target.closest(".row");
+  if (!row || state.launching) return;
+  state.choice = { ...state.choice, entry: Number(row.dataset.entry) };
+  renderLaunch();
+});
+$("launch-agents").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip || state.launching) return;
+  const agent = state.targets.agents.find((a) => a.id === Number(chip.dataset.agent));
+  state.choice = { ...state.choice, agent: agent.name };
+  renderLaunch();
+});
+$("launch-start").addEventListener("click", startLaunch);
 $("font-down").addEventListener("click", () => zoomStep(-1));
 $("font-up").addEventListener("click", () => zoomStep(1));
 $("composer").addEventListener("submit", submitPrompt);

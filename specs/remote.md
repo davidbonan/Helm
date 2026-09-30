@@ -264,8 +264,8 @@ Clicking it, like any click in the pane, takes the size back.
   usual auto-naming. Until the UI adopts it, the phone labels it with the agent's
   name.
 - **Before the agent shows**: a launched pane is watchable at once, **read-only**
-  (`writable = false`) until the watcher sees the agent in its foreground; a command
-  that fails (`command not found`) stays readable there. It enters the agents list
+  (`writable = false`, notice *Starting <agent>…*) until the watcher sees the agent
+  in its foreground; a command that fails (`command not found`) stays readable there. It enters the agents list
   with its badge, like any other.
 
 ## 8. Testing

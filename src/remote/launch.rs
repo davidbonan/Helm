@@ -74,7 +74,8 @@ impl LaunchTarget {
         let mut hasher = DefaultHasher::new();
         path.hash(&mut hasher);
         Self {
-            id: hasher.finish(),
+            // The page's JS reads JSON numbers exactly only below 2^53.
+            id: hasher.finish() >> 11,
             path,
             project,
             branch,
@@ -185,6 +186,18 @@ mod tests {
         assert!(LaunchAgent::new("Claude", "/opt/bin/claude-code").is_detected());
         assert!(!LaunchAgent::new("Cursor", "cursor-agent").is_detected());
         assert!(!LaunchAgent::new("Wrapped", "npx claude").is_detected());
+    }
+
+    #[test]
+    fn an_entry_id_survives_the_pages_json_numbers() {
+        let target = LaunchTarget::new(
+            PathBuf::from("/Users/dev/api"),
+            "api".to_owned(),
+            None,
+            false,
+        );
+
+        assert!(target.id < 1 << 53);
     }
 
     #[test]
