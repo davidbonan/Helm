@@ -45,15 +45,25 @@
       <pre id="history" class="grid"></pre><pre id="screen" class="grid"></pre>
     </div>
     <footer class="dock">
-      <div id="keys" class="keys">
-        <button type="button" data-key="escape">Esc</button>
-        <button type="button" data-key="up" aria-label="Up">↑</button>
-        <button type="button" data-key="down" aria-label="Down">↓</button>
-        <button type="button" data-key="tab" aria-label="Tab">⇥</button>
-        <button type="button" data-key="backtab" aria-label="Shift Tab">⇧⇥</button>
-        <button type="button" data-key="backspace" data-repeat aria-label="Backspace">⌫</button>
-        <button type="button" data-key="ctrl_c" aria-label="Control C">^C</button>
-        <button type="button" data-key="enter" aria-label="Enter">⏎</button>
+      <div class="key-row">
+        <div id="keys" class="keys">
+          <button type="button" data-key="escape">Esc</button>
+          <button type="button" data-key="up" aria-label="Up">↑</button>
+          <button type="button" data-key="down" aria-label="Down">↓</button>
+          <button type="button" data-key="tab" aria-label="Tab">⇥</button>
+          <button type="button" data-key="backtab" aria-label="Shift Tab">⇧⇥</button>
+          <button type="button" data-key="backspace" data-repeat aria-label="Backspace">⌫</button>
+          <button type="button" data-key="ctrl_c" aria-label="Control C">^C</button>
+          <button type="button" data-key="enter" aria-label="Enter">⏎</button>
+        </div>
+        <div class="commands">
+          <button id="commands-toggle" class="commands-toggle" type="button" aria-label="Claude Code commands" aria-haspopup="menu" aria-expanded="false" aria-controls="commands-menu">/</button>
+          <div id="commands-menu" class="commands-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-command="/clear">/clear<span>Start a new conversation</span></button>
+            <button type="button" role="menuitem" data-command="/compact">/compact<span>Summarize to free context</span></button>
+            <button type="button" role="menuitem" data-command="/model">/model<span>Switch the model</span></button>
+          </div>
+        </div>
       </div>
       <form id="composer" class="composer">
         <textarea id="prompt" rows="1" placeholder="Reply to the agent…" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>

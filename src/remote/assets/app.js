@@ -168,6 +168,7 @@ function openMirror(id) {
 function closeMirror() {
   if (state.watched !== null) send({ type: "unwatch" });
   state.watched = null;
+  toggleCommands(false);
   $("terminal-view").hidden = true;
   $("agents-view").hidden = false;
 }
@@ -447,14 +448,29 @@ function autosize() {
   prompt.style.height = `${prompt.scrollHeight}px`;
 }
 
+function sendText(text) {
+  send({ type: "send", id: state.watched, text });
+  $("scroller").scrollTop = $("scroller").scrollHeight;
+}
+
 function submitPrompt(event) {
   event.preventDefault();
   if (state.watched === null || !state.writable) return;
   const prompt = $("prompt");
-  send({ type: "send", id: state.watched, text: prompt.value });
+  sendText(prompt.value);
   prompt.value = "";
   autosize();
-  $("scroller").scrollTop = $("scroller").scrollHeight;
+}
+
+function toggleCommands(open) {
+  $("commands-menu").hidden = !open;
+  $("commands-toggle").setAttribute("aria-expanded", String(open));
+}
+
+function runCommand(button) {
+  toggleCommands(false);
+  if (state.watched === null || !state.writable) return;
+  sendText(button.dataset.command);
 }
 
 function pressKey(button) {
@@ -535,6 +551,16 @@ $("keys").addEventListener("click", (event) => {
 $("keys").addEventListener("pointerdown", startRepeat);
 $("keys").addEventListener("pointerup", stopRepeat);
 $("keys").addEventListener("pointercancel", stopRepeat);
+$("commands-toggle").addEventListener("mousedown", (event) => event.preventDefault());
+$("commands-toggle").addEventListener("click", () => toggleCommands($("commands-menu").hidden));
+$("commands-menu").addEventListener("mousedown", (event) => event.preventDefault());
+$("commands-menu").addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (button) runCommand(button);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".commands")) toggleCommands(false);
+});
 $("scroller").addEventListener("scroll", () => {
   state.pinned = isAtBottom($("scroller"));
   if ($("scroller").scrollTop < 40) requestHistory();

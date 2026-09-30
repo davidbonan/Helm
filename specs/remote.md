@@ -9,14 +9,17 @@ to install. Module: `remote` (+ `agent_watch` off the UI thread, §4).
 
 | In | Out (§10) |
 |----|-----------|
-| List of the agents helm detects, with their badge | Creating a terminal / launching an agent from the phone |
+| List of the agents helm detects, with their badge | Plain terminals, free commands, creating a worktree from the phone |
 | One agent's terminal at the phone's own size (+ scrollback) | Conversation view (transcript-based) |
 | Sending an instruction, quick keys for prompts | Non-agent terminals (plain shells, Run strips) |
+| Launching a configured agent in a new tab of a workspace project or worktree (§7.2) | Initial prompt at launch (the composer sends the first one) |
 | Works with the Mac locked / helm hidden | HTTPS, Tailscale, push notifications |
 
 **Agents only**: a pane is exposed while `agent_watch` sees an agent in its
 foreground (badge ≠ `None`, [`agents.md`](agents.md) §2). The phone never reaches
-a plain shell: the attack surface is the agents, not the Mac.
+a plain shell: the attack surface is the agents, not the Mac. A launch (§7.2)
+names an agent of the Mac's list and a workspace entry by id: the phone never
+sends a command line nor a path.
 
 ## 2. Entry point — command palette only
 
@@ -78,6 +81,7 @@ moves to a **watcher thread** (refactor, first task):
 [remote server] --reads grid (lock)--> [Term grid] <--feeds-- [PTY reader]
 [remote server] --paste / key bytes--> [PtyWriter]
 [remote server] --claim / release size--> [PaneSizing] <--widget size, claim-- [UI]
+[remote server] --spawn Pane (launch)--> [Registry pending + watcher extra] --Pane--> [UI adopts]
 ```
 
 - **Watcher thread** owns the per-pane `PaneAgentState` and ticks every second
@@ -98,6 +102,16 @@ moves to a **watcher thread** (refactor, first task):
   upgrade hides the `TcpStream` behind a `Box<dyn ReadWrite>`, so one thread
   could not both read the phone (read timeout) and push frames. Assets (`index.html`, `app.js`, `app.css`) embedded with
   `include_str!`; nothing loaded from a CDN.
+
+- **Launch without the UI** (§7.2): the server thread spawns the `Pane` itself —
+  `Pane` owns its PTY and threads, nothing of egui — then registers it **pending**
+  in the registry and as an **extra** of the watcher, so the phone can watch it and
+  the badge can light while helm draws no frame. The `Pane` travels to the UI over a
+  channel with its entry's key; the next `update` drains it and inserts it as a new
+  tab. A pending pane / watcher extra stays until a UI `publish` / `track` lists
+  it, or the UI drops it unadopted (entry gone) and forgets it. The UI publishes
+  the launch targets beside the panes: the workspace entries (not hidden) and the
+  agent list from Preferences; its repaint pacer wakes the UI at launch.
 
 Phone input goes through `Pane`'s write path semantics: bytes stamp
 `PaneActivity` input, so replying from the phone **acknowledges** a green exactly
@@ -126,6 +140,9 @@ Server → phone:
 | `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable, app_scrolls}` | watched pane, on change, ≤ 10 /s — ≤ 60 /s for 600 ms after a phone `send`/`key`/`scroll`, so a swipe reads as motion; `fg`/`bg` = the palette's own, what a blank cell shows; `app_scrolls` = the app takes the wheel ([`terminal.md`](terminal.md) §8) |
 | `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
+| `targets` | `{entries: [{id, project, branch, worktree}], agents: [{id, name}]}` | on connect, then when the workspace or the agent list changes |
+| `launched` | `{id}` | reply to `launch`: the new pane, watchable at once |
+| `launch_failed` | `{message}` | reply to `launch`: unknown entry / agent, spawn error |
 
 `lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
 resolved to `#rrggbb` through the pane's `TermPalette`, dim and inverse already
@@ -143,6 +160,7 @@ Phone → server:
 | `send` | `{id, text}` | re-claims the size, then `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
 | `key` | `{id, key}` | re-claims the size, then one quick key (§7), encoded like the Mac keyboard |
 | `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
+| `launch` | `{entry, agent, rows, cols}` | spawn the agent in a new tab of that entry, sized for the phone (§7.2) |
 | `scroll` | `{id, lines, line, col}` | re-claims the size, then the Mac wheel's bytes (`wheel_bytes`: `lines > 0` = up, cell under the finger, ≤ 100 lines); nothing when the app does not take the wheel |
 
 Change detection: the server snapshots the watched grid every 100 ms (16 ms while
@@ -199,6 +217,9 @@ palette ([`design-system.md`](design-system.md) §1).
 - **Quick keys** row: `Esc` · `↑` · `↓` · `⇥` · `⇧⇥` · `⌫` · `^C` ·
   `⏎` — enough to answer Claude Code's permission menus and switch its mode.
   `⌫` repeats while held: it clears a prompt `⇥` filled in.
+  Pinned at the row's right end, outside its scroll: a **`/`** button opening a
+  menu of Claude Code commands — `/clear`, `/compact`, `/model` — a tap sends it like the
+  composer (`send`); a tap elsewhere closes the menu.
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
 - **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
@@ -226,12 +247,34 @@ narrower grid in its pane and a pill at the pane's top right — Smartphone icon
 `text.secondary`, radius 8) — so the narrow grid does not read as a glitch.
 Clicking it, like any click in the pane, takes the size back.
 
+### 7.2 Launching an agent
+
+- **Entry**: a **+** button at the right of the *Agents* large title; hidden when
+  the Mac's agent list is empty.
+- **Sheet** (bottom, `bg.surface`, rounded top): *Project* — one row per entry,
+  project name, worktrees indented under their project with their branch; then
+  *Agent* — one chip per configured agent, by name; **Start** (accent) at the
+  bottom. The last entry and agent used are preselected (`localStorage`, per
+  phone); a vanished one falls back to the first.
+- **Start** ⇒ `launch`; on `launched` the sheet closes on the terminal view of the
+  new pane (`watch` right away); on `launch_failed` the message shows in the sheet.
+- **On the Mac**: a login shell in the entry's directory, into which the agent's
+  command is typed (as `Send to agent` does: exiting the agent leaves a shell). The
+  new tab joins the entry's tabs **without** becoming active; its label follows the
+  usual auto-naming. Until the UI adopts it, the phone labels it with the agent's
+  name.
+- **Before the agent shows**: a launched pane is watchable at once, **read-only**
+  (`writable = false`) until the watcher sees the agent in its foreground; a command
+  that fails (`command not found`) stays readable there. It enters the agents list
+  with its badge, like any other.
+
 ## 8. Testing
 
 | Level | What |
 |-------|------|
-| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; token/cookie/`Origin` checks; idle-stop clock (injected); address pick over fixture interfaces; quick-key → bytes |
-| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed |
+| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; token/cookie/`Origin` checks; idle-stop clock (injected); address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
+| App unit | a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count |
 | Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |
 | Manual | iPhone Safari on the LAN: pair, follow a live Claude Code turn, answer a permission prompt, lock the Mac 10 min then resume |
@@ -247,12 +290,14 @@ Clicking it, like any click in the pane, takes the size back.
 - Scrollback read while the agent keeps printing drifts by the lines scrolled
   in meanwhile (history is addressed by grid line); back at the bottom, it resets.
 - No notification on the phone: the user opens the page to check.
+- A configured agent whose program is not on the watchlist ([`agents.md`](agents.md)
+  §2) never gets a badge: the phone keeps it read-only and never lists it
+  (Preferences warns, [`preferences.md`](preferences.md) §4).
 - Mac asleep (lid closed on battery, manual sleep) ⇒ unreachable until wake.
 - One LAN address: moving the Mac to another network stops access.
 
 ## 10. Out of scope (possible follow-ups)
 
-- **New terminal + agent from the phone** — dropped by the user.
 - **Conversation view** from Claude Code's session transcript (bubbles, native
   mobile reading), mapped to a pane through a `SessionStart` hook.
 - **HTTPS / Tailscale** (encrypted, off-LAN, prerequisite for Web Push).
