@@ -6,6 +6,30 @@
 
 ---
 
+## ☐ Milestone — M-PhoneLaunch · Launch an agent from the phone
+
+Spec: [`specs/remote.md`](../remote.md) §4, §6, §7.2 +
+[`specs/preferences.md`](../preferences.md) *Agents*. Per the user: new tab (not
+active), no initial prompt, agent list configurable in Preferences, no worktree
+creation. Counter: **0/3**.
+
+- ☐ **PL1 — Agent list pref + Preferences *Agents*.** `launch_agents`
+  (`name` + `command`, defaults Claude Code / Codex / opencode, absent ⇒ defaults);
+  Preferences section: rows name + command + trash, *Add agent*, watchlist warning.
+  *Tests*: persistence round-trip (absent / empty / custom) + UI e2e on the section.
+- ☐ **PL2 — Launch off the UI thread.** Server spawns the `Pane` (login shell +
+  typed command, phone size); registry pending panes + published targets (entries,
+  agents); watcher extras; channel → UI adopts as a new non-active tab
+  (`Workspace` add-tab-to-entry). *Tests*: unit (registry pending/forget), app unit
+  (adoption, entry gone), business e2e (`launch` with no UI frame → listed with its
+  badge → `send` reaches; unknown entry/agent → `launch_failed`).
+- ☐ **PL3 — Phone page.** `targets` / `launch` / `launched` / `launch_failed`;
+  **+** on the *Agents* title (hidden when no agent), sheet project/worktree +
+  agent chips + Start, last choice remembered, lands on the new pane.
+  *Verified*: `.claude/skills/mobile` (dark + light, sheet + landing).
+
+---
+
 ## ☑ Milestone — M-Phone · Follow and drive agents from a phone on the LAN
 
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per

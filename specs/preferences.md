@@ -117,6 +117,20 @@ action shows a muted `unbound` placeholder.
 | **Editor** | IDE opened by a Cmd+click on a file link in the terminal ([`terminal.md`](terminal.md) §12) | Dropdown, 3 options: **VS Code** / **Cursor** / **Zed** (`links::Editor` domain, product names from `label`, default VS Code) | Opens the file (with its line) in the chosen IDE's CLI — `code`/`cursor -g {file}:{line}`, `zed {file}:{line}` — spawned detached; a CLI that fails surfaces an error toast naming it (no silent fallback). Persisted on change (`editor`); **never opens** anything by itself. |
 | **Shell command** | Run `helm <path>` in a terminal to open a repository or worktree ([`cli.md`](cli.md) §7) | **Install** button when absent, **Replace** when a foreign `helm` holds the path, the install directory as a read-only status when it is ours; outside a bundle, the dev-mode note | Symlinks `/usr/local/bin/helm` to the binary **inside** the bundle, so an in-place update ([`update.md`](update.md) §5) keeps it working. Intent pattern — the page writes no file; the app links and toasts the outcome. A non-writable directory returns the exact `sudo ln -sf …` to run; a real file at that path is never replaced. Nothing persisted (the link on disk is the state). |
 
+### Agents
+
+The agents the phone can launch ([`remote.md`](remote.md) §7.2). One card, one
+row per agent, in the order the phone shows them.
+
+| Setting | Description (UI) | Control | Behavior |
+|---------|------------------|----------|--------------|
+| **Agent row** | — | **Name** field (what the phone shows) + monospace **Command** field (typed into a login shell in the chosen project, e.g. `claude --model opus`) + trash icon | Persisted on change (`launch_agents`). A row with an empty name or command is not offered. When the command's program (first word) is not on the watchlist ([`agents.md`](agents.md) §2), the row shows *helm won't detect `<program>` as an agent — the phone won't list it* (`text.muted`, warning icon). |
+| **Add agent** | — | Ghost button under the card | Appends an empty row, focused on its name. |
+
+Defaults: **Claude Code** `claude`, **Codex** `codex`, **opencode** `opencode`.
+An empty list hides the phone's **+**. Intents pattern — the page never writes
+prefs itself.
+
 ### Pull Requests
 
 Sources and credentials of the PR cockpit ([`pull-requests.md`](pull-requests.md)
@@ -168,7 +182,9 @@ both settings are cleared.
   rewriting the TOML — keybindings.md §6) + `bitbucket_email` (Bitbucket account
   email, default empty; the paired token lives in the macOS Keychain, **never**
   in the TOML — [`pull-requests.md`](pull-requests.md) §3) + `pr_detail_width`
-  (PR cockpit detail-panel width) + `project_settings` (array-of-tables
+  (PR cockpit detail-panel width) + `launch_agents` (array-of-tables `name` +
+  `command`; key absent ⇒ the defaults of *Agents*, present — even empty — ⇒
+  verbatim) + `project_settings` (array-of-tables
   keyed by project `root`: optional `worktree_base` + `post_create`; an entry
   with neither is dropped, orphans whose project left the workspace are purged).
 - The rendering logic stays as pure `fn(&mut egui::Ui, …)` functions
