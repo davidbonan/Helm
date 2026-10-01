@@ -12,7 +12,7 @@ pub struct KeepAwake {
 }
 
 // NSProcessInfo activities may begin and end on any thread (Foundation documents
-// the class as thread-safe); the server thread that decides the idle stop ends it.
+// the class as thread-safe); the server thread that notices the LAN address gone ends it.
 unsafe impl Send for KeepAwake {}
 
 impl KeepAwake {

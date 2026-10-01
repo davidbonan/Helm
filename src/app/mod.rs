@@ -46,7 +46,9 @@ use crate::ui::graph_view::{
     BranchEditor, BranchEditorTarget, DeleteBranchTarget, GraphAction, GraphSearch, GraphViewState,
     StashTarget, WipRow,
 };
-use crate::ui::preferences::{preferences_page, KeyboardState, PreferencesSection, UpdatesView};
+use crate::ui::preferences::{
+    preferences_page, KeyboardState, PhoneDeviceRow, PhoneView, PreferencesSection, UpdatesView,
+};
 use crate::ui::rebase_view::{rebase_view, RebasePage, RebasePageAction};
 use crate::ui::repo_sidebar::{
     delete_worktree_modal, CreateSelection, DeleteModalAction, DeletePrompt, ProjectHeader,
@@ -638,6 +640,7 @@ pub struct HelmApp {
     /// Native banner on agent completion (specs/agents.md), persisted in
     /// `prefs.toml`: loaded at boot, toggled in Preferences.
     notify_on_agent_completion: bool,
+    phone_access_at_launch: bool,
     /// Agents the phone can launch (remote.md §7.2), edited in Preferences.
     launch_agents: Vec<crate::remote::launch::LaunchAgent>,
     /// Branch editor (M12-6): opened by the toolbar button, rendered by `graph_view`
@@ -662,6 +665,9 @@ pub struct HelmApp {
     agent_readings: Readings,
     /// Phone access (specs/remote.md), `None` while off.
     phone: Option<phone_access::PhoneAccess>,
+    /// Phones paired with helm: outlive phone access (specs/remote.md §3.2).
+    phone_devices: crate::remote::devices::PairedDevices,
+    phone_starter: phone_access::PhoneStarter,
     /// The theme of the last frame: what the phone page and mirror paint with.
     theme_preset: &'static theme::ThemePreset,
     last_group_poll: f64,
@@ -862,6 +868,7 @@ impl HelmApp {
             review: HashMap::new(),
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
+            phone_access_at_launch: prefs.phone_access_at_launch,
             launch_agents: prefs.launch_agents,
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),
@@ -871,6 +878,8 @@ impl HelmApp {
             agent_watcher: None,
             agent_readings: Readings::default(),
             phone: None,
+            phone_devices: Default::default(),
+            phone_starter: Default::default(),
             theme_preset: theme::preset("helm", true),
             last_group_poll: 0.0,
             last_group_probe: 0.0,
@@ -1104,7 +1113,7 @@ impl HelmApp {
             self.caches.agents.clear();
             self.agent_watcher = None;
             self.agent_readings = Readings::default();
-            self.sync_phone_access(ctx.input(|i| i.time));
+            self.sync_phone_access(ctx, ctx.input(|i| i.time));
             return;
         }
         // Idle wake-up: the watched set and the focus reach the watcher at this
@@ -1122,7 +1131,7 @@ impl HelmApp {
                     AgentWatcher::spawn(move || ctx.request_repaint())
                 })
                 .track(watched, focused);
-            self.sync_phone_access(now);
+            self.sync_phone_access(ctx, now);
         }
         let changed = self
             .agent_watcher
@@ -4779,6 +4788,7 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             app.prefs_path = crate::persistence::prefs_path();
             app.review_time = crate::pull_requests::review_time::ReviewTimeLog::load();
             app.review_time_path = crate::pull_requests::review_time::path();
+            app.phone_devices = crate::remote::devices::PairedDevices::load();
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

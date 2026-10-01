@@ -28,41 +28,82 @@ Two palette commands ([`keybindings.md`](keybindings.md) §6), one visible at a 
 | Command | Available when | Effect |
 |---------|----------------|--------|
 | **Open on phone** | access off | Starts access (§3) and opens the **pairing modal** |
-| **Open on phone** | access on | Reopens the pairing modal (same token) |
+| **Open on phone** | access on | Reopens the pairing modal (fresh pairing code, §3.2) |
 | **Stop phone access** | access on | Stops access (§3) |
 
 Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
 access is on — anyone with this code can type into your agents*, the connected
-device count, and a **Stop** button. No sidebar indicator: the palette is the only
-surface (user decision); the modal says plainly that access is live.
+device count, and a **Stop** button. The code is single-use and lives 5 min: once
+used or expired, the open modal shows a fresh one. While access is on, a
+**dot** (8 pt) left of the title bar's *Open with* selector says so — `git.added`
+while a phone is connected, `text.muted` while access waits for one, both at 45 %
+opacity (full under the pointer) — its tooltip naming who is connected (*Phone
+access on — iPhone connected* / *— no phone connected*); a click opens the pairing
+modal. Hidden while off: starting and stopping stay in the palette. Paired devices and *Start at launch* live in Preferences › *Phone*
+([`preferences.md`](preferences.md) §4).
 
 ## 3. Access lifecycle & security
 
-**Start**: pick the LAN address (§3.1), mint a token, bind the server, begin the
-no-sleep activity (§5). **Stop**, on whichever comes first: *Stop phone access*,
-**2 h** with no connected client, the LAN address disappearing, helm quitting.
-Stop closes every connection, frees the port, ends the no-sleep activity, and
-forgets the token.
+Two lifetimes: the **server** (bound while access is on) and the **pairings**
+(a phone scans once, its pairing survives stops and restarts of helm until
+revoked, §3.2).
+
+**Start**: *Open on phone*, or at launch on the pairing network (§3.4) — pick the
+LAN address (§3.1), bind the server, begin the no-sleep activity (§5). **Stop**, on
+whichever comes first: *Stop phone access*, the LAN address disappearing, helm
+quitting. No idle stop: a phone locked on the couch keeps its access. Stop closes
+every connection, frees the port and ends the no-sleep activity; pairings stay.
 
 ### 3.1 Address
 First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
 `getifaddrs`, `en0` preferred. The server binds **that address only** (never
-`0.0.0.0`: no exposure on a VPN or a second interface), port chosen by the OS.
-None found ⇒ the command fails with *No local network*.
+`0.0.0.0`: no exposure on a VPN or a second interface). **Port persisted**: the
+last bound port is tried first, so the phone's bookmark keeps working; taken ⇒
+the OS picks one, which is saved. None found ⇒ the command fails with *No local
+network*. A phone's cookie belongs to the host's IP: a new IP (DHCP) ⇒ rescan.
 
-### 3.2 Token & session
-- **Token**: 128 random bits (`arc4random_buf`), hex. **New on every start**: a
-  phone paired before is out after a stop, and must rescan.
-- **Pairing URL** (QR): `http://<ip>:<port>/pair?t=<token>`. A valid token is
-  exchanged for a cookie `helm_session=<token>; HttpOnly; SameSite=Strict; Path=/`
-  and a `303` to `/` — the token leaves the address bar and the history.
-- Every other request needs the cookie (constant-time compare), else `401`. The
-  WebSocket upgrade also requires `Origin == http://<ip>:<port>`.
+### 3.2 Pairing & sessions
+- **Pairing code**: 128 random bits (`arc4random_buf`), hex, **single use**, valid
+  **5 min**; minted each time the pairing modal opens or the shown one is spent.
+- **Pairing URL** (QR): `http://<ip>:<port>/pair?t=<code>`. A valid code becomes a
+  **paired device** and its cookie `helm_session=<device token>; HttpOnly;
+  SameSite=Strict; Path=/; Max-Age=2592000`, then a `303` to `/` — the code leaves
+  the address bar and the history.
+- **Device token**: 256 random bits, hex. helm stores only its **SHA-256**, in
+  `phone_devices.toml` (support directory, beside `prefs.toml`) with the device's
+  name (from its `User-Agent`: *iPhone*, *iPad*, *Android phone*, else *Browser*),
+  pairing date and last visit.
+- **Rotation**: every `GET /` (page load, reconnect probe) answers with a new
+  token in a fresh cookie; the previous one stays valid **30 s** (the page's own
+  requests in flight), then never again. A copied cookie is worth one visit: the
+  phone's next load rotates it away, and if the thief rotates first, the phone
+  finds itself unpaired — the visible alarm.
+- Every other request needs a paired device's cookie (constant-time compare of
+  the hashes), else `401`. The WebSocket upgrade also requires
+  `Origin == http://<ip>:<port>`.
+- **Revocation**: per device or all, from Preferences (§2); a revoked device's
+  open sockets close within a read timeout. A device unseen for **30 days** is
+  dropped. No cap on the device count.
+- **Alerts** (native notification, [`agents.md`](agents.md) §5 backend): *New
+  phone paired — <name>*; *<name> is connected from two addresses — revoke it in
+  Preferences if one isn't yours*, when a device opens a WebSocket while another
+  of its sockets is live from a different IP. Posted from the server thread: they
+  fire with helm hidden.
 
 ### 3.3 Accepted risk
 Plain HTTP: the cookie travels in clear on the Wi-Fi. Acceptable on a home
-network, not on a shared one. The pairing modal states it; §10 lists the
-upgrade paths.
+network, not on a shared one; rotation, the two-address alert and revocation
+bound what a sniffed cookie is worth. LAN only, by decision: no off-LAN access,
+no Tailscale for now. The pairing modal states it; §10 lists the upgrade paths.
+
+### 3.4 Start at launch
+Preference *Start at launch* (`phone_access_at_launch`, off by default). The
+networks where a device was paired are recorded by their **gateway MAC**
+(`route -n get default` → gateway IP, `arp -n <ip>` → MAC; no location
+permission, unlike the SSID). While the preference is on and access is off, helm
+checks every 30 s: on a recorded network ⇒ starts access silently (no modal). A
+*Stop phone access* holds it off until the next *Open on phone* or helm restart.
+Moving back home after the LAN address went away resumes access the same way.
 
 ## 4. Architecture — nothing waits on the UI thread
 
@@ -126,7 +167,7 @@ battery still sleeps — accepted (§9).
 
 ## 6. Wire protocol
 
-HTTP: `GET /pair`, `GET /` (+ assets), `GET /ws` (upgrade). `GET /` inlines helm's
+HTTP: `GET /pair`, `GET /` (+ assets; rotates the session cookie, §3.2), `GET /ws` (upgrade). `GET /` inlines helm's
 active theme on `<html>` (`data-theme` + the tokens as CSS variables): the first
 paint already wears it. Everything else runs
 on the WebSocket, one JSON object per text frame.
@@ -223,8 +264,9 @@ palette ([`design-system.md`](design-system.md) §1).
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
 - **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
-  suspends background tabs), reconnect and re-`watch`; a `401` shows *Access
-  stopped — scan the QR code again*. Hidden, the page closes its socket: the
+  suspends background tabs), reconnect and re-`watch`; a `401` shows *This
+  phone isn't paired — on your Mac, run Open on phone and scan the code* (revoked,
+  dropped after 30 days, rotated away, or a new IP). Hidden, the page closes its socket: the
   phone stops driving (§7.1).
 
 ### 7.1 One PTY, two screens — the latest to act sizes it
@@ -275,10 +317,10 @@ Clicking it, like any click in the pane, takes the size back.
 
 | Level | What |
 |-------|------|
-| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; token/cookie/`Origin` checks; idle-stop clock (injected); address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
-| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
-| App unit | a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
-| UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count |
+| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
+| App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
+| UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle |
 | Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |
 | Manual | iPhone Safari on the LAN: pair, follow a live Claude Code turn, answer a permission prompt, lock the Mac 10 min then resume |
 
@@ -297,7 +339,12 @@ Clicking it, like any click in the pane, takes the size back.
   §2) never gets a badge: the phone keeps it read-only and never lists it
   (Preferences warns, [`preferences.md`](preferences.md) §4).
 - Mac asleep (lid closed on battery, manual sleep) ⇒ unreachable until wake.
-- One LAN address: moving the Mac to another network stops access.
+- One LAN address: moving the Mac to another network stops access; *Start at
+  launch* resumes it back on a recorded network — at the next frame helm draws
+  (the check runs on the UI thread, §4).
+- The Mac's IP changes (DHCP) ⇒ the cookie no longer matches the host: rescan.
+- An iOS Home Screen web app may keep its own cookies, apart from Safari
+  (unverified on a device): then pair from inside it.
 
 ## 10. Out of scope (possible follow-ups)
 

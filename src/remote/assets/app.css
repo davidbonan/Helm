@@ -228,6 +228,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .send:active { filter: brightness(1.15); }
 .dock.read-only .keys, .dock.read-only .commands, .dock.read-only .composer { opacity: .45; }
 
-.expired { justify-content: center; align-items: center; padding: 0 16px; text-align: center; background: var(--canvas); }
-.expired h1 { font-size: 20px; margin: 0 0 8px; }
-.expired p { margin: 0; color: var(--muted); }
+.unpaired { justify-content: center; align-items: center; padding: 0 16px; text-align: center; background: var(--canvas); }
+.unpaired h1 { font-size: 20px; margin: 0 0 8px; }
+.unpaired p { margin: 0; color: var(--muted); }

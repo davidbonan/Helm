@@ -711,6 +711,8 @@ pub fn root_layout(
     open_workspace: &mut Option<WorkspaceOpener>,
     open_preferences: &mut bool,
     open_feedback: &mut bool,
+    phone: Option<&PhoneIndicator>,
+    open_phone: &mut bool,
     agents_badge: AgentBadge,
     agents_active: bool,
     done_agents: &[DoneAgentRow],
@@ -936,6 +938,8 @@ pub fn root_layout(
                 open_workspace,
                 open_preferences,
                 open_feedback,
+                phone,
+                open_phone,
                 helm_central,
                 show_git,
                 pr_active,
@@ -980,6 +984,8 @@ fn top_right_actions(
     open_workspace: &mut Option<WorkspaceOpener>,
     open_preferences: &mut bool,
     open_feedback: &mut bool,
+    phone: Option<&PhoneIndicator>,
+    open_phone: &mut bool,
     helm_central: bool,
     show_git: &mut bool,
     pr_active: bool,
@@ -988,9 +994,12 @@ fn top_right_actions(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
+        // The row centers each item on the height it has reached so far: the dot,
+        // laid out first, is painted once its neighbour has settled.
+        let phone_slot = phone.map(|phone| (phone, ui.allocate_space(PHONE_DOT_HIT).1));
         // No repository imported ⇒ no launcher at all; once repos exist, a
         // missing active folder keeps it visible but disabled (tooltip below).
-        if show_launcher {
+        let launcher = show_launcher.then(|| {
             workspace_launcher(
                 ui,
                 palette,
@@ -998,8 +1007,8 @@ fn top_right_actions(
                 default_workspace_opener,
                 installed_openers,
                 open_workspace,
-            );
-        }
+            )
+        });
         // The git panel is forced hidden while a Helm central mode is open, so its
         // toggle would be inert. The PR cockpit reuses that slot for its own
         // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars
@@ -1022,8 +1031,17 @@ fn top_right_actions(
         } else {
             None
         };
-        feedback_button(ui, palette, open_feedback);
+        let feedback = feedback_button(ui, palette, open_feedback);
         let prefs = preferences_button(ui, palette, open_preferences);
+        if let Some((phone, slot)) = phone_slot {
+            let neighbour = launcher
+                .or(git.as_ref().map(|git| git.rect))
+                .unwrap_or(feedback.rect);
+            let center = egui::pos2(slot.center().x, neighbour.center().y);
+            if phone_indicator(ui, palette, phone, center).clicked() {
+                *open_phone = true;
+            }
+        }
         // Badges are painted as an overlay below their icon (not inserted into the
         // flow): a `new_child` does not advance the cursor, so the row keeps its
         // width and the icons do not shift when Cmd toggles the display.
@@ -1078,6 +1096,56 @@ fn shortcut_badge(
             .color(palette.text_muted),
     );
 }
+/// Phone access is on (specs/remote.md §2): who is connected, for the title bar dot.
+pub struct PhoneIndicator {
+    pub devices: Vec<String>,
+}
+
+const PHONE_DOT_HIT: egui::Vec2 = egui::vec2(12.0, 24.0);
+const PHONE_DOT_RADIUS: f32 = 4.0;
+pub const PHONE_DOT_LABEL: &str = "Phone access";
+/// Opacity at rest: a hint, not a status light.
+const PHONE_DOT_FADE: f32 = 0.45;
+
+/// Faded green while a phone is connected, muted while access waits for one; full
+/// strength under the pointer. A click opens the pairing modal.
+fn phone_indicator(
+    ui: &egui::Ui,
+    palette: &Palette,
+    phone: &PhoneIndicator,
+    center: egui::Pos2,
+) -> egui::Response {
+    let response = ui
+        .interact(
+            egui::Rect::from_center_size(center, PHONE_DOT_HIT),
+            ui.id().with("phone_dot"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    let color = if phone.devices.is_empty() {
+        palette.text_muted
+    } else {
+        palette.git_added
+    };
+    let color = if hovered {
+        color
+    } else {
+        color.gamma_multiply(PHONE_DOT_FADE)
+    };
+    ui.painter().circle_filled(center, PHONE_DOT_RADIUS, color);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, PHONE_DOT_LABEL));
+    response.on_hover_text(phone_indicator_tooltip(&phone.devices))
+}
+
+pub fn phone_indicator_tooltip(devices: &[String]) -> String {
+    match devices {
+        [] => "Phone access on — no phone connected".to_owned(),
+        names => format!("Phone access on — {} connected", names.join(", ")),
+    }
+}
+
 const LAUNCHER_MAIN_HIT: egui::Vec2 = egui::vec2(32.0, 24.0);
 const LAUNCHER_MENU_HIT: egui::Vec2 = egui::vec2(18.0, 24.0);
 const LAUNCHER_ICON_SIZE: f32 = 20.0;
@@ -1095,7 +1163,7 @@ fn workspace_launcher(
     default_opener: WorkspaceOpener,
     installed: &[WorkspaceOpener],
     out: &mut Option<WorkspaceOpener>,
-) {
+) -> egui::Rect {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let default_label = format!("Open workspace in {}", default_opener.label());
@@ -1157,7 +1225,9 @@ fn workspace_launcher(
                     }
                 });
         }
-    });
+    })
+    .response
+    .rect
 }
 
 #[derive(Clone, Copy)]

@@ -107,6 +107,8 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                 &mut state.open_workspace,
                 &mut state.open_preferences,
                 &mut false,
+                None,
+                &mut false,
                 helm::agent_watch::AgentBadge::None,
                 false,
                 &[],

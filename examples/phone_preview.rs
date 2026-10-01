@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
-use helm::remote::server::PhoneServer;
+use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
 use helm::theme;
 use portable_pty::CommandBuilder;
@@ -110,13 +110,13 @@ fn main() {
     });
     // Launched panes wait here forever: no UI adopts them in the preview.
     let (launcher, _launches) = Launcher::channel(|| {});
+    let services = PhoneServices::unpersisted(registry, launcher);
     let server = if has("--loopback") {
-        PhoneServer::start_on_address([127, 0, 0, 1].into(), registry, launcher)
-            .expect("bind the loopback")
+        PhoneServer::start_on_address([127, 0, 0, 1].into(), services).expect("bind the loopback")
     } else {
-        PhoneServer::start(registry, launcher).expect("a LAN address, like the real phone")
+        PhoneServer::start(services).expect("a LAN address, like the real phone")
     };
-    println!("{}", server.pairing_url());
+    println!("{}", server.offer_pairing());
     for pane in &panes {
         println!("#/pane/{}", pane.uid().get());
     }

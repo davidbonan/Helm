@@ -2945,6 +2945,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         ai_rebase_provider: AiProvider::Codex,
         editor: Editor::default(),
         notify_on_agent_completion: true,
+        phone_access_at_launch: false,
         git_file_view: crate::ui::file_list::FileViewMode::default(),
         run_panel_height: 200.0,
         run_panel_collapsed: false,
@@ -4080,8 +4081,7 @@ fn stop_phone_access_is_offered_while_on_and_ends_it() {
     let (launcher, launches) = crate::remote::launch::Launcher::channel(|| {});
     let server = crate::remote::server::PhoneServer::start_on_address(
         [127, 0, 0, 1].into(),
-        registry.clone(),
-        launcher,
+        crate::remote::server::PhoneServices::unpersisted(registry.clone(), launcher),
     )
     .unwrap();
     let app = harness.state_mut();
@@ -4105,13 +4105,147 @@ fn phone_on(
     let (launcher, _) = crate::remote::launch::Launcher::channel(|| {});
     let server = crate::remote::server::PhoneServer::start_on_address(
         [127, 0, 0, 1].into(),
-        registry.clone(),
-        launcher,
+        crate::remote::server::PhoneServices::unpersisted(registry.clone(), launcher),
     )
     .unwrap();
     let (adopt, launches) = crossbeam_channel::unbounded();
     app.adopt_phone_server(server, registry.clone(), launches);
     (registry, adopt)
+}
+
+#[test]
+fn the_pairing_modal_offers_a_fresh_code_once_the_shown_one_is_used() {
+    use egui_kittest::kittest::Queryable;
+    use std::io::{Read, Write};
+    let mut app = app_with(&["a"]);
+    phone_on(&mut app);
+    app.modal = Some(Modal::PhoneAccess);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_modals(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run();
+    let shown = |harness: &egui_kittest::Harness<'_, HelmApp>| {
+        harness
+            .get_by_label_contains("/pair?t=")
+            .value()
+            .unwrap_or_default()
+    };
+    let first = shown(&harness);
+
+    let (host, path) = first.trim_start_matches("http://").split_once('/').unwrap();
+    let mut stream = std::net::TcpStream::connect(host).unwrap();
+    write!(stream, "GET /{path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    harness.run();
+
+    assert!(response.starts_with("HTTP/1.1 303"), "{response}");
+    assert_ne!(shown(&harness), first, "a spent code is replaced");
+}
+
+#[test]
+fn revoke_in_preferences_drops_that_device_from_the_book() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with(&["a"]);
+    let now = crate::remote::devices::wall_ms();
+    let (iphone, ipad) = app.phone_devices.edit(|book| {
+        (
+            book.pair("iPhone", now).as_str().to_owned(),
+            book.pair("iPad", now).as_str().to_owned(),
+        )
+    });
+    app.preferences_section = PreferencesSection::Phone;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_preferences(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run_steps(2);
+    let today = crate::ui::format_date((now / 1000) as i64);
+    let detail = format!("Paired {today} · Last seen just now");
+    assert_eq!(harness.get_all_by_label(&detail).count(), 2);
+
+    harness.get_all_by_label("Revoke").nth(1).unwrap().click();
+    harness.run_steps(2);
+
+    let book = |token: &str| {
+        harness
+            .state()
+            .phone_devices
+            .read(|book| book.device(token, now).is_some())
+    };
+    assert!(book(&iphone), "the other device stays");
+    assert!(!book(&ipad), "the iPad's row was revoked");
+}
+
+const HOME_GATEWAY: &str = "38:06:e6:45:5e:10";
+
+/// *Start at launch* on, `home` recorded, the gateway reading `HOME_GATEWAY`
+/// when `at_home`, and the server bound on the loopback.
+fn app_starting_at_launch(at_home: bool) -> HelmApp {
+    let mut app = app_with(&["a"]);
+    app.phone_access_at_launch = true;
+    app.phone_devices
+        .edit(|book| book.record_network(HOME_GATEWAY));
+    let gateway: fn() -> Option<String> = if at_home {
+        || Some(HOME_GATEWAY.to_owned())
+    } else {
+        || Some("00:11:22:33:44:55".to_owned())
+    };
+    app.phone_starter = phone_access::PhoneStarter::seamed(gateway, |services| {
+        crate::remote::server::PhoneServer::start_on_address([127, 0, 0, 1].into(), services)
+            .map_err(crate::remote::server::StartError::Bind)
+    });
+    app
+}
+
+/// Agent polls until access is on, or a few seconds went by.
+fn poll_until_phone_access(app: &mut HelmApp, ctx: &egui::Context) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && !app.is_phone_access_on() {
+        app.sync_phone_access(ctx, 0.0);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.is_phone_access_on()
+}
+
+#[test]
+fn start_at_launch_turns_access_on_on_a_recorded_network_without_the_modal() {
+    let mut app = app_starting_at_launch(true);
+
+    assert!(poll_until_phone_access(&mut app, &egui::Context::default()));
+    assert!(app.modal.is_none(), "silent: no pairing modal");
+}
+
+#[test]
+fn start_at_launch_leaves_access_off_on_another_network() {
+    let mut app = app_starting_at_launch(false);
+
+    assert!(!poll_until_phone_access(
+        &mut app,
+        &egui::Context::default()
+    ));
+}
+
+#[test]
+fn a_manual_stop_holds_start_at_launch_off() {
+    let mut app = app_starting_at_launch(true);
+    let ctx = egui::Context::default();
+    assert!(poll_until_phone_access(&mut app, &ctx));
+
+    app.stop_phone_access();
+
+    assert!(!poll_until_phone_access(&mut app, &ctx));
 }
 
 fn cat_pane() -> Pane {

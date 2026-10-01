@@ -6,6 +6,50 @@
 
 ---
 
+## ☑ Milestone — M-PhoneKeep · Phone pairing that lasts
+
+Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
+[`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
+HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
+launch* off by default, 30-day drop, no device cap. Counter: **7/7**.
+
+- ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
+  5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
+  `User-Agent` → name, recorded networks, `phone_devices.toml` load/save, port.
+  *Tests*: 8 unit (injected clock) + 1 unit (code single use + 5 min).
+- ☑ **K2 — Server on paired devices.** `/pair` spends the code, `GET /` rotates,
+  cookie `Max-Age`, revoked ⇒ `401` + sockets closed, two-address alert, persisted
+  port, no idle stop, phone 401 copy. *Tests*: 4 unit (`access`) + 4 business e2e
+  (code single use + alert, rotation, outlives a restart on the same port, revoked
+  ⇒ `401` + socket closed). Two-address alert: not covered (loopback has one IP).
+- ☑ **K3 — App wiring + pairing modal.** Store owned by the app (lives with access
+  off), fresh code per modal open / once spent, alerts → `notify::post`.
+  *Tests*: 1 app unit (spent code ⇒ the modal shows a fresh one).
+- ☑ **K4 — Preferences › Phone.** *Start at launch* toggle + paired devices,
+  Revoke / Revoke all. *Tests*: 3 UI e2e (toggle, per-row Revoke + Revoke all,
+  empty state) + 1 persistence.
+- ☑ **K5 — Start at launch on the pairing network.** Gateway MAC (`route` / `arp`
+  parsing), network recorded at pairing, 30 s check, manual Stop holds it off.
+  *Tests*: 3 unit (`route` / `arp` parsing) + 3 app unit (recorded network ⇒ on,
+  silent; other network ⇒ off; manual Stop holds off). Real lookup checked once.
+- ☑ **K6 — Phone verification.** Simulator (`mobile` skill): pair, reload keeps
+  the session, revoked ⇒ not-paired page; a paired phone rescanning lands on its
+  agents (no second device). *Tests*: 1 business e2e (rescan) + 1 app unit
+  (Revoke row → that device). *Verified*: iOS simulator
+  `verify-artifacts/20261001_phone-keep/` (reloads 35 s apart, past the grace);
+  headless-verify `verify-artifacts/20261001_102237_7243/` (Phone section, Revoke,
+  modal).
+- ☑ **K7 — Title bar dot.** Per the user: a discreet dot left of *Open with* while
+  access is on (green when a phone is connected, muted otherwise), tooltip naming
+  who is connected; `PhoneServer::connected_devices`; faded at rest (45 %), a click
+  opens the pairing modal. *Tests*: 1 UI e2e (hidden off, tooltip names the phone,
+  click ⇒ modal intent) + business e2e extended (listed while connected, gone
+  after). *Verified*: headless-verify `verify-artifacts/20261001_103306_44487/`,
+  `verify-artifacts/20261001_103956_59007/` (rest / hover, dark + light),
+  `verify-artifacts/20261001_105931_44311/` (8 pt, centered on *Open with*).
+
+---
+
 ## ☑ Milestone — M-PhoneLaunch · Launch an agent from the phone
 
 Spec: [`specs/remote.md`](../remote.md) §4, §6, §7.2 +

@@ -12,8 +12,8 @@ use helm::remote::launch::LaunchAgent;
 use helm::terminal::links::Editor;
 use helm::theme::{Palette, ThemeMode};
 use helm::ui::preferences::{
-    preferences_page, setting_divider, setting_row, settings_card, KeyboardState, PrSourcesView,
-    PreferencesSection, ProjectView, UpdatesView,
+    preferences_page, setting_divider, setting_row, settings_card, KeyboardState, PhoneDeviceRow,
+    PhoneView, PrSourcesView, PreferencesSection, ProjectView, UpdatesView, NO_PAIRED_DEVICE,
 };
 use helm::update::{UpdateState, Version};
 
@@ -163,6 +163,10 @@ fn page_harness_full(
             &pr_sources,
             &mut notify.borrow_mut(),
             &mut launch_agents.borrow_mut(),
+            PhoneView {
+                start_at_launch: &mut false,
+                devices: &[],
+            },
             &mut keymap.borrow_mut(),
             &mut keyboard.borrow_mut(),
             &updates,
@@ -1027,6 +1031,10 @@ fn project_harness(
                 &idle_pr_sources(),
                 &mut notify,
                 &mut LaunchAgent::defaults(),
+                PhoneView {
+                    start_at_launch: &mut false,
+                    devices: &[],
+                },
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
@@ -1146,6 +1154,10 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                 &pr_sources,
                 &mut true,
                 &mut LaunchAgent::defaults(),
+                PhoneView {
+                    start_at_launch: &mut false,
+                    devices: &[],
+                },
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &idle_updates(),
@@ -1621,6 +1633,10 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &idle_pr_sources(),
                 &mut true,
                 &mut LaunchAgent::defaults(),
+                PhoneView {
+                    start_at_launch: &mut false,
+                    devices: &[],
+                },
                 &mut Keymap::default(),
                 &mut KeyboardState::default(),
                 &updates,
@@ -1653,4 +1669,105 @@ fn release_notes_stay_browsable_outside_a_bundle() {
             .is_some(),
         "the notes block is independent of the updater (readable in dev runs)"
     );
+}
+
+/// What the Phone section reported, frame after frame.
+#[derive(Default)]
+struct PhoneProbe {
+    start_at_launch: bool,
+    at_launch_changes: usize,
+    revoked: Vec<usize>,
+    revoked_all: usize,
+}
+
+fn phone_harness(devices: &[&str]) -> (Harness<'static>, Rc<RefCell<PhoneProbe>>) {
+    let palette = Palette::dark();
+    let probe = Rc::new(RefCell::new(PhoneProbe::default()));
+    let observed = probe.clone();
+    let devices: Vec<PhoneDeviceRow> = devices
+        .iter()
+        .map(|name| PhoneDeviceRow {
+            name: (*name).to_owned(),
+            detail: "Paired 2026-10-01 · Last seen just now".to_owned(),
+        })
+        .collect();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            let mut probe = observed.borrow_mut();
+            let mut start_at_launch = probe.start_at_launch;
+            let action = preferences_page(
+                ui,
+                &palette,
+                &mut PreferencesSection::Phone,
+                &mut ThemeMode::Auto,
+                &mut "helm".to_owned(),
+                &mut "helm".to_owned(),
+                &mut PullDefault::default(),
+                &mut AiProvider::default(),
+                &mut String::new(),
+                &mut AiProvider::default(),
+                &mut String::new(),
+                &mut Editor::default(),
+                &mut String::new(),
+                &mut String::new(),
+                &idle_pr_sources(),
+                &mut true,
+                &mut LaunchAgent::defaults(),
+                PhoneView {
+                    start_at_launch: &mut start_at_launch,
+                    devices: &devices,
+                },
+                &mut Keymap::default(),
+                &mut KeyboardState::default(),
+                &idle_updates(),
+                &helm::cli::ShellCommand::Unbundled,
+                &mut egui_commonmark::CommonMarkCache::default(),
+                None,
+            );
+            probe.start_at_launch = start_at_launch;
+            if action.phone_at_launch_changed {
+                probe.at_launch_changes += 1;
+            }
+            probe.revoked.extend(action.revoke_device);
+            if action.revoke_all_devices {
+                probe.revoked_all += 1;
+            }
+        });
+    harness.run();
+    (harness, probe)
+}
+
+#[test]
+fn start_at_launch_is_off_by_default_and_its_toggle_signals() {
+    let (mut harness, probe) = phone_harness(&[]);
+    assert!(!probe.borrow().start_at_launch);
+
+    harness.get_by_role(egui::accesskit::Role::CheckBox).click();
+    harness.run();
+
+    assert!(probe.borrow().start_at_launch);
+    assert_eq!(probe.borrow().at_launch_changes, 1);
+}
+
+#[test]
+fn each_paired_device_has_its_own_revoke_and_all_go_at_once() {
+    let (mut harness, probe) = phone_harness(&["iPhone", "iPad"]);
+    harness.get_by_label("iPad");
+
+    harness.get_all_by_label("Revoke").nth(1).unwrap().click();
+    harness.run();
+    harness.get_by_label("Revoke all").click();
+    harness.run();
+
+    assert_eq!(probe.borrow().revoked, vec![1], "the iPad's row");
+    assert_eq!(probe.borrow().revoked_all, 1);
+}
+
+#[test]
+fn no_paired_device_says_how_to_pair_and_offers_no_revoke_all() {
+    let (harness, _probe) = phone_harness(&[]);
+
+    harness.get_by_label(NO_PAIRED_DEVICE);
+    assert!(harness.query_by_label("Revoke all").is_none());
 }

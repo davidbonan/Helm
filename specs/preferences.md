@@ -132,6 +132,16 @@ Defaults: **Claude Code** `claude`, **Codex** `codex`, **opencode** `opencode`.
 An empty list hides the phone's **+**. Intents pattern — the page never writes
 prefs itself.
 
+### Phone
+
+Below *Agents* in the nav (Lucide `Smartphone`). Phone access itself starts from
+the palette ([`remote.md`](remote.md) §2); this section holds what outlives it.
+
+| Setting | Description (UI) | Control | Behavior |
+|---------|------------------|----------|--------------|
+| **Start at launch** | Turn phone access on by itself on a Wi-Fi where a phone was paired | Toggle, off by default | Persisted on change (`phone_access_at_launch`); [`remote.md`](remote.md) §3.4. |
+| **Paired devices** | Phones that can reach your agents without scanning again | One row per device: name + *Paired <date> · Last seen <relative>* (`text.muted`) + **Revoke** (secondary pill); **Revoke all** pill under the card; empty ⇒ *No paired phone — use Open on phone from the palette* | Revoke drops the device from `phone_devices.toml` and closes its connections ([`remote.md`](remote.md) §3.2). Intent pattern: the page reports, the app revokes. |
+
 ### Pull Requests
 
 Sources and credentials of the PR cockpit ([`pull-requests.md`](pull-requests.md)
@@ -185,7 +195,7 @@ both settings are cleared.
   in the TOML — [`pull-requests.md`](pull-requests.md) §3) + `pr_detail_width`
   (PR cockpit detail-panel width) + `launch_agents` (array-of-tables `name` +
   `command`; key absent ⇒ the defaults of *Agents*, present — even empty — ⇒
-  verbatim) + `project_settings` (array-of-tables
+  verbatim) + `phone_access_at_launch` (bool, default `false`) + `project_settings` (array-of-tables
   keyed by project `root`: optional `worktree_base` + `post_create`; an entry
   with neither is dropped, orphans whose project left the workspace are purged).
 - The rendering logic stays as pure `fn(&mut egui::Ui, …)` functions

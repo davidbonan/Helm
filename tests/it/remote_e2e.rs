@@ -5,16 +5,18 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use alacritty_terminal::grid::Dimensions;
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
+use helm::remote::access::AccessAlert;
 use helm::remote::awake::{KeepAwake, REASON};
+use helm::remote::devices::PairedDevices;
 use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
-use helm::remote::server::PhoneServer;
+use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
 use helm::theme;
 use portable_pty::CommandBuilder;
@@ -49,7 +51,10 @@ struct Fixture {
     shell: Pane,
     registry: Registry,
     _watcher: AgentWatcher,
-    server: PhoneServer,
+    devices: PairedDevices,
+    alerts: Arc<Mutex<Vec<AccessAlert>>>,
+    /// `None` only while restarting.
+    server: Option<PhoneServer>,
     launches: crossbeam_channel::Receiver<LaunchedPane>,
     dir: tempfile::TempDir,
 }
@@ -79,15 +84,17 @@ impl Fixture {
             theme::preset("helm", true),
         );
         let (launcher, launches) = Launcher::channel(|| {});
-        let server =
-            PhoneServer::start_on_address([127, 0, 0, 1].into(), registry.clone(), launcher)
-                .unwrap();
+        let devices = PairedDevices::default();
+        let alerts = Arc::new(Mutex::new(Vec::new()));
+        let server = Some(start_server(&registry, launcher, &devices, &alerts));
         Self {
             _awake: awake,
             agent,
             shell,
             registry,
             _watcher: watcher,
+            devices,
+            alerts,
             server,
             launches,
             dir,
@@ -95,8 +102,29 @@ impl Fixture {
     }
 
     fn origin(&self) -> String {
-        let url = self.server.pairing_url();
-        url[..url.find("/pair").unwrap()].to_owned()
+        self.server().origin().to_owned()
+    }
+
+    /// The path and query of a freshly offered pairing code.
+    fn pairing_path(&self) -> String {
+        let url = self.server().offer_pairing();
+        url[url.find("/pair").unwrap()..].to_owned()
+    }
+
+    fn server(&self) -> &PhoneServer {
+        self.server.as_ref().expect("a running server")
+    }
+
+    /// A server restarted on the same devices' book, as after a Stop or a relaunch.
+    fn restart_server(&mut self) {
+        self.server = None;
+        let (launcher, _) = Launcher::channel(|| {});
+        self.server = Some(start_server(
+            &self.registry,
+            launcher,
+            &self.devices,
+            &self.alerts,
+        ));
     }
 
     fn get(&self, path_and_query: &str, cookie: Option<&str>) -> String {
@@ -115,13 +143,8 @@ impl Fixture {
 
     /// Pairs and returns the `name=value` session cookie.
     fn pair(&self) -> String {
-        let url = self.server.pairing_url();
-        let response = self.get(&url[url.find("/pair").unwrap()..], None);
-        let set_cookie = response
-            .lines()
-            .find_map(|line| line.strip_prefix("Set-Cookie: "))
-            .expect("a pairing sets the session cookie");
-        set_cookie.split(';').next().unwrap().to_owned()
+        let response = self.get(&self.pairing_path(), None);
+        session_cookie_of(&response).expect("a pairing sets the session cookie")
     }
 
     fn connect(&self, cookie: &str) -> WebSocket<TcpStream> {
@@ -147,6 +170,30 @@ impl Fixture {
         teardown(self.agent);
         teardown(self.shell);
     }
+}
+
+fn start_server(
+    registry: &Registry,
+    launcher: Launcher,
+    devices: &PairedDevices,
+    alerts: &Arc<Mutex<Vec<AccessAlert>>>,
+) -> PhoneServer {
+    let alerts = Arc::clone(alerts);
+    let services = PhoneServices {
+        registry: registry.clone(),
+        launcher,
+        devices: devices.clone(),
+        alert: Arc::new(move |alert| alerts.lock().unwrap().push(alert)),
+    };
+    PhoneServer::start_on_address([127, 0, 0, 1].into(), services).unwrap()
+}
+
+/// The `name=value` of a response's session `Set-Cookie`.
+fn session_cookie_of(response: &str) -> Option<String> {
+    let set_cookie = response
+        .lines()
+        .find_map(|line| line.strip_prefix("Set-Cookie: "))?;
+    Some(set_cookie.split(';').next()?.to_owned())
 }
 
 fn exposed(pane: &Pane, tab: &str) -> ExposedPane {
@@ -188,33 +235,128 @@ fn wait_for_within(
 }
 
 #[test]
-fn pairing_trades_the_token_for_a_session_cookie() {
+fn pairing_spends_the_code_for_a_lasting_session_cookie() {
     let fixture = Fixture::new();
-    let url = fixture.server.pairing_url().to_owned();
+    let pairing = fixture.pairing_path();
 
-    let response = fixture.get(&url[url.find("/pair").unwrap()..], None);
+    let response = fixture.get(&pairing, None);
+    let replayed = fixture.get(&pairing, None);
+    let alerts = fixture.alerts.lock().unwrap().clone();
 
     fixture.close();
     assert!(response.starts_with("HTTP/1.1 303"), "{response}");
     assert!(
         response.contains("Location: /\r\n"),
-        "the token leaves the address bar"
+        "the code leaves the address bar"
     );
     assert!(response.contains("Set-Cookie: helm_session="));
-    assert!(response.contains("HttpOnly; SameSite=Strict"));
+    assert!(response.contains("HttpOnly; SameSite=Strict; Path=/; Max-Age="));
+    assert!(
+        replayed.starts_with("HTTP/1.1 401"),
+        "the code is single use"
+    );
+    assert_eq!(
+        alerts,
+        vec![AccessAlert::Paired {
+            device: "Browser".to_owned()
+        }]
+    );
 }
 
 #[test]
-fn an_unpaired_phone_gets_the_access_stopped_page() {
+fn an_unpaired_phone_gets_the_not_paired_page() {
     let fixture = Fixture::new();
+    fixture.server().offer_pairing();
 
     let page = fixture.get("/", None);
-    let wrong_token = fixture.get("/pair?t=00", None);
+    let wrong_code = fixture.get("/pair?t=00", None);
 
     fixture.close();
     assert!(page.starts_with("HTTP/1.1 401"), "{page}");
-    assert!(page.contains("Access stopped"));
-    assert!(wrong_token.starts_with("HTTP/1.1 401"));
+    assert!(page.contains("This phone isn't paired"));
+    assert!(wrong_code.starts_with("HTTP/1.1 401"));
+}
+
+#[test]
+fn a_paired_phone_scanning_again_lands_on_its_agents_without_a_second_pairing() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let pairing = fixture.pairing_path();
+
+    let rescanned = fixture.get(&pairing, Some(&cookie));
+    let other_phone = fixture.get(&pairing, None);
+    let devices = fixture.devices.read(|book| book.devices.len());
+
+    fixture.close();
+    assert!(rescanned.starts_with("HTTP/1.1 303"), "{rescanned}");
+    assert!(
+        !rescanned.contains("Set-Cookie"),
+        "the paired phone keeps its device"
+    );
+    assert!(
+        other_phone.starts_with("HTTP/1.1 303"),
+        "the code was not spent"
+    );
+    assert_eq!(devices, 2);
+}
+
+#[test]
+fn a_page_load_rotates_the_session_cookie() {
+    let fixture = Fixture::new();
+    let paired = fixture.pair();
+
+    let page = fixture.get("/", Some(&paired));
+    let rotated = session_cookie_of(&page).expect("the page load hands a new cookie");
+    let asset = fixture.get("/app.css", Some(&rotated));
+
+    fixture.close();
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert_ne!(rotated, paired);
+    assert!(asset.starts_with("HTTP/1.1 200"), "{asset}");
+}
+
+#[test]
+fn a_pairing_outlives_the_server() {
+    let mut fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let port = fixture.origin();
+
+    fixture.restart_server();
+    let page = fixture.get("/app.css", Some(&cookie));
+    let same_port = fixture.origin() == port;
+
+    fixture.close();
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(same_port, "the phone's bookmark keeps pointing at helm");
+}
+
+#[test]
+fn a_revoked_phone_is_shut_out_and_its_socket_closes() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
+    let connected = fixture.server().connected_devices();
+
+    fixture.devices.edit(|book| book.revoke_all());
+    let closed = wait_until_within(Duration::from_secs(3), || match ws.read() {
+        Ok(message) => message.is_close(),
+        Err(tungstenite::Error::Io(err)) => !matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        Err(_) => true,
+    });
+    let page = fixture.get("/app.css", Some(&cookie));
+    let left = wait_until_within(Duration::from_secs(3), || {
+        fixture.server().connected_devices().is_empty()
+    });
+
+    fixture.close();
+    assert_eq!(connected, vec!["Browser".to_owned()]);
+    assert!(left, "a closed socket no longer counts as connected");
+    assert!(closed, "the revoked phone's socket is closed");
+    assert!(page.starts_with("HTTP/1.1 401"), "{page}");
 }
 
 #[test]

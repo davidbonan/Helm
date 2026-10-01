@@ -117,6 +117,10 @@ pub struct Prefs {
     /// Post a native banner when a watched agent finishes a turn (specs/agents.md);
     /// on by default.
     pub notify_on_agent_completion: bool,
+    /// Phone access turns on by itself on a network where a phone was paired
+    /// (remote.md §3.4); off by default.
+    #[serde(skip_serializing_if = "is_false")]
+    pub phone_access_at_launch: bool,
     /// Flat vs IDE-style tree layout shared by the WIP and commit-detail file
     /// lists (M40). Restored on launch; absent in older prefs falls back to Flat.
     pub git_file_view: FileViewMode,
@@ -187,6 +191,7 @@ impl Default for Prefs {
             ai_rebase_provider: AiProvider::default(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
+            phone_access_at_launch: false,
             git_file_view: FileViewMode::default(),
             run_panel_height: DEFAULT_RUN_PANEL_HEIGHT,
             git_unstaged_share: None,
@@ -550,6 +555,7 @@ mod tests {
             ai_rebase_provider: AiProvider::Opencode,
             editor: Editor::Zed,
             notify_on_agent_completion: false,
+            phone_access_at_launch: true,
             git_file_view: FileViewMode::Tree,
             run_panel_height: 240.0,
             run_panel_collapsed: true,
@@ -605,6 +611,17 @@ mod tests {
         };
         let text = cleared.to_toml().unwrap();
         assert_eq!(Prefs::from_toml(&text).unwrap(), cleared, "{text}");
+    }
+
+    #[test]
+    fn phone_access_at_launch_is_off_when_absent_and_round_trips_on() {
+        assert!(!Prefs::from_toml("").unwrap().phone_access_at_launch);
+        let on = Prefs {
+            phone_access_at_launch: true,
+            ..Prefs::default()
+        };
+        let text = on.to_toml().unwrap();
+        assert_eq!(Prefs::from_toml(&text).unwrap(), on, "{text}");
     }
 
     #[test]
