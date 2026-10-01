@@ -45,7 +45,8 @@ launch* off by default, 30-day drop, no device cap. Counter: **7/7**.
   opens the pairing modal. *Tests*: 1 UI e2e (hidden off, tooltip names the phone,
   click ⇒ modal intent) + business e2e extended (listed while connected, gone
   after). *Verified*: headless-verify `verify-artifacts/20261001_103306_44487/`,
-  `verify-artifacts/20261001_103956_59007/` (rest / hover, dark + light).
+  `verify-artifacts/20261001_103956_59007/` (rest / hover, dark + light),
+  `verify-artifacts/20261001_105931_44311/` (8 pt, centered on *Open with*).
 
 ---
 

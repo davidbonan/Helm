@@ -35,7 +35,7 @@ Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
 access is on — anyone with this code can type into your agents*, the connected
 device count, and a **Stop** button. The code is single-use and lives 5 min: once
 used or expired, the open modal shows a fresh one. While access is on, a
-**dot** (6 pt) left of the title bar's *Open with* selector says so — `git.added`
+**dot** (8 pt) left of the title bar's *Open with* selector says so — `git.added`
 while a phone is connected, `text.muted` while access waits for one, both at 45 %
 opacity (full under the pointer) — its tooltip naming who is connected (*Phone
 access on — iPhone connected* / *— no phone connected*); a click opens the pairing

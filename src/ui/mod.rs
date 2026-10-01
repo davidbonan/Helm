@@ -994,14 +994,12 @@ fn top_right_actions(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
-        if let Some(phone) = phone {
-            if phone_indicator(ui, palette, phone).clicked() {
-                *open_phone = true;
-            }
-        }
+        // The row centers each item on the height it has reached so far: the dot,
+        // laid out first, is painted once its neighbour has settled.
+        let phone_slot = phone.map(|phone| (phone, ui.allocate_space(PHONE_DOT_HIT).1));
         // No repository imported ⇒ no launcher at all; once repos exist, a
         // missing active folder keeps it visible but disabled (tooltip below).
-        if show_launcher {
+        let launcher = show_launcher.then(|| {
             workspace_launcher(
                 ui,
                 palette,
@@ -1009,8 +1007,8 @@ fn top_right_actions(
                 default_workspace_opener,
                 installed_openers,
                 open_workspace,
-            );
-        }
+            )
+        });
         // The git panel is forced hidden while a Helm central mode is open, so its
         // toggle would be inert. The PR cockpit reuses that slot for its own
         // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars
@@ -1033,8 +1031,17 @@ fn top_right_actions(
         } else {
             None
         };
-        feedback_button(ui, palette, open_feedback);
+        let feedback = feedback_button(ui, palette, open_feedback);
         let prefs = preferences_button(ui, palette, open_preferences);
+        if let Some((phone, slot)) = phone_slot {
+            let neighbour = launcher
+                .or(git.as_ref().map(|git| git.rect))
+                .unwrap_or(feedback.rect);
+            let center = egui::pos2(slot.center().x, neighbour.center().y);
+            if phone_indicator(ui, palette, phone, center).clicked() {
+                *open_phone = true;
+            }
+        }
         // Badges are painted as an overlay below their icon (not inserted into the
         // flow): a `new_child` does not advance the cursor, so the row keeps its
         // width and the icons do not shift when Cmd toggles the display.
@@ -1095,15 +1102,27 @@ pub struct PhoneIndicator {
 }
 
 const PHONE_DOT_HIT: egui::Vec2 = egui::vec2(12.0, 24.0);
-const PHONE_DOT_RADIUS: f32 = 3.0;
+const PHONE_DOT_RADIUS: f32 = 4.0;
 pub const PHONE_DOT_LABEL: &str = "Phone access";
 /// Opacity at rest: a hint, not a status light.
 const PHONE_DOT_FADE: f32 = 0.45;
 
 /// Faded green while a phone is connected, muted while access waits for one; full
 /// strength under the pointer. A click opens the pairing modal.
-fn phone_indicator(ui: &mut egui::Ui, palette: &Palette, phone: &PhoneIndicator) -> egui::Response {
-    let (rect, response, hovered) = clickable(ui, PHONE_DOT_HIT, true);
+fn phone_indicator(
+    ui: &egui::Ui,
+    palette: &Palette,
+    phone: &PhoneIndicator,
+    center: egui::Pos2,
+) -> egui::Response {
+    let response = ui
+        .interact(
+            egui::Rect::from_center_size(center, PHONE_DOT_HIT),
+            ui.id().with("phone_dot"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
     let color = if phone.devices.is_empty() {
         palette.text_muted
     } else {
@@ -1114,8 +1133,7 @@ fn phone_indicator(ui: &mut egui::Ui, palette: &Palette, phone: &PhoneIndicator)
     } else {
         color.gamma_multiply(PHONE_DOT_FADE)
     };
-    ui.painter()
-        .circle_filled(rect.center(), PHONE_DOT_RADIUS, color);
+    ui.painter().circle_filled(center, PHONE_DOT_RADIUS, color);
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, PHONE_DOT_LABEL));
     response.on_hover_text(phone_indicator_tooltip(&phone.devices))
@@ -1145,7 +1163,7 @@ fn workspace_launcher(
     default_opener: WorkspaceOpener,
     installed: &[WorkspaceOpener],
     out: &mut Option<WorkspaceOpener>,
-) {
+) -> egui::Rect {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let default_label = format!("Open workspace in {}", default_opener.label());
@@ -1207,7 +1225,9 @@ fn workspace_launcher(
                     }
                 });
         }
-    });
+    })
+    .response
+    .rect
 }
 
 #[derive(Clone, Copy)]
