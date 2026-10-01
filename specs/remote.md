@@ -34,7 +34,10 @@ Two palette commands ([`keybindings.md`](keybindings.md) §6), one visible at a 
 Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
 access is on — anyone with this code can type into your agents*, the connected
 device count, and a **Stop** button. The code is single-use and lives 5 min: once
-used or expired, the open modal shows a fresh one. While access is on, a
+used or expired, the open modal shows a fresh one. When the macOS firewall keeps
+the phone out — *Block all incoming connections*, or helm's own rule set to block
+(`socketfilterfw`, no admin rights; re-read every 2 s while open) — a banner says
+so with **Open settings ›** (Firewall pane). While access is on, a
 **dot** (8 pt) left of the title bar's *Open with* selector says so — `git.added`
 while a phone is connected, `text.muted` while access waits for one, both at 45 %
 opacity (full under the pointer) — its tooltip naming who is connected (*Phone

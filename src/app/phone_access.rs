@@ -2,6 +2,7 @@
 //! the server, the agent poll publishes the live panes to it.
 
 use super::*;
+use crate::remote::firewall::FirewallBlock;
 use crate::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use crate::remote::qr::QrMatrix;
 use crate::remote::registry::{ExposedPane, Registry};
@@ -15,6 +16,9 @@ const MODAL_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
 /// How often *Start at launch* looks at the network while access is off.
 const NETWORK_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How often the open modal re-reads the firewall, so a fix in Settings clears its banner.
+const FIREWALL_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How access gets started, by hand or by *Start at launch* (remote.md §3.4).
 pub(super) struct PhoneStarter {
     /// A *Stop phone access* holds *Start at launch* off until the next *Open on phone*.
@@ -24,6 +28,7 @@ pub(super) struct PhoneStarter {
     pending: Option<crossbeam_channel::Receiver<Option<String>>>,
     gateway_mac: fn() -> Option<String>,
     bind: fn(PhoneServices) -> Result<PhoneServer, StartError>,
+    firewall: fn() -> Option<FirewallBlock>,
 }
 
 impl Default for PhoneStarter {
@@ -34,6 +39,7 @@ impl Default for PhoneStarter {
             pending: None,
             gateway_mac: crate::remote::network::current_gateway_mac,
             bind: PhoneServer::start,
+            firewall: crate::remote::firewall::helm_blocked,
         }
     }
 }
@@ -90,6 +96,50 @@ pub(super) struct PhoneAccess {
     offered: Option<OfferedPairing>,
     registry: Registry,
     launches: crossbeam_channel::Receiver<LaunchedPane>,
+    firewall: FirewallWatch,
+}
+
+/// The firewall reading the modal shows; each read is two subprocesses, kept off the UI thread.
+#[derive(Default)]
+struct FirewallWatch {
+    block: Option<FirewallBlock>,
+    pending: Option<crossbeam_channel::Receiver<Option<FirewallBlock>>>,
+    last_check: Option<f64>,
+}
+
+impl FirewallWatch {
+    fn poll(
+        &mut self,
+        ctx: &egui::Context,
+        now: f64,
+        read: fn() -> Option<FirewallBlock>,
+    ) -> Option<FirewallBlock> {
+        if let Some(pending) = &self.pending {
+            match pending.try_recv() {
+                Err(crossbeam_channel::TryRecvError::Empty) => return self.block,
+                landed => {
+                    self.pending = None;
+                    self.block = landed.ok().flatten();
+                }
+            }
+        }
+        if self
+            .last_check
+            .is_none_or(|at| now - at >= FIREWALL_CHECK.as_secs_f64())
+        {
+            self.last_check = Some(now);
+            let (sender, receiver) = crossbeam_channel::bounded(1);
+            let repaint = ctx.clone();
+            let _ = std::thread::Builder::new()
+                .name("phone-firewall".into())
+                .spawn(move || {
+                    let _ = sender.send(read());
+                    repaint.request_repaint();
+                });
+            self.pending = Some(receiver);
+        }
+        self.block
+    }
 }
 
 struct OfferedPairing {
@@ -169,6 +219,7 @@ impl HelmApp {
             server,
             registry,
             launches,
+            firewall: FirewallWatch::default(),
         });
         self.publish_phone_panes();
     }
@@ -324,6 +375,8 @@ impl HelmApp {
         };
         ctx.request_repaint_after(MODAL_REFRESH);
         phone.refresh_offered_pairing();
+        let now = ctx.input(|i| i.time);
+        let firewall = phone.firewall.poll(ctx, now, self.phone_starter.firewall);
         let Some(offered) = &phone.offered else {
             return;
         };
@@ -332,11 +385,15 @@ impl HelmApp {
             pairing_url: &pairing_url,
             qr: offered.qr.as_ref(),
             clients: phone.server.clients(),
+            firewall,
         };
         let action = phone_access_modal(ui, palette, &view);
         if action.copy_url {
             ctx.copy_text(pairing_url);
             self.toasts.success("Link copied", ctx.input(|i| i.time));
+        }
+        if action.open_firewall_settings {
+            crate::remote::firewall::open_settings();
         }
         if action.stop {
             self.stop_phone_access();

@@ -13,7 +13,7 @@ pub fn current_gateway_mac() -> Option<String> {
     mac_in_arp(&run("/usr/sbin/arp", &["-n", &gateway.to_string()])?)
 }
 
-fn run(program: &str, args: &[&str]) -> Option<String> {
+pub(super) fn run(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;
     output
         .status
