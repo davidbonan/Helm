@@ -28,10 +28,7 @@ impl AiProvider {
         }
     }
 
-    /// Preferences dropdown label: the product name, identical for the
-    /// commit-message and the AI-rebase provider. The invocation flavor (`-p`
-    /// text vs agentic) differs internally but is not user-facing — each setting's
-    /// description states which action it drives.
+    /// Preferences dropdown label: the product name.
     pub fn display_name(self) -> &'static str {
         match self {
             AiProvider::Claude => "Claude Code",
@@ -135,7 +132,7 @@ pub fn generate_with(
     parse_suggestion(&output.stdout).ok_or(AiError::EmptyReply)
 }
 
-pub(crate) fn failure_detail(output: &cli::CliOutput) -> String {
+fn failure_detail(output: &cli::CliOutput) -> String {
     let stderr = output.stderr.trim();
     if !stderr.is_empty() {
         return stderr.to_owned();

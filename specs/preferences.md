@@ -81,7 +81,6 @@ floating preferences window. Tokens and components: [`design-system.md`](design-
 | **Default pull behavior** | Operation run by the Pull button in the graph toolbar | Dropdown, 4 options: **Fetch All** / **Pull (fast-forward if possible)** / **Pull (fast-forward only)** / **Pull (rebase)** (labels from the `git::sync::PullDefault` domain) | **Same setting** as the radio menu of the Pull split-button ([`git.md`](git.md) §10): both surfaces read/write `pull_default` — a change on one side is reflected on the other; persisted; **never triggers** an operation. |
 | **AI provider** | CLI used to generate the commit message | Dropdown, 3 options: **Claude Code** / **Codex** / **opencode** (`ai::AiProvider` domain, product names from `display_name`, default Claude) | CLI launched as a subprocess by the "Generate commit message" button of the commit card ([`git.md`](git.md) §5); Claude is pinned to the small/fast **Haiku** model (`commit_model_args`) since summarizing a staged diff is cheap; persisted; **never triggers** generation. |
 | **AI instructions** | Extra guidance added to the commit message prompt | **Multiline** full-width text field (below the label — the right slot is too narrow), hint "e.g. Use conventional commits, write in French…" | Free text appended as-is to the generation prompt; persisted on change. |
-| **AI rebase provider** | CLI that performs the AI rebase — runs git itself, never pushes | Dropdown, **same labels** as AI provider: **Claude Code** / **Codex** / **opencode** (same `ai::AiProvider` domain, default Claude — the agentic vs `-p` text invocation differs internally but is not user-facing; the row description states which action it drives) | CLI launched by the **Start AI rebase** of the recap modal ([`git.md`](git.md) §9); configured **separately** from the commit-message provider; persisted; **never triggers** a rebase. |
 
 ### Keyboard
 
@@ -184,8 +183,7 @@ both settings are cleared.
 - `prefs.toml` fields: `theme` and `pull_default` (existing) + `light_theme` /
   `dark_theme` (theme families, default `"helm"`; an unknown id falls back to
   Helm at resolution time without rewriting the TOML) + `ai_provider` (kebab-case,
-  default `"claude"`) / `ai_instructions` (default empty) + `ai_rebase_provider`
-  (kebab-case, default `"claude"`) + `editor_command` (editor template for the
+  default `"claude"`) / `ai_instructions` (default empty) + `editor_command` (editor template for the
   terminal's file links, default `"code -g {file}:{line}"`, empty = macOS
   `open` — [`terminal.md`](terminal.md) §12) + `keybindings` (table `action-id = "combo"`,
   e.g. `split-right = "cmd+shift+x"`: **only deviations** from the defaults,

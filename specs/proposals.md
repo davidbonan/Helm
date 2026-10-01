@@ -105,8 +105,8 @@
   saved templates. Opt-in so it never gets in the way.
 
 **P14 — AI review/explain staged changes + AI PR description** ◇
-- Extends the AI surface (`ai.rs` commit msg, `ai_rebase.rs` agentic rebase).
-  "Review/explain my staged diff" via the agentic provider; pre-generate the PR
+- Extends the AI surface (`ai.rs` commit msg).
+  "Review/explain my staged diff" via an agentic provider; pre-generate the PR
   title/body for create-PR (M32) and pass via URL params (feeds P10/forge).
 
 ## 5 · PR / forge & branch ops

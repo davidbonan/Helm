@@ -10,7 +10,6 @@ captured by hand.
 | `terminal.png` | Terminal with **keyboard splits** (2–3 panes) and the per-repo **tab bar** visible. | A split layout (`Cmd+D` / `Cmd+Shift+D`), ideally an agent running in one pane |
 | `git-graph.png` | The **commit graph** (`Cmd+Shift+G`): branch/tag chips, colored lanes, a selected commit with its detail + files in the right sidebar. | A repo with several branches so the lanes are visible |
 | `worktrees.png` | Left sidebar showing a **project group** (root + indented worktrees) and the **Create worktree** modal open with the branch autocomplete. | The `+` modal on the root row |
-| `ai-rebase.png` | The **AI rebase** recap modal (current → target, commits to replay, the AI instructions box) — or the running `AI rebase · m:ss` toolbar chip. | The modal opened from a branch chip's context menu |
 | `git-staging.png` | The **diff view** with hunk/line staging controls, plus the unstaged/staged/commit sidebar (bonus: the ✨ AI commit message button). | A file diff mid-stage |
 | `conflicts.png` | The in-app **conflict editor**: ours/theirs panes over a live merged result, with the Conflicted/Resolved sidebar and Continue/Abort. | A merge stopped on a conflict |
 | `agents.png` | Left sidebar with **agent activity badges**: a spinner (Working) and a green dot (Done) on different workspaces. | The sidebar while an agent is mid-turn in one repo and finished in another |

@@ -79,15 +79,6 @@ pub enum BusyAction {
     Branch,
     Stash,
     Pop,
-    /// AI rebase run (git.md §9): minutes are normal, so the end-of-row loader
-    /// names the operation, counts the time and offers **Cancel** — the only
-    /// way out before the provider finishes.
-    AiRebase {
-        seconds: u64,
-        /// Cancel already asked: the button turns inert ("Cancelling…") while
-        /// the provider is killed and the branch restored.
-        cancelling: bool,
-    },
     /// Mutation triggered outside the toolbar (checkout from a chip, commit,
     /// staging…): no button spins, loader at the end of the row.
     Other,
@@ -129,8 +120,6 @@ pub struct ToolbarAction {
     pub force_push: bool,
     pub stash: bool,
     pub pop: bool,
-    /// Cancel on the AI rebase chip: kill the provider and restore the branch.
-    pub cancel_ai_rebase: bool,
 }
 
 /// Graph action toolbar (git.md §10, design-system §4): a
@@ -218,49 +207,12 @@ pub fn graph_toolbar(
         action.pop = true;
     }
 
-    match state.busy {
-        Some(BusyAction::AiRebase {
-            seconds,
-            cancelling,
-        }) => {
-            row.add(
-                Spinner::new()
-                    .size(ICON_GLYPH)
-                    .color(palette.text_secondary),
-            );
-            row.label(
-                egui::RichText::new(ai_rebase_chip_label(seconds))
-                    .size(LABEL_SIZE)
-                    .color(palette.text_secondary),
-            );
-            let label = if cancelling {
-                "Cancelling…"
-            } else {
-                "Cancel"
-            };
-            let response = toolbar_button(
-                &mut row,
-                palette,
-                lucide_icons::Icon::X,
-                label,
-                !cancelling,
-                false,
-                egui::CornerRadius::same(RADIUS_PILL),
-            );
-            if cancelling {
-                response.on_hover_text("Stopping the provider and restoring the branch");
-            } else if response.clicked() {
-                action.cancel_ai_rebase = true;
-            }
-        }
-        Some(BusyAction::Other) => {
-            row.add(
-                Spinner::new()
-                    .size(ICON_GLYPH)
-                    .color(palette.text_secondary),
-            );
-        }
-        _ => {}
+    if state.busy == Some(BusyAction::Other) {
+        row.add(
+            Spinner::new()
+                .size(ICON_GLYPH)
+                .color(palette.text_secondary),
+        );
     }
 
     ui.painter().line_segment(
@@ -271,11 +223,6 @@ pub fn graph_toolbar(
         egui::Stroke::new(1.0_f32, palette.border_subtle),
     );
     action
-}
-
-/// "AI rebase · m:ss" — the elapsed time tells a long run is alive, not stuck.
-fn ai_rebase_chip_label(seconds: u64) -> String {
-    format!("AI rebase · {}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// Useful message for a network op failure (git.md §10): typed variant ⇒ a short

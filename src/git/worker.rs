@@ -1012,8 +1012,8 @@ const FETCH_STOP_POLL: Duration = Duration::from_millis(200);
 /// fetch only writes loose `refs/remotes` + objects (never a repack / `packed-refs`
 /// rewrite), disjoint from the index and local refs the mutation lock guards — holding
 /// it would instead spuriously fail user staging/commits on every tick. A tick is
-/// skipped (never queued) while that lock is held: a manual network op / AI rebase
-/// moves the same remote refs, and `is_locked` only peeks — acquiring it would race
+/// skipped (never queued) while that lock is held: a manual network op moves
+/// the same remote refs, and `is_locked` only peeks — acquiring it would race
 /// the user op for the lock.
 /// Failures (offline / auth) are swallowed: the fetch stays invisible until it moves
 /// a ref the graph then shows. Sequential by construction: a fetch slower than the
@@ -1399,7 +1399,7 @@ mod tests {
         let _fetch = FetchRunner::with_interval(&a, lock, Duration::from_millis(50), || {});
         assert!(
             !wait_until(20, || tracking_main(&a) == target),
-            "no fetch while a mutation (manual pull, AI rebase) holds the lock"
+            "no fetch while a mutation (manual pull) holds the lock"
         );
 
         drop(guard);

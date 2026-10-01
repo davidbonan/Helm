@@ -289,9 +289,6 @@ pub(crate) struct GitSession {
     /// AI generation of the commit message, off the UI thread; one request at a time
     /// (`busy` ⇒ spinner on the commit card button).
     pub(crate) ai: AiRunner,
-    /// AI rebase (git.md §9), off the UI thread; holds the repo's mutation lock
-    /// for the whole run — staging, commits and sync ops are refused meanwhile.
-    pub(crate) ai_rebase: AiRebaseRunner,
     pub(crate) status: RepoStatus,
     pub(crate) branch: Branch,
     /// Stash count + presence of a remote (worker snapshot, M12-6): drive the
@@ -377,7 +374,6 @@ impl GitSession {
         let worker = GitWorker::spawn_with_lock(path, mutation_lock.clone(), repainter(ctx));
         let sync = SyncRunner::new_with_lock(path, mutation_lock.clone(), repainter(ctx));
         let fetch = FetchRunner::new(path, mutation_lock.clone(), repainter(ctx));
-        let ai_rebase = AiRebaseRunner::new(path, mutation_lock.clone(), repainter(ctx));
         Self {
             key,
             mutation_lock,
@@ -385,7 +381,6 @@ impl GitSession {
             sync,
             fetch,
             ai,
-            ai_rebase,
             status: RepoStatus::default(),
             branch: Branch::Named(String::new()),
             stash_count: 0,
@@ -540,7 +535,7 @@ impl GitSession {
                 GitResult::Diff(result) => Self::on_diff(result, diff, modal, toasts, now),
                 GitResult::Graph { result, .. } => self.on_graph(result, diff, toasts, now),
                 GitResult::RebaseTodo { onto, result } => {
-                    Self::on_rebase_todo(onto, result, rebase_page, modal)
+                    Self::on_rebase_todo(onto, result, rebase_page)
                 }
                 GitResult::CommitDetail(result) => self.on_commit_detail(result, toasts, now),
                 GitResult::CommitFileDiff { oid, result } => {
@@ -833,36 +828,25 @@ impl GitSession {
         }
     }
 
-    /// Commit list for the interactive-rebase page **or** the AI rebase recap
-    /// modal (git.md §9) — both surfaces share the worker command and are
-    /// mutually exclusive on screen: adopted only by the one still loading
-    /// **this** target — a surface reopened on another branch never inherits
-    /// the previous plan. A failure (unknown ref, capped range) lands as the
-    /// surface's clean error state, not a toast: it is what the click opened.
+    /// Commit list for the interactive-rebase page (git.md §9): adopted only
+    /// while the page is still loading **this** target — a page reopened on
+    /// another branch never inherits the previous plan. A failure (unknown ref,
+    /// capped range) lands as the page's clean error state, not a toast: it is
+    /// what the click opened.
     fn on_rebase_todo(
         onto: String,
         result: Result<Vec<RebaseCommit>, git2::Error>,
         page: &mut Option<RebasePage>,
-        modal: &mut Option<Modal>,
     ) {
-        if let Some(open) = page.as_mut() {
-            if open.onto == onto && open.loading {
-                match result {
-                    Ok(commits) => open.adopt(commits),
-                    Err(err) => open.fail(err.message()),
-                }
-            }
-            return;
-        }
-        let Some(Modal::AiRebase(recap)) = modal.as_mut() else {
+        let Some(open) = page.as_mut() else {
             return;
         };
-        if recap.onto != onto || !recap.loading {
+        if open.onto != onto || !open.loading {
             return;
         }
         match result {
-            Ok(commits) => recap.adopt(commits),
-            Err(err) => recap.fail(err.message()),
+            Ok(commits) => open.adopt(commits),
+            Err(err) => open.fail(err.message()),
         }
     }
 
@@ -968,7 +952,7 @@ impl GitSession {
     /// also read directly: it may be held by a run this session never started —
     /// one the previous session on this repo left going across a switch.
     pub(crate) fn lock_busy(&self) -> bool {
-        self.sync.busy() || self.ai_rebase.busy() || self.mutation_lock.is_locked()
+        self.sync.busy() || self.mutation_lock.is_locked()
     }
 
     /// Git command in progress, as seen by the graph toolbar: network op first
@@ -976,14 +960,6 @@ impl GitSession {
     /// worker. Any command ⇒ loader + all other buttons greyed out
     /// (D-2026-06-03-toolbar-loader-commandes-git).
     pub(crate) fn busy_action(&self) -> Option<BusyAction> {
-        // The AI rebase holds the mutation lock for its whole run: named
-        // end-of-row chip (elapsed time + Cancel), all buttons greyed out.
-        if self.ai_rebase.busy() {
-            return Some(BusyAction::AiRebase {
-                seconds: self.ai_rebase.elapsed().unwrap_or_default().as_secs(),
-                cancelling: self.ai_rebase.cancelling(),
-            });
-        }
         match self.sync.in_flight() {
             Some(SyncCommand::Push | SyncCommand::ForcePush { .. }) => Some(BusyAction::Push),
             // Remote deletion and rebase: no dedicated button — generic end-of-row

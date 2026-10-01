@@ -1117,7 +1117,7 @@ fn lock_busy_state(busy: bool) -> GitPanelState {
 
 #[test]
 fn a_lock_holding_op_greys_the_sidebar_actions() {
-    // A sync op / AI rebase holds the repo's mutation lock for its whole run
+    // A sync op holds the repo's mutation lock for its whole run
     // (git.md §9): every staging or commit sent meanwhile is refused by the
     // worker, so the sidebar must not keep offering the click.
     let intents = drive_with_state(mixed_status(), lock_busy_state(true), |h| {

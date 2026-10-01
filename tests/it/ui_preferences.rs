@@ -28,7 +28,6 @@ struct PageProbe {
     pull: Rc<RefCell<PullDefault>>,
     ai_provider: Rc<RefCell<AiProvider>>,
     ai_instructions: Rc<RefCell<String>>,
-    ai_rebase_provider: Rc<RefCell<AiProvider>>,
     review_agent: Rc<RefCell<String>>,
     editor: Rc<RefCell<Editor>>,
     notify: Rc<RefCell<bool>>,
@@ -97,7 +96,6 @@ fn page_harness_full(
         pull: Rc::new(RefCell::new(pull)),
         ai_provider: Rc::new(RefCell::new(AiProvider::default())),
         ai_instructions: Rc::new(RefCell::new(String::new())),
-        ai_rebase_provider: Rc::new(RefCell::new(AiProvider::default())),
         review_agent: Rc::new(RefCell::new(String::new())),
         editor: Rc::new(RefCell::new(Editor::default())),
         notify: Rc::new(RefCell::new(true)),
@@ -122,7 +120,6 @@ fn page_harness_full(
     let pull = probe.pull.clone();
     let ai_provider = probe.ai_provider.clone();
     let ai_instructions = probe.ai_instructions.clone();
-    let ai_rebase_provider = probe.ai_rebase_provider.clone();
     let review_agent = probe.review_agent.clone();
     let editor = probe.editor.clone();
     let notify = probe.notify.clone();
@@ -155,7 +152,6 @@ fn page_harness_full(
             &mut pull.borrow_mut(),
             &mut ai_provider.borrow_mut(),
             &mut ai_instructions.borrow_mut(),
-            &mut ai_rebase_provider.borrow_mut(),
             &mut review_agent.borrow_mut(),
             &mut editor.borrow_mut(),
             &mut bitbucket_email,
@@ -527,7 +523,7 @@ fn radio_status(harness: &Harness<'_>, label: &str) -> String {
 }
 
 /// Number of provider **dropdown buttons** (role Button, not a menu radio) that
-/// show `label`: the two AI rows display the same harmonized product name, so a
+/// show `label`: the open menu repeats the current provider as a radio, so a
 /// plain `get_by_label` would be ambiguous.
 fn provider_button_count(harness: &Harness<'_>, label: &str) -> usize {
     harness
@@ -536,15 +532,11 @@ fn provider_button_count(harness: &Harness<'_>, label: &str) -> usize {
         .count()
 }
 
-/// Clicks the nth provider dropdown button labeled `label`. The Git card renders
-/// the commit-message provider first (nth 0), the AI-rebase provider second
-/// (nth 1); both carry the same product name, so position disambiguates.
-fn click_provider_button(harness: &Harness<'_>, label: &str, nth: usize) {
+fn click_provider_button(harness: &Harness<'_>, label: &str) {
     harness
         .get_all_by_label(label)
-        .filter(|n| format!("{:?}", n.accesskit_node().role()) == "Button")
-        .nth(nth)
-        .unwrap_or_else(|| panic!("dropdown button \"{label}\" #{nth} missing"))
+        .find(|n| format!("{:?}", n.accesskit_node().role()) == "Button")
+        .unwrap_or_else(|| panic!("dropdown button \"{label}\" missing"))
         .click();
 }
 
@@ -646,8 +638,8 @@ fn the_git_section_shows_the_ai_provider_and_instructions_rows() {
     harness.get_by_label("CLI used to generate the commit message");
     assert_eq!(
         provider_button_count(&harness, "Claude Code"),
-        2,
-        "the commit and rebase dropdowns both show the harmonized product name",
+        1,
+        "the dropdown shows the provider's product name",
     );
     harness.get_by_label("AI instructions");
     harness.get_by_label("Extra guidance added to the commit message prompt");
@@ -656,11 +648,9 @@ fn the_git_section_shows_the_ai_provider_and_instructions_rows() {
 #[test]
 fn opening_the_provider_dropdown_lists_the_three_clis_with_the_current_checked() {
     let (mut harness, _probe) = git_section(PullDefault::default());
-    click_provider_button(&harness, "Claude Code", 0);
+    click_provider_button(&harness, "Claude Code");
     harness.run();
 
-    // The other dropdown's button still reads "Claude Code", so the menu options
-    // "Codex"/"opencode" are unambiguous (only the open menu carries them).
     harness.get_by_label("Codex");
     harness.get_by_label("opencode");
     assert_eq!(
@@ -674,7 +664,7 @@ fn opening_the_provider_dropdown_lists_the_three_clis_with_the_current_checked()
 #[test]
 fn selecting_a_provider_updates_it_and_reports_one_change() {
     let (mut harness, probe) = git_section(PullDefault::default());
-    click_provider_button(&harness, "Claude Code", 0);
+    click_provider_button(&harness, "Claude Code");
     harness.run();
     harness.get_by_label("Codex").click();
     harness.run();
@@ -688,42 +678,7 @@ fn selecting_a_provider_updates_it_and_reports_one_change() {
     assert_eq!(
         provider_button_count(&harness, "Codex"),
         1,
-        "the commit dropdown button follows the new provider"
-    );
-    assert_eq!(
-        provider_button_count(&harness, "Claude Code"),
-        1,
-        "only the untouched rebase dropdown still reads Claude Code"
-    );
-}
-
-#[test]
-fn the_git_section_shows_the_ai_rebase_provider_row() {
-    let (harness, _probe) = git_section(PullDefault::default());
-    harness.get_by_label("AI rebase provider");
-    harness.get_by_label("CLI that performs the AI rebase — runs git itself, never pushes");
-    // Harmonized: the rebase dropdown shows the same product name as the commit one.
-    assert_eq!(provider_button_count(&harness, "Claude Code"), 2);
-}
-
-#[test]
-fn selecting_an_ai_rebase_provider_updates_it_and_reports_one_change() {
-    let (mut harness, probe) = git_section(PullDefault::default());
-    click_provider_button(&harness, "Claude Code", 1);
-    harness.run();
-    harness.get_by_label("Codex").click();
-    harness.run();
-
-    assert_eq!(*probe.ai_rebase_provider.borrow(), AiProvider::Codex);
-    assert_eq!(
-        *probe.ai_provider.borrow(),
-        AiProvider::Claude,
-        "the commit-message provider is untouched"
-    );
-    assert_eq!(
-        *probe.ai_changes.borrow(),
-        1,
-        "the selection reports exactly one change (to persist)"
+        "the dropdown button follows the new provider"
     );
 }
 
@@ -1023,7 +978,6 @@ fn project_harness(
                 &mut PullDefault::default(),
                 &mut AiProvider::default(),
                 &mut String::new(),
-                &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),
@@ -1146,7 +1100,6 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                 &mut PullDefault::default(),
                 &mut AiProvider::default(),
                 &mut String::new(),
-                &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
                 &mut email.borrow_mut(),
@@ -1625,7 +1578,6 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut PullDefault::default(),
                 &mut AiProvider::default(),
                 &mut String::new(),
-                &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),
@@ -1706,7 +1658,6 @@ fn phone_harness(devices: &[&str]) -> (Harness<'static>, Rc<RefCell<PhoneProbe>>
                 &mut PullDefault::default(),
                 &mut AiProvider::default(),
                 &mut String::new(),
-                &mut AiProvider::default(),
                 &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),

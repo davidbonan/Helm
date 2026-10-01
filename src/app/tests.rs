@@ -2942,7 +2942,6 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         pull_default: PullDefault::Rebase,
         ai_provider: AiProvider::Opencode,
         ai_instructions: "Use conventional commits.".to_owned(),
-        ai_rebase_provider: AiProvider::Codex,
         editor: Editor::default(),
         notify_on_agent_completion: true,
         phone_access_at_launch: false,
@@ -2988,7 +2987,6 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
     assert_eq!(app.pull_default, PullDefault::Rebase);
     assert_eq!(app.ai_provider, AiProvider::Opencode);
     assert_eq!(app.ai_instructions, "Use conventional commits.");
-    assert_eq!(app.ai_rebase_provider, AiProvider::Codex);
 }
 
 #[test]

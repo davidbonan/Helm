@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -96,26 +95,6 @@ pub fn run_program_with_timeout(
     timeout: Duration,
     envs: &[(&str, String)],
 ) -> Result<CliOutput, CliError> {
-    let never = AtomicBool::new(false);
-    let out = run_program_cancellable(program, workdir, args, timeout, envs, &never)?;
-    Ok(out.expect("the flag is never raised"))
-}
-
-/// [`run_program_with_timeout`] with a caller-owned cancellation flag, checked
-/// before the spawn and at every wait tick: once raised, the process group is
-/// killed and the call returns `Ok(None)` — cancellation is the caller's
-/// decision, not a process failure, so it stays out of [`CliError`].
-pub fn run_program_cancellable(
-    program: &Path,
-    workdir: &Path,
-    args: &[&str],
-    timeout: Duration,
-    envs: &[(&str, String)],
-    cancel: &AtomicBool,
-) -> Result<Option<CliOutput>, CliError> {
-    if cancel.load(Ordering::Relaxed) {
-        return Ok(None);
-    }
     let mut child = Command::new(program)
         .args(args)
         .current_dir(workdir)
@@ -151,17 +130,11 @@ pub fn run_program_cancellable(
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(CliError::Io)? {
-            return Ok(Some(CliOutput {
+            return Ok(CliOutput {
                 stdout: join_pipe(stdout),
                 stderr: join_pipe(stderr),
                 code: status.code(),
-            }));
-        }
-        if cancel.load(Ordering::Relaxed) {
-            kill_process_group(child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
+            });
         }
         if start.elapsed() >= timeout {
             kill_process_group(child.id());
@@ -282,55 +255,6 @@ mod tests {
 
         assert!(out.success());
         assert_eq!(out.stdout, "injected");
-    }
-
-    #[test]
-    fn run_program_cancel_kills_the_process_before_its_end() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cancel = std::sync::Arc::new(AtomicBool::new(false));
-        let flag = std::sync::Arc::clone(&cancel);
-        let killer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
-            flag.store(true, Ordering::Relaxed);
-        });
-        let start = Instant::now();
-        let out = run_program_cancellable(
-            Path::new("/bin/sh"),
-            tmp.path(),
-            &["-c", "sleep 5"],
-            Duration::from_secs(10),
-            &[],
-            &cancel,
-        )
-        .unwrap();
-        killer.join().unwrap();
-
-        assert!(out.is_none(), "a cancelled run yields no output");
-        assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "the kill follows the flag, not the child's sleep"
-        );
-    }
-
-    #[test]
-    fn run_program_cancelled_up_front_spawns_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cancel = AtomicBool::new(true);
-        let out = run_program_cancellable(
-            Path::new("/bin/sh"),
-            tmp.path(),
-            &["-c", "touch marker"],
-            Duration::from_secs(5),
-            &[],
-            &cancel,
-        )
-        .unwrap();
-
-        assert!(out.is_none());
-        assert!(
-            !tmp.path().join("marker").exists(),
-            "the child must not even spawn"
-        );
     }
 
     #[test]
