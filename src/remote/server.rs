@@ -19,6 +19,7 @@ use crate::remote::awake::KeepAwake;
 use crate::remote::devices::{device_name, wall_ms, PairedDevices};
 use crate::remote::http::{read_head, RequestHead, Response};
 use crate::remote::launch::Launcher;
+use crate::remote::network::current_gateway_mac;
 use crate::remote::protocol::PageTheme;
 use crate::remote::registry::Registry;
 use crate::remote::socket::{PhoneSocket, READ_TIMEOUT};
@@ -332,17 +333,21 @@ fn index_page(theme: &PageTheme) -> String {
 }
 
 /// The offered code, spent, becomes a paired device and its session cookie; the
-/// code leaves the address bar.
+/// code leaves the address bar. The network it paired on is recorded for *Start
+/// at launch*.
 fn pair(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
     if !shared.redeem_pairing(head.query_param("t")) {
         let _ = unpaired().write_to(stream);
         return;
     }
     let name = device_name(head.header("user-agent"));
-    let token = shared
-        .services
-        .devices
-        .edit(|book| book.pair(name, wall_ms()));
+    let network = current_gateway_mac();
+    let token = shared.services.devices.edit(|book| {
+        if let Some(mac) = &network {
+            book.record_network(mac);
+        }
+        book.pair(name, wall_ms())
+    });
     (shared.services.alert)(AccessAlert::Paired {
         device: name.to_owned(),
     });

@@ -7,6 +7,7 @@ pub mod awake;
 pub mod devices;
 pub mod http;
 pub mod launch;
+pub mod network;
 pub mod protocol;
 pub mod qr;
 pub mod registry;

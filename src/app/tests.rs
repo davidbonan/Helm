@@ -4130,6 +4130,66 @@ fn the_pairing_modal_offers_a_fresh_code_once_the_shown_one_is_used() {
     assert_ne!(shown(&harness), first, "a spent code is replaced");
 }
 
+const HOME_GATEWAY: &str = "38:06:e6:45:5e:10";
+
+/// *Start at launch* on, `home` recorded, the gateway reading `HOME_GATEWAY`
+/// when `at_home`, and the server bound on the loopback.
+fn app_starting_at_launch(at_home: bool) -> HelmApp {
+    let mut app = app_with(&["a"]);
+    app.phone_access_at_launch = true;
+    app.phone_devices
+        .edit(|book| book.record_network(HOME_GATEWAY));
+    let gateway: fn() -> Option<String> = if at_home {
+        || Some(HOME_GATEWAY.to_owned())
+    } else {
+        || Some("00:11:22:33:44:55".to_owned())
+    };
+    app.phone_starter = phone_access::PhoneStarter::seamed(gateway, |services| {
+        crate::remote::server::PhoneServer::start_on_address([127, 0, 0, 1].into(), services)
+            .map_err(crate::remote::server::StartError::Bind)
+    });
+    app
+}
+
+/// Agent polls until access is on, or a few seconds went by.
+fn poll_until_phone_access(app: &mut HelmApp, ctx: &egui::Context) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && !app.is_phone_access_on() {
+        app.sync_phone_access(ctx, 0.0);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.is_phone_access_on()
+}
+
+#[test]
+fn start_at_launch_turns_access_on_on_a_recorded_network_without_the_modal() {
+    let mut app = app_starting_at_launch(true);
+
+    assert!(poll_until_phone_access(&mut app, &egui::Context::default()));
+    assert!(app.modal.is_none(), "silent: no pairing modal");
+}
+
+#[test]
+fn start_at_launch_leaves_access_off_on_another_network() {
+    let mut app = app_starting_at_launch(false);
+
+    assert!(!poll_until_phone_access(
+        &mut app,
+        &egui::Context::default()
+    ));
+}
+
+#[test]
+fn a_manual_stop_holds_start_at_launch_off() {
+    let mut app = app_starting_at_launch(true);
+    let ctx = egui::Context::default();
+    assert!(poll_until_phone_access(&mut app, &ctx));
+
+    app.stop_phone_access();
+
+    assert!(!poll_until_phone_access(&mut app, &ctx));
+}
+
 fn cat_pane() -> Pane {
     Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap()
 }

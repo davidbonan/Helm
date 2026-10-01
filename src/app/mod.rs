@@ -667,6 +667,7 @@ pub struct HelmApp {
     phone: Option<phone_access::PhoneAccess>,
     /// Phones paired with helm: outlive phone access (specs/remote.md §3.2).
     phone_devices: crate::remote::devices::PairedDevices,
+    phone_starter: phone_access::PhoneStarter,
     /// The theme of the last frame: what the phone page and mirror paint with.
     theme_preset: &'static theme::ThemePreset,
     last_group_poll: f64,
@@ -875,6 +876,7 @@ impl HelmApp {
             agent_readings: Readings::default(),
             phone: None,
             phone_devices: Default::default(),
+            phone_starter: Default::default(),
             theme_preset: theme::preset("helm", true),
             last_group_poll: 0.0,
             last_group_probe: 0.0,
@@ -1108,7 +1110,7 @@ impl HelmApp {
             self.caches.agents.clear();
             self.agent_watcher = None;
             self.agent_readings = Readings::default();
-            self.sync_phone_access(ctx.input(|i| i.time));
+            self.sync_phone_access(ctx, ctx.input(|i| i.time));
             return;
         }
         // Idle wake-up: the watched set and the focus reach the watcher at this
@@ -1126,7 +1128,7 @@ impl HelmApp {
                     AgentWatcher::spawn(move || ctx.request_repaint())
                 })
                 .track(watched, focused);
-            self.sync_phone_access(now);
+            self.sync_phone_access(ctx, now);
         }
         let changed = self
             .agent_watcher

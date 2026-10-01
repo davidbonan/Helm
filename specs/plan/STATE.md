@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **4/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **5/6**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
@@ -28,9 +28,10 @@ launch* off by default, 30-day drop, no device cap. Counter: **4/6**.
 - ☑ **K4 — Preferences › Phone.** *Start at launch* toggle + paired devices,
   Revoke / Revoke all. *Tests*: 3 UI e2e (toggle, per-row Revoke + Revoke all,
   empty state) + 1 persistence.
-- ☐ **K5 — Start at launch on the pairing network.** Gateway MAC (`route` / `arp`
+- ☑ **K5 — Start at launch on the pairing network.** Gateway MAC (`route` / `arp`
   parsing), network recorded at pairing, 30 s check, manual Stop holds it off.
-  *Tests*: unit + app unit.
+  *Tests*: 3 unit (`route` / `arp` parsing) + 3 app unit (recorded network ⇒ on,
+  silent; other network ⇒ off; manual Stop holds off). Real lookup checked once.
 - ☐ **K6 — Phone verification.** Simulator (`mobile` skill): pair, reload keeps
   the session, revoked ⇒ not-paired page.
 
