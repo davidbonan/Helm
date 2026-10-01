@@ -11,12 +11,12 @@
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **0/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **1/6**.
 
-- ☐ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
+- ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
   `User-Agent` → name, recorded networks, `phone_devices.toml` load/save, port.
-  *Tests*: unit (injected clock).
+  *Tests*: 8 unit (injected clock) + 1 unit (code single use + 5 min).
 - ☐ **K2 — Server on paired devices.** `/pair` spends the code, `GET /` rotates,
   cookie `Max-Age`, revoked ⇒ `401` + sockets closed, two-address alert, persisted
   port, no idle stop, phone 401 copy. *Tests*: business e2e.

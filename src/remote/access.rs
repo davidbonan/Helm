@@ -1,6 +1,6 @@
 //! Who may talk to the phone server (specs/remote.md §3): a token minted per
 //! start, exchanged once for a session cookie; an idle clock that stops access
-//! when no phone stays connected.
+//! when no phone stays connected; the single-use pairing code of the QR.
 
 use std::net::SocketAddr;
 
@@ -11,30 +11,69 @@ pub const IDLE_STOP_MS: u64 = 2 * 60 * 60 * 1000;
 
 const TOKEN_BYTES: usize = 16;
 
-/// 128 random bits, hex. New on every start: a phone paired before is out.
+/// A pairing code is spent by its first use, and dies unused after this long.
+pub const PAIRING_CODE_LIFETIME_MS: u64 = 5 * 60 * 1000;
+
+/// Random bits, hex.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Token(String);
 
 impl Token {
+    /// 128 bits.
     pub fn mint() -> Self {
-        let mut bytes = [0u8; TOKEN_BYTES];
-        unsafe { libc::arc4random_buf(bytes.as_mut_ptr().cast(), bytes.len()) };
-        Self(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        Self::random(TOKEN_BYTES)
+    }
+
+    pub fn random(bytes: usize) -> Self {
+        let mut buffer = vec![0u8; bytes];
+        unsafe { libc::arc4random_buf(buffer.as_mut_ptr().cast(), buffer.len()) };
+        Self(buffer.iter().map(|b| format!("{b:02x}")).collect())
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Constant-time: the comparison time says nothing about the prefix matched.
     fn matches(&self, candidate: &str) -> bool {
-        let (ours, theirs) = (self.0.as_bytes(), candidate.as_bytes());
-        ours.len() == theirs.len()
-            && ours
-                .iter()
-                .zip(theirs)
-                .fold(0u8, |diff, (a, b)| diff | (a ^ b))
-                == 0
+        constant_time_eq(&self.0, candidate)
+    }
+}
+
+/// The comparison time says nothing about the prefix matched.
+pub fn constant_time_eq(ours: &str, theirs: &str) -> bool {
+    let (ours, theirs) = (ours.as_bytes(), theirs.as_bytes());
+    ours.len() == theirs.len()
+        && ours
+            .iter()
+            .zip(theirs)
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+}
+
+/// What the QR code carries: single use — the server forgets it once redeemed.
+pub struct PairingCode {
+    token: Token,
+    expires_ms: u64,
+}
+
+impl PairingCode {
+    pub fn mint(now_ms: u64) -> Self {
+        Self {
+            token: Token::mint(),
+            expires_ms: now_ms + PAIRING_CODE_LIFETIME_MS,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.token.as_str()
+    }
+
+    pub fn is_live(&self, now_ms: u64) -> bool {
+        now_ms < self.expires_ms
+    }
+
+    pub fn redeems(&self, candidate: &str, now_ms: u64) -> bool {
+        self.is_live(now_ms) && self.token.matches(candidate)
     }
 }
 
@@ -181,6 +220,19 @@ mod tests {
         assert!(!access.accepts_upgrade(cookie, Some("http://evil.example")));
         assert!(!access.accepts_upgrade(cookie, None));
         assert!(!access.accepts_upgrade(None, Some("http://192.168.1.20:5123")));
+    }
+
+    #[test]
+    fn a_pairing_code_redeems_only_itself_and_only_for_five_minutes() {
+        let code = PairingCode::mint(1_000);
+        let value = code.as_str().to_owned();
+
+        assert!(code.redeems(&value, 1_000 + PAIRING_CODE_LIFETIME_MS - 1));
+        assert!(!code.redeems(&value[1..], 1_000));
+        assert!(
+            !code.redeems(&value, 1_000 + PAIRING_CODE_LIFETIME_MS),
+            "an unused code dies"
+        );
     }
 
     #[test]

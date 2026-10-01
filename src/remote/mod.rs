@@ -4,6 +4,7 @@
 pub mod access;
 pub mod address;
 pub mod awake;
+pub mod devices;
 pub mod http;
 pub mod launch;
 pub mod protocol;
