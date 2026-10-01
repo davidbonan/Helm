@@ -5,7 +5,7 @@ use super::*;
 use crate::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use crate::remote::qr::QrMatrix;
 use crate::remote::registry::{ExposedPane, Registry};
-use crate::remote::server::{PhoneServer, StartError};
+use crate::remote::server::{PhoneServer, PhoneServices, StartError};
 use crate::theme::Palette;
 use crate::ui::phone_access_modal::{phone_access_modal, PhoneAccessView};
 
@@ -14,9 +14,30 @@ const MODAL_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(super) struct PhoneAccess {
     server: PhoneServer,
-    qr: Option<QrMatrix>,
+    /// The pairing code the modal shows; none until the modal opens.
+    offered: Option<OfferedPairing>,
     registry: Registry,
     launches: crossbeam_channel::Receiver<LaunchedPane>,
+}
+
+struct OfferedPairing {
+    url: String,
+    qr: Option<QrMatrix>,
+}
+
+impl PhoneAccess {
+    /// A fresh code when none is shown yet, or the shown one was used or expired.
+    fn refresh_offered_pairing(&mut self) {
+        let shown = self.offered.as_ref().map(|offered| offered.url.as_str());
+        if shown.is_some() && self.server.pairing_url().as_deref() == shown {
+            return;
+        }
+        let url = self.server.offer_pairing();
+        self.offered = Some(OfferedPairing {
+            qr: QrMatrix::encode(&url),
+            url,
+        });
+    }
 }
 
 impl HelmApp {
@@ -24,12 +45,21 @@ impl HelmApp {
         self.phone.is_some()
     }
 
-    /// *Open on phone*: starts access when off, then shows the pairing modal.
+    /// *Open on phone*: starts access when off, then shows the pairing modal with
+    /// a fresh code.
     pub(super) fn open_on_phone(&mut self, ctx: &egui::Context, now: f64) {
         if self.phone.is_none() {
             let registry = Registry::default();
             let (launcher, launches) = Launcher::channel(repaint_pacer(ctx));
-            let server = match PhoneServer::start(registry.clone(), launcher) {
+            let services = PhoneServices {
+                registry: registry.clone(),
+                launcher,
+                devices: self.phone_devices.clone(),
+                alert: std::sync::Arc::new(|alert| {
+                    crate::notify::post(&alert.title(), &alert.body());
+                }),
+            };
+            let server = match PhoneServer::start(services) {
                 Ok(server) => server,
                 Err(StartError::NoLocalNetwork) => {
                     self.toasts
@@ -44,6 +74,9 @@ impl HelmApp {
             };
             self.adopt_phone_server(server, registry, launches);
         }
+        if let Some(phone) = &mut self.phone {
+            phone.offered = None;
+        }
         self.modal = Some(Modal::PhoneAccess);
     }
 
@@ -55,7 +88,7 @@ impl HelmApp {
         launches: crossbeam_channel::Receiver<LaunchedPane>,
     ) {
         self.phone = Some(PhoneAccess {
-            qr: QrMatrix::encode(server.pairing_url()),
+            offered: None,
             server,
             registry,
             launches,
@@ -71,7 +104,7 @@ impl HelmApp {
     }
 
     /// At the agent poll: republish the live panes, or take note of a stop the
-    /// server decided on its own (idle delay, LAN address gone).
+    /// server decided on its own (LAN address gone).
     pub(super) fn sync_phone_access(&mut self, now: f64) {
         let Some(phone) = &self.phone else {
             return;
@@ -183,15 +216,19 @@ impl HelmApp {
         palette: &Palette,
         ctx: &egui::Context,
     ) {
-        let Some(phone) = &self.phone else {
+        let Some(phone) = &mut self.phone else {
             self.modal = None;
             return;
         };
         ctx.request_repaint_after(MODAL_REFRESH);
-        let pairing_url = phone.server.pairing_url().to_owned();
+        phone.refresh_offered_pairing();
+        let Some(offered) = &phone.offered else {
+            return;
+        };
+        let pairing_url = offered.url.clone();
         let view = PhoneAccessView {
             pairing_url: &pairing_url,
-            qr: phone.qr.as_ref(),
+            qr: offered.qr.as_ref(),
             clients: phone.server.clients(),
         };
         let action = phone_access_modal(ui, palette, &view);

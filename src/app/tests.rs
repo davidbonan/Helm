@@ -4061,8 +4061,7 @@ fn stop_phone_access_is_offered_while_on_and_ends_it() {
     let (launcher, launches) = crate::remote::launch::Launcher::channel(|| {});
     let server = crate::remote::server::PhoneServer::start_on_address(
         [127, 0, 0, 1].into(),
-        registry.clone(),
-        launcher,
+        crate::remote::server::PhoneServices::unpersisted(registry.clone(), launcher),
     )
     .unwrap();
     let app = harness.state_mut();
@@ -4086,13 +4085,48 @@ fn phone_on(
     let (launcher, _) = crate::remote::launch::Launcher::channel(|| {});
     let server = crate::remote::server::PhoneServer::start_on_address(
         [127, 0, 0, 1].into(),
-        registry.clone(),
-        launcher,
+        crate::remote::server::PhoneServices::unpersisted(registry.clone(), launcher),
     )
     .unwrap();
     let (adopt, launches) = crossbeam_channel::unbounded();
     app.adopt_phone_server(server, registry.clone(), launches);
     (registry, adopt)
+}
+
+#[test]
+fn the_pairing_modal_offers_a_fresh_code_once_the_shown_one_is_used() {
+    use egui_kittest::kittest::Queryable;
+    use std::io::{Read, Write};
+    let mut app = app_with(&["a"]);
+    phone_on(&mut app);
+    app.modal = Some(Modal::PhoneAccess);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_modals(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run();
+    let shown = |harness: &egui_kittest::Harness<'_, HelmApp>| {
+        harness
+            .get_by_label_contains("/pair?t=")
+            .value()
+            .unwrap_or_default()
+    };
+    let first = shown(&harness);
+
+    let (host, path) = first.trim_start_matches("http://").split_once('/').unwrap();
+    let mut stream = std::net::TcpStream::connect(host).unwrap();
+    write!(stream, "GET /{path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    harness.run();
+
+    assert!(response.starts_with("HTTP/1.1 303"), "{response}");
+    assert_ne!(shown(&harness), first, "a spent code is replaced");
 }
 
 fn cat_pane() -> Pane {

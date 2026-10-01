@@ -95,7 +95,7 @@ async function checkAccess() {
   try {
     const response = await fetch("/", { cache: "no-store" });
     if (response.status === 401) {
-      showExpired();
+      showUnpaired();
       return false;
     }
   } catch (_) { /* Mac unreachable: keep retrying */ }
@@ -648,9 +648,9 @@ function fitViewport() {
   }
 }
 
-function showExpired() {
+function showUnpaired() {
   for (const view of document.querySelectorAll(".view")) view.hidden = true;
-  $("expired-view").hidden = false;
+  $("unpaired-view").hidden = false;
 }
 
 // Wiring

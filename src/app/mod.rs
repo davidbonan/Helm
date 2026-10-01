@@ -662,6 +662,8 @@ pub struct HelmApp {
     agent_readings: Readings,
     /// Phone access (specs/remote.md), `None` while off.
     phone: Option<phone_access::PhoneAccess>,
+    /// Phones paired with helm: outlive phone access (specs/remote.md §3.2).
+    phone_devices: crate::remote::devices::PairedDevices,
     /// The theme of the last frame: what the phone page and mirror paint with.
     theme_preset: &'static theme::ThemePreset,
     last_group_poll: f64,
@@ -868,6 +870,7 @@ impl HelmApp {
             agent_watcher: None,
             agent_readings: Readings::default(),
             phone: None,
+            phone_devices: Default::default(),
             theme_preset: theme::preset("helm", true),
             last_group_poll: 0.0,
             last_group_probe: 0.0,
@@ -4766,6 +4769,7 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             app.prefs_path = crate::persistence::prefs_path();
             app.review_time = crate::pull_requests::review_time::ReviewTimeLog::load();
             app.review_time_path = crate::pull_requests::review_time::path();
+            app.phone_devices = crate::remote::devices::PairedDevices::load();
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

@@ -11,18 +11,20 @@
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **1/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **3/6**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
   `User-Agent` → name, recorded networks, `phone_devices.toml` load/save, port.
   *Tests*: 8 unit (injected clock) + 1 unit (code single use + 5 min).
-- ☐ **K2 — Server on paired devices.** `/pair` spends the code, `GET /` rotates,
+- ☑ **K2 — Server on paired devices.** `/pair` spends the code, `GET /` rotates,
   cookie `Max-Age`, revoked ⇒ `401` + sockets closed, two-address alert, persisted
-  port, no idle stop, phone 401 copy. *Tests*: business e2e.
-- ☐ **K3 — App wiring + pairing modal.** Store owned by the app (lives with access
+  port, no idle stop, phone 401 copy. *Tests*: 4 unit (`access`) + 4 business e2e
+  (code single use + alert, rotation, outlives a restart on the same port, revoked
+  ⇒ `401` + socket closed). Two-address alert: not covered (loopback has one IP).
+- ☑ **K3 — App wiring + pairing modal.** Store owned by the app (lives with access
   off), fresh code per modal open / once spent, alerts → `notify::post`.
-  *Tests*: app unit + UI e2e.
+  *Tests*: 1 app unit (spent code ⇒ the modal shows a fresh one).
 - ☐ **K4 — Preferences › Phone.** *Start at launch* toggle + paired devices,
   Revoke / Revoke all. *Tests*: UI e2e + persistence.
 - ☐ **K5 — Start at launch on the pairing network.** Gateway MAC (`route` / `arp`
