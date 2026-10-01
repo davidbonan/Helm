@@ -1,5 +1,16 @@
 # Release notes
 
+## 3.4.0
+
+- New Preferences › Agents: one list of agents — Claude Code, Codex and
+  opencode pre-filled — each with its own commands. Add your own: an alias
+  or a wrapper works too.
+- Commit message and review now pick an agent from that list, and their
+  prompts are editable with a **Restore default**. Your previous settings
+  are carried over.
+- Phone: the pairing modal says when the macOS firewall keeps the phone
+  out, with a link to the Firewall settings.
+
 ## 3.3.1
 
 - Agents wall and phone: each split of a tab now shows its own
@@ -79,13 +90,3 @@
   projects), **Stashes** and **Checkout branch**; `Esc` goes back.
 - On an empty query, your last command and most used ones lead the list
   under **Recent**.
-
-## 2.7.0
-
-- The pull requests list opens on **Inbox**: only what needs you — PRs waiting on
-  your review, plus your own still in review. Drafts, red builds, changes
-  requested and ready-to-merge stay under the role tabs.
-- A PR you already approved moves to **Waiting on the author** — merging is their
-  move, not yours.
-- Bigger, more legible rows: taller lines, larger avatars, readable initials, and
-  a review verdict badge with a verdict-colored ring you can actually spot.
