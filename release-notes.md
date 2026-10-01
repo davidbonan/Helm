@@ -1,5 +1,18 @@
 # Release notes
 
+## 3.3.0
+
+- Phone pairing now lasts: a paired phone stays paired across restarts of
+  helm for 30 days, and scanning the QR code again lands on its agents.
+- New Preferences › Phone: start phone access at launch when the Mac is on
+  the network the phone paired on, and revoke paired devices.
+- A dot beside **Open with** shows phone access is on and who is connected;
+  click it to open the pairing modal.
+- Git sidebar: folding Unstaged or Staged gives its room to the other list,
+  and the split between them is draggable.
+- Going back from an agent started on the phone lands on the agents list.
+- Removed the AI rebase (graph menu entry and its Preferences provider).
+
 ## 3.2.0
 
 - Start a new agent from the phone: the **+** on the Agents screen
@@ -75,12 +88,3 @@
   under **Agents** in the sidebar. Landing there clears its green, so pressing
   again takes you to the next finished one. Rebindable in Preferences › Keyboard;
   hold `Cmd` to see the `⌘J` hint on the row.
-
-## 2.5.0
-
-- The PR review surface keeps track of how long you have spent on each pull
-  request: a quiet clock readout in the header, in minutes only, counts while the
-  PR is on screen and the window is focused, and picks up where it left off when
-  you come back. Totals survive restarts.
-- `helm pr time` (or `--json`) lists every PR you have reviewed with the time spent,
-  most recent first — with helm open or closed.
