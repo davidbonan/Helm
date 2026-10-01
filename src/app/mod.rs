@@ -1238,9 +1238,9 @@ impl HelmApp {
                     group_name,
                     branch,
                     tab_id: key.1,
-                    tab_name: self
+                    pane_name: self
                         .workspace
-                        .tab_label(key.1)
+                        .pane_label(key.1, *pane_id)
                         .unwrap_or_else(|| "Terminal".to_owned()),
                     pane_id: *pane_id,
                     agent,
@@ -1269,22 +1269,15 @@ impl HelmApp {
         }
     }
 
-    /// Tab auto-naming (terminal.md §4): name each tab after the current activity of
-    /// its focused pane; the workspace keeps it sticky.
+    /// Tab auto-naming (terminal.md §4): name each pane after its current activity;
+    /// the workspace keeps the names sticky and lets the focused pane name the tab.
     fn auto_name_tabs(&mut self) {
         for (key, panes) in &self.caches.panes {
-            let tab_id = key.1;
-            let candidate = self
-                .workspace
-                .tab_focus(tab_id)
-                .and_then(|pane_id| panes.get(&pane_id))
-                .and_then(|state| match state {
-                    TerminalState::Live(pane) => Some(&**pane),
-                    _ => None,
-                })
-                .and_then(name_candidate);
-            self.workspace
-                .refresh_auto_name(tab_id, candidate.as_deref());
+            let activities = panes.iter().filter_map(|(pane_id, state)| match state {
+                TerminalState::Live(pane) => Some((*pane_id, name_candidate(pane)?)),
+                _ => None,
+            });
+            self.workspace.refresh_auto_names(key.1, activities);
         }
     }
 

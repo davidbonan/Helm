@@ -935,7 +935,7 @@ impl HelmApp {
             .map(|(index, e)| crate::ui::repo_sidebar::DoneAgentRow {
                 index,
                 branch: e.branch.clone(),
-                tab: e.tab_name.clone(),
+                tab: e.pane_name.clone(),
             })
             .collect();
         // Dashboard rows borrow `self.caches.agents` (disjoint from `panes`, mutably
@@ -974,7 +974,7 @@ impl HelmApp {
                         crate::ui::agents_view::AgentRow {
                             repo: &e.group_name,
                             branch: e.branch.as_deref(),
-                            tab: &e.tab_name,
+                            tab: &e.pane_name,
                             agent: e.agent,
                             badge: e.badge,
                             detail: match e.badge {

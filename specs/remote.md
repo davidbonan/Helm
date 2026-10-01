@@ -216,7 +216,7 @@ the phone's scheme): chrome on `bg.sidebar`, content on `bg.canvas` / the termin
 palette ([`design-system.md`](design-system.md) §1).
 
 - **Agents**: large title, blurred when the list scrolls under it; one rounded card
-  per project — branch over tab (the tab alone when detached; the agent's name tells
+  per project — branch over tab (the terminal's name, [`terminal.md`](terminal.md) §4; the tab alone when detached; the agent's name tells
   nothing, every one is *Claude*), a state pill (badge +
   *Working* / *Done* / *Idle*, same semantics and colors as the sidebar), chevron.
   Tap ⇒ terminal view. Empty ⇒ *No agent running*.

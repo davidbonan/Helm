@@ -124,6 +124,10 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
      names nothing (idle);
   3. the **live folder**, once the shell has left its spawn directory (the repo
      root already names the sidebar entry).
+  Each **pane** keeps its own sticky activity name the same way; the focused
+  one's names the tab. A terminal is named on the agents wall and the phone by
+  its **pane name**, else its tab's title (rename / auto / `Tab N`) — the splits
+  of one tab stay apart, even under a rename.
   Runtime-only, like the tabs themselves (§10): auto names are not persisted.
 - **Switch Terminal ⇄ Git** (post-MVP): a segmented control in the header of
   the central zone toggles the display between the **terminal** and the **Git

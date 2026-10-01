@@ -920,7 +920,7 @@ fn agent_entry(
         group_name: app.workspace.repo(repo).unwrap().name.clone(),
         branch: Some("main".to_owned()),
         tab_id,
-        tab_name: format!("Tab {}", pane + 1),
+        pane_name: format!("Tab {}", pane + 1),
         pane_id: PaneId(pane),
         agent,
         badge,

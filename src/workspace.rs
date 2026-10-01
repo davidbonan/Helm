@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::persistence::Project;
@@ -39,6 +40,9 @@ struct Tab {
     /// process), refreshed at the agent-watch tick (terminal.md §4). Kept across
     /// idle periods — only a new activity replaces it.
     auto_name: Option<String>,
+    /// Same sticky activity name, per pane: what tells the splits of one tab apart
+    /// on the agents wall and the phone.
+    pane_names: HashMap<PaneId, String>,
 }
 
 struct Entry {
@@ -83,6 +87,7 @@ impl Workspace {
             layout: Layout::new(),
             name: None,
             auto_name: None,
+            pane_names: HashMap::new(),
         }
     }
 
@@ -184,7 +189,7 @@ impl Workspace {
     }
 
     /// Titles shown by the active repo's tab bar: user rename (`rename_tab`),
-    /// else the activity-derived auto name (`refresh_auto_name`), else a "Tab N"
+    /// else the activity-derived auto name (`refresh_auto_names`), else a "Tab N"
     /// fallback based on the current position (terminal.md §4).
     pub fn tab_titles(&self) -> Option<Vec<String>> {
         let e = self.active_entry()?;
@@ -202,31 +207,45 @@ impl Workspace {
         )
     }
 
-    /// Focused pane of tab `tab_id` (whichever entry owns it) — the pane whose
-    /// activity names the tab (terminal.md §4). `None` if the id is stale.
-    pub fn tab_focus(&self, tab_id: TabId) -> Option<PaneId> {
-        self.entries
-            .iter()
-            .flat_map(|e| &e.tabs)
-            .find(|t| t.id == tab_id)
-            .map(|t| t.layout.focus())
+    /// Name of one terminal on the agents wall and the phone: its pane's own sticky
+    /// activity name, else its tab's title (`tab_label`).
+    pub fn pane_label(&self, tab_id: TabId, pane: PaneId) -> Option<String> {
+        let own = self.tab(tab_id)?.pane_names.get(&pane).cloned();
+        own.or_else(|| self.tab_label(tab_id))
     }
 
-    /// Updates a tab's activity-derived auto name. Sticky: a `None` candidate
-    /// (idle prompt) keeps the last name; only a new, different activity replaces
-    /// it. The user rename still wins at display (terminal.md §4).
-    pub fn refresh_auto_name(&mut self, tab_id: TabId, candidate: Option<&str>) {
-        let Some(cand) = candidate else { return };
-        if let Some(tab) = self
+    /// Sticky activity names of tab `tab_id`'s panes; the focused pane's also names
+    /// the tab. An idle pane (absent from `activities`) keeps its last name; a
+    /// closed one is forgotten (terminal.md §4).
+    pub fn refresh_auto_names(
+        &mut self,
+        tab_id: TabId,
+        activities: impl IntoIterator<Item = (PaneId, String)>,
+    ) {
+        let Some(tab) = self
             .entries
             .iter_mut()
             .flat_map(|e| &mut e.tabs)
             .find(|t| t.id == tab_id)
-        {
-            if tab.auto_name.as_deref() != Some(cand) {
-                tab.auto_name = Some(cand.to_owned());
+        else {
+            return;
+        };
+        let focus = tab.layout.focus();
+        for (pane, name) in activities {
+            if pane == focus {
+                tab.auto_name = Some(name.clone());
             }
+            tab.pane_names.insert(pane, name);
         }
+        let live = tab.layout.pane_ids();
+        tab.pane_names.retain(|pane, _| live.contains(pane));
+    }
+
+    fn tab(&self, tab_id: TabId) -> Option<&Tab> {
+        self.entries
+            .iter()
+            .flat_map(|e| &e.tabs)
+            .find(|t| t.id == tab_id)
     }
 
     /// Renames tab `tab` of the active repo. An empty name (after trim) clears the
@@ -1256,22 +1275,27 @@ mod tests {
         assert_eq!(ws.active_tab(), Some(0));
     }
 
+    fn named(pane: PaneId, name: &str) -> Vec<(PaneId, String)> {
+        vec![(pane, name.to_owned())]
+    }
+
     #[test]
     fn auto_name_falls_back_then_sticks_across_idle() {
         let mut ws = Workspace::new();
         ws.add(repo("a"));
         let tab = ws.tab_id(0, 0).unwrap();
+        let pane = ws.active_layout().unwrap().focus();
         assert_eq!(ws.tab_titles(), Some(vec!["Tab 1".to_string()]));
 
-        ws.refresh_auto_name(tab, Some("claude"));
+        ws.refresh_auto_names(tab, named(pane, "claude"));
         assert_eq!(ws.tab_titles(), Some(vec!["claude".to_string()]));
 
         // Back at an idle prompt (no candidate): the last activity name sticks.
-        ws.refresh_auto_name(tab, None);
+        ws.refresh_auto_names(tab, []);
         assert_eq!(ws.tab_titles(), Some(vec!["claude".to_string()]));
 
         // A new activity replaces it.
-        ws.refresh_auto_name(tab, Some("cargo"));
+        ws.refresh_auto_names(tab, named(pane, "cargo"));
         assert_eq!(ws.tab_titles(), Some(vec!["cargo".to_string()]));
     }
 
@@ -1280,7 +1304,8 @@ mod tests {
         let mut ws = Workspace::new();
         ws.add(repo("a"));
         let tab = ws.tab_id(0, 0).unwrap();
-        ws.refresh_auto_name(tab, Some("vim"));
+        let pane = ws.active_layout().unwrap().focus();
+        ws.refresh_auto_names(tab, named(pane, "vim"));
 
         assert!(ws.rename_tab(0, "notes"));
         assert_eq!(ws.tab_titles(), Some(vec!["notes".to_string()]));
@@ -1291,12 +1316,44 @@ mod tests {
     }
 
     #[test]
-    fn tab_focus_resolves_by_id_and_rejects_stale() {
+    fn splits_of_one_tab_keep_their_own_names_over_the_tab_title() {
         let mut ws = Workspace::new();
         ws.add(repo("a"));
         let tab = ws.tab_id(0, 0).unwrap();
-        assert!(ws.tab_focus(tab).is_some());
-        assert!(ws.tab_focus(TabId(9_999)).is_none());
+        let first = ws.active_layout().unwrap().focus();
+        let second = ws.active_layout_mut().unwrap().split(Orient::Horizontal);
+        let idle = ws.active_layout_mut().unwrap().split(Orient::Horizontal);
+        ws.rename_tab(0, "notes");
+
+        let activities = [first, second].map(|p| (p, format!("session {}", p.0)));
+        ws.refresh_auto_names(tab, activities);
+
+        assert_eq!(
+            ws.pane_label(tab, first).unwrap(),
+            format!("session {}", first.0)
+        );
+        assert_eq!(
+            ws.pane_label(tab, second).unwrap(),
+            format!("session {}", second.0)
+        );
+        assert_eq!(ws.pane_label(tab, idle).unwrap(), "notes");
+    }
+
+    #[test]
+    fn closed_pane_forgets_its_name() {
+        let mut ws = Workspace::new();
+        ws.add(repo("a"));
+        let tab = ws.tab_id(0, 0).unwrap();
+        let first = ws.active_layout().unwrap().focus();
+        let split = ws.active_layout_mut().unwrap().split(Orient::Horizontal);
+        ws.active_layout_mut().unwrap().set_focus(first);
+        ws.refresh_auto_names(tab, named(split, "claude"));
+
+        ws.active_layout_mut().unwrap().set_focus(split);
+        ws.active_layout_mut().unwrap().close();
+        ws.refresh_auto_names(tab, []);
+
+        assert_eq!(ws.pane_label(tab, split).unwrap(), "Tab 1");
     }
 
     #[test]
