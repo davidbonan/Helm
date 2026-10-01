@@ -140,7 +140,7 @@ the palette ([`remote.md`](remote.md) §2); this section holds what outlives it.
 | Setting | Description (UI) | Control | Behavior |
 |---------|------------------|----------|--------------|
 | **Start at launch** | Turn phone access on by itself on a Wi-Fi where a phone was paired | Toggle, off by default | Persisted on change (`phone_access_at_launch`); [`remote.md`](remote.md) §3.4. |
-| **Paired devices** | Phones that can reach your agents without scanning again | One row per device: name + *Paired <date> · Last seen <relative>* (`text.muted`) + **Revoke** (danger ghost); **Revoke all** under the card; empty ⇒ *No paired phone — use Open on phone from the palette* | Revoke drops the device from `phone_devices.toml` and closes its connections ([`remote.md`](remote.md) §3.2). Intent pattern: the page reports, the app revokes. |
+| **Paired devices** | Phones that can reach your agents without scanning again | One row per device: name + *Paired <date> · Last seen <relative>* (`text.muted`) + **Revoke** (secondary pill); **Revoke all** pill under the card; empty ⇒ *No paired phone — use Open on phone from the palette* | Revoke drops the device from `phone_devices.toml` and closes its connections ([`remote.md`](remote.md) §3.2). Intent pattern: the page reports, the app revokes. |
 
 ### Pull Requests
 

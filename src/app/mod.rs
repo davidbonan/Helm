@@ -46,7 +46,9 @@ use crate::ui::graph_view::{
     BranchEditor, BranchEditorTarget, DeleteBranchTarget, GraphAction, GraphSearch, GraphViewState,
     StashTarget, WipRow,
 };
-use crate::ui::preferences::{preferences_page, KeyboardState, PreferencesSection, UpdatesView};
+use crate::ui::preferences::{
+    preferences_page, KeyboardState, PhoneDeviceRow, PhoneView, PreferencesSection, UpdatesView,
+};
 use crate::ui::rebase_view::{rebase_view, RebasePage, RebasePageAction};
 use crate::ui::repo_sidebar::{
     delete_worktree_modal, CreateSelection, DeleteModalAction, DeletePrompt, ProjectHeader,
@@ -638,6 +640,7 @@ pub struct HelmApp {
     /// Native banner on agent completion (specs/agents.md), persisted in
     /// `prefs.toml`: loaded at boot, toggled in Preferences.
     notify_on_agent_completion: bool,
+    phone_access_at_launch: bool,
     /// Agents the phone can launch (remote.md §7.2), edited in Preferences.
     launch_agents: Vec<crate::remote::launch::LaunchAgent>,
     /// Branch editor (M12-6): opened by the toolbar button, rendered by `graph_view`
@@ -861,6 +864,7 @@ impl HelmApp {
             review: HashMap::new(),
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
+            phone_access_at_launch: prefs.phone_access_at_launch,
             launch_agents: prefs.launch_agents,
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),

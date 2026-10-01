@@ -58,17 +58,19 @@ pub enum PreferencesSection {
     Keyboard,
     Terminal,
     Agents,
+    Phone,
     PullRequests,
     Project,
     Updates,
 }
 
-const SECTIONS: [PreferencesSection; 8] = [
+const SECTIONS: [PreferencesSection; 9] = [
     PreferencesSection::Appearance,
     PreferencesSection::Git,
     PreferencesSection::Keyboard,
     PreferencesSection::Terminal,
     PreferencesSection::Agents,
+    PreferencesSection::Phone,
     PreferencesSection::PullRequests,
     PreferencesSection::Project,
     PreferencesSection::Updates,
@@ -82,6 +84,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => "Keyboard",
             PreferencesSection::Terminal => "Terminal",
             PreferencesSection::Agents => "Agents",
+            PreferencesSection::Phone => "Phone",
             PreferencesSection::PullRequests => "Pull Requests",
             PreferencesSection::Project => "Project",
             PreferencesSection::Updates => "Updates",
@@ -95,6 +98,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => lucide_icons::Icon::Keyboard,
             PreferencesSection::Terminal => lucide_icons::Icon::SquareTerminal,
             PreferencesSection::Agents => lucide_icons::Icon::Bot,
+            PreferencesSection::Phone => lucide_icons::Icon::Smartphone,
             PreferencesSection::PullRequests => lucide_icons::Icon::GitPullRequest,
             PreferencesSection::Project => lucide_icons::Icon::FolderGit2,
             PreferencesSection::Updates => lucide_icons::Icon::Download,
@@ -129,6 +133,19 @@ pub struct PrSourcesView {
     pub bitbucket: SourceStatus,
     /// `false` until the first fetch replies — the status lines read "Checking…".
     pub loaded: bool,
+}
+
+/// The Phone section (preferences.md §4): what outlives phone access. The devices
+/// are a snapshot of the app's book; revoking is an intent.
+pub struct PhoneView<'a> {
+    pub start_at_launch: &'a mut bool,
+    pub devices: &'a [PhoneDeviceRow],
+}
+
+pub struct PhoneDeviceRow {
+    pub name: String,
+    /// *Paired <date> · Last seen <age>*.
+    pub detail: String,
 }
 
 /// Signals raised by the page: the app closes (`back`) or applies + persists the
@@ -169,6 +186,11 @@ pub struct PreferencesAction {
     pub agent_notify_changed: bool,
     /// A phone-launchable agent was edited, added or removed (remote.md §7.2).
     pub launch_agents_changed: bool,
+    /// The *Start at launch* toggle flipped — the app persists it (remote.md §3.4).
+    pub phone_at_launch_changed: bool,
+    /// Revoke the paired device at this index of `PhoneView::devices`.
+    pub revoke_device: Option<usize>,
+    pub revoke_all_devices: bool,
     /// The Bitbucket email field was edited — the app persists it
     /// (pull-requests.md §3); the token stays out of `prefs`.
     pub bitbucket_email_changed: bool,
@@ -218,6 +240,7 @@ pub fn preferences_page(
     pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
     launch_agents: &mut Vec<LaunchAgent>,
+    phone: PhoneView<'_>,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
     updates: &UpdatesView,
@@ -440,6 +463,7 @@ pub fn preferences_page(
                     action.launch_agents_changed = true;
                 }
             }
+            PreferencesSection::Phone => phone_section(ui, palette, phone, &mut action),
             PreferencesSection::PullRequests => {
                 pull_requests_section(
                     ui,
@@ -958,24 +982,12 @@ fn launch_agents_card(ui: &mut egui::Ui, palette: &Palette, agents: &mut Vec<Lau
     let mut changed = false;
     let mut removed = None;
     settings_card(ui, palette, |ui| {
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = LABEL_GAP;
-                ui.label(
-                    egui::RichText::new("Phone launch")
-                        .size(LABEL_SIZE)
-                        .family(theme::medium_family(ui.ctx()))
-                        .color(palette.text_primary),
-                );
-                ui.label(
-                    egui::RichText::new(
-                        "Agents the phone can start in a new tab; the command is typed into a login shell",
-                    )
-                    .size(DESCRIPTION_SIZE)
-                    .color(palette.text_muted),
-                );
-            });
+        card_header(
+            ui,
+            palette,
+            "Phone launch",
+            "Agents the phone can start in a new tab; the command is typed into a login shell",
+        );
         for (index, agent) in agents.iter_mut().enumerate() {
             setting_divider(ui, palette);
             let row = launch_agent_row(ui, palette, index, agent);
@@ -999,6 +1011,84 @@ fn launch_agents_card(ui: &mut egui::Ui, palette: &Palette, agents: &mut Vec<Lau
         changed = true;
     }
     changed
+}
+
+fn phone_section(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    phone: PhoneView<'_>,
+    action: &mut PreferencesAction,
+) {
+    settings_card(ui, palette, |ui| {
+        setting_row(
+            ui,
+            palette,
+            "Start at launch",
+            Some("Turn phone access on by itself on a Wi-Fi where a phone was paired"),
+            |ui| {
+                if toggle_switch(ui, palette, phone.start_at_launch) {
+                    action.phone_at_launch_changed = true;
+                }
+            },
+        );
+    });
+    ui.add_space(CARD_GAP);
+    settings_card(ui, palette, |ui| {
+        card_header(
+            ui,
+            palette,
+            "Paired devices",
+            "Phones that can reach your agents without scanning again",
+        );
+        if phone.devices.is_empty() {
+            setting_divider(ui, palette);
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(NO_PAIRED_DEVICE)
+                            .size(DESCRIPTION_SIZE)
+                            .color(palette.text_muted),
+                    );
+                });
+        }
+        for (index, device) in phone.devices.iter().enumerate() {
+            setting_divider(ui, palette);
+            setting_row(ui, palette, &device.name, Some(&device.detail), |ui| {
+                if pill_button(ui, palette, "Revoke", true, false) {
+                    action.revoke_device = Some(index);
+                }
+            });
+        }
+    });
+    if !phone.devices.is_empty() {
+        ui.add_space(LAUNCH_ROW_GAP);
+        if pill_button(ui, palette, "Revoke all", true, false) {
+            action.revoke_all_devices = true;
+        }
+    }
+}
+
+pub const NO_PAIRED_DEVICE: &str = "No paired phone — use Open on phone from the palette";
+
+/// Title + description block opening a card whose rows follow.
+fn card_header(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &str) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = LABEL_GAP;
+            ui.label(
+                egui::RichText::new(title)
+                    .size(LABEL_SIZE)
+                    .family(theme::medium_family(ui.ctx()))
+                    .color(palette.text_primary),
+            );
+            ui.label(
+                egui::RichText::new(description)
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
+            );
+        });
 }
 
 struct LaunchRowOutcome {
@@ -1998,6 +2088,7 @@ mod tests {
                 "Keyboard",
                 "Terminal",
                 "Agents",
+                "Phone",
                 "Pull Requests",
                 "Project",
                 "Updates"

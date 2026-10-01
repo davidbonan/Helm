@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **3/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **4/6**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
@@ -25,8 +25,9 @@ launch* off by default, 30-day drop, no device cap. Counter: **3/6**.
 - ☑ **K3 — App wiring + pairing modal.** Store owned by the app (lives with access
   off), fresh code per modal open / once spent, alerts → `notify::post`.
   *Tests*: 1 app unit (spent code ⇒ the modal shows a fresh one).
-- ☐ **K4 — Preferences › Phone.** *Start at launch* toggle + paired devices,
-  Revoke / Revoke all. *Tests*: UI e2e + persistence.
+- ☑ **K4 — Preferences › Phone.** *Start at launch* toggle + paired devices,
+  Revoke / Revoke all. *Tests*: 3 UI e2e (toggle, per-row Revoke + Revoke all,
+  empty state) + 1 persistence.
 - ☐ **K5 — Start at launch on the pairing network.** Gateway MAC (`route` / `arp`
   parsing), network recorded at pairing, 30 s check, manual Stop holds it off.
   *Tests*: unit + app unit.

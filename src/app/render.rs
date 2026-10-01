@@ -207,6 +207,14 @@ impl HelmApp {
             bitbucket: self.pr_cache.bitbucket.clone(),
             loaded: self.pr_cache.loaded,
         };
+        let now_ms = crate::remote::devices::wall_ms();
+        let (device_ids, device_rows): (Vec<String>, Vec<PhoneDeviceRow>) =
+            self.phone_devices.read(|book| {
+                book.devices
+                    .iter()
+                    .map(|device| (device.id.clone(), phone_device_row(device, now_ms)))
+                    .unzip()
+            });
         let action = preferences_page(
             ui,
             &palette,
@@ -225,6 +233,10 @@ impl HelmApp {
             &pr_sources,
             &mut self.notify_on_agent_completion,
             &mut self.launch_agents,
+            PhoneView {
+                start_at_launch: &mut self.phone_access_at_launch,
+                devices: &device_rows,
+            },
             &mut self.keymap,
             &mut self.keyboard_prefs,
             &updates,
@@ -290,6 +302,19 @@ impl HelmApp {
                 launch_agents,
                 ..prefs
             });
+        }
+        if action.phone_at_launch_changed {
+            let phone_access_at_launch = self.phone_access_at_launch;
+            self.persist(move |prefs| Prefs {
+                phone_access_at_launch,
+                ..prefs
+            });
+        }
+        if let Some(id) = action.revoke_device.and_then(|index| device_ids.get(index)) {
+            self.phone_devices.edit(|book| book.revoke(id));
+        }
+        if action.revoke_all_devices {
+            self.phone_devices.edit(|book| book.revoke_all());
         }
         // Bitbucket email persists like any scalar; the token never touches prefs
         // — "Save" stores it in the Keychain and re-fetches (pull-requests.md §3).
@@ -3121,6 +3146,19 @@ pub(crate) fn armed_force_push(git: Option<&super::git_session::GitSession>) -> 
         remote: remote.clone(),
         lease,
     })
+}
+
+/// *Paired <date> · Last seen <age>* under a device of Preferences › Phone.
+fn phone_device_row(device: &crate::remote::devices::PairedDevice, now_ms: u64) -> PhoneDeviceRow {
+    let seen_secs = now_ms.saturating_sub(device.last_seen_ms) / 1000;
+    PhoneDeviceRow {
+        name: device.name.clone(),
+        detail: format!(
+            "Paired {} · Last seen {}",
+            crate::ui::format_date((device.paired_at_ms / 1000) as i64),
+            crate::pull_requests::model::age_label(seen_secs as i64)
+        ),
+    }
 }
 
 /// Compact caption for a finished agent on the dashboard (the green arms ~6 s

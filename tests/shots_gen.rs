@@ -2156,6 +2156,10 @@ fn gen_preferences() {
                 &pr_sources,
                 &mut notify,
                 &mut helm::remote::launch::LaunchAgent::defaults(),
+                helm::ui::preferences::PhoneView {
+                    start_at_launch: &mut false,
+                    devices: &[],
+                },
                 &mut keymap,
                 &mut keyboard,
                 &updates,
