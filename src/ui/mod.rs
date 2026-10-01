@@ -712,6 +712,7 @@ pub fn root_layout(
     open_preferences: &mut bool,
     open_feedback: &mut bool,
     phone: Option<&PhoneIndicator>,
+    open_phone: &mut bool,
     agents_badge: AgentBadge,
     agents_active: bool,
     done_agents: &[DoneAgentRow],
@@ -938,6 +939,7 @@ pub fn root_layout(
                 open_preferences,
                 open_feedback,
                 phone,
+                open_phone,
                 helm_central,
                 show_git,
                 pr_active,
@@ -983,6 +985,7 @@ fn top_right_actions(
     open_preferences: &mut bool,
     open_feedback: &mut bool,
     phone: Option<&PhoneIndicator>,
+    open_phone: &mut bool,
     helm_central: bool,
     show_git: &mut bool,
     pr_active: bool,
@@ -992,7 +995,9 @@ fn top_right_actions(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
         if let Some(phone) = phone {
-            phone_indicator(ui, palette, phone);
+            if phone_indicator(ui, palette, phone).clicked() {
+                *open_phone = true;
+            }
         }
         // No repository imported ⇒ no launcher at all; once repos exist, a
         // missing active folder keeps it visible but disabled (tooltip below).
@@ -1092,20 +1097,28 @@ pub struct PhoneIndicator {
 const PHONE_DOT_HIT: egui::Vec2 = egui::vec2(12.0, 24.0);
 const PHONE_DOT_RADIUS: f32 = 3.0;
 pub const PHONE_DOT_LABEL: &str = "Phone access";
+/// Opacity at rest: a hint, not a status light.
+const PHONE_DOT_FADE: f32 = 0.45;
 
-/// Green while a phone is connected, muted while access waits for one.
-fn phone_indicator(ui: &mut egui::Ui, palette: &Palette, phone: &PhoneIndicator) {
-    let (rect, response) = ui.allocate_exact_size(PHONE_DOT_HIT, egui::Sense::hover());
+/// Faded green while a phone is connected, muted while access waits for one; full
+/// strength under the pointer. A click opens the pairing modal.
+fn phone_indicator(ui: &mut egui::Ui, palette: &Palette, phone: &PhoneIndicator) -> egui::Response {
+    let (rect, response, hovered) = clickable(ui, PHONE_DOT_HIT, true);
     let color = if phone.devices.is_empty() {
         palette.text_muted
     } else {
         palette.git_added
     };
+    let color = if hovered {
+        color
+    } else {
+        color.gamma_multiply(PHONE_DOT_FADE)
+    };
     ui.painter()
         .circle_filled(rect.center(), PHONE_DOT_RADIUS, color);
     response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, PHONE_DOT_LABEL));
-    response.on_hover_text(phone_indicator_tooltip(&phone.devices));
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, PHONE_DOT_LABEL));
+    response.on_hover_text(phone_indicator_tooltip(&phone.devices))
 }
 
 pub fn phone_indicator_tooltip(devices: &[String]) -> String {

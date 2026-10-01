@@ -75,6 +75,7 @@ fn renders_three_zones() {
             &mut false,
             &mut false,
             None,
+            &mut false,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -173,6 +174,7 @@ fn workspace_launcher_shows_only_installed_openers_and_main_button_tracks_the_la
             &mut false,
             &mut false,
             None,
+            &mut false,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -262,6 +264,7 @@ fn workspace_sidebar_can_be_hidden() {
             &mut false,
             &mut false,
             None,
+            &mut false,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -329,6 +332,7 @@ fn central_zone_invites_to_open_a_folder_when_no_repo() {
             &mut false,
             &mut false,
             None,
+            &mut false,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -446,6 +450,7 @@ fn sidebar_widths_round_trip_through_the_layout_state() {
             &mut false,
             &mut false,
             None,
+            &mut false,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -579,59 +584,64 @@ fn repo_sidebar_lists_repo_names() {
 }
 
 /// The full layout with phone access as `phone` says (`None` = off).
-fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static> {
+/// The state is whether the dot asked for the pairing modal.
+fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static, bool> {
     let palette = Palette::dark();
     let status = RepoStatus::default();
-    Harness::new_ui(move |ui| {
-        ui.style_mut().interaction.tooltip_delay = 0.0;
-        let mut git_state = GitPanelState::default();
-        root_layout(
-            ui,
-            &palette,
-            &[],
-            &[],
-            &[],
-            None,
-            "main",
-            &status,
-            false,
-            None,
-            &mut git_state,
-            &mut Vec::new(),
-            &mut true,
-            &mut true,
-            false,
-            None,
-            false,
-            None,
-            &mut None,
-            None,
-            &mut FileMenuOutput::default(),
-            helm::ui::file_list::FileViewMode::default(),
-            WorkspaceOpener::default(),
-            &WorkspaceOpener::ALL,
-            &mut None,
-            &mut false,
-            &mut false,
-            phone.as_ref(),
-            AgentBadge::None,
-            false,
-            &[],
-            0,
-            false,
-            false,
-            &mut false,
-            &mut SidebarAction::default(),
-            280.0,
-            320.0,
-            &Keymap::default(),
-            false,
-            true,
-            200.0,
-            |_ui| {},
-            |_ui| {},
-        );
-    })
+    Harness::new_ui_state(
+        move |ui, open_phone: &mut bool| {
+            ui.style_mut().interaction.tooltip_delay = 0.0;
+            let mut git_state = GitPanelState::default();
+            root_layout(
+                ui,
+                &palette,
+                &[],
+                &[],
+                &[],
+                None,
+                "main",
+                &status,
+                false,
+                None,
+                &mut git_state,
+                &mut Vec::new(),
+                &mut true,
+                &mut true,
+                false,
+                None,
+                false,
+                None,
+                &mut None,
+                None,
+                &mut FileMenuOutput::default(),
+                helm::ui::file_list::FileViewMode::default(),
+                WorkspaceOpener::default(),
+                &WorkspaceOpener::ALL,
+                &mut None,
+                &mut false,
+                &mut false,
+                phone.as_ref(),
+                open_phone,
+                AgentBadge::None,
+                false,
+                &[],
+                0,
+                false,
+                false,
+                &mut false,
+                &mut SidebarAction::default(),
+                280.0,
+                320.0,
+                &Keymap::default(),
+                false,
+                true,
+                200.0,
+                |_ui| {},
+                |_ui| {},
+            );
+        },
+        false,
+    )
 }
 
 #[test]
@@ -648,4 +658,7 @@ fn the_phone_dot_shows_only_while_access_is_on_and_names_who_is_connected() {
     on.run();
 
     on.get_by_label("Phone access on — iPhone connected");
+    on.get_by_label(PHONE_DOT_LABEL).click();
+    on.run();
+    assert!(*on.state(), "a click asks for the pairing modal");
 }

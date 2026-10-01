@@ -41,9 +41,11 @@ launch* off by default, 30-day drop, no device cap. Counter: **7/7**.
   modal).
 - ☑ **K7 — Title bar dot.** Per the user: a discreet dot left of *Open with* while
   access is on (green when a phone is connected, muted otherwise), tooltip naming
-  who is connected; `PhoneServer::connected_devices`. *Tests*: 1 UI e2e (hidden
-  off, tooltip names the phone) + business e2e extended (listed while connected,
-  gone after). *Verified*: headless-verify `verify-artifacts/20261001_103306_44487/`.
+  who is connected; `PhoneServer::connected_devices`; faded at rest (45 %), a click
+  opens the pairing modal. *Tests*: 1 UI e2e (hidden off, tooltip names the phone,
+  click ⇒ modal intent) + business e2e extended (listed while connected, gone
+  after). *Verified*: headless-verify `verify-artifacts/20261001_103306_44487/`,
+  `verify-artifacts/20261001_103956_59007/` (rest / hover, dark + light).
 
 ---
 

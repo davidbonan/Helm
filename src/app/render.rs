@@ -1026,6 +1026,7 @@ impl HelmApp {
         let wall_page = self.agents_wall.page();
         let wall_page_counts = self.agents_wall.counts();
         let mut open_feedback_request = false;
+        let mut open_phone_request = false;
         let mut open_dialog_requested = false;
         let mut open_link: Option<LinkAction> = None;
         let mut file_menu = crate::ui::file_list::FileMenuOutput::default();
@@ -1248,6 +1249,7 @@ impl HelmApp {
                     &mut toggle_preferences_request,
                     &mut open_feedback_request,
                     phone_indicator.as_ref(),
+                    &mut open_phone_request,
                     agents_badge,
                     agents_active,
                     &done_agents,
@@ -2184,6 +2186,7 @@ impl HelmApp {
                     &mut toggle_preferences_request,
                     &mut open_feedback_request,
                     phone_indicator.as_ref(),
+                    &mut open_phone_request,
                     agents_badge,
                     agents_active,
                     &done_agents,
@@ -2712,6 +2715,9 @@ impl HelmApp {
         }
         if open_feedback_request {
             self.modal = Some(Modal::Feedback(FeedbackPage::default()));
+        }
+        if open_phone_request {
+            self.open_on_phone(ctx, ctx.input(|i| i.time));
         }
         PageActions {
             open_folder: sidebar.open || open_dialog_requested,
