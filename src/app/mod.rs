@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPane};
 use crate::agent_watch::AgentBadge;
-use crate::ai::{AiProvider, AiRunner};
+use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
+use crate::ai::AiRunner;
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -25,7 +26,8 @@ use crate::terminal::emu::FontZoom;
 use crate::terminal::layout::{Dir, Layout, Orient, PaneId, Rect};
 use crate::terminal::links::{Editor, LinkAction};
 use crate::terminal::palette::TermPalette;
-use crate::terminal::pane::{Pane, PaneUid};
+use crate::terminal::pane::{Pane, PaneUid, TypedCommand};
+use crate::terminal::sizing::GridSize;
 use crate::theme::{self, ThemeMode};
 use crate::ui::conflict_view::{
     conflict_view, ConflictEditorAction, ConflictEditorState, ResolveRequest,
@@ -45,7 +47,8 @@ use crate::ui::graph_view::{
     StashTarget, WipRow,
 };
 use crate::ui::preferences::{
-    preferences_page, KeyboardState, PhoneDeviceRow, PhoneView, PreferencesSection, UpdatesView,
+    preferences_page, AgentsView, KeyboardState, PhoneDeviceRow, PhoneView, PreferencesSection,
+    UpdatesView,
 };
 use crate::ui::rebase_view::{rebase_view, RebasePage, RebasePageAction};
 use crate::ui::repo_sidebar::{
@@ -376,7 +379,7 @@ struct PendingPostCreate {
     env: Vec<(&'static str, String)>,
 }
 
-/// An **Ask Claude** (pull-requests.md §11) deferred while its PR is checked out:
+/// An **Ask {agent}** (pull-requests.md §11) deferred while its PR is checked out:
 /// the agent can't launch until the worktree exists, so the prompt is held here
 /// across the off-thread fetch + create, then resumed once the new worktree is
 /// live and its post-create script (if any) has been consumed — running the agent
@@ -598,7 +601,7 @@ pub struct HelmApp {
     /// One-shot post-create script injected into a freshly created worktree's first
     /// terminal (worktrees.md §6).
     pending_post_create: Option<PendingPostCreate>,
-    /// An **Ask Claude** held while its PR is checked out (pull-requests.md §11):
+    /// An **Ask {agent}** held while its PR is checked out (pull-requests.md §11):
     /// resumed once the worktree lands.
     pending_pr_ask: Option<PendingPrAsk>,
     /// Edit buffers of the Preferences "Project" section, scoped to the active
@@ -611,13 +614,12 @@ pub struct HelmApp {
     /// Default operation of the Pull split-button (git.md §10), persisted in
     /// `prefs.toml` (M12-7): loaded at boot, saved on change in the menu.
     pull_default: PullDefault,
-    /// Provider + instructions of the AI commit message, persisted in `prefs.toml`:
+    /// Command + prompt of the AI commit message, persisted in `prefs.toml`:
     /// loaded at boot, saved on change in Preferences.
-    ai_provider: AiProvider,
-    ai_instructions: String,
-    /// CLI the in-diff review's "Send to {agent}" button launches (M-RC),
-    /// persisted in `prefs.toml`: loaded at boot, saved on change in Preferences.
-    review_agent_command: String,
+    commit_message: CommitMessageSettings,
+    /// Agent the review notes and the PR review surface hand work to, persisted
+    /// in `prefs.toml`: loaded at boot, saved on change in Preferences.
+    review_agent: ReviewSettings,
     /// In-diff review comments accumulated per repo (M-RC), in memory only: the
     /// active repo's set feeds the diff view and the `Send` prompt.
     review: HashMap<RepoKey, crate::review::FileComments>,
@@ -628,8 +630,8 @@ pub struct HelmApp {
     /// `prefs.toml`: loaded at boot, toggled in Preferences.
     notify_on_agent_completion: bool,
     phone_access_at_launch: bool,
-    /// Agents the phone can launch (remote.md §7.2), edited in Preferences.
-    launch_agents: Vec<crate::remote::launch::LaunchAgent>,
+    /// Agents helm can start (preferences.md §4), edited in Preferences.
+    agents: Vec<Agent>,
     /// Branch editor (M12-6): opened by the toolbar button, rendered by `graph_view`
     /// on the HEAD row; stays open while waiting for the worker, which writes the
     /// inline error into it or closes it on success.
@@ -848,14 +850,13 @@ impl HelmApp {
             project_settings_edit: None,
             selected_project: None,
             pull_default: prefs.pull_default,
-            ai_provider: prefs.ai_provider,
-            ai_instructions: prefs.ai_instructions,
-            review_agent_command: prefs.review_agent_command,
+            commit_message: prefs.commit_message,
+            review_agent: prefs.review,
             review: HashMap::new(),
             editor: prefs.editor,
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             phone_access_at_launch: prefs.phone_access_at_launch,
-            launch_agents: prefs.launch_agents,
+            agents: prefs.agents,
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
@@ -1886,7 +1887,15 @@ impl HelmApp {
         if crate::review::count(store) == 0 {
             return;
         }
-        let prompt = crate::review::build_review_prompt(store);
+        let Some(command) = self.review_command(ctx.input(|i| i.time)) else {
+            return;
+        };
+        let Some(store) = self.review.get(&key) else {
+            return;
+        };
+        let prompt = self
+            .review_agent
+            .comments_prompt_for(&crate::review::render_comments(store));
         let Some(cwd) = self.workspace.repo(index).map(|r| r.path.clone()) else {
             return;
         };
@@ -1899,8 +1908,8 @@ impl HelmApp {
         ) else {
             return;
         };
-        self.workspace.rename_tab(tab, &self.review_agent_command);
-        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, &prompt);
+        self.workspace.rename_tab(tab, self.review_agent.label());
+        let pane = open_agent_terminal(ctx, &cwd, &command, &prompt);
         self.caches
             .panes
             .entry((key.clone(), tab_id))
@@ -1912,6 +1921,21 @@ impl HelmApp {
             git.flush_open_edit(&self.diff);
         }
         self.diff = None;
+    }
+
+    /// `None` + an error toast when no agent of the table can take the review.
+    fn review_command(&mut self, now: f64) -> Option<String> {
+        let command = self
+            .review_agent
+            .command_in(&self.agents)
+            .map(str::to_owned);
+        if command.is_none() {
+            self.toasts.error(
+                "No agent for the review — pick one in Preferences › Agents",
+                now,
+            );
+        }
+        command
     }
 
     /// Arms the one-shot post-create injection (worktrees.md §6) when the project
@@ -2845,9 +2869,9 @@ impl HelmApp {
             self.post_pr_resolve(thread_id, comment_id, resolved, ctx);
         }
         if let Some((file, old, new)) = ask_thread {
-            self.ask_claude_on_thread(&file, old, new, ctx);
+            self.ask_review_agent_on_thread(&file, old, new, ctx);
         } else if send_to_agent {
-            self.ask_claude_on_pr(ctx);
+            self.ask_review_agent_on_pr(ctx);
         }
     }
 
@@ -2949,17 +2973,26 @@ impl HelmApp {
     /// Launch the review agent on the whole PR (pull-requests.md §11): the generic
     /// "review this branch" prompt, plus the user's agent-pool notes when present
     /// (never the forge draft, which is destined for GitHub / Bitbucket).
-    fn ask_claude_on_pr(&mut self, ctx: &egui::Context) {
+    fn ask_review_agent_on_pr(&mut self, ctx: &egui::Context) {
         let Some((pr, draft_notes)) = self.active_review().map(|r| {
             let notes = (crate::review::count(&r.agent_notes) > 0)
-                .then(|| crate::review::build_review_prompt(&r.agent_notes));
+                .then(|| crate::review::render_comments(&r.agent_notes));
             (r.pr.clone(), notes)
         }) else {
             return;
         };
+        let pr_prompt = self.review_agent.pr_prompt_for(&PullRequestRef {
+            source: &pr.source_branch,
+            dest: &pr.dest_branch,
+            title: &pr.title,
+            number: pr.number,
+        });
         let prompt = match draft_notes {
-            Some(notes) => format!("{}\n\n{notes}", pr_review_prompt(&pr)),
-            None => pr_review_prompt(&pr),
+            Some(notes) => format!(
+                "{pr_prompt}\n\n{}",
+                self.review_agent.comments_prompt_for(&notes)
+            ),
+            None => pr_prompt,
         };
         self.launch_pr_agent(&pr, prompt, ctx);
     }
@@ -2967,20 +3000,21 @@ impl HelmApp {
     /// Launch the review agent on one existing PR comment thread (pull-requests.md
     /// §11): the prompt carries the anchor and the posted comments so the agent can
     /// address the reviewer's feedback directly.
-    fn ask_claude_on_thread(
+    fn ask_review_agent_on_thread(
         &mut self,
         file: &str,
         old: Option<u32>,
         new: Option<u32>,
         ctx: &egui::Context,
     ) {
-        let Some((pr, prompt)) = self.active_review().and_then(|r| {
+        let Some((pr, comments)) = self.active_review().and_then(|r| {
             let thread = r.existing.get(file)?.get(&(old, new))?;
-            let line = new.or(old).unwrap_or_default();
-            Some((r.pr.clone(), thread_agent_prompt(file, line, thread)))
+            let comments = crate::review::render_thread(file, new.or(old), thread);
+            Some((r.pr.clone(), comments))
         }) else {
             return;
         };
+        let prompt = self.review_agent.comments_prompt_for(&comments);
         self.launch_pr_agent(&pr, prompt, ctx);
     }
 
@@ -2995,6 +3029,9 @@ impl HelmApp {
     ) {
         use crate::pull_requests::runner::matching_worktree;
         let now = ctx.input(|i| i.time);
+        if self.review_command(now).is_none() {
+            return;
+        }
         let Some(root) = self.pr_repo_root(pr) else {
             self.toasts
                 .error("No workspace repo matches this pull request", now);
@@ -3010,7 +3047,10 @@ impl HelmApp {
             });
             self.request_pr_checkout(pr, ctx);
             self.toasts.success(
-                "Checking out the PR — Claude starts once the worktree is ready",
+                format!(
+                    "Checking out the PR — {} starts once the worktree is ready",
+                    self.review_agent.label()
+                ),
                 now,
             );
             return;
@@ -3022,6 +3062,9 @@ impl HelmApp {
     /// its terminal (pull-requests.md §11). A new tab (not the worktree's first
     /// pane) so a post-create script never shares the agent's pane.
     fn open_pr_agent_in(&mut self, index: usize, prompt: &str, ctx: &egui::Context) -> bool {
+        let Some(command) = self.review_command(ctx.input(|i| i.time)) else {
+            return false;
+        };
         self.workspace.set_active(index);
         let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
         self.persist(move |_| next);
@@ -3038,8 +3081,8 @@ impl HelmApp {
         ) else {
             return false;
         };
-        self.workspace.rename_tab(tab, &self.review_agent_command);
-        let pane = open_agent_terminal(ctx, &cwd, &self.review_agent_command, prompt);
+        self.workspace.rename_tab(tab, self.review_agent.label());
+        let pane = open_agent_terminal(ctx, &cwd, &command, prompt);
         self.caches
             .panes
             .entry((key, tab_id))
@@ -3050,7 +3093,7 @@ impl HelmApp {
         true
     }
 
-    /// Resume a deferred **Ask Claude** (pull-requests.md §11) once its worktree is
+    /// Resume a deferred **Ask {agent}** (pull-requests.md §11) once its worktree is
     /// live and any post-create script for that path has been consumed (so the
     /// agent gets its own tab). Polled each frame; a no-op until both hold.
     fn resume_pending_pr_ask(&mut self, ctx: &egui::Context) {
@@ -4085,53 +4128,25 @@ fn open_run_terminal(ctx: &egui::Context, cwd: &Path, command: &str) -> Terminal
     }
 }
 
-/// Agent pane behind a Send-to-agent action (M-RC): an interactive login shell in
-/// `cwd` with the aggregated review prompt exported (`HELM_REVIEW_PROMPT`), into
-/// which the configured CLI invocation is fed. Running the agent as a job of the
-/// shell — not as the pane's root process — keeps the terminal usable after the
-/// agent exits (Ctrl+C returns to the shell prompt instead of a dead pane).
-/// The instruction handed to the agent CLI when reviewing a PR branch
-/// (pull-requests.md §11): the source branch is already checked out in `cwd`.
-fn pr_review_prompt(pr: &crate::pull_requests::model::PullRequest) -> String {
-    format!(
-        "Review the changes on this branch ({src}), which is the pull request \
-         \"{title}\" (#{number}) targeting {dest}. Read the diff against {dest}, \
-         then summarize the key changes and flag any bugs, risks, or improvements.",
-        src = pr.source_branch,
-        title = pr.title,
-        number = pr.number,
-        dest = pr.dest_branch,
-    )
-}
-
-/// The instruction handed to the agent for one PR comment thread (pull-requests.md
-/// §11): the file/line anchor plus the posted comments, so the agent can act on the
-/// reviewer's feedback in the already-checked-out branch.
-fn thread_agent_prompt(file: &str, line: u32, thread: &[crate::review::ThreadComment]) -> String {
-    let mut out = format!(
-        "A reviewer left feedback on `{file}` around line {line}. Make the changes \
-         they ask for and explain what you did. The comments are:\n"
-    );
-    for c in thread {
-        out.push_str(&format!("\n{}: {}", c.author, c.body));
-    }
-    out
-}
-
+/// Agent pane behind a Send-to-agent action (M-RC): the review command typed into
+/// a login shell in `cwd`, the prompt handed over in `$HELM_PROMPT`.
 fn open_agent_terminal(
     ctx: &egui::Context,
     cwd: &Path,
-    program: &str,
+    command: &str,
     prompt: &str,
 ) -> TerminalState {
-    let mut cmd =
-        crate::terminal::pty::login_shell_command(crate::terminal::pty::shell_program(), cwd);
-    cmd.env(crate::terminal::pty::REVIEW_PROMPT_ENV, prompt);
-    match Pane::from_command(cmd, INITIAL_ROWS, INITIAL_COLS, repaint_pacer(ctx)) {
-        Ok(pane) => {
-            let _ = pane.feed(crate::terminal::pty::agent_invocation(program).as_bytes());
-            TerminalState::Live(Box::new(pane))
-        }
+    let typed = TypedCommand {
+        cwd,
+        line: command,
+        prompt: Some(prompt),
+    };
+    let size = GridSize {
+        rows: INITIAL_ROWS,
+        cols: INITIAL_COLS,
+    };
+    match Pane::typing(&typed, size, repaint_pacer(ctx)) {
+        Ok(pane) => TerminalState::Live(Box::new(pane)),
         Err(err) => TerminalState::Failed(err.to_string()),
     }
 }

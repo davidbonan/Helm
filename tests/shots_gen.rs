@@ -9,7 +9,6 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::agent_watch::AgentBadge;
-use helm::ai::AiProvider;
 use helm::git::commit_detail::{CommitDetail, CommitFile, CommitMeta};
 use helm::git::conflict::{ConflictFile, ConflictKind, LineEnding, Region};
 use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
@@ -2039,8 +2038,6 @@ fn gen_preferences() {
             let mut light = String::from("helm");
             let mut dark = String::from("helm");
             let mut pull = PullDefault::default();
-            let mut ai = AiProvider::Claude;
-            let mut ai_instr = String::new();
             let mut editor = Editor::default();
             let mut notify = true;
             let mut keymap = Keymap::default();
@@ -2066,15 +2063,16 @@ fn gen_preferences() {
                 &mut light,
                 &mut dark,
                 &mut pull,
-                &mut ai,
-                &mut ai_instr,
-                &mut String::from("claude"),
                 &mut editor,
                 &mut bitbucket_email,
                 &mut bitbucket_token,
                 &pr_sources,
                 &mut notify,
-                &mut helm::remote::launch::LaunchAgent::defaults(),
+                helm::ui::preferences::AgentsView {
+                    agents: &mut helm::agents::Agent::defaults(),
+                    commit_message: &mut helm::agents::CommitMessageSettings::default(),
+                    review: &mut helm::agents::ReviewSettings::default(),
+                },
                 helm::ui::preferences::PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],

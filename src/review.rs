@@ -132,8 +132,10 @@ pub enum ReviewIntent {
     },
 }
 
-pub fn build_review_prompt(comments: &FileComments) -> String {
-    let mut out = String::from("Please address the following code review comments.\n");
+/// The notes as the review prompt lists them (`{comments}`): one section per
+/// file, one bullet per note with its line and code.
+pub fn render_comments(comments: &FileComments) -> String {
+    let mut out = String::new();
     for (file, file_comments) in comments {
         if file_comments.is_empty() {
             continue;
@@ -150,6 +152,20 @@ pub fn build_review_prompt(comments: &FileComments) -> String {
                 c.note
             ));
         }
+    }
+    out
+}
+
+/// A posted PR thread in the shape of [`render_comments`]: its file's section,
+/// one bullet per comment with the line and the author.
+pub fn render_thread(file: &str, line: Option<u32>, thread: &[ThreadComment]) -> String {
+    let loc = match line {
+        Some(n) => format!("L{n}"),
+        None => "?".to_string(),
+    };
+    let mut out = format!("\n## {file}\n");
+    for comment in thread {
+        out.push_str(&format!("\n- {loc} {}: {}\n", comment.author, comment.body));
     }
     out
 }
@@ -227,7 +243,7 @@ mod tests {
             vec![comment(None, Some(2), "a", "fix a")],
         );
 
-        let prompt = build_review_prompt(&comments);
+        let prompt = render_comments(&comments);
         let alpha = prompt.find("src/alpha.rs").unwrap();
         let zeta = prompt.find("src/zeta.rs").unwrap();
         assert!(alpha < zeta, "files must appear in sorted order:\n{prompt}");
@@ -244,7 +260,7 @@ mod tests {
             ],
         );
 
-        let prompt = build_review_prompt(&comments);
+        let prompt = render_comments(&comments);
         assert!(prompt.contains("- L8 `added`"), "{prompt}");
         assert!(prompt.contains("- L4 `removed`"), "{prompt}");
     }
@@ -261,7 +277,7 @@ mod tests {
             vec![comment(None, Some(2), "let b = 2;", "rename b")],
         );
 
-        let prompt = build_review_prompt(&comments);
+        let prompt = render_comments(&comments);
         assert!(prompt.contains("## a.rs"), "{prompt}");
         assert!(prompt.contains("## b.rs"), "{prompt}");
         assert!(prompt.contains("`let a = 1;`"), "{prompt}");
@@ -278,7 +294,26 @@ mod tests {
             vec![comment(None, Some(1), "    let a = 1;\n", "note")],
         );
 
-        let prompt = build_review_prompt(&comments);
+        let prompt = render_comments(&comments);
         assert!(prompt.contains("`    let a = 1;`"), "{prompt}");
+    }
+
+    #[test]
+    fn a_posted_thread_renders_as_its_file_section_with_line_and_authors() {
+        let posted = |author: &str, body: &str| ThreadComment {
+            author: author.to_string(),
+            body: body.to_string(),
+            id: None,
+            created_at: String::new(),
+            context: None,
+            resolved: false,
+            thread_id: None,
+        };
+        let thread = [posted("bob", "rename it"), posted("alice", "and test it")];
+
+        assert_eq!(
+            render_thread("src/a.rs", Some(42), &thread),
+            "\n## src/a.rs\n\n- L42 bob: rename it\n\n- L42 alice: and test it\n"
+        );
     }
 }

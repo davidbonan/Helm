@@ -223,15 +223,16 @@ impl HelmApp {
             &mut self.light_theme,
             &mut self.dark_theme,
             &mut self.pull_default,
-            &mut self.ai_provider,
-            &mut self.ai_instructions,
-            &mut self.review_agent_command,
             &mut self.editor,
             &mut self.bitbucket_email,
             &mut self.bitbucket_token_input,
             &pr_sources,
             &mut self.notify_on_agent_completion,
-            &mut self.launch_agents,
+            AgentsView {
+                agents: &mut self.agents,
+                commit_message: &mut self.commit_message,
+                review: &mut self.review_agent,
+            },
             PhoneView {
                 start_at_launch: &mut self.phone_access_at_launch,
                 devices: &device_rows,
@@ -269,19 +270,6 @@ impl HelmApp {
                 ..prefs
             });
         }
-        if action.ai_changed {
-            let (ai_provider, ai_instructions, review_agent_command) = (
-                self.ai_provider,
-                self.ai_instructions.clone(),
-                self.review_agent_command.clone(),
-            );
-            self.persist(move |prefs| Prefs {
-                ai_provider,
-                ai_instructions,
-                review_agent_command,
-                ..prefs
-            });
-        }
         if action.editor_changed {
             let editor = self.editor;
             self.persist(move |prefs| Prefs { editor, ..prefs });
@@ -293,10 +281,16 @@ impl HelmApp {
                 ..prefs
             });
         }
-        if action.launch_agents_changed {
-            let launch_agents = self.launch_agents.clone();
+        if action.agents_changed {
+            let (agents, commit_message, review) = (
+                self.agents.clone(),
+                self.commit_message.clone(),
+                self.review_agent.clone(),
+            );
             self.persist(move |prefs| Prefs {
-                launch_agents,
+                agents,
+                commit_message,
+                review,
                 ..prefs
             });
         }
@@ -1092,7 +1086,7 @@ impl HelmApp {
         let mut pr_merge: Option<crate::pull_requests::model::PullRequest> = None;
         // The open PR, for the review header's Merge (the list rows resolve by index).
         let review_pr = pr_review_local.as_ref().map(|r| r.pr.clone());
-        let pr_agent = self.review_agent_command.clone();
+        let pr_agent = self.review_agent.label().to_owned();
         // The composer avatar shows the current user of the open PR's forge (§11).
         let pr_current_user = pr_review_local
             .as_ref()
@@ -1171,7 +1165,7 @@ impl HelmApp {
                 let review_comments = self.review.get(&run_key).unwrap_or(&empty_comments);
                 // Working-tree / commit diffs carry no posted PR threads.
                 let no_threads = crate::review::ForgeThreads::new();
-                let review_agent = self.review_agent_command.clone();
+                let review_agent = self.review_agent.label().to_owned();
                 let pane_ids = layout.pane_ids();
                 // In Agents mode the per-repo terminal tree isn't rendered (the
                 // dashboard owns the central area). The list view mirrors the SELECTED
@@ -2433,13 +2427,16 @@ impl HelmApp {
         // AI generation (commit card): carried by the session's `AiRunner` — one
         // request at a time, the result comes back via `drain_ai`.
         if generate_requested {
-            if let Some(git) = self.git.as_mut() {
-                if git
-                    .ai
-                    .request(self.ai_provider, self.ai_instructions.clone())
-                {
-                    ctx.request_repaint();
+            match self.commit_message.request_in(&self.agents) {
+                Some(request) => {
+                    if self.git.as_mut().is_some_and(|git| git.ai.request(request)) {
+                        ctx.request_repaint();
+                    }
                 }
+                None => self.toasts.error(
+                    "No agent for the commit message — pick one in Preferences › Agents",
+                    ctx.input(|i| i.time),
+                ),
             }
         }
 

@@ -1,8 +1,7 @@
-use crate::ai::AiProvider;
+use crate::agents::{Agent, CommitMessageSettings, Preset, ReviewSettings, PROMPT_ENV};
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Group, Keymap, Shortcut};
 use crate::pull_requests::runner::SourceStatus;
-use crate::remote::launch::LaunchAgent;
 use crate::terminal::links::Editor;
 use crate::theme::{self, Palette, ThemeMode, RADIUS_PILL};
 use crate::ui::spinner::Spinner;
@@ -149,10 +148,9 @@ pub struct PhoneDeviceRow {
 }
 
 /// Signals raised by the page: the app closes (`back`) or applies + persists the
-/// mutated setting (`theme_changed` / `pull_changed` / `ai_changed`) — no prefs
+/// mutated setting (`theme_changed` / `pull_changed` / `agents_changed`) — no prefs
 /// writes in the UI (§5), and a Pull default never triggers an operation.
-/// `theme_changed` covers the mode **and** the light/dark theme families;
-/// `ai_changed` covers the provider **and** the instructions. The updater
+/// `theme_changed` covers the mode **and** the light/dark theme families. The updater
 /// intents (`check_updates` / `install_update`) are routed to the runner by the
 /// app — the page executes nothing (update.md §6).
 #[derive(Debug, Default, Clone, Copy)]
@@ -160,7 +158,6 @@ pub struct PreferencesAction {
     pub back: bool,
     pub theme_changed: bool,
     pub pull_changed: bool,
-    pub ai_changed: bool,
     /// The terminal's editor (IDE) was changed — the app persists it
     /// (terminal.md §12); it never opens anything on its own.
     pub editor_changed: bool,
@@ -184,8 +181,9 @@ pub struct PreferencesAction {
     /// The agent completion-notification toggle flipped — the app persists it
     /// (specs/agents.md).
     pub agent_notify_changed: bool,
-    /// A phone-launchable agent was edited, added or removed (remote.md §7.2).
-    pub launch_agents_changed: bool,
+    /// The agents table, the commit message or the review agent was edited
+    /// (preferences.md §4 *Agents*).
+    pub agents_changed: bool,
     /// The *Start at launch* toggle flipped — the app persists it (remote.md §3.4).
     pub phone_at_launch_changed: bool,
     /// Revoke the paired device at this index of `PhoneView::devices`.
@@ -230,15 +228,12 @@ pub fn preferences_page(
     light_theme: &mut String,
     dark_theme: &mut String,
     pull_default: &mut PullDefault,
-    ai_provider: &mut AiProvider,
-    ai_instructions: &mut String,
-    review_agent_command: &mut String,
     editor: &mut Editor,
     bitbucket_email: &mut String,
     bitbucket_token: &mut String,
     pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
-    launch_agents: &mut Vec<LaunchAgent>,
+    mut agents: AgentsView<'_>,
     phone: PhoneView<'_>,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
@@ -311,204 +306,198 @@ pub fn preferences_page(
         ),
         content_rect.y_range(),
     );
+    // The scroll area spans the whole content zone, so its bar sits on the
+    // window's edge rather than against the cards.
     let mut content = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(content_inner)
+            .max_rect(content_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    egui::ScrollArea::vertical().show(&mut content, |ui| {
-        ui.set_width(ui.available_width());
-        ui.add_space(CONTENT_PAD_Y);
-        // The Project section swaps its title for a picker over the workspace's
-        // projects (preferences.md §4); every other section keeps a plain title.
-        match (*section, project.as_ref()) {
-            (PreferencesSection::Project, Some(p)) => {
-                action.project_selected =
-                    project_title_dropdown(ui, palette, p.projects, p.selected);
-            }
-            _ => section_title(ui, palette, section.title()),
-        }
-        ui.add_space(TITLE_GAP);
-        match *section {
-            PreferencesSection::Appearance => {
-                settings_card(ui, palette, |ui| {
-                    setting_row(
-                        ui,
-                        palette,
-                        "Theme",
-                        Some("Use light, dark, or match your system"),
-                        |ui| {
-                            if theme_segments(ui, palette, mode) {
-                                action.theme_changed = true;
-                            }
-                        },
-                    );
-                    setting_divider(ui, palette);
-                    setting_row(
-                        ui,
-                        palette,
-                        "Light theme",
-                        Some("Colors used when the appearance is light"),
-                        |ui| {
-                            if preset_dropdown(ui, palette, false, light_theme) {
-                                action.theme_changed = true;
-                            }
-                        },
-                    );
-                    setting_divider(ui, palette);
-                    setting_row(
-                        ui,
-                        palette,
-                        "Dark theme",
-                        Some("Colors used when the appearance is dark"),
-                        |ui| {
-                            if preset_dropdown(ui, palette, true, dark_theme) {
-                                action.theme_changed = true;
-                            }
-                        },
-                    );
-                });
-            }
-            PreferencesSection::Git => {
-                settings_card(ui, palette, |ui| {
-                    setting_row(
-                        ui,
-                        palette,
-                        "Default pull behavior",
-                        Some("Operation run by the Pull button in the graph toolbar"),
-                        |ui| {
-                            if pull_dropdown(ui, palette, pull_default) {
-                                action.pull_changed = true;
-                            }
-                        },
-                    );
-                    setting_divider(ui, palette);
-                    setting_row(
-                        ui,
-                        palette,
-                        "AI provider",
-                        Some("CLI used to generate the commit message"),
-                        |ui| {
-                            if provider_dropdown(ui, palette, ai_provider) {
-                                action.ai_changed = true;
-                            }
-                        },
-                    );
-                    setting_divider(ui, palette);
-                    if instructions_row(ui, palette, ai_instructions) {
-                        action.ai_changed = true;
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(&mut content, |ui| {
+            let column = egui::Rect::from_x_y_ranges(
+                content_inner.x_range(),
+                ui.available_rect_before_wrap().y_range(),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
+                ui.set_width(ui.available_width());
+                ui.add_space(CONTENT_PAD_Y);
+                // The Project section swaps its title for a picker over the workspace's
+                // projects (preferences.md §4); every other section keeps a plain title.
+                match (*section, project.as_ref()) {
+                    (PreferencesSection::Project, Some(p)) => {
+                        action.project_selected =
+                            project_title_dropdown(ui, palette, p.projects, p.selected);
                     }
-                    setting_divider(ui, palette);
-                    if run_command_row(
-                        ui,
-                        palette,
-                        "Review agent",
-                        "CLI the in-diff review's Send button launches with your comments",
-                        "claude",
-                        review_agent_command,
-                    ) {
-                        action.ai_changed = true;
-                    }
-                });
-            }
-            PreferencesSection::Keyboard => {
-                keyboard_section(ui, palette, keymap, keyboard, &mut action);
-            }
-            PreferencesSection::Terminal => {
-                settings_card(ui, palette, |ui| {
-                    setting_row(
-                        ui,
-                        palette,
-                        "Editor",
-                        Some("IDE opened by a Cmd+click on a file link in the terminal"),
-                        |ui| {
-                            if editor_dropdown(ui, palette, editor) {
-                                action.editor_changed = true;
-                            }
-                        },
-                    );
-                    setting_divider(ui, palette);
-                    shell_command_row(ui, palette, shell_command, &mut action);
-                });
-            }
-            PreferencesSection::Agents => {
-                settings_card(ui, palette, |ui| {
-                    setting_row(
-                        ui,
-                        palette,
-                        "Completion notifications",
-                        Some("Show a macOS banner when an agent finishes a turn"),
-                        |ui| {
-                            if toggle_switch(ui, palette, notify_on_agent_completion) {
-                                action.agent_notify_changed = true;
-                            }
-                        },
-                    );
-                });
-                ui.add_space(CARD_GAP);
-                if launch_agents_card(ui, palette, launch_agents) {
-                    action.launch_agents_changed = true;
+                    _ => section_title(ui, palette, section.title()),
                 }
-            }
-            PreferencesSection::Phone => phone_section(ui, palette, phone, &mut action),
-            PreferencesSection::PullRequests => {
-                pull_requests_section(
-                    ui,
-                    palette,
-                    bitbucket_email,
-                    bitbucket_token,
-                    pr_sources,
-                    &mut action,
-                );
-            }
-            PreferencesSection::Project => match project.as_mut() {
-                Some(p) => {
-                    settings_card(ui, palette, |ui| {
-                        if worktree_base_row(ui, palette, p.worktree_base, p.base_hint, &mut action)
-                        {
-                            action.project_changed = true;
-                        }
-                        setting_divider(ui, palette);
-                        if run_command_row(
+                ui.add_space(TITLE_GAP);
+                match *section {
+                    PreferencesSection::Appearance => {
+                        settings_card(ui, palette, |ui| {
+                            setting_row(
+                                ui,
+                                palette,
+                                "Theme",
+                                Some("Use light, dark, or match your system"),
+                                |ui| {
+                                    if theme_segments(ui, palette, mode) {
+                                        action.theme_changed = true;
+                                    }
+                                },
+                            );
+                            setting_divider(ui, palette);
+                            setting_row(
+                                ui,
+                                palette,
+                                "Light theme",
+                                Some("Colors used when the appearance is light"),
+                                |ui| {
+                                    if preset_dropdown(ui, palette, false, light_theme) {
+                                        action.theme_changed = true;
+                                    }
+                                },
+                            );
+                            setting_divider(ui, palette);
+                            setting_row(
+                                ui,
+                                palette,
+                                "Dark theme",
+                                Some("Colors used when the appearance is dark"),
+                                |ui| {
+                                    if preset_dropdown(ui, palette, true, dark_theme) {
+                                        action.theme_changed = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    PreferencesSection::Git => {
+                        settings_card(ui, palette, |ui| {
+                            setting_row(
+                                ui,
+                                palette,
+                                "Default pull behavior",
+                                Some("Operation run by the Pull button in the graph toolbar"),
+                                |ui| {
+                                    if pull_dropdown(ui, palette, pull_default) {
+                                        action.pull_changed = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    PreferencesSection::Keyboard => {
+                        keyboard_section(ui, palette, keymap, keyboard, &mut action);
+                    }
+                    PreferencesSection::Terminal => {
+                        settings_card(ui, palette, |ui| {
+                            setting_row(
+                                ui,
+                                palette,
+                                "Editor",
+                                Some("IDE opened by a Cmd+click on a file link in the terminal"),
+                                |ui| {
+                                    if editor_dropdown(ui, palette, editor) {
+                                        action.editor_changed = true;
+                                    }
+                                },
+                            );
+                            setting_divider(ui, palette);
+                            shell_command_row(ui, palette, shell_command, &mut action);
+                        });
+                    }
+                    PreferencesSection::Agents => {
+                        action.agents_changed = agents_card(ui, palette, &mut agents);
+                        ui.add_space(GROUP_GAP);
+                        group_title(ui, palette, "Tasks");
+                        action.agents_changed |=
+                            commit_message_card(ui, palette, agents.commit_message, agents.agents);
+                        ui.add_space(CARD_GAP);
+                        action.agents_changed |=
+                            review_card(ui, palette, agents.review, agents.agents);
+                        ui.add_space(GROUP_GAP);
+                        group_title(ui, palette, "Notifications");
+                        settings_card(ui, palette, |ui| {
+                            setting_row(
+                                ui,
+                                palette,
+                                "Completion notifications",
+                                Some("Show a macOS banner when an agent finishes a turn"),
+                                |ui| {
+                                    if toggle_switch(ui, palette, notify_on_agent_completion) {
+                                        action.agent_notify_changed = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    PreferencesSection::Phone => phone_section(ui, palette, phone, &mut action),
+                    PreferencesSection::PullRequests => {
+                        pull_requests_section(
                             ui,
                             palette,
-                            "Run command",
-                            "Launched by the sidebar Run strip; empty auto-detects",
-                            "npm run dev",
-                            p.run_command,
-                        ) {
-                            action.project_changed = true;
+                            bitbucket_email,
+                            bitbucket_token,
+                            pr_sources,
+                            &mut action,
+                        );
+                    }
+                    PreferencesSection::Project => match project.as_mut() {
+                        Some(p) => {
+                            settings_card(ui, palette, |ui| {
+                                if worktree_base_row(
+                                    ui,
+                                    palette,
+                                    p.worktree_base,
+                                    p.base_hint,
+                                    &mut action,
+                                ) {
+                                    action.project_changed = true;
+                                }
+                                setting_divider(ui, palette);
+                                if run_command_row(
+                                    ui,
+                                    palette,
+                                    "Run command",
+                                    "Launched by the sidebar Run strip; empty auto-detects",
+                                    "npm run dev",
+                                    p.run_command,
+                                ) {
+                                    action.project_changed = true;
+                                }
+                                setting_divider(ui, palette);
+                                if base_port_row(ui, palette, p.base_port) {
+                                    action.project_changed = true;
+                                }
+                                setting_divider(ui, palette);
+                                if post_create_row(ui, palette, p.post_create) {
+                                    action.project_changed = true;
+                                }
+                            });
                         }
-                        setting_divider(ui, palette);
-                        if base_port_row(ui, palette, p.base_port) {
-                            action.project_changed = true;
+                        None => {
+                            ui.label(
+                                egui::RichText::new("Open a repository to configure it.")
+                                    .size(LABEL_SIZE)
+                                    .color(palette.text_muted),
+                            );
                         }
-                        setting_divider(ui, palette);
-                        if post_create_row(ui, palette, p.post_create) {
-                            action.project_changed = true;
-                        }
-                    });
+                    },
+                    PreferencesSection::Updates => {
+                        updates_card(ui, palette, updates, &mut action);
+                        ui.add_space(CARD_GAP);
+                        settings_card(ui, palette, |ui| {
+                            egui::Frame::new().inner_margin(CARD_PAD_X).show(ui, |ui| {
+                                crate::ui::release_notes::body(ui, release_notes_cache);
+                            });
+                        });
+                    }
                 }
-                None => {
-                    ui.label(
-                        egui::RichText::new("Open a repository to configure it.")
-                            .size(LABEL_SIZE)
-                            .color(palette.text_muted),
-                    );
-                }
-            },
-            PreferencesSection::Updates => {
-                updates_card(ui, palette, updates, &mut action);
-                ui.add_space(CARD_GAP);
-                settings_card(ui, palette, |ui| {
-                    egui::Frame::new().inner_margin(CARD_PAD_X).show(ui, |ui| {
-                        crate::ui::release_notes::body(ui, release_notes_cache);
-                    });
-                });
-            }
-        }
-        ui.add_space(CONTENT_PAD_Y);
-    });
+                ui.add_space(CONTENT_PAD_Y);
+            });
+        });
     action
 }
 
@@ -760,65 +749,6 @@ fn pull_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut PullDefault
     changed
 }
 
-/// AI provider dropdown: button labeled with the current provider + chevron,
-/// radio menu of the 3 supported CLIs (`AiProvider::display_name`). Mutates
-/// `current` on selection and returns `true` if the provider changed — never executes.
-fn provider_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut AiProvider) -> bool {
-    let response = dropdown_button(ui, palette, current.display_name());
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for option in AiProvider::ALL {
-                if ui
-                    .radio(*current == option, option.display_name())
-                    .clicked()
-                    && *current != option
-                {
-                    *current = option;
-                    changed = true;
-                }
-            }
-        });
-    changed
-}
-
-const INSTRUCTIONS_ROWS: usize = 3;
-const INSTRUCTIONS_HINT: &str = "e.g. Use conventional commits, write in French…";
-
-/// Full-width AI instructions row: label + description then a multiline field
-/// below them (the right slot of `setting_row` is too narrow for free text).
-/// Returns `true` on every edit — the caller persists.
-fn instructions_row(ui: &mut egui::Ui, palette: &Palette, text: &mut String) -> bool {
-    let mut changed = false;
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 16))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = LABEL_GAP;
-            ui.label(
-                egui::RichText::new("AI instructions")
-                    .size(LABEL_SIZE)
-                    .family(theme::medium_family(ui.ctx()))
-                    .color(palette.text_primary),
-            );
-            ui.label(
-                egui::RichText::new("Extra guidance added to the commit message prompt")
-                    .size(DESCRIPTION_SIZE)
-                    .color(palette.text_muted),
-            );
-            ui.add_space(4.0);
-            let response = ui.add(
-                egui::TextEdit::multiline(text)
-                    .desired_rows(INSTRUCTIONS_ROWS)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(egui::RichText::new(INSTRUCTIONS_HINT).color(palette.text_muted)),
-            );
-            changed = response.changed();
-        });
-    changed
-}
-
 /// Editor dropdown (terminal.md §12, preferences.md §4 Terminal): button labeled
 /// with the current IDE + chevron, radio menu of the 3 supported IDEs
 /// (`links::Editor`). Mutates `current` on selection and returns `true` if the IDE
@@ -872,8 +802,7 @@ fn worktree_base_row(
                 let field_w = (ui.available_width() - 96.0).max(120.0);
                 let response = ui.add_sized(
                     [field_w, SEGMENT_SIZE.y],
-                    egui::TextEdit::singleline(base)
-                        .hint_text(egui::RichText::new(hint).color(palette.text_muted)),
+                    tall_field(base).hint_text(egui::RichText::new(hint).color(palette.text_muted)),
                 );
                 changed = response.changed();
                 if pill_button(ui, palette, "Choose…", true, false) {
@@ -920,8 +849,8 @@ fn post_create_row(ui: &mut egui::Ui, palette: &Palette, text: &mut String) -> b
 }
 
 /// Full-width labeled monospace singleline command row, shared by the project Run
-/// command (git.md §3) and the in-diff review agent (M-RC). Returns `true` on every
-/// edit.
+/// command (git.md §3) and the agent commands (preferences.md §4). Returns `true`
+/// on every edit.
 fn run_command_row(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -958,45 +887,370 @@ fn run_command_row(
     changed
 }
 
-const LAUNCH_NAME_WIDTH: f32 = 140.0;
 const LAUNCH_ROW_GAP: f32 = 8.0;
 const WARNING_ICON_SIZE: f32 = 12.0;
 
-/// Agents the phone's **+** can launch (remote.md §7.2), one editable row each,
-/// then *Add agent*. Returns `true` on every edit, addition or removal.
-fn launch_agents_card(ui: &mut egui::Ui, palette: &Palette, agents: &mut Vec<LaunchAgent>) -> bool {
+/// The agent settings the Agents section edits (preferences.md §4).
+pub struct AgentsView<'a> {
+    pub agents: &'a mut Vec<Agent>,
+    pub commit_message: &'a mut CommitMessageSettings,
+    pub review: &'a mut ReviewSettings,
+}
+
+fn open_agent_id() -> egui::Id {
+    egui::Id::new("preferences-open-agent")
+}
+
+/// The agents table (preferences.md §4): one folded row per agent, a single one
+/// open on its fields, then *Add agent*. A renamed agent keeps the commit
+/// message and the review that chose it. Returns `true` on every edit, addition
+/// or removal.
+fn agents_card(ui: &mut egui::Ui, palette: &Palette, view: &mut AgentsView<'_>) -> bool {
     let mut changed = false;
     let mut removed = None;
+    let mut open = ui
+        .data(|data| data.get_temp::<Option<usize>>(open_agent_id()))
+        .flatten();
     settings_card(ui, palette, |ui| {
-        card_header(
+        for (index, agent) in view.agents.iter_mut().enumerate() {
+            if index > 0 {
+                setting_divider(ui, palette);
+            }
+            let is_open = open == Some(index);
+            let header = agent_header(ui, palette, agent, is_open);
+            if header.removed {
+                removed = Some(index);
+            }
+            if header.toggled {
+                open = (!is_open).then_some(index);
+            }
+            if !is_open {
+                continue;
+            }
+            let name_before = agent.name.clone();
+            changed |= agent_fields(ui, palette, index, agent);
+            if agent.name != name_before && !name_before.trim().is_empty() {
+                for choice in [&mut view.commit_message.agent, &mut view.review.agent] {
+                    if *choice == name_before {
+                        choice.clone_from(&agent.name);
+                    }
+                }
+            }
+        }
+        if !view.agents.is_empty() {
+            setting_divider(ui, palette);
+        }
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 12))
+            .show(ui, |ui| {
+                if let Some(agent) = add_agent_menu(ui, palette) {
+                    view.agents.push(agent);
+                    let added = view.agents.len() - 1;
+                    open = Some(added);
+                    // The new fields are drawn next frame: focusing an id absent from
+                    // this one's accessibility tree panics accesskit.
+                    ui.data_mut(|data| data.insert_temp(launch_focus_id(), added));
+                    changed = true;
+                }
+            });
+    });
+    if let Some(index) = removed {
+        view.agents.remove(index);
+        open = None;
+        changed = true;
+    }
+    ui.data_mut(|data| data.insert_temp(open_agent_id(), open));
+    changed
+}
+
+const ADD_AGENT_LABEL: &str = "Add agent";
+const EMPTY_AGENT_LABEL: &str = "Empty agent";
+
+/// "Add agent" dropdown: a known agent, its three commands pre-filled, or an
+/// empty block.
+fn add_agent_menu(ui: &mut egui::Ui, palette: &Palette) -> Option<Agent> {
+    let response = dropdown_button(ui, palette, ADD_AGENT_LABEL);
+    let mut added = None;
+    egui::Popup::menu(&response)
+        .gap(DROPDOWN_POPUP_GAP)
+        .style(theme::menu_style)
+        .show(|ui| {
+            for preset in Preset::ALL {
+                if ui.button(preset.name()).clicked() {
+                    added = Some(preset.agent());
+                }
+            }
+            ui.separator();
+            if ui.button(EMPTY_AGENT_LABEL).clicked() {
+                added = Some(Agent::new("", ""));
+            }
+        });
+    added
+}
+
+const TALL_FIELD_PAD_X: i8 = 10;
+
+/// Single-line field given an explicit height: its text centered and inset,
+/// where egui anchors it to the top-left corner.
+fn tall_field(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text)
+        .vertical_align(egui::Align::Center)
+        .margin(egui::Margin::symmetric(TALL_FIELD_PAD_X, 0))
+}
+
+const PROMPT_ROWS: usize = 5;
+const NO_AGENT_LABEL: &str = "Choose an agent";
+const NO_ABLE_AGENT: &str = "No agent has the command this task needs";
+
+/// Agent + prompt of the commit card's "Generate commit message" (git.md §5).
+/// Returns `true` on every edit.
+fn commit_message_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    settings: &mut CommitMessageSettings,
+    agents: &[Agent],
+) -> bool {
+    let mut changed = false;
+    settings_card(ui, palette, |ui| {
+        setting_row(
             ui,
             palette,
-            "Phone launch",
-            "Agents the phone can start in a new tab; the command is typed into a login shell",
+            "Commit message",
+            Some("Written by the agent's Headless command"),
+            |ui| {
+                let able = agents.iter().filter(|a| a.can_write_commit_messages());
+                changed |= agent_dropdown(ui, palette, &mut settings.agent, able);
+            },
         );
-        for (index, agent) in agents.iter_mut().enumerate() {
-            setting_divider(ui, palette);
-            let row = launch_agent_row(ui, palette, index, agent);
-            changed |= row.edited;
-            if row.removed {
-                removed = Some(index);
+        setting_divider(ui, palette);
+        changed |= prompt_row(
+            ui,
+            palette,
+            &PromptField {
+                label: "Commit message prompt",
+                description:
+                    "{changes} is the staged files and diff; helm appends the reply format",
+                default: &CommitMessageSettings::default().prompt,
+            },
+            &mut settings.prompt,
+        );
+    });
+    changed
+}
+
+/// The agent the review notes and the PR review surface hand work to
+/// (pull-requests.md §11). Returns `true` on every edit.
+fn review_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    settings: &mut ReviewSettings,
+    agents: &[Agent],
+) -> bool {
+    let mut changed = false;
+    let defaults = ReviewSettings::default();
+    settings_card(ui, palette, |ui| {
+        setting_row(
+            ui,
+            palette,
+            "Review",
+            Some("Opens the agent on your review comments or a pull request"),
+            |ui| {
+                let able = agents.iter().filter(|a| a.can_review());
+                changed |= agent_dropdown(ui, palette, &mut settings.agent, able);
+            },
+        );
+        setting_divider(ui, palette);
+        changed |= prompt_row(
+            ui,
+            palette,
+            &PromptField {
+                label: "Review comments prompt",
+                description:
+                    "Send to, Ask on a thread: {comments} is the comments, grouped by file",
+                default: &defaults.comments_prompt,
+            },
+            &mut settings.comments_prompt,
+        );
+        setting_divider(ui, palette);
+        changed |= prompt_row(
+            ui,
+            palette,
+            &PromptField {
+                label: "Pull request prompt",
+                description: "Ask on a pull request: {source} {dest} {title} {number}",
+                default: &defaults.pr_prompt,
+            },
+            &mut settings.pr_prompt,
+        );
+    });
+    changed
+}
+
+/// Dropdown choosing one agent of the table among those `able` to do the job;
+/// a choice that left the table, or lost its command, reads as unset.
+fn agent_dropdown<'a>(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    chosen: &mut String,
+    able: impl Iterator<Item = &'a Agent>,
+) -> bool {
+    let able: Vec<&str> = able.map(|agent| agent.name.as_str()).collect();
+    let label = if able.contains(&chosen.as_str()) {
+        chosen.as_str()
+    } else {
+        NO_AGENT_LABEL
+    };
+    let response = dropdown_button(ui, palette, label);
+    let mut changed = false;
+    egui::Popup::menu(&response)
+        .gap(DROPDOWN_POPUP_GAP)
+        .style(theme::menu_style)
+        .show(|ui| {
+            // A menu first sized empty keeps that width: its choices must not wrap into it.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            if able.is_empty() {
+                ui.label(egui::RichText::new(NO_ABLE_AGENT).color(palette.text_muted));
+            }
+            for name in able {
+                if ui.radio(chosen.as_str() == name, name).clicked() && chosen.as_str() != name {
+                    *chosen = name.to_owned();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+struct PromptField<'a> {
+    label: &'a str,
+    description: &'a str,
+    default: &'a str,
+}
+
+/// Folded prompt row saying whether the text deviates; open, its description, a
+/// multiline field, and *Restore default* once it deviates. Returns `true` on
+/// every edit.
+fn prompt_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    field: &PromptField<'_>,
+    text: &mut String,
+) -> bool {
+    let open_id = egui::Id::new(("preferences-prompt", field.label));
+    let mut open = ui.data(|data| data.get_temp::<bool>(open_id)) == Some(true);
+    let deviates = text.as_str() != field.default;
+    let header = Disclosure {
+        title: field.label,
+        detail: if deviates { "Edited" } else { "Default" },
+        detail_font: egui::FontId::proportional(DESCRIPTION_SIZE),
+        open,
+    };
+    if disclosure_row(ui, palette, &header).clicked() {
+        open = !open;
+        ui.data_mut(|data| data.insert_temp(open_id, open));
+    }
+    if !open {
+        return false;
+    }
+    let mut changed = false;
+    disclosure_body(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = LABEL_GAP;
+        ui.label(
+            egui::RichText::new(field.description)
+                .size(DESCRIPTION_SIZE)
+                .color(palette.text_muted),
+        );
+        ui.add_space(4.0);
+        let response = ui.add(
+            egui::TextEdit::multiline(text)
+                .desired_rows(PROMPT_ROWS)
+                .desired_width(f32::INFINITY),
+        );
+        changed = response.changed();
+        if deviates {
+            ui.add_space(4.0);
+            if pill_button(ui, palette, "Restore default", true, false) {
+                *text = field.default.to_owned();
+                changed = true;
             }
         }
     });
-    if let Some(index) = removed {
-        agents.remove(index);
-        changed = true;
-    }
-    ui.add_space(LAUNCH_ROW_GAP);
-    if pill_button(ui, palette, "Add agent", true, false) {
-        agents.push(LaunchAgent::new("", ""));
-        // The new row is drawn next frame: focusing an id absent from this one's
-        // accessibility tree panics accesskit.
-        let added = agents.len() - 1;
-        ui.data_mut(|data| data.insert_temp(launch_focus_id(), added));
-        changed = true;
-    }
     changed
+}
+
+const DISCLOSURE_ROW_HEIGHT: f32 = 44.0;
+const DISCLOSURE_ICON_SIZE: f32 = 14.0;
+const DISCLOSURE_GAP: f32 = 8.0;
+const DISCLOSURE_INDENT: f32 = CARD_PAD_X + DISCLOSURE_ICON_SIZE + DISCLOSURE_GAP;
+
+struct Disclosure<'a> {
+    title: &'a str,
+    detail: &'a str,
+    detail_font: egui::FontId,
+    open: bool,
+}
+
+/// Foldable row of a card: chevron, title, then a muted detail. The caller owns
+/// the open state and draws the body ([`disclosure_body`]).
+fn disclosure_row(ui: &mut egui::Ui, palette: &Palette, row: &Disclosure<'_>) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), DISCLOSURE_ROW_HEIGHT);
+    let (rect, response, hovered) = clickable(ui, size, true);
+    let icon = if row.open {
+        lucide_icons::Icon::ChevronDown
+    } else {
+        lucide_icons::Icon::ChevronRight
+    };
+    let chevron_ink = if hovered {
+        palette.text_primary
+    } else {
+        palette.text_secondary
+    };
+    let middle = rect.center().y;
+    paint_icon(
+        ui.painter(),
+        egui::pos2(
+            rect.left() + CARD_PAD_X + DISCLOSURE_ICON_SIZE / 2.0,
+            middle,
+        ),
+        DISCLOSURE_ICON_SIZE,
+        icon,
+        chevron_ink,
+    );
+    let text_right = rect.right() - CARD_PAD_X - AFFORDANCE_SIZE - DISCLOSURE_GAP;
+    let painter = ui.painter().with_clip_rect(rect.with_max_x(text_right));
+    let title = painter.text(
+        egui::pos2(rect.left() + DISCLOSURE_INDENT, middle),
+        egui::Align2::LEFT_CENTER,
+        row.title,
+        egui::FontId::new(LABEL_SIZE, theme::medium_family(ui.ctx())),
+        palette.text_primary,
+    );
+    painter.text(
+        egui::pos2(title.right() + DISCLOSURE_GAP + 2.0, middle),
+        egui::Align2::LEFT_CENTER,
+        row.detail,
+        row.detail_font.clone(),
+        palette.text_muted,
+    );
+    let label = if row.detail.is_empty() {
+        row.title.to_owned()
+    } else {
+        format!("{}, {}", row.title, row.detail)
+    };
+    response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response
+}
+
+/// Body of an open [`disclosure_row`], aligned under its title.
+fn disclosure_body(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: DISCLOSURE_INDENT as i8,
+            right: CARD_PAD_X as i8,
+            top: 0,
+            bottom: 16,
+        })
+        .show(ui, contents);
 }
 
 fn phone_section(
@@ -1077,8 +1331,8 @@ fn card_header(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &
         });
 }
 
-struct LaunchRowOutcome {
-    edited: bool,
+struct AgentHeaderOutcome {
+    toggled: bool,
     removed: bool,
 }
 
@@ -1086,72 +1340,190 @@ fn launch_focus_id() -> egui::Id {
     egui::Id::new("launch-agent-focus")
 }
 
-fn launch_agent_row(
+const UNNAMED_AGENT: &str = "New agent";
+
+fn undetected_program(agent: &Agent) -> Option<&str> {
+    agent.program().filter(|_| !agent.is_detected())
+}
+
+/// Folded row of an agent: its name and its start command; open, the trash.
+fn agent_header(
     ui: &mut egui::Ui,
     palette: &Palette,
-    index: usize,
-    agent: &mut LaunchAgent,
-) -> LaunchRowOutcome {
-    let mut outcome = LaunchRowOutcome {
-        edited: false,
-        removed: false,
+    agent: &Agent,
+    open: bool,
+) -> AgentHeaderOutcome {
+    let title = if agent.name.trim().is_empty() {
+        UNNAMED_AGENT
+    } else {
+        agent.name.as_str()
     };
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(CARD_PAD_X as i8, 12))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = LABEL_GAP;
+    let header = Disclosure {
+        title,
+        detail: &agent.command,
+        detail_font: egui::FontId::monospace(DESCRIPTION_SIZE),
+        open,
+    };
+    let response = disclosure_row(ui, palette, &header);
+    let mut slot = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(response.rect.shrink2(egui::vec2(CARD_PAD_X, 0.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    let mut removed = false;
+    if open {
+        let label = format!("Remove agent {}", agent.name);
+        removed = affordance(&mut slot, palette, lucide_icons::Icon::Trash2, &label);
+    } else if undetected_program(agent).is_some() {
+        warning_icon(&mut slot, palette);
+    }
+    AgentHeaderOutcome {
+        toggled: response.clicked(),
+        removed,
+    }
+}
+
+fn warning_icon(ui: &mut egui::Ui, palette: &Palette) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::Vec2::splat(WARNING_ICON_SIZE), egui::Sense::hover());
+    paint_icon(
+        ui.painter(),
+        rect.center(),
+        WARNING_ICON_SIZE,
+        lucide_icons::Icon::AlertTriangle,
+        palette.text_muted,
+    );
+}
+
+/// Fields of the open agent: its name, then one command line per use. Returns
+/// `true` on every edit.
+fn agent_fields(ui: &mut egui::Ui, palette: &Palette, index: usize, agent: &mut Agent) -> bool {
+    let mut edited = false;
+    disclosure_body(ui, |ui| {
+        let name = agent_field(
+            ui,
+            palette,
+            &AgentField {
+                label: "Name",
+                usage: "",
+                hint: "Name",
+                font: egui::TextStyle::Body,
+            },
+            &mut agent.name,
+        );
+        if ui.data(|data| data.get_temp::<usize>(launch_focus_id())) == Some(index) {
+            ui.data_mut(|data| data.remove::<usize>(launch_focus_id()));
+            name.request_focus();
+        }
+        edited = name.changed();
+        let hints = Preset::ClaudeCode.agent();
+        for (label, usage, hint, command) in [
+            (
+                "Start",
+                "From the phone",
+                &hints.command,
+                &mut agent.command,
+            ),
+            (
+                "With a prompt",
+                "Review",
+                &hints.prompt_command,
+                &mut agent.prompt_command,
+            ),
+            (
+                "Headless",
+                "Commit message",
+                &hints.headless_command,
+                &mut agent.headless_command,
+            ),
+        ] {
+            let field = AgentField {
+                label,
+                usage,
+                hint,
+                font: egui::TextStyle::Monospace,
+            };
+            edited |= agent_field(ui, palette, &field, command).changed();
+        }
+        ui.add_space(LAUNCH_ROW_GAP);
+        ui.spacing_mut().item_spacing.y = LABEL_GAP;
+        if let Some(program) = undetected_program(agent) {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = LAUNCH_ROW_GAP;
-                let name = ui.add_sized(
-                    [LAUNCH_NAME_WIDTH, SEGMENT_SIZE.y],
-                    egui::TextEdit::singleline(&mut agent.name)
-                        .hint_text(egui::RichText::new("Name").color(palette.text_muted)),
-                );
-                if ui.data(|data| data.get_temp::<usize>(launch_focus_id())) == Some(index) {
-                    ui.data_mut(|data| data.remove::<usize>(launch_focus_id()));
-                    name.request_focus();
-                }
-                let command_width =
-                    (ui.available_width() - AFFORDANCE_SIZE - LAUNCH_ROW_GAP).max(120.0);
-                let command = ui.add_sized(
-                    [command_width, SEGMENT_SIZE.y],
-                    egui::TextEdit::singleline(&mut agent.command)
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text(egui::RichText::new("command").color(palette.text_muted)),
-                );
-                outcome.edited = name.changed() || command.changed();
-                outcome.removed = affordance(
-                    ui,
-                    palette,
-                    lucide_icons::Icon::Trash2,
-                    &format!("Remove agent {}", agent.name),
+                warning_icon(ui, palette);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "helm won't detect {program} as an agent — the phone won't list it"
+                    ))
+                    .size(DESCRIPTION_SIZE)
+                    .color(palette.text_muted),
                 );
             });
-            let undetected = agent.program().filter(|_| !agent.is_detected());
-            if let Some(program) = undetected {
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::Vec2::splat(WARNING_ICON_SIZE),
-                        egui::Sense::hover(),
-                    );
-                    paint_icon(
-                        ui.painter(),
-                        rect.center(),
-                        WARNING_ICON_SIZE,
-                        lucide_icons::Icon::AlertTriangle,
-                        palette.text_muted,
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "helm won't detect {program} as an agent — the phone won't list it"
-                        ))
-                        .size(DESCRIPTION_SIZE)
-                        .color(palette.text_muted),
-                    );
-                });
-            }
-        });
-    outcome
+        }
+        ui.label(
+            egui::RichText::new(format!(
+                "Commands run in your login shell; ${PROMPT_ENV} is the prompt. Headless \
+                 answers once and exits. A blank command turns that use off"
+            ))
+            .size(DESCRIPTION_SIZE)
+            .color(palette.text_muted),
+        );
+    });
+    edited
+}
+
+const AGENT_LABEL_WIDTH: f32 = 132.0;
+const AGENT_FIELD_HEIGHT: f32 = 28.0;
+const AGENT_FIELD_ROW_HEIGHT: f32 = 42.0;
+const AGENT_USAGE_SIZE: f32 = 11.0;
+
+struct AgentField<'a> {
+    label: &'a str,
+    usage: &'a str,
+    hint: &'a str,
+    font: egui::TextStyle,
+}
+
+/// One field of the open agent: its label over what helm uses it for, the field
+/// beside them.
+fn agent_field(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    field: &AgentField<'_>,
+    text: &mut String,
+) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), AGENT_FIELD_ROW_HEIGHT);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let label_font = egui::FontId::proportional(DESCRIPTION_SIZE);
+    let label_anchor = if field.usage.is_empty() {
+        egui::Align2::LEFT_CENTER
+    } else {
+        egui::Align2::LEFT_BOTTOM
+    };
+    ui.painter().text(
+        rect.left_center(),
+        label_anchor,
+        field.label,
+        label_font,
+        palette.text_primary,
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(0.0, 1.0),
+        egui::Align2::LEFT_TOP,
+        field.usage,
+        egui::FontId::proportional(AGENT_USAGE_SIZE),
+        palette.text_muted,
+    );
+    let field_rect =
+        egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), AGENT_FIELD_HEIGHT))
+            .with_min_x(rect.left() + AGENT_LABEL_WIDTH);
+    ui.put(
+        field_rect,
+        tall_field(text).font(field.font.clone()).hint_text(
+            egui::RichText::new(field.hint)
+                .text_style(field.font.clone())
+                .color(palette.text_muted),
+        ),
+    )
 }
 
 /// Pull Requests section (pull-requests.md §3): GitHub authenticates through the
@@ -1280,7 +1652,7 @@ fn bitbucket_token_row(ui: &mut egui::Ui, palette: &Palette, token: &mut String)
                 let field_w = (ui.available_width() - 80.0).max(120.0);
                 ui.add_sized(
                     [field_w, SEGMENT_SIZE.y],
-                    egui::TextEdit::singleline(token).password(true).hint_text(
+                    tall_field(token).password(true).hint_text(
                         egui::RichText::new("Bitbucket API token").color(palette.text_muted),
                     ),
                 );
@@ -1388,13 +1760,7 @@ fn keyboard_section(
         if index > 0 {
             ui.add_space(GROUP_GAP);
         }
-        ui.label(
-            egui::RichText::new(group.label())
-                .size(LABEL_SIZE)
-                .family(theme::medium_family(ui.ctx()))
-                .color(palette.text_secondary),
-        );
-        ui.add_space(GROUP_TITLE_GAP);
+        group_title(ui, palette, group.label());
         settings_card(ui, palette, |ui| {
             let mut first = true;
             for entry in Action::ALL.into_iter().filter(|a| a.group() == group) {
@@ -1406,6 +1772,17 @@ fn keyboard_section(
             }
         });
     }
+}
+
+/// Title of a group of cards inside a section.
+fn group_title(ui: &mut egui::Ui, palette: &Palette, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(LABEL_SIZE)
+            .family(theme::medium_family(ui.ctx()))
+            .color(palette.text_secondary),
+    );
+    ui.add_space(GROUP_TITLE_GAP);
 }
 
 /// One rebindable action row: label + description, the binding as a keycap in

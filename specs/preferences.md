@@ -79,8 +79,6 @@ floating preferences window. Tokens and components: [`design-system.md`](design-
 | Setting | Description (UI) | Control | Behavior |
 |---------|------------------|----------|--------------|
 | **Default pull behavior** | Operation run by the Pull button in the graph toolbar | Dropdown, 4 options: **Fetch All** / **Pull (fast-forward if possible)** / **Pull (fast-forward only)** / **Pull (rebase)** (labels from the `git::sync::PullDefault` domain) | **Same setting** as the radio menu of the Pull split-button ([`git.md`](git.md) §10): both surfaces read/write `pull_default` — a change on one side is reflected on the other; persisted; **never triggers** an operation. |
-| **AI provider** | CLI used to generate the commit message | Dropdown, 3 options: **Claude Code** / **Codex** / **opencode** (`ai::AiProvider` domain, product names from `display_name`, default Claude) | CLI launched as a subprocess by the "Generate commit message" button of the commit card ([`git.md`](git.md) §5); Claude is pinned to the small/fast **Haiku** model (`commit_model_args`) since summarizing a staged diff is cheap; persisted; **never triggers** generation. |
-| **AI instructions** | Extra guidance added to the commit message prompt | **Multiline** full-width text field (below the label — the right slot is too narrow), hint "e.g. Use conventional commits, write in French…" | Free text appended as-is to the generation prompt; persisted on change. |
 
 ### Keyboard
 
@@ -118,18 +116,64 @@ action shows a muted `unbound` placeholder.
 
 ### Agents
 
-Below the *Completion notifications* card, a **Phone launch** card: the agents
-the phone can launch ([`remote.md`](remote.md) §7.2), one row per agent, in the
-order the phone shows them.
+The **agents table** is the single source of every command helm runs for an AI
+action; the actions only **choose an agent** and own their prompt. Every command
+and prompt is **free text**, pre-filled so a fresh install works untouched:
+nothing is imposed, an alias or a wrapper is as valid as a known CLI. The known
+CLIs (**Claude Code**, **Codex**, **opencode** — `agents::Preset`) are only
+presets that fill an agent's fields. Top to bottom: the **agents** card, the
+group **Tasks** (cards **Commit message** and **Review**), the group
+**Notifications** (*Completion notifications*). The page opens folded — one row
+per agent, one row per prompt — and details open on a click.
+
+Every command is a shell line; the ones that take a prompt read it from
+`$HELM_PROMPT` (never escaped nor echoed). Prompts are templates: `{key}` is
+replaced by its value, an unknown key stays as typed.
+
+**Agents** — one folded row per agent (chevron, name, its **Start** command in
+muted monospace; a warning icon when undetected), in the order the phone shows
+them ([`remote.md`](remote.md) §7.2). A click opens its fields, **one agent at a
+time**; each command field says under its label what helm uses it for (*From the
+phone*, *Review*, *Commit message*), and a muted line recalls the rules. A blank
+command turns that use off for the agent.
 
 | Setting | Description (UI) | Control | Behavior |
 |---------|------------------|----------|--------------|
-| **Agent row** | — | **Name** field (what the phone shows) + monospace **Command** field (typed into a login shell in the chosen project, e.g. `claude --model opus`) + trash icon | Persisted on change (`launch_agents`). A row with an empty name or command is not offered. When the command's program (first word) is not on the watchlist ([`agents.md`](agents.md) §2), the row shows *helm won't detect `<program>` as an agent — the phone won't list it* (`text.muted`, warning icon). |
-| **Add agent** | — | Ghost button under the card | Appends an empty row, focused on its name. |
+| **Name** | — | Single-line field; trash icon on the open row | Names the agent on the phone, in the two dropdowns below, on *Send to* / *Ask* and on its tab. Renaming an agent keeps the actions that chose it. |
+| **Start** | — | Monospace field, e.g. `claude` | Typed into a login shell in the chosen project: the phone's **+**. Blank, or a blank name ⇒ not offered on the phone. When its program (first word) is not on the watchlist ([`agents.md`](agents.md) §2), the open agent shows *helm won't detect `<program>` as an agent — the phone won't list it* (`text.muted`, warning icon). |
+| **With a prompt** | — | Monospace field, e.g. `claude "$HELM_PROMPT"` | Opens a session on the prompt, typed into a login shell in the worktree (exiting the agent leaves the shell): the review. Blank ⇒ not a choice of **Review**. |
+| **Headless** | — | Monospace field, e.g. `claude --model haiku -p "$HELM_PROMPT"` | Non-interactive and meant to be fast: answers the prompt once on stdout and exits, run by the user's shell, login + interactive (PATH and aliases apply); its stdout is the commit message. Blank ⇒ not a choice of **Commit message**. |
+| **Add agent** | — | Dropdown closing the card: the presets, then *Empty agent* | Appends the preset, its three commands filled, or an empty agent — opened, focused on its name. |
 
-Defaults: **Claude Code** `claude`, **Codex** `codex`, **opencode** `opencode`.
-An empty list hides the phone's **+**. Intents pattern — the page never writes
-prefs itself.
+Persisted on change (`agents`). Defaults — the three presets:
+
+| Agent | Start | With a prompt | Headless |
+|-------|-------|---------------|-----------|
+| **Claude Code** | `claude` | `claude "$HELM_PROMPT"` | `claude --model haiku -p "$HELM_PROMPT"` |
+| **Codex** | `codex` | `codex "$HELM_PROMPT"` | `codex exec "$HELM_PROMPT"` |
+| **opencode** | `opencode` | `opencode --prompt "$HELM_PROMPT"` | `opencode run "$HELM_PROMPT"` |
+
+No agent offered hides the phone's **+**.
+
+**Commit message** — the commit card's *Generate commit message*
+([`git.md`](git.md) §5).
+
+| Setting | Description (UI) | Control | Behavior |
+|---------|------------------|----------|--------------|
+| **Commit message** | Written by the agent's Headless command | Dropdown of the agents that have a **Headless** command (default **Claude Code**) | Persisted by name (`commit_message.agent`). A choice that left the table, or lost its command, shows *Choose an agent* and generation refuses with a toast. |
+| **Commit message prompt** | {changes} is the staged files and diff; helm appends the reply format | Folded row tagged *Default* / *Edited*; open: multiline field + **Restore default** once it deviates | `{changes}` ⇒ staged file list + index diff. The reply format (raw message, subject line, optional body) is appended by helm and is **not** editable — the reply is split into subject + description. |
+
+**Review** — the agent the diff's review notes and the PR review surface hand
+work to ([`pull-requests.md`](pull-requests.md) §11).
+
+| Setting | Description (UI) | Control | Behavior |
+|---------|------------------|----------|--------------|
+| **Review** | Opens the agent on your review comments or a pull request | Dropdown of the agents that have a **With a prompt** command (default **Claude Code**) | Persisted by name (`review.agent`); the name labels *Send to {agent}*, *Ask {agent}* and the agent's tab. A choice that left the table, or lost its command, shows *Choose an agent* and the action refuses with a toast. |
+| **Review comments prompt** | Send to, Ask on a thread: {comments} is the comments, grouped by file | Folded row, as above | Prompt of *Send to {agent}* (your line notes: line, code, note) and of a thread's *Ask {agent}* (the posted thread: line, author, comment) — both rendered as one section per file. |
+| **Pull request prompt** | Ask on a pull request: {source} {dest} {title} {number} | Folded row, as above | Prompt of the whole-PR *Ask {agent}*; pending agent notes follow it, through the comments prompt. |
+
+Intents pattern — the page never writes prefs itself; any edit of the section
+raises one `agents_changed`.
 
 ### Phone
 
@@ -182,8 +226,11 @@ both settings are cleared.
   (re)seeded to the active project each time the page opens.
 - `prefs.toml` fields: `theme` and `pull_default` (existing) + `light_theme` /
   `dark_theme` (theme families, default `"helm"`; an unknown id falls back to
-  Helm at resolution time without rewriting the TOML) + `ai_provider` (kebab-case,
-  default `"claude"`) / `ai_instructions` (default empty) + `editor_command` (editor template for the
+  Helm at resolution time without rewriting the TOML) + `commit_message` (table
+  `agent` + `prompt`) / `review` (table `agent` + `comments_prompt` +
+  `pr_prompt`), each key defaulting to its *Agents* default,
+  `agent` being the name of a row of `agents` +
+  `editor_command` (editor template for the
   terminal's file links, default `"code -g {file}:{line}"`, empty = macOS
   `open` — [`terminal.md`](terminal.md) §12) + `keybindings` (table `action-id = "combo"`,
   e.g. `split-right = "cmd+shift+x"`: **only deviations** from the defaults,
@@ -191,11 +238,20 @@ both settings are cleared.
   rewriting the TOML — keybindings.md §6) + `bitbucket_email` (Bitbucket account
   email, default empty; the paired token lives in the macOS Keychain, **never**
   in the TOML — [`pull-requests.md`](pull-requests.md) §3) + `pr_detail_width`
-  (PR cockpit detail-panel width) + `launch_agents` (array-of-tables `name` +
-  `command`; key absent ⇒ the defaults of *Agents*, present — even empty — ⇒
-  verbatim) + `phone_access_at_launch` (bool, default `false`) + `project_settings` (array-of-tables
+  (PR cockpit detail-panel width) + `agents` (array-of-tables `name` +
+  `command` + `prompt_command` + `headless_command`, the last two default empty; key absent ⇒ the defaults of *Agents*,
+  present — even empty — ⇒ verbatim) + `phone_access_at_launch` (bool, default `false`) + `project_settings` (array-of-tables
   keyed by project `root`: optional `worktree_base` + `post_create`; an entry
   with neither is dropped, orphans whose project left the workspace are purged).
+- **Legacy agent keys** (`ai_provider`, `ai_instructions`,
+  `review_agent_command`, `launch_agents`) are carried into the tables above on
+  load, and the file is rewritten without them. Each phone row becomes an agent:
+  a bare preset program gets the preset's commands, any other command gets
+  `<command> "$HELM_PROMPT"` as its prompt command (what helm typed then) and its
+  program's preset headless command, if any. The commit provider and the review CLI then
+  choose the agent of the table running the same command, or join the table
+  under a free name (`Claude Code 2`); the instructions are inlined in the commit
+  prompt. A key already in the new format wins.
 - The rendering logic stays as pure `fn(&mut egui::Ui, …)` functions
   driven by a state + **intents** (testing.md §5) — no pref writes
   in the UI, the app applies and persists.

@@ -2390,12 +2390,14 @@ fn an_ai_generation_survives_a_repo_switch() {
 
     // Launch generation on A, then switch away before it finishes: the runner is
     // parked, not dropped with the session.
+    let request =
+        CommitMessageSettings::default().request_running(&format!("'{}'", provider.display()));
     assert!(app
         .git
         .as_mut()
         .unwrap()
         .ai
-        .request_program(provider, &[], String::new()));
+        .request_in_shell(PathBuf::from("/bin/sh"), request));
     app.workspace.set_active(1);
     app.sync_git_session(&ctx);
 
@@ -2940,8 +2942,6 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         show_workspace: false,
         show_git: true,
         pull_default: PullDefault::Rebase,
-        ai_provider: AiProvider::Opencode,
-        ai_instructions: "Use conventional commits.".to_owned(),
         editor: Editor::default(),
         notify_on_agent_completion: true,
         phone_access_at_launch: false,
@@ -2951,8 +2951,12 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         git_unstaged_share: None,
         workspace_opener: WorkspaceOpener::default(),
         last_seen_version: String::new(),
-        review_agent_command: "claude".to_owned(),
-        launch_agents: Vec::new(),
+        commit_message: CommitMessageSettings {
+            agent: "Codex".to_owned(),
+            prompt: "Use conventional commits.\n{changes}".to_owned(),
+        },
+        review: ReviewSettings::default(),
+        agents: Vec::new(),
         bitbucket_email: String::new(),
         pr_detail_width: 460.0,
         pr_rail_collapsed: false,
@@ -2985,8 +2989,11 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
     );
     assert!(app.sidebars.git, "persisted open state is restored");
     assert_eq!(app.pull_default, PullDefault::Rebase);
-    assert_eq!(app.ai_provider, AiProvider::Opencode);
-    assert_eq!(app.ai_instructions, "Use conventional commits.");
+    assert_eq!(app.commit_message.agent, "Codex");
+    assert_eq!(
+        app.commit_message.prompt,
+        "Use conventional commits.\n{changes}"
+    );
 }
 
 #[test]
@@ -3079,7 +3086,14 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
     // The agent runs as a job of an interactive login shell (so the terminal
     // survives the agent exiting): the pane is the shell, and the configured
     // command is fed into it rather than exec'd as the pane's root process.
-    app.review_agent_command = "/bin/echo".to_owned();
+    app.agents = vec![Agent {
+        prompt_command: "/bin/echo \"$HELM_PROMPT\"".to_owned(),
+        ..Agent::new("Echo", "/bin/echo")
+    }];
+    app.review_agent = ReviewSettings {
+        agent: "Echo".to_owned(),
+        ..ReviewSettings::default()
+    };
     app.central_mode = CentralMode::Graph;
 
     let key = RepoKey::of(tmp.path());
@@ -3124,8 +3138,8 @@ fn send_to_agent_opens_a_new_tab_with_a_prebuilt_agent_pane() {
     assert!(app.diff.is_none());
     assert_eq!(
         app.workspace.tab_titles().unwrap()[active_tab],
-        "/bin/echo",
-        "the agent tab is named after the configured command"
+        "Echo",
+        "the agent tab is named after the configured agent"
     );
 }
 

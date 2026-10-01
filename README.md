@@ -103,8 +103,8 @@ the count of what is actually actionable.
   branch**, comment on any line, reply to existing threads, browse **per commit**,
   then **Approve · Request changes · Comment** from a composer that spells out
   exactly what it will post.
-- **Hand it over, or take it over** — **Ask Claude** on a whole PR or a single
-  thread launches your agent in that PR's worktree; **Checkout** brings the source
+- **Hand it over, or take it over** — **Ask your agent** on a whole PR or a single
+  thread launches it in that PR's worktree; **Checkout** brings the source
   branch up as a worktree (fetched first, forks included) and activates it.
 
 <p align="center">

@@ -308,7 +308,7 @@ Clicking it, like any click in the pane, takes the size back.
   back swipe close it; `launched` replaces it with the pane, so back from the new
   pane lands on the agents list.
 - **On the Mac**: a login shell in the entry's directory, into which the agent's
-  command is typed (as `Send to agent` does: exiting the agent leaves a shell). The
+  command is typed (as *Send to {agent}* does: exiting the agent leaves a shell). The
   new tab joins the entry's tabs **without** becoming active; its label follows the
   usual auto-naming. Until the UI adopts it, the phone labels it with the agent's
   name.

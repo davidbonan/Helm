@@ -7,11 +7,21 @@ use alacritty_terminal::term::{Term, TermMode};
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, PtySize};
 
+use crate::agents::PROMPT_ENV;
 use crate::terminal::activity::{now_ms, PaneActivity};
 use crate::terminal::emu::{lock_writer, Emulator, PtyWriter, ReplyListener, SharedTerm};
 use crate::terminal::palette::TermPalette;
-use crate::terminal::pty::{PgidProbe, Pty};
+use crate::terminal::pty::{login_shell_command, shell_program, PgidProbe, Pty};
 use crate::terminal::sizing::{GridSize, PaneSizing};
+
+/// A command typed into a login shell in `cwd`, as the user would: the shell's
+/// profile (PATH, aliases) applies, and quitting the command leaves the shell
+/// rather than a dead pane. `prompt` reaches the command through `$HELM_PROMPT`.
+pub struct TypedCommand<'a> {
+    pub cwd: &'a Path,
+    pub line: &'a str,
+    pub prompt: Option<&'a str>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CursorPos {
@@ -92,6 +102,20 @@ impl Pane {
             cols,
             Arc::new(on_change),
         )
+    }
+
+    pub fn typing(
+        command: &TypedCommand<'_>,
+        size: GridSize,
+        on_change: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
+        let mut cmd = login_shell_command(shell_program(), command.cwd);
+        if let Some(prompt) = command.prompt {
+            cmd.env(PROMPT_ENV, prompt);
+        }
+        let pane = Self::from_command(cmd, size.rows, size.cols, on_change)?;
+        pane.feed(format!("{}\n", command.line).as_bytes())?;
+        Ok(pane)
     }
 
     fn from_pty(pty: Pty, cwd: &Path, rows: u16, cols: u16, on_change: OnChange) -> Result<Self> {

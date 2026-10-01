@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
-use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, Launcher};
+use helm::agents::Agent;
+use helm::remote::launch::{LaunchTarget, LaunchTargets, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
@@ -104,8 +105,8 @@ fn main() {
             target("avoda", "avoda", "develop", false),
         ],
         agents: vec![
-            LaunchAgent::new("Claude Code", &fake_command),
-            LaunchAgent::new("Codex", &fake_command),
+            Agent::new("Claude Code", &fake_command),
+            Agent::new("Codex", &fake_command),
         ],
     });
     // Launched panes wait here forever: no UI adopts them in the preview.

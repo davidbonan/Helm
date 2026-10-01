@@ -95,7 +95,8 @@ pub fn run_program_with_timeout(
     timeout: Duration,
     envs: &[(&str, String)],
 ) -> Result<CliOutput, CliError> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(workdir)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -114,13 +115,13 @@ pub fn run_program_with_timeout(
         .env("SSH_ASKPASS_REQUIRE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => CliError::NotFound,
-            _ => CliError::Io(err),
-        })?;
+        .stderr(Stdio::piped());
+    // No controlling terminal: an interactive shell left on helm's stops itself (SIGTTIN).
+    unsafe { command.pre_exec(start_own_session) };
+    let mut child = command.spawn().map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => CliError::NotFound,
+        _ => CliError::Io(err),
+    })?;
     // Drained on dedicated threads **while** waiting: a pipe left unread blocks
     // the child as soon as it writes one buffer's worth (~64 KB) — `try_wait`
     // then never succeeds and every chatty command (large staged diff for the
@@ -144,6 +145,13 @@ pub fn run_program_with_timeout(
         }
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn start_own_session() -> std::io::Result<()> {
+    if unsafe { libc::setsid() } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn drain_pipe(pipe: impl std::io::Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {

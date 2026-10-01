@@ -273,9 +273,9 @@ impl HelmApp {
             })
             .collect();
         let agents = self
-            .launch_agents
+            .agents
             .iter()
-            .filter(|agent| agent.is_offered())
+            .filter(|agent| agent.is_offered_on_phone())
             .cloned()
             .collect();
         LaunchTargets { entries, agents }
