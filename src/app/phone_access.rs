@@ -98,6 +98,10 @@ struct OfferedPairing {
 }
 
 impl PhoneAccess {
+    pub(super) fn connected_devices(&self) -> Vec<String> {
+        self.server.connected_devices()
+    }
+
     /// A fresh code when none is shown yet, or the shown one was used or expired.
     fn refresh_offered_pairing(&mut self) {
         let shown = self.offered.as_ref().map(|offered| offered.url.as_str());

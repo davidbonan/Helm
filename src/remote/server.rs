@@ -83,6 +83,7 @@ struct Shared {
 #[derive(Clone, PartialEq, Eq)]
 struct LiveSocket {
     device: String,
+    name: String,
     ip: IpAddr,
 }
 
@@ -133,17 +134,16 @@ impl Shared {
     }
 
     /// Alerts when the device already has a socket open from another address.
-    fn open_socket(&self, socket: LiveSocket, name: &str) {
+    fn open_socket(&self, socket: LiveSocket) {
         let mut sockets = self.sockets();
         let elsewhere = sockets
             .iter()
             .any(|live| live.device == socket.device && live.ip != socket.ip);
+        let device = socket.name.clone();
         sockets.push(socket);
         drop(sockets);
         if elsewhere {
-            (self.services.alert)(AccessAlert::TwoAddresses {
-                device: name.to_owned(),
-            });
+            (self.services.alert)(AccessAlert::TwoAddresses { device });
         }
     }
 
@@ -225,6 +225,20 @@ impl PhoneServer {
 
     pub fn clients(&self) -> usize {
         self.shared.sockets().len()
+    }
+
+    /// The names of the devices with a socket open, each device once.
+    pub fn connected_devices(&self) -> Vec<String> {
+        let sockets = self.shared.sockets();
+        let mut seen = Vec::new();
+        let mut names = Vec::new();
+        for socket in sockets.iter() {
+            if !seen.contains(&socket.device) {
+                seen.push(socket.device.clone());
+                names.push(socket.name.clone());
+            }
+        }
+        names
     }
 
     /// `false` once access stopped on its own (LAN address gone).
@@ -383,9 +397,10 @@ fn upgrade(mut stream: TcpStream, head: &RequestHead, visitor: Option<Visitor>, 
     let ws = WebSocket::from_raw_socket(stream, Role::Server, None);
     let socket = LiveSocket {
         device: visitor.id,
+        name: visitor.name,
         ip: peer.ip(),
     };
-    shared.open_socket(socket.clone(), &visitor.name);
+    shared.open_socket(socket.clone());
     PhoneSocket::new(
         ws,
         shared.services.registry.clone(),

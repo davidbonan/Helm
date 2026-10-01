@@ -336,6 +336,7 @@ fn a_revoked_phone_is_shut_out_and_its_socket_closes() {
     let cookie = fixture.pair();
     let mut ws = fixture.connect(&cookie);
     wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
+    let connected = fixture.server().connected_devices();
 
     fixture.devices.edit(|book| book.revoke_all());
     let closed = wait_until_within(Duration::from_secs(3), || match ws.read() {
@@ -347,8 +348,13 @@ fn a_revoked_phone_is_shut_out_and_its_socket_closes() {
         Err(_) => true,
     });
     let page = fixture.get("/app.css", Some(&cookie));
+    let left = wait_until_within(Duration::from_secs(3), || {
+        fixture.server().connected_devices().is_empty()
+    });
 
     fixture.close();
+    assert_eq!(connected, vec!["Browser".to_owned()]);
+    assert!(left, "a closed socket no longer counts as connected");
     assert!(closed, "the revoked phone's socket is closed");
     assert!(page.starts_with("HTTP/1.1 401"), "{page}");
 }

@@ -711,6 +711,7 @@ pub fn root_layout(
     open_workspace: &mut Option<WorkspaceOpener>,
     open_preferences: &mut bool,
     open_feedback: &mut bool,
+    phone: Option<&PhoneIndicator>,
     agents_badge: AgentBadge,
     agents_active: bool,
     done_agents: &[DoneAgentRow],
@@ -936,6 +937,7 @@ pub fn root_layout(
                 open_workspace,
                 open_preferences,
                 open_feedback,
+                phone,
                 helm_central,
                 show_git,
                 pr_active,
@@ -980,6 +982,7 @@ fn top_right_actions(
     open_workspace: &mut Option<WorkspaceOpener>,
     open_preferences: &mut bool,
     open_feedback: &mut bool,
+    phone: Option<&PhoneIndicator>,
     helm_central: bool,
     show_git: &mut bool,
     pr_active: bool,
@@ -988,6 +991,9 @@ fn top_right_actions(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
+        if let Some(phone) = phone {
+            phone_indicator(ui, palette, phone);
+        }
         // No repository imported ⇒ no launcher at all; once repos exist, a
         // missing active folder keeps it visible but disabled (tooltip below).
         if show_launcher {
@@ -1078,6 +1084,37 @@ fn shortcut_badge(
             .color(palette.text_muted),
     );
 }
+/// Phone access is on (specs/remote.md §2): who is connected, for the title bar dot.
+pub struct PhoneIndicator {
+    pub devices: Vec<String>,
+}
+
+const PHONE_DOT_HIT: egui::Vec2 = egui::vec2(12.0, 24.0);
+const PHONE_DOT_RADIUS: f32 = 3.0;
+pub const PHONE_DOT_LABEL: &str = "Phone access";
+
+/// Green while a phone is connected, muted while access waits for one.
+fn phone_indicator(ui: &mut egui::Ui, palette: &Palette, phone: &PhoneIndicator) {
+    let (rect, response) = ui.allocate_exact_size(PHONE_DOT_HIT, egui::Sense::hover());
+    let color = if phone.devices.is_empty() {
+        palette.text_muted
+    } else {
+        palette.git_added
+    };
+    ui.painter()
+        .circle_filled(rect.center(), PHONE_DOT_RADIUS, color);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, PHONE_DOT_LABEL));
+    response.on_hover_text(phone_indicator_tooltip(&phone.devices));
+}
+
+pub fn phone_indicator_tooltip(devices: &[String]) -> String {
+    match devices {
+        [] => "Phone access on — no phone connected".to_owned(),
+        names => format!("Phone access on — {} connected", names.join(", ")),
+    }
+}
+
 const LAUNCHER_MAIN_HIT: egui::Vec2 = egui::vec2(32.0, 24.0);
 const LAUNCHER_MENU_HIT: egui::Vec2 = egui::vec2(18.0, 24.0);
 const LAUNCHER_ICON_SIZE: f32 = 20.0;

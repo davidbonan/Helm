@@ -8,7 +8,7 @@ use helm::theme::Palette;
 use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::GitPanelState;
 use helm::ui::repo_sidebar::{repo_sidebar, ProjectHeader, RepoRow, SidebarAction, SidebarItem};
-use helm::ui::{central_empty_state, root_layout};
+use helm::ui::{central_empty_state, root_layout, PhoneIndicator, PHONE_DOT_LABEL};
 use helm::workspace_launcher::WorkspaceOpener;
 
 #[test]
@@ -74,6 +74,7 @@ fn renders_three_zones() {
             &mut open_workspace,
             &mut false,
             &mut false,
+            None,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -171,6 +172,7 @@ fn workspace_launcher_shows_only_installed_openers_and_main_button_tracks_the_la
             &mut open_workspace,
             &mut false,
             &mut false,
+            None,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -259,6 +261,7 @@ fn workspace_sidebar_can_be_hidden() {
             &mut open_workspace,
             &mut false,
             &mut false,
+            None,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -325,6 +328,7 @@ fn central_zone_invites_to_open_a_folder_when_no_repo() {
             &mut open_workspace,
             &mut false,
             &mut false,
+            None,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -441,6 +445,7 @@ fn sidebar_widths_round_trip_through_the_layout_state() {
             &mut open_workspace,
             &mut false,
             &mut false,
+            None,
             helm::agent_watch::AgentBadge::None,
             false,
             &[],
@@ -571,4 +576,76 @@ fn repo_sidebar_lists_repo_names() {
     harness.get_by_label("alpha");
     harness.get_by_label("beta");
     assert!(harness.query_by_label("Open Folder… · ⌘O").is_none());
+}
+
+/// The full layout with phone access as `phone` says (`None` = off).
+fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static> {
+    let palette = Palette::dark();
+    let status = RepoStatus::default();
+    Harness::new_ui(move |ui| {
+        ui.style_mut().interaction.tooltip_delay = 0.0;
+        let mut git_state = GitPanelState::default();
+        root_layout(
+            ui,
+            &palette,
+            &[],
+            &[],
+            &[],
+            None,
+            "main",
+            &status,
+            false,
+            None,
+            &mut git_state,
+            &mut Vec::new(),
+            &mut true,
+            &mut true,
+            false,
+            None,
+            false,
+            None,
+            &mut None,
+            None,
+            &mut FileMenuOutput::default(),
+            helm::ui::file_list::FileViewMode::default(),
+            WorkspaceOpener::default(),
+            &WorkspaceOpener::ALL,
+            &mut None,
+            &mut false,
+            &mut false,
+            phone.as_ref(),
+            AgentBadge::None,
+            false,
+            &[],
+            0,
+            false,
+            false,
+            &mut false,
+            &mut SidebarAction::default(),
+            280.0,
+            320.0,
+            &Keymap::default(),
+            false,
+            true,
+            200.0,
+            |_ui| {},
+            |_ui| {},
+        );
+    })
+}
+
+#[test]
+fn the_phone_dot_shows_only_while_access_is_on_and_names_who_is_connected() {
+    let mut off = layout_with_phone(None);
+    off.run();
+    assert!(off.query_by_label(PHONE_DOT_LABEL).is_none());
+
+    let mut on = layout_with_phone(Some(PhoneIndicator {
+        devices: vec!["iPhone".to_owned()],
+    }));
+    on.run();
+    on.get_by_label(PHONE_DOT_LABEL).hover();
+    on.run();
+
+    on.get_by_label("Phone access on — iPhone connected");
 }

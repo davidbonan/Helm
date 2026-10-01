@@ -34,9 +34,11 @@ Two palette commands ([`keybindings.md`](keybindings.md) §6), one visible at a 
 Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
 access is on — anyone with this code can type into your agents*, the connected
 device count, and a **Stop** button. The code is single-use and lives 5 min: once
-used or expired, the open modal shows a fresh one. No sidebar indicator: the
-palette is the only surface (user decision); the modal says plainly that access is
-live. Paired devices and *Start at launch* live in Preferences › *Phone*
+used or expired, the open modal shows a fresh one. The palette stays the only
+control; while access is on, a **dot** (6 pt) left of the title bar's *Open with*
+selector says so — `git.added` while a phone is connected, `text.muted` while
+access waits for one — its tooltip naming who is connected (*Phone access on —
+iPhone connected* / *— no phone connected*). Hidden while off. Paired devices and *Start at launch* live in Preferences › *Phone*
 ([`preferences.md`](preferences.md) §4).
 
 ## 3. Access lifecycle & security

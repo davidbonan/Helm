@@ -11,7 +11,7 @@
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **6/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **7/7**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
@@ -39,6 +39,11 @@ launch* off by default, 30-day drop, no device cap. Counter: **6/6**.
   `verify-artifacts/20261001_phone-keep/` (reloads 35 s apart, past the grace);
   headless-verify `verify-artifacts/20261001_102237_7243/` (Phone section, Revoke,
   modal).
+- ☑ **K7 — Title bar dot.** Per the user: a discreet dot left of *Open with* while
+  access is on (green when a phone is connected, muted otherwise), tooltip naming
+  who is connected; `PhoneServer::connected_devices`. *Tests*: 1 UI e2e (hidden
+  off, tooltip names the phone) + business e2e extended (listed while connected,
+  gone after). *Verified*: headless-verify `verify-artifacts/20261001_103306_44487/`.
 
 ---
 

@@ -894,6 +894,9 @@ impl HelmApp {
         let show_git = &mut self.sidebars.git;
         let default_workspace_opener = self.workspace_opener;
         let installed_openers = self.installed_openers.clone();
+        let phone_indicator = self.phone.as_ref().map(|phone| crate::ui::PhoneIndicator {
+            devices: phone.connected_devices(),
+        });
         let git_state = &mut self.git_panel_state;
         let diff = &mut self.diff;
         // Any git command running greys the page's Start button out — same
@@ -1244,6 +1247,7 @@ impl HelmApp {
                     &mut open_workspace_request,
                     &mut toggle_preferences_request,
                     &mut open_feedback_request,
+                    phone_indicator.as_ref(),
                     agents_badge,
                     agents_active,
                     &done_agents,
@@ -2179,6 +2183,7 @@ impl HelmApp {
                     &mut open_workspace_request,
                     &mut toggle_preferences_request,
                     &mut open_feedback_request,
+                    phone_indicator.as_ref(),
                     agents_badge,
                     agents_active,
                     &done_agents,
