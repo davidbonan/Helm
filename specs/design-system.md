@@ -299,7 +299,8 @@ the aesthetic onto the 3 zones of [`overview.md`](overview.md) §3:
   summary bar = "N files changed" + totals **+A** / **−D** (`git.added` /
   `git.deleted`) + ratio bar (§4); **Unstaged (N) / Staged (N)** sections
   collapsible into **two fixed-height blocks** (same height at 0 entries, internal
-  scroll) — **colored** status icon (`git.*`) per file, stats `+N` / `−N`
+  scroll; a folded one keeps only its header, the other takes the room; both
+  open ⇒ hover separator above Staged, 2px `accent`, drags the split) — **colored** status icon (`git.*`) per file, stats `+N` / `−N`
   aligned right at rest, replaced on hover by the
   **Stage / Unstage / Discard** pills (neutral at rest, tinted to the intent on
   hover); global actions **Stage All / Unstage All** in the section header,

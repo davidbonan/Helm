@@ -101,7 +101,13 @@ Light/dark mockup redesign: the sidebar is made of **two cards** on `bg.canvas`,
 Sections 3–4 each occupy a **fixed-height block** (same height at
 0 entries; internal scroll if the list overflows; 1px separators between rows);
 **collapsible** headers "Unstaged (N)" / "Staged (N)" (chevron,
-`text.primary`) with their global action aligned to the right; both sections
+`text.primary`) with their global action aligned to the right; folding one
+shrinks it to its header and hands its room to the other (folded Staged ⇒ its
+header sits at the bottom of the card), reopening the other if it was folded —
+never both folded; while both are open, the gap above Staged is a **resize
+separator** (accent rule on hover, vertical drag; each block keeps its header +
+two rows; split persisted in `Prefs.git_unstaged_share`, equal halves by
+default); both sections
 empty ⇒ **Nothing to commit**.
 
 **Commit card** (detached at the bottom): **Commit message** label (red asterisk —

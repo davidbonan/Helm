@@ -123,9 +123,13 @@ pub struct GitPanelState {
     // suggestion lands (`drain_ai`).
     pub subject: String,
     pub description: String,
-    // Section folding — toggled here by the section headers only.
+    // Section folding — toggled here by the section headers only, never both
+    // folded (`toggle_section`).
     pub unstaged_collapsed: bool,
     pub staged_collapsed: bool,
+    // Unstaged's share of the two open blocks — dragged here on the separator
+    // above Staged, persisted by the app; `None` ⇒ equal halves.
+    pub unstaged_share: Option<f32>,
     // Tree-view directory folding (M40) — session-only, keyed by directory full
     // path; toggled here by the directory rows. Empty (and unused) in Flat mode.
     pub unstaged_collapsed_dirs: HashSet<String>,
@@ -185,6 +189,50 @@ impl GitPanelState {
         self.marked_files.clear();
         self.selection_anchor = None;
     }
+
+    /// Folding a section reopens the other one: the freed room always shows a list.
+    fn toggle_section(&mut self, section: RowSection) {
+        let (toggled, other) = match section {
+            RowSection::Unstaged => (&mut self.unstaged_collapsed, &mut self.staged_collapsed),
+            RowSection::Staged => (&mut self.staged_collapsed, &mut self.unstaged_collapsed),
+        };
+        *toggled = !*toggled;
+        if *toggled {
+            *other = false;
+        }
+    }
+
+    /// Heights `(unstaged, staged)` of the two section blocks sharing `available`:
+    /// split by `unstaged_share` when both are open, a folded section shrinks to
+    /// its header and the other takes the rest.
+    pub fn section_heights(&self, available: f32) -> (f32, f32) {
+        let shared = (available - SECTION_GAP).max(0.0);
+        let rest = (shared - SECTION_HEADER_H).max(0.0);
+        match (self.unstaged_collapsed, self.staged_collapsed) {
+            (false, false) => {
+                let unstaged = open_unstaged_height(shared, self.unstaged_share.unwrap_or(0.5));
+                (unstaged, shared - unstaged)
+            }
+            (true, _) => (SECTION_HEADER_H, rest),
+            (false, true) => (rest, SECTION_HEADER_H),
+        }
+    }
+
+    fn resize_sections(&mut self, unstaged_height: f32, available: f32) {
+        let shared = available - SECTION_GAP;
+        if shared > 0.0 {
+            self.unstaged_share =
+                Some(open_unstaged_height(shared, unstaged_height / shared) / shared);
+        }
+    }
+}
+
+/// Unstaged's height out of `shared`, each open block keeping its header + two rows.
+fn open_unstaged_height(shared: f32, share: f32) -> f32 {
+    if shared < 2.0 * SECTION_MIN_H {
+        return shared / 2.0;
+    }
+    (shared * share).clamp(SECTION_MIN_H, shared - SECTION_MIN_H)
 }
 
 const BRANCH_SIZE: f32 = 13.0;
@@ -204,6 +252,8 @@ const SUMMARY_BAND_H: f32 = 34.0;
 const SUMMARY_SIZE: f32 = 13.0;
 const SECTION_HEADER_H: f32 = 30.0;
 const SECTION_GAP: f32 = 8.0;
+const SECTION_MIN_H: f32 = SECTION_HEADER_H + 2.0 * ROW_HEIGHT;
+const SECTION_RESIZE_LABEL: &str = "Resize sections";
 const RATIO_BAR_W: f32 = 56.0;
 const RATIO_BAR_H: f32 = 6.0;
 const RATIO_BAR_GAP: f32 = 2.0;
@@ -963,8 +1013,9 @@ pub(crate) fn ratio_bar(ui: &mut egui::Ui, palette: &Palette, additions: usize, 
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "diff ratio"));
 }
 
-/// Two **fixed-height** blocks (same height even with 0 entries — user
-/// feedback), each with its own internal scroll if the list overflows.
+/// Two blocks sized by [`GitPanelState::section_heights`] (equal by default,
+/// even with 0 entries — user feedback), each with its own internal scroll if
+/// the list overflows; the gap between two open blocks drags the split.
 fn file_sections(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -976,14 +1027,41 @@ fn file_sections(
 ) {
     ui.spacing_mut().item_spacing.y = 0.0;
     ui.add_space(2.0);
-    let half = ((remaining_height(ui) - SECTION_GAP) / 2.0).max(0.0);
-    card(ui, half, |ui| {
+    let available = remaining_height(ui);
+    let (unstaged_h, staged_h) = state.section_heights(available);
+    let both_open = !state.unstaged_collapsed && !state.staged_collapsed;
+    card(ui, unstaged_h, |ui| {
         unstaged_section(ui, palette, status, state, intents, menu, view);
     });
-    ui.add_space(SECTION_GAP);
-    card(ui, half, |ui| {
+    if both_open {
+        if let Some(dragged_by) = section_resize_handle(ui, palette) {
+            state.resize_sections(unstaged_h + dragged_by, available);
+        }
+    } else {
+        ui.add_space(SECTION_GAP);
+    }
+    card(ui, staged_h, |ui| {
         staged_section(ui, palette, status, state, intents, menu, view);
     });
+}
+
+/// Separator filling the gap above Staged, painted on hover / drag only;
+/// returns the vertical drag of this frame.
+fn section_resize_handle(ui: &mut egui::Ui, palette: &Palette) -> Option<f32> {
+    let size = egui::vec2(ui.available_width(), SECTION_GAP);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Other, true, SECTION_RESIZE_LABEL)
+    });
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        ui.painter().hline(
+            rect.x_range(),
+            rect.center().y,
+            egui::Stroke::new(2.0_f32, palette.accent),
+        );
+    }
+    response.dragged().then(|| response.drag_delta().y)
 }
 
 /// Scrollable row list bounded to the block's remaining height.
@@ -1027,7 +1105,7 @@ fn unstaged_section(
         });
     });
     if toggled {
-        state.unstaged_collapsed = !state.unstaged_collapsed;
+        state.toggle_section(RowSection::Unstaged);
     }
     if !state.unstaged_collapsed {
         if status.unstaged.is_empty() && status.staged.is_empty() {
@@ -1084,7 +1162,7 @@ fn staged_section(
         });
     });
     if toggled {
-        state.staged_collapsed = !state.staged_collapsed;
+        state.toggle_section(RowSection::Staged);
     }
     if !state.staged_collapsed && !status.staged.is_empty() {
         file_scroll(ui, "git_staged_files", |ui| {

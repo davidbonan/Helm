@@ -126,6 +126,10 @@ pub struct Prefs {
     /// Run terminal strip folded to its header (git.md §3). Restored on launch.
     #[serde(default, skip_serializing_if = "is_false")]
     pub run_panel_collapsed: bool,
+    /// Unstaged's share of the git sidebar's two open file sections (git.md §3),
+    /// set by dragging the separator above Staged; absent ⇒ equal halves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_unstaged_share: Option<f32>,
     /// Last app picked in the workspace launcher; the main button reopens it.
     pub workspace_opener: WorkspaceOpener,
     /// Highest app version whose release notes the user has already seen
@@ -185,6 +189,7 @@ impl Default for Prefs {
             notify_on_agent_completion: true,
             git_file_view: FileViewMode::default(),
             run_panel_height: DEFAULT_RUN_PANEL_HEIGHT,
+            git_unstaged_share: None,
             run_panel_collapsed: false,
             workspace_opener: WorkspaceOpener::default(),
             last_seen_version: String::new(),
@@ -548,6 +553,7 @@ mod tests {
             git_file_view: FileViewMode::Tree,
             run_panel_height: 240.0,
             run_panel_collapsed: true,
+            git_unstaged_share: Some(0.75),
             workspace_opener: WorkspaceOpener::GitKraken,
             last_seen_version: "0.8.4".to_owned(),
             review_agent_command: "claude --model opus".to_owned(),

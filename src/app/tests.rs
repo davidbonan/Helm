@@ -2647,6 +2647,24 @@ fn sidebar_visibility_is_persisted_only_when_a_toggle_changed_it() {
 }
 
 #[test]
+fn the_git_section_split_is_persisted_only_when_a_drag_changed_it() {
+    let mut app = app_with(&["a"]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("prefs.toml");
+    app.prefs_path = Some(path.clone());
+
+    app.persist_git_section_split_if_changed();
+    app.flush_prefs();
+    assert!(!path.exists(), "no write when nothing changed");
+
+    app.git_panel_state.unstaged_share = Some(0.75);
+    app.persist_git_section_split_if_changed();
+    app.flush_prefs();
+
+    assert_eq!(Prefs::load_from(&path).git_unstaged_share, Some(0.75));
+}
+
+#[test]
 fn the_preferences_route_toggles_between_the_two_pages() {
     assert_eq!(Page::Main.toggled(), Page::Preferences);
     assert_eq!(Page::Preferences.toggled(), Page::Main);
@@ -2930,6 +2948,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         git_file_view: crate::ui::file_list::FileViewMode::default(),
         run_panel_height: 200.0,
         run_panel_collapsed: false,
+        git_unstaged_share: None,
         workspace_opener: WorkspaceOpener::default(),
         last_seen_version: String::new(),
         review_agent_command: "claude".to_owned(),

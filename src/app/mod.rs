@@ -832,7 +832,10 @@ impl HelmApp {
             keyboard_prefs: KeyboardState::default(),
             workspace,
             git: None,
-            git_panel_state: GitPanelState::default(),
+            git_panel_state: GitPanelState {
+                unstaged_share: prefs.git_unstaged_share,
+                ..GitPanelState::default()
+            },
             diff: None,
             rebase_page: None,
             conflict_editor: None,
@@ -1335,6 +1338,16 @@ impl HelmApp {
                     ..prefs
                 });
             }
+        }
+    }
+
+    fn persist_git_section_split_if_changed(&mut self) {
+        let share = self.git_panel_state.unstaged_share;
+        if share != self.prefs.git_unstaged_share {
+            self.persist(move |prefs| Prefs {
+                git_unstaged_share: share,
+                ..prefs
+            });
         }
     }
 

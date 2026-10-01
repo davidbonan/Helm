@@ -3099,6 +3099,7 @@ impl HelmApp {
     ) {
         self.persist_sidebar_widths_if_changed(ctx);
         self.persist_sidebar_visibility_if_changed(sidebars_were);
+        self.persist_git_section_split_if_changed();
         self.flush_prefs_if_due(ctx);
     }
 }

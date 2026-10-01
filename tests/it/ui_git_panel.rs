@@ -1916,3 +1916,106 @@ fn an_open_inline_editor_disarms_the_commit_shortcut() {
         "`Cmd+Enter` is inactive until the editor closes, got {intents:?}"
     );
 }
+
+#[test]
+fn folding_staged_hands_its_room_to_unstaged() {
+    let palette = Palette::light();
+    let status = sample_status();
+    let state = Rc::new(RefCell::new(GitPanelState::default()));
+    let state_in_ui = state.clone();
+    let mut harness = git_panel_harness(move |ui| {
+        git_panel(
+            ui,
+            &palette,
+            "main",
+            &status,
+            false,
+            None,
+            &mut state_in_ui.borrow_mut(),
+            &Keymap::default(),
+            &mut Vec::new(),
+            None,
+            &mut FileMenuOutput::default(),
+            FileViewMode::Flat,
+        );
+    });
+    harness.run();
+    let staged_top_open = harness.get_by_label_contains("Staged (0)").rect().top();
+
+    harness.get_by_label_contains("Staged (0)").click();
+    harness.run();
+
+    let staged_top_folded = harness.get_by_label_contains("Staged (0)").rect().top();
+    assert!(
+        staged_top_folded > staged_top_open + 100.0,
+        "the folded Staged header drops to the bottom of the files card, \
+         got {staged_top_open} → {staged_top_folded}"
+    );
+}
+
+#[test]
+fn folding_a_section_reopens_the_other_one() {
+    let (_, state) = drive_collect(
+        sample_status(),
+        GitPanelState {
+            staged_collapsed: true,
+            ..Default::default()
+        },
+        |h| h.get_by_label_contains("Unstaged (1)").click(),
+    );
+
+    let state = state.borrow();
+    assert!(
+        state.unstaged_collapsed,
+        "Unstaged folds on its header click"
+    );
+    assert!(!state.staged_collapsed, "Staged reopens to take the room");
+}
+
+#[test]
+fn dragging_the_separator_above_staged_resizes_both_sections() {
+    let (_, state) = drive_collect(sample_status(), GitPanelState::default(), |h| {
+        let grip = h.get_by_label("Resize sections").rect().center();
+        let pointer_button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        h.event(egui::Event::PointerMoved(grip));
+        h.event(pointer_button(grip, true));
+        h.step();
+        for step in 1..=4 {
+            h.event(egui::Event::PointerMoved(
+                grip + egui::vec2(0.0, 20.0 * step as f32),
+            ));
+            h.step();
+        }
+        h.event(pointer_button(grip + egui::vec2(0.0, 80.0), false));
+        h.run();
+        let staged_top = h.get_by_label_contains("Staged (0)").rect().top();
+        assert!(
+            (staged_top - grip.y - 80.0).abs() < 12.0,
+            "the Staged header follows the 80px drag, grip {} → header {staged_top}",
+            grip.y
+        );
+    });
+
+    let share = state.borrow().unstaged_share;
+    assert!(
+        share.is_some_and(|share| share > 0.5),
+        "dragging down grows Unstaged, got {share:?}"
+    );
+}
+
+#[test]
+fn a_folded_section_offers_no_resize_separator() {
+    drive_collect(
+        sample_status(),
+        GitPanelState {
+            staged_collapsed: true,
+            ..Default::default()
+        },
+        |h| assert!(h.query_by_label("Resize sections").is_none()),
+    );
+}
