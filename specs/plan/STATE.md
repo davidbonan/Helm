@@ -1064,9 +1064,8 @@ work**. Counter: **38/38**.
   `marked_files`, `selection_anchor`, `selected_file`; **collapsed-dirs sets are not
   worth parking** (review). *Files*: `src/app/mod.rs`, `src/ui/git_panel.rs`.
 - ☑ **T3 — Destructive modals + graph menu dropped on repo switch.** Modals carry a
-  name/oid and resolve `self.git` at confirm time (`render.rs:2674-2760`);
-  `close_ai_rebase_modal` deliberately clears only the AI variants. `ForcePush` carries
-  **no branch at all** ⇒ force-pushes the new repo's current branch; `DeleteBranch`/
+  name/oid and resolve `self.git` at confirm time (`render.rs:2674-2760`). `ForcePush`
+  carries **no branch at all** ⇒ force-pushes the new repo's current branch; `DeleteBranch`/
   `DeleteTag`/`AbortOp` act by name. Oid-addressed `DropStash`/`ResetHard` degrade to a
   clean "not found" — not part of the fix. Chip menu is global egui state
   (`graph_view.rs:746`, `:931`). Cheapest: stamp the modal with its `RepoKey`.
@@ -1100,12 +1099,8 @@ work**. Counter: **38/38**.
   `.env` with it, and the post-create-script flow (`worktrees.md:195`) makes that the
   normal case. Fix = surface it (count ignored, warn/confirm), **not** treat clean as
   dirty. *Files*: `src/git/worktree.rs`, `src/ui/repo_sidebar.rs`.
-- ⏭ **T8 — AI rebase backup ref + outcome verification.** Closed: `classify()`
-  (`ai_rebase.rs:405`) implements `git.md:513-515` **verbatim** ("Completed (state
-  clean, HEAD moved) / Branch unchanged / Rebase left in progress"), and the spec's
-  designed restore is `--abort` only (`git.md:505`), with the branch reflog covering a
-  provider `reset --hard`. Stronger verification (checking the replayed commits are
-  reachable) would be a **spec change**, not a bug fix.
+- ⏭ **T8 — AI rebase backup ref + outcome verification.** Closed, then moot: the
+  feature was removed in v3.3.0.
 - ☑ **T9 — Bulk ops never abort half-way, and a failed mutation never leaks into the
   next commit.** 🔴 most severe of the lot. A plain nested clone is reported as one
   untracked entry `vendor/` — `nested_in_workdir` only collects `repo.worktrees()`
@@ -1265,19 +1260,17 @@ work**. Counter: **38/38**.
 
 ### Lot D — flow & robustness
 
-- ☑ **T28 — Sidebar pills greyed during a sync/AI op.** ⚠ **re-scoped**: refusing (not
+- ☑ **T28 — Sidebar pills greyed during a sync op.** ⚠ **re-scoped**: refusing (not
   queueing) is spec-locked — `git.md:502-504` ("staging, commits and sync ops are
   **refused** meanwhile") — and the refusal *is* surfaced as a toast
   (`git_session.rs:525`). The defect is only that the sidebar keeps offering pills that
-  are guaranteed to fail during a 30-min AI rebase. Project `sync.busy()` /
-  `ai_rebase.busy()` into `GitPanelState` like `mutation_busy`; **do not queue**.
+  are guaranteed to fail during a long sync op. Project `sync.busy()` into
+  `GitPanelState` like `mutation_busy`; **do not queue**.
   *Files*: `src/ui/git_panel.rs`, `src/app/render.rs`, `src/app/git_session.rs`.
 - ☑ **T29 — `MutationLock` per repo, not per session.** `git_session.rs:328` mints a new
   lock per spawn and `SyncRunner` has no `Drop` — its thread is deliberately left
-  running (`worker.rs:797`). The author already documented this exact race for the AI
-  case: `ai_rebase.rs:552` ("an unjoined run would race the fresh `MutationLock` of the
-  session reopened on the same repo") — the join in `Drop` is a workaround for the hole,
-  which sync ops still have. Keying the lock by `RepoKey` also lets that join go.
+  running (`worker.rs:797`): an unjoined run races the fresh `MutationLock` of the
+  session reopened on the same repo. Keying the lock by `RepoKey` closes the hole.
   *Files*: `src/app/mod.rs`, `src/app/git_session.rs`.
 - ☑ **T30 — Checkout auto-stash.** ⚠ **re-scoped, 4 sub-claims:** (a) the *remote chip*
   no-op is **invalid** — `merge_local_remote` (`graph/mod.rs:217`) drops a remote entry
@@ -1301,10 +1294,9 @@ work**. Counter: **38/38**.
   companion: an abandoned session's mutation refused by the lock is dropped with no
   possible toast (`worker.rs:528`). *Files*: `src/app/git_session.rs`, `src/git/worker.rs`.
 - ☑ **T32 — Network ops are not SIGKILLed at 120 s.** `DEFAULT_TIMEOUT` (`cli.rs:9`)
-  reaches every sync op (`sync.rs:658` → `run_with_env` → `run_program_with_timeout`);
-  the cancellable path has exactly one caller (`ai_rebase.rs:294`). No spec or commit
-  documents the value (`git log -S DEFAULT_TIMEOUT` → only the initial squash) — the
-  only specified timeout is the AI rebase's 30 min. Also `git.md:686` states "never a
+  reaches every sync op (`sync.rs:658` → `run_with_env` → `run_program_with_timeout`).
+  No spec or commit documents the value (`git log -S DEFAULT_TIMEOUT` → only the
+  initial squash). Also `git.md:686` states "never a
   hung prompt" but only `GIT_TERMINAL_PROMPT=0` + null stdin are set (`cli.rs:101`): a
   configured `GIT_ASKPASS`/`SSH_ASKPASS`/`core.askPass` still spawns a GUI helper and
   burns the full timeout. (The `GIT_DIR` half is dropped — no path launches helm from a
