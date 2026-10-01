@@ -1,5 +1,13 @@
 # Release notes
 
+## 3.3.1
+
+- Agents wall and phone: each split of a tab now shows its own
+  agent's name instead of the last focused one's.
+- Phone: selecting terminal text works while the agent is running —
+  the selection handles can be dragged and the screen holds still
+  until you tap away.
+
 ## 3.3.0
 
 - Phone pairing now lasts: a paired phone stays paired across restarts of
@@ -81,10 +89,3 @@
   move, not yours.
 - Bigger, more legible rows: taller lines, larger avatars, readable initials, and
   a review verdict badge with a verdict-colored ring you can actually spot.
-
-## 2.6.0
-
-- `Cmd+J` jumps straight to the first agent that has finished — the top green row
-  under **Agents** in the sidebar. Landing there clears its green, so pressing
-  again takes you to the next finished one. Rebindable in Preferences › Keyboard;
-  hold `Cmd` to see the `⌘J` hint on the row.
