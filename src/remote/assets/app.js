@@ -41,6 +41,10 @@ const state = {
   resizeTimer: 0,
   // The mirror follows new output while the user has not scrolled away from the bottom.
   pinned: true,
+  // Markup of each painted screen line, so a frame only replaces the lines that changed.
+  screenLines: [],
+  // The latest frame received while the user selects text: painting it would drop the selection.
+  heldFrame: null,
   targets: { entries: [], agents: [] },
   // Last entry id and agent name picked on this phone.
   choice: loadChoice(),
@@ -194,6 +198,8 @@ function openMirror(id) {
   state.cols = 0;
   resetHistory();
   $("screen").innerHTML = "";
+  state.screenLines = [];
+  state.heldFrame = null;
   $("notice").hidden = true;
   $("agents-view").hidden = true;
   $("terminal-view").hidden = false;
@@ -251,7 +257,29 @@ function isAtBottom(scroller) {
   return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
 }
 
+function selectsScreenText() {
+  const selection = document.getSelection();
+  return !selection.isCollapsed && $("scroller").contains(selection.anchorNode);
+}
+
+// A replaced line drops the selection on it, and a long press that began there.
+function paintLines(lines) {
+  const screen = $("screen");
+  lines.forEach((line, index) => {
+    if (state.screenLines[index] === line) return;
+    const node = screen.children[index];
+    if (node) node.outerHTML = line;
+    else screen.insertAdjacentHTML("beforeend", line);
+  });
+  while (screen.children.length > lines.length) screen.lastElementChild.remove();
+  state.screenLines = lines;
+}
+
 function renderScreen(frame) {
+  if (selectsScreenText()) {
+    state.heldFrame = frame;
+    return;
+  }
   const scroller = $("scroller");
   const stick = isAtBottom(scroller);
   if (frame.cols !== state.cols) {
@@ -263,9 +291,7 @@ function renderScreen(frame) {
   scroller.style.setProperty("--term-bg", frame.bg);
   scroller.style.setProperty("--term-fg", frame.fg);
   const cursor = frame.cursor;
-  $("screen").innerHTML = frame.lines
-    .map((runs, line) => lineHtml(runs, cursor && cursor[0] === line ? cursor[1] : null))
-    .join("");
+  paintLines(frame.lines.map((runs, line) => lineHtml(runs, cursor && cursor[0] === line ? cursor[1] : null)));
   if (state.writable !== frame.writable) {
     state.writable = frame.writable;
     setDockWritable(frame.writable);
@@ -460,7 +486,7 @@ function screenCell(touch) {
 }
 
 function moveSwipe(event) {
-  if (event.touches.length !== 1 || pinch.distance !== 0) return;
+  if (event.touches.length !== 1 || pinch.distance !== 0 || selectsScreenText()) return;
   const touch = event.touches[0];
   if (touch.identifier !== swipe.id) return startSwipe(event);
   const dy = touch.clientY - swipe.y;
@@ -726,6 +752,12 @@ $("scroller").addEventListener("touchend", (event) => {
 });
 $("scroller").addEventListener("touchcancel", endPinch);
 document.addEventListener("gesturestart", (event) => event.preventDefault());
+document.addEventListener("selectionchange", () => {
+  if (state.heldFrame === null || selectsScreenText()) return;
+  const frame = state.heldFrame;
+  state.heldFrame = null;
+  renderScreen(frame);
+});
 
 // The sheet is a history entry: Safari's back-swipe snapshot of the list is then taken without it.
 function route() {
