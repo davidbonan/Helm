@@ -6,12 +6,12 @@
 
 ---
 
-## ◐ Milestone — M-PhoneKeep · Phone pairing that lasts
+## ☑ Milestone — M-PhoneKeep · Phone pairing that lasts
 
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **5/6**.
+launch* off by default, 30-day drop, no device cap. Counter: **6/6**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
@@ -32,8 +32,13 @@ launch* off by default, 30-day drop, no device cap. Counter: **5/6**.
   parsing), network recorded at pairing, 30 s check, manual Stop holds it off.
   *Tests*: 3 unit (`route` / `arp` parsing) + 3 app unit (recorded network ⇒ on,
   silent; other network ⇒ off; manual Stop holds off). Real lookup checked once.
-- ☐ **K6 — Phone verification.** Simulator (`mobile` skill): pair, reload keeps
-  the session, revoked ⇒ not-paired page.
+- ☑ **K6 — Phone verification.** Simulator (`mobile` skill): pair, reload keeps
+  the session, revoked ⇒ not-paired page; a paired phone rescanning lands on its
+  agents (no second device). *Tests*: 1 business e2e (rescan) + 1 app unit
+  (Revoke row → that device). *Verified*: iOS simulator
+  `verify-artifacts/20261001_phone-keep/` (reloads 35 s apart, past the grace);
+  headless-verify `verify-artifacts/20261001_102237_7243/` (Phone section, Revoke,
+  modal).
 
 ---
 

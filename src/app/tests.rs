@@ -4130,6 +4130,45 @@ fn the_pairing_modal_offers_a_fresh_code_once_the_shown_one_is_used() {
     assert_ne!(shown(&harness), first, "a spent code is replaced");
 }
 
+#[test]
+fn revoke_in_preferences_drops_that_device_from_the_book() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with(&["a"]);
+    let now = crate::remote::devices::wall_ms();
+    let (iphone, ipad) = app.phone_devices.edit(|book| {
+        (
+            book.pair("iPhone", now).as_str().to_owned(),
+            book.pair("iPad", now).as_str().to_owned(),
+        )
+    });
+    app.preferences_section = PreferencesSection::Phone;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_preferences(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run_steps(2);
+    let today = crate::ui::format_date((now / 1000) as i64);
+    let detail = format!("Paired {today} · Last seen just now");
+    assert_eq!(harness.get_all_by_label(&detail).count(), 2);
+
+    harness.get_all_by_label("Revoke").nth(1).unwrap().click();
+    harness.run_steps(2);
+
+    let book = |token: &str| {
+        harness
+            .state()
+            .phone_devices
+            .read(|book| book.device(token, now).is_some())
+    };
+    assert!(book(&iphone), "the other device stays");
+    assert!(!book(&ipad), "the iPad's row was revoked");
+}
+
 const HOME_GATEWAY: &str = "38:06:e6:45:5e:10";
 
 /// *Start at launch* on, `home` recorded, the gateway reading `HOME_GATEWAY`

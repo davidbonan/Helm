@@ -283,6 +283,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
     }
     let visitor = shared.visitor(&head);
     let response = match head.path.as_str() {
+        "/pair" if visitor.is_some() => to_agents(),
         "/pair" => return pair(&mut stream, &head, shared),
         "/ws" if head.is_websocket_upgrade() => return upgrade(stream, &head, visitor, shared),
         "/" | "/app.js" | "/app.css" if visitor.is_none() => unpaired(),
@@ -300,6 +301,12 @@ fn unpaired() -> Response<'static> {
         "text/html; charset=utf-8",
         UNPAIRED_HTML.as_bytes(),
     )
+}
+
+/// A phone already paired that scans a code again: no second device, the code
+/// stays offered.
+fn to_agents() -> Response<'static> {
+    Response::new("303 See Other", "text/plain", b"").with("Location", "/".to_owned())
 }
 
 /// Every page load rotates the device's token: a copied cookie is worth one visit.
@@ -351,8 +358,7 @@ fn pair(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
     (shared.services.alert)(AccessAlert::Paired {
         device: name.to_owned(),
     });
-    let _ = Response::new("303 See Other", "text/plain", b"")
-        .with("Location", "/".to_owned())
+    let _ = to_agents()
         .with("Set-Cookie", session_cookie(&token))
         .write_to(stream);
 }

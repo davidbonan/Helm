@@ -278,6 +278,29 @@ fn an_unpaired_phone_gets_the_not_paired_page() {
 }
 
 #[test]
+fn a_paired_phone_scanning_again_lands_on_its_agents_without_a_second_pairing() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let pairing = fixture.pairing_path();
+
+    let rescanned = fixture.get(&pairing, Some(&cookie));
+    let other_phone = fixture.get(&pairing, None);
+    let devices = fixture.devices.read(|book| book.devices.len());
+
+    fixture.close();
+    assert!(rescanned.starts_with("HTTP/1.1 303"), "{rescanned}");
+    assert!(
+        !rescanned.contains("Set-Cookie"),
+        "the paired phone keeps its device"
+    );
+    assert!(
+        other_phone.starts_with("HTTP/1.1 303"),
+        "the code was not spent"
+    );
+    assert_eq!(devices, 2);
+}
+
+#[test]
 fn a_page_load_rotates_the_session_cookie() {
     let fixture = Fixture::new();
     let paired = fixture.pair();
