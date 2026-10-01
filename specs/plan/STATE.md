@@ -6,12 +6,49 @@
 
 ---
 
+## ☑ Milestone — M-Agents · One agents table behind every AI action
+
+Spec: [`specs/preferences.md`](../preferences.md) §4 *Agents* + §5,
+[`specs/git.md`](../git.md) §5, [`specs/pull-requests.md`](../pull-requests.md) §11.
+Per the user: nothing imposed — every command and prompt is free text, pre-filled
+from presets; the agents table is the single source of commands, the commit
+message and the review only choose an agent. Counter: **9/9**.
+
+- ☑ **A1 — Agents domain.** `agents`: `Agent` (start / with a prompt / headless
+  commands), `Preset`, `CommitMessageSettings` + `CommitMessageRequest`,
+  `ReviewSettings`, `fill` templates. *Tests*: 13 unit.
+- ☑ **A2 — Prefs + migration.** `agents` / `commit_message` / `review`; legacy
+  `ai_provider` / `ai_instructions` / `review_agent_command` / `launch_agents`
+  carried into the table, file rewritten. *Tests*: 3 unit.
+- ☑ **A3 — Commit message through the shell.** The agent's headless command,
+  `$HELM_PROMPT`, startup output cut off by a marker. *Tests*: 8 business e2e
+  (`ai_commit_e2e`).
+- ☑ **A4 — Review + phone on the table.** One `Pane::typing` for both; agent name
+  on *Send to* / *Ask* / tab / toast; no able agent ⇒ toast. *Tests*: app unit updated.
+- ☑ **A5 — Preferences › Agents.** Agent blocks, *Add agent* (presets / empty),
+  agent dropdowns on Commit message and Review, rename follows, *Restore default*.
+  *Tests*: 9 UI e2e.
+- ☑ **A7 — Preferences polish.** Tall single-line fields center and inset their
+  text; the scroll bar sits on the window's edge, not against the cards.
+- ☑ **A8 — One comments prompt.** *Send to* and a thread's *Ask* share
+  `comments_prompt`; a posted thread renders like the notes (`review::render_thread`).
+- ☑ **A9 — Folded Agents page.** One row per agent and per prompt, opened on a
+  click (one agent at a time); groups *Tasks* and *Notifications*.
+- ☑ **A6 — Subprocesses in their own session.** `git::cli` spawns under `setsid`:
+  an interactive shell no longer stops on helm's controlling terminal.
+
+Not done: detected agents still show their binary name (`Claude`) in the banner
+and the dashboard, not the table's name. `codex exec` / `opencode run` /
+`opencode --prompt` come from each CLI's `--help`, never run for real.
+
+---
+
 ## ☑ Milestone — M-PhoneKeep · Phone pairing that lasts
 
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §7, §8, §9 +
 [`specs/preferences.md`](../preferences.md) *Phone*. Per the user: LAN only, plain
 HTTP + guards (rotation, two-address alert, revocation), no idle stop, *Start at
-launch* off by default, 30-day drop, no device cap. Counter: **7/7**.
+launch* off by default, 30-day drop, no device cap. Counter: **8/8**.
 
 - ☑ **K1 — Paired devices domain.** `remote::devices`: pairing code (single use,
   5 min), device token 256-bit + SHA-256, rotation with 30 s grace, 30-day drop,
@@ -84,7 +121,7 @@ creation. Counter: **3/3**.
 Spec: [`specs/remote.md`](../remote.md). Per the user: LAN HTTP + token (new per
 start), agents only, mirror with zoom/scroll (no reflow), composer + quick keys,
 Mac kept awake, 2 h idle stop, palette-only entry; no terminal creation from the
-phone. Counter: **6/6**.
+phone. Counter: **8/8**.
 
 - ☑ **T1 — Agent watch off the UI thread.** Watcher thread owns the per-pane
   `PaneAgentState`, 1 s tick; pgid probe = `dup` of the PTY master fd
@@ -691,7 +728,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §5/§10/§11 (reconciled 
 Rebuilds both cockpit surfaces: the **list** groups by actionability behind a
 search + tabs header, and the **review surface** grows a full-width header with a
 verdict cluster and Merge, a Conversation/Files/Commits tab bar, a **left** rail and
-a continuous multi-file diff. Counter: **6/6**.
+a continuous multi-file diff. Counter: **8/8**.
 
 **Locked decisions** (they *supersede* M-PR4's, taken against the previous mockup):
 **tabs are back** (Open · To review · Mine · Drafts) and so are **search** and the
@@ -852,7 +889,7 @@ seams resize and its tiles rearrange like a workspace tab's. Counter: **5/5**.
 Spec: [`specs/git.md`](../git.md) §4 (+ [`keybindings.md`](../keybindings.md) §3,
 [`design-system.md`](../design-system.md) §4). A click in the diff content puts a
 caret on the line; the buffer reaches the working tree on exit and on idle typing,
-with no save control. Counter: **7/7**.
+with no save control. Counter: **8/8**.
 
 - ☑ **T1 — Spec.** `git.md` §4 (inline editing, section-of-origin staging rule,
   non-editable list, edit mechanism), §7 (diff poll suspended while editing), §8
@@ -1410,7 +1447,7 @@ pills**, a **Created … ago** age and an **Oldest/Newest** conversation toggle.
 Locked decisions: **labels = GitHub-only** (Bitbucket Cloud has no PR labels →
 empty); **linked issue / conversation filter / reactions = cut** (no backing — the
 Jira key already leads the title); reviewers wired from the existing
-`PullRequest.reviewers` (GitHub-populated, **BB empty in v1**). Counter: **7/7**.
+`PullRequest.reviewers` (GitHub-populated, **BB empty in v1**). Counter: **8/8**.
 
 - ☑ **T1 — Reviewers cluster + role pills.** Detail meta-row reuses
   `reviewer_stack` (allocated rect → painter); `comment_role` derives **Author** /
@@ -1706,7 +1743,7 @@ Spec: [`specs/pull-requests.md`](../pull-requests.md) §11. Turns the read-only
 detail panel into a **diff-centric review surface**: PR diff without cloning,
 in-diff line comments, **Submit review** (Comment / Approve / Request changes) on
 GitHub **and** Bitbucket Cloud, and **Ask Claude** on an existing thread. Reuses
-the M-RC review engine (`review.rs`, `ui::diff_view`). Counter: **7/7** — complete,
+the M-RC review engine (`review.rs`, `ui::diff_view`). Counter: **8/8** — complete,
 pending review + merge of the `m-pr` worktree branch.
 
 - ☑ **T1 — PR diff producer (domain).** `git::diff::pr_changed_files` +
@@ -2013,7 +2050,7 @@ file/line/code/note) and **clears** the repo's comments (the tab is the only
 signal). Works on **both** Git WIP and Commit Détail (every line annotable).
 Locked: multi-file accumulation (app-level store), **dedicated** pref
 `review_agent_command` (default `claude`), launch in a **new tab**.
-In-memory only except `review_agent_command` (persisted). Counter: **6/6**.
+In-memory only except `review_agent_command` (persisted). Counter: **8/8**.
 
 - ☑ **RC1 — Domain + prompt.** `review::{LineComment, build_review_prompt}` —
   pure markdown grouped by file (BTreeMap), line-ref `new_lineno` else

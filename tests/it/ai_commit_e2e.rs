@@ -6,7 +6,20 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use helm::agents::{CommitMessageRequest, CommitMessageSettings};
 use helm::ai::{self, AiError, AiRunner};
+
+const SHELL: &str = "/bin/sh";
+
+/// The request running `provider -p "$HELM_PROMPT"`, default prompt.
+fn request_running(provider: &Path) -> CommitMessageRequest {
+    CommitMessageSettings::default()
+        .request_running(&format!("'{}' -p \"$HELM_PROMPT\"", provider.display()))
+}
+
+fn generate(provider: &Path, repo: &Path) -> Result<ai::CommitSuggestion, AiError> {
+    ai::generate_in_shell(Path::new(SHELL), repo, &request_running(provider))
+}
 
 /// Fake provider: captures the received prompt (`-p <prompt>`) into `prompt.txt`
 /// then replies `reply` on stdout.
@@ -70,15 +83,24 @@ fn generation_feeds_only_the_staged_diff_and_parses_the_reply() {
     let bin = tempfile::tempdir().unwrap();
     let provider = fake_provider(bin.path(), "Add main entry point\n\nBootstrap the binary.");
 
-    let suggestion = ai::generate_with(&provider, &[], repo.path(), "Write in English.").unwrap();
+    let request = CommitMessageRequest {
+        prompt: "Write in English.\n{changes}".to_owned(),
+        ..request_running(&provider)
+    };
+
+    let suggestion = ai::generate_in_shell(Path::new(SHELL), repo.path(), &request).unwrap();
 
     assert_eq!(suggestion.subject, "Add main entry point");
     assert_eq!(suggestion.description, "Bootstrap the binary.");
 
     let prompt = fs::read_to_string(bin.path().join("prompt.txt")).unwrap();
     assert!(
-        prompt.contains("Additional instructions:\nWrite in English."),
-        "the preference instructions reach the prompt:\n{prompt}"
+        prompt.starts_with("Write in English.\nStaged files"),
+        "the prompt of the preferences is the one sent:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("imperative subject"),
+        "the reply format closes the prompt:\n{prompt}"
     );
     assert!(
         prompt.contains("Staged diff") && prompt.contains("+fn main() {}"),
@@ -95,21 +117,45 @@ fn generation_feeds_only_the_staged_diff_and_parses_the_reply() {
 }
 
 #[test]
-fn the_model_flags_precede_the_prompt_in_the_invocation() {
+fn the_command_runs_as_typed_with_the_prompt_as_one_argument() {
     let repo = repo_with_staged_file();
     let bin = tempfile::tempdir().unwrap();
     let provider = argv_recording_provider(bin.path(), "Add main entry point");
+    let request = CommitMessageSettings::default().request_running(&format!(
+        "'{}' --model haiku -p \"$HELM_PROMPT\"",
+        provider.display()
+    ));
 
-    ai::generate_with(&provider, &["--model", "haiku"], repo.path(), "").unwrap();
+    ai::generate_in_shell(Path::new(SHELL), repo.path(), &request).unwrap();
 
     let argv = fs::read_to_string(bin.path().join("argv.txt")).unwrap();
     let args: Vec<&str> = argv.split('\0').filter(|s| !s.is_empty()).collect();
+    assert_eq!(&args[..3], ["--model", "haiku", "-p"]);
     assert_eq!(
-        &args[..3],
-        ["--model", "haiku", "-p"],
-        "model flags precede `-p <prompt>`"
+        args.len(),
+        4,
+        "the multi-line prompt stays a single argument"
     );
-    assert_eq!(args.len(), 4, "the prompt follows as a single argument");
+}
+
+#[test]
+fn what_the_shell_prints_at_startup_stays_out_of_the_message() {
+    let repo = repo_with_staged_file();
+    let bin = tempfile::tempdir().unwrap();
+    let provider = fake_provider(bin.path(), "Add main entry point");
+    let noisy_shell = bin.path().join("noisy-sh");
+    fs::write(
+        &noisy_shell,
+        "#!/bin/sh\necho 'Welcome back'\nexec /bin/sh \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&noisy_shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let suggestion =
+        ai::generate_in_shell(&noisy_shell, repo.path(), &request_running(&provider)).unwrap();
+
+    assert_eq!(suggestion.subject, "Add main entry point");
+    assert_eq!(suggestion.description, "");
 }
 
 #[test]
@@ -128,7 +174,7 @@ fn unstaged_changes_alone_refuse_to_generate() {
     let bin = tempfile::tempdir().unwrap();
     let provider = fake_provider(bin.path(), "never called");
 
-    let err = ai::generate_with(&provider, &[], repo.path(), "").unwrap_err();
+    let err = generate(&provider, repo.path()).unwrap_err();
 
     assert_eq!(err, AiError::NoChanges);
     assert!(
@@ -144,7 +190,7 @@ fn a_clean_tree_refuses_to_generate() {
     let bin = tempfile::tempdir().unwrap();
     let provider = fake_provider(bin.path(), "never called");
 
-    let err = ai::generate_with(&provider, &[], tmp.path(), "").unwrap_err();
+    let err = generate(&provider, tmp.path()).unwrap_err();
 
     assert_eq!(err, AiError::NoChanges);
     assert!(
@@ -159,21 +205,25 @@ fn a_failing_provider_surfaces_its_stderr() {
     let bin = tempfile::tempdir().unwrap();
     let provider = failing_provider(bin.path());
 
-    let err = ai::generate_with(&provider, &[], repo.path(), "").unwrap_err();
+    let err = generate(&provider, repo.path()).unwrap_err();
 
-    assert_eq!(err, AiError::Failed("quota exceeded".to_owned()));
+    assert!(
+        matches!(&err, AiError::Failed(detail) if detail.contains("quota exceeded")),
+        "{err:?}"
+    );
     assert!(err.message().contains("quota exceeded"));
 }
 
 #[test]
-fn a_missing_provider_binary_is_a_clear_error() {
+fn a_command_the_shell_cannot_find_is_a_clear_error() {
     let repo = repo_with_staged_file();
 
-    let err =
-        ai::generate_with(Path::new("/nonexistent/helm-ai"), &[], repo.path(), "").unwrap_err();
+    let err = generate(Path::new("/nonexistent/helm-ai"), repo.path()).unwrap_err();
 
-    assert_eq!(err, AiError::NotFound("/nonexistent/helm-ai".to_owned()));
-    assert!(err.message().contains("Preferences"));
+    assert!(
+        matches!(&err, AiError::Failed(detail) if detail.contains("/nonexistent/helm-ai")),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -184,10 +234,10 @@ fn the_runner_is_busy_until_drained_and_accepts_the_next_request() {
     let mut runner = AiRunner::new(repo.path(), || {});
     assert!(!runner.busy());
 
-    assert!(runner.request_program(provider.clone(), &[], String::new()));
+    assert!(runner.request_in_shell(PathBuf::from(SHELL), request_running(&provider)));
     assert!(runner.busy());
     assert!(
-        !runner.request_program(provider.clone(), &[], String::new()),
+        !runner.request_in_shell(PathBuf::from(SHELL), request_running(&provider)),
         "a second request is ignored while one is in flight"
     );
 
@@ -195,6 +245,6 @@ fn the_runner_is_busy_until_drained_and_accepts_the_next_request() {
     assert_eq!(reply.subject, "Add main entry point");
     assert!(!runner.busy());
 
-    assert!(runner.request_program(provider, &[], String::new()));
+    assert!(runner.request_in_shell(PathBuf::from(SHELL), request_running(&provider)));
     assert!(runner.recv().unwrap().is_ok());
 }

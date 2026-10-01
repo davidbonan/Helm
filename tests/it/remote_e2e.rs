@@ -11,10 +11,11 @@ use std::time::Duration;
 use alacritty_terminal::grid::Dimensions;
 
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
+use helm::agents::Agent;
 use helm::remote::access::AccessAlert;
 use helm::remote::awake::{KeepAwake, REASON};
 use helm::remote::devices::PairedDevices;
-use helm::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
+use helm::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use helm::remote::registry::{ExposedPane, Registry};
 use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
@@ -423,7 +424,7 @@ fn offer_the_echo_agent(fixture: &Fixture) -> u64 {
     let command = fixture.dir.path().join("claude").display().to_string();
     fixture.registry.publish_targets(LaunchTargets {
         entries: vec![entry],
-        agents: vec![LaunchAgent::new("Claude Code", &command)],
+        agents: vec![Agent::new("Claude Code", &command)],
     });
     entry_id
 }

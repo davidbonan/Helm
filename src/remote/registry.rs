@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::agent_watch::watcher::{PaneReading, WatchedPane, WatcherLink};
 use crate::agent_watch::AgentBadge;
-use crate::remote::launch::{LaunchAgent, LaunchTarget, LaunchTargets};
+use crate::agents::Agent;
+use crate::remote::launch::{LaunchTarget, LaunchTargets};
 use crate::remote::protocol::PageTheme;
 use crate::terminal::palette::TermPalette;
 use crate::terminal::pane::{PaneHandle, PaneUid};
@@ -84,7 +85,7 @@ impl Registry {
         self.lock().targets.clone()
     }
 
-    pub fn launch_choice(&self, entry: u64, agent: usize) -> Option<(LaunchTarget, LaunchAgent)> {
+    pub fn launch_choice(&self, entry: u64, agent: usize) -> Option<(LaunchTarget, Agent)> {
         let published = self.lock();
         let target = published.targets.entries.iter().find(|t| t.id == entry)?;
         let agent = published.targets.agents.get(agent)?;

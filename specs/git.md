@@ -358,15 +358,16 @@ effect** (§2).
   triggers the same action as the button.
 - **AI-assisted message**: a sparkles icon button ("Generate commit
   message") to the right of the **Commit message** label — has the summary +
-  description drafted by the configured AI CLI ([`preferences.md`](preferences.md)
-  §4: provider `claude --model haiku -p` / `codex -p` / `opencode -p` + prompt
-  instructions — summarizing a staged diff is cheap, so Claude is pinned to the
-  small/fast Haiku model), as a subprocess off the UI thread. Context sent: **only the
+  description drafted by the chosen agent's **Headless** command ([`preferences.md`](preferences.md)
+  §4 *Agents*: a free shell line + prompt, `claude --model haiku -p "$HELM_PROMPT"`
+  by default — summarizing a staged diff is cheap, so the default runs the
+  small/fast Haiku model), run by the user's login + interactive shell off the UI
+  thread; what the shell prints at startup never reaches the message. Context sent: **only the
   staged** — file list + index diff; the working tree and
   untracked files never enter the prompt. The result **fills the
   inputs** — never an automatic commit. Active under the same conditions as the
   commit: ≥ 1 staged entry; spinner + click ignored during generation;
-  failure (missing binary, errored process, empty response) ⇒ toast (§10).
+  failure (blank or unknown command, errored process, empty response) ⇒ toast (§10).
 
 ## 6. Branch indicator
 

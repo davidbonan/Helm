@@ -52,7 +52,8 @@ New components follow this shape; existing deviations converge on it (notably
 | `terminal` | Split tree, pane, `alacritty_terminal` + `portable-pty` integration | — |
 | `git` | Repo, status model, hunk/line staging, commit, branch (wraps `git2`) | — |
 | `pull_requests` | Workspace PR model + sources (GitHub via `gh`, Bitbucket Cloud via `curl`), `PrRunner`; pure parsers I/O-free ([`pull-requests.md`](pull-requests.md)) | `git` (forge parse) |
-| `persistence` | Load/save preferences & repository list (serde) | `workspace`, `theme` |
+| `agents` | Agent settings: the agents table (the commands of every AI action), the agent + prompts of the commit message and of the review, presets, prompt templates ([`preferences.md`](preferences.md) §4) | `agent_watch` |
+| `persistence` | Load/save preferences & repository list (serde) | `workspace`, `theme`, `agents` |
 
 Anticipated submodules: `terminal::{pty, emu, layout}`, `git::{status, diff, stage, commit}`.
 

@@ -5,58 +5,16 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
-use serde::{Deserialize, Serialize};
 
-use crate::agent_watch;
 use crate::agent_watch::watcher::WatchedPane;
+use crate::agents::Agent;
 use crate::remote::registry::{ExposedPane, Registry};
-use crate::terminal::pane::Pane;
-use crate::terminal::pty::{login_shell_command, shell_program};
+use crate::terminal::pane::{Pane, TypedCommand};
 use crate::terminal::sizing::GridSize;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaunchAgent {
-    pub name: String,
-    /// Typed into a login shell in the chosen entry's directory.
-    pub command: String,
-}
-
-impl LaunchAgent {
-    pub fn new(name: &str, command: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-            command: command.to_owned(),
-        }
-    }
-
-    pub fn defaults() -> Vec<Self> {
-        vec![
-            Self::new("Claude Code", "claude"),
-            Self::new("Codex", "codex"),
-            Self::new("opencode", "opencode"),
-        ]
-    }
-
-    pub fn program(&self) -> Option<&str> {
-        self.command.split_whitespace().next()
-    }
-
-    /// A row with an empty name or command is kept in Preferences but never
-    /// offered to the phone.
-    pub fn is_offered(&self) -> bool {
-        !self.name.trim().is_empty() && self.program().is_some()
-    }
-
-    /// `false` ⇒ the watcher never badges it, so the phone never lists it.
-    pub fn is_detected(&self) -> bool {
-        self.program().is_some_and(agent_watch::is_watched_program)
-    }
-}
 
 /// A workspace entry the phone may launch into.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +47,7 @@ impl LaunchTarget {
 pub struct LaunchTargets {
     pub entries: Vec<LaunchTarget>,
     /// Offered agents only; the phone picks one by its index here.
-    pub agents: Vec<LaunchAgent>,
+    pub agents: Vec<Agent>,
 }
 
 /// A pane launched off the UI thread, on its way to become a tab of `entry`.
@@ -132,7 +90,12 @@ impl Launcher {
             .launch_choice(entry, agent)
             .ok_or_else(|| "That project or agent is no longer offered".to_owned())?;
         let wake = Arc::clone(&self.wake);
-        let pane = spawn_agent(&target.path, &agent.command, size.phone(), move || wake())
+        let typed = TypedCommand {
+            cwd: &target.path,
+            line: &agent.command,
+            prompt: None,
+        };
+        let pane = Pane::typing(&typed, size.phone(), move || wake())
             .map_err(|err| format!("Could not start {} — {err}", agent.name))?;
         let uid = pane.uid();
         registry.add_launched(
@@ -158,35 +121,9 @@ impl Launcher {
     }
 }
 
-/// A login shell in `cwd` into which `command` is typed, as the user would: the
-/// shell's profile (PATH) applies, and quitting the agent leaves the shell.
-fn spawn_agent(
-    cwd: &Path,
-    command: &str,
-    size: GridSize,
-    on_change: impl Fn() + Send + Sync + 'static,
-) -> Result<Pane> {
-    let pane = Pane::from_command(
-        login_shell_command(shell_program(), cwd),
-        size.rows,
-        size.cols,
-        on_change,
-    )?;
-    pane.feed(format!("{command}\n").as_bytes())?;
-    Ok(pane)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_agent_is_detected_by_the_invoked_name_of_its_first_word() {
-        assert!(LaunchAgent::new("Claude", "claude --model opus").is_detected());
-        assert!(LaunchAgent::new("Claude", "/opt/bin/claude-code").is_detected());
-        assert!(!LaunchAgent::new("Cursor", "cursor-agent").is_detected());
-        assert!(!LaunchAgent::new("Wrapped", "npx claude").is_detected());
-    }
 
     #[test]
     fn an_entry_id_survives_the_pages_json_numbers() {
@@ -198,12 +135,5 @@ mod tests {
         );
 
         assert!(target.id < 1 << 53);
-    }
-
-    #[test]
-    fn a_row_missing_its_name_or_command_is_not_offered() {
-        assert!(LaunchAgent::new("Codex", "codex").is_offered());
-        assert!(!LaunchAgent::new("  ", "codex").is_offered());
-        assert!(!LaunchAgent::new("Codex", "   ").is_offered());
     }
 }

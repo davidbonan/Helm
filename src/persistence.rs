@@ -4,11 +4,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::AiProvider;
+use crate::agents::{Agent, CommitMessageSettings, ReviewSettings};
 use crate::command_palette::CommandUsage;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
-use crate::remote::launch::LaunchAgent;
 use crate::terminal::links::Editor;
 use crate::theme::ThemeMode;
 use crate::ui::file_list::FileViewMode;
@@ -47,10 +46,6 @@ fn is_false(value: &bool) -> bool {
 
 fn is_unused(usage: &CommandUsage) -> bool {
     *usage == CommandUsage::default()
-}
-
-fn default_review_agent_command() -> String {
-    "claude".to_owned()
 }
 
 /// Per-project settings keyed by the **project root** (shared across its
@@ -104,10 +99,6 @@ pub struct Prefs {
     pub show_workspace: bool,
     pub show_git: bool,
     pub pull_default: PullDefault,
-    /// AI CLI behind the commit card's "Generate commit message" button.
-    pub ai_provider: AiProvider,
-    /// Instructions appended to the commit message prompt.
-    pub ai_instructions: String,
     /// IDE opening a file from a terminal Cmd+click link (terminal.md §12): its
     /// CLI template is spawned with the file path and line (`Editor::template`).
     pub editor: Editor,
@@ -137,10 +128,6 @@ pub struct Prefs {
     /// (update.md §9.3): the boot trigger shows the What's new modal once when
     /// `current_version()` exceeds it. Empty on a first install ⇒ silent baseline.
     pub last_seen_version: String,
-    /// CLI the in-diff review's "Send to {agent}" button launches in a new
-    /// terminal tab (M-RC): `<command> "<prompt>"`. Default `claude`.
-    #[serde(default = "default_review_agent_command")]
-    pub review_agent_command: String,
     /// Bitbucket account email for the PR cockpit's Basic auth (pull-requests.md
     /// §3); the paired token lives in the Keychain, never here. Empty ⇒ the
     /// Bitbucket source stays off.
@@ -162,9 +149,15 @@ pub struct Prefs {
     /// table of tables: after `keybindings`, before the arrays-of-tables.
     #[serde(skip_serializing_if = "is_unused")]
     pub command_usage: CommandUsage,
-    /// Agents the phone can launch (remote.md §7.2). Absent ⇒ the defaults;
+    /// Command + prompt of the commit card's "Generate commit message" (git.md
+    /// §5). Regular table, like `keybindings`.
+    pub commit_message: CommitMessageSettings,
+    /// Agent the review notes and the PR review surface hand work to
+    /// (pull-requests.md §11). Regular table.
+    pub review: ReviewSettings,
+    /// Agents helm can start (preferences.md §4). Absent ⇒ the defaults;
     /// present, even empty ⇒ verbatim.
-    pub launch_agents: Vec<LaunchAgent>,
+    pub agents: Vec<Agent>,
     pub projects: Vec<Project>,
     /// Per-project settings (worktrees.md §6); array-of-tables like `projects`,
     /// so it stays after every scalar field.
@@ -183,8 +176,6 @@ impl Default for Prefs {
             show_workspace: true,
             show_git: false,
             pull_default: PullDefault::default(),
-            ai_provider: AiProvider::default(),
-            ai_instructions: String::new(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
             phone_access_at_launch: false,
@@ -194,13 +185,14 @@ impl Default for Prefs {
             run_panel_collapsed: false,
             workspace_opener: WorkspaceOpener::default(),
             last_seen_version: String::new(),
-            review_agent_command: default_review_agent_command(),
             bitbucket_email: String::new(),
             pr_detail_width: DEFAULT_PR_DETAIL_WIDTH,
             pr_rail_collapsed: false,
             keybindings: BTreeMap::new(),
             command_usage: CommandUsage::default(),
-            launch_agents: LaunchAgent::defaults(),
+            commit_message: CommitMessageSettings::default(),
+            review: ReviewSettings::default(),
+            agents: Agent::defaults(),
             projects: Vec::new(),
             project_settings: Vec::new(),
         }
@@ -228,6 +220,57 @@ impl Default for LegacyPrefs {
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
             pull_default: PullDefault::default(),
+        }
+    }
+}
+
+/// Agent settings as written before the agents table (one provider enum, one
+/// review CLI, the phone's own list), next to the keys that replace them.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct LegacyAgentPrefs {
+    ai_provider: Option<String>,
+    ai_instructions: Option<String>,
+    review_agent_command: Option<String>,
+    launch_agents: Option<Vec<Agent>>,
+    commit_message: Option<toml::Value>,
+    review: Option<toml::Value>,
+    agents: Option<toml::Value>,
+}
+
+impl LegacyAgentPrefs {
+    fn is_present(&self) -> bool {
+        self.ai_provider.is_some()
+            || self.ai_instructions.is_some()
+            || self.review_agent_command.is_some()
+            || self.launch_agents.is_some()
+    }
+
+    /// A key already written in the new format wins over its legacy counterpart.
+    /// The phone list becomes the table first: the commit provider and the review
+    /// CLI then reuse its rows, or join it.
+    fn carry_into(self, prefs: &mut Prefs) {
+        if !self.is_present() {
+            return;
+        }
+        if let (None, Some(rows)) = (&self.agents, &self.launch_agents) {
+            prefs.agents = rows
+                .iter()
+                .map(|row| Agent::from_legacy(&row.name, &row.command))
+                .collect();
+        }
+        if self.commit_message.is_none() {
+            prefs.commit_message = CommitMessageSettings::from_legacy(
+                self.ai_provider.as_deref(),
+                self.ai_instructions.as_deref().unwrap_or_default(),
+                &mut prefs.agents,
+            );
+        }
+        if self.review.is_none() {
+            prefs.review = ReviewSettings::from_legacy(
+                self.review_agent_command.as_deref().unwrap_or_default(),
+                &mut prefs.agents,
+            );
         }
     }
 }
@@ -357,7 +400,11 @@ impl Prefs {
             let legacy: LegacyPrefs = value.try_into()?;
             return Ok((legacy.into(), true));
         }
-        Ok((value.try_into()?, false))
+        let legacy_agents: LegacyAgentPrefs = value.clone().try_into()?;
+        let mut prefs: Self = value.try_into()?;
+        let migrated = legacy_agents.is_present();
+        legacy_agents.carry_into(&mut prefs);
+        Ok((prefs, migrated))
     }
 
     pub fn load() -> Self {
@@ -546,8 +593,6 @@ mod tests {
             show_workspace: false,
             show_git: true,
             pull_default: PullDefault::FfOnly,
-            ai_provider: AiProvider::Codex,
-            ai_instructions: "Always write in French.".to_owned(),
             editor: Editor::Zed,
             notify_on_agent_completion: false,
             phone_access_at_launch: true,
@@ -557,7 +602,6 @@ mod tests {
             git_unstaged_share: Some(0.75),
             workspace_opener: WorkspaceOpener::GitKraken,
             last_seen_version: "0.8.4".to_owned(),
-            review_agent_command: "claude --model opus".to_owned(),
             bitbucket_email: "me@corp.com".to_owned(),
             pr_detail_width: 480.0,
             pr_rail_collapsed: true,
@@ -568,7 +612,18 @@ mod tests {
                 usage.record(Command::Push, 1_790_100_000);
                 usage
             },
-            launch_agents: vec![LaunchAgent::new("Claude", "claude --model opus")],
+            commit_message: CommitMessageSettings {
+                agent: "Opus".to_owned(),
+                prompt: "En français.\n\n{changes}".to_owned(),
+            },
+            review: ReviewSettings {
+                agent: "Opus".to_owned(),
+                ..ReviewSettings::default()
+            },
+            agents: vec![Agent {
+                headless_command: "cc -p \"$HELM_PROMPT\"".to_owned(),
+                ..Agent::from_legacy("Opus", "claude --model opus")
+            }],
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),
                 project("/Users/dev/beta", &[]),
@@ -593,19 +648,68 @@ mod tests {
     }
 
     #[test]
-    fn launch_agents_default_when_absent_and_stay_empty_once_cleared() {
-        assert_eq!(
-            Prefs::from_toml("").unwrap().launch_agents,
-            LaunchAgent::defaults()
-        );
+    fn agents_default_when_absent_and_stay_empty_once_cleared() {
+        assert_eq!(Prefs::from_toml("").unwrap().agents, Agent::defaults());
         let cleared = Prefs {
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+x".to_owned())]),
-            launch_agents: Vec::new(),
+            agents: Vec::new(),
             projects: vec![project("/Users/dev/alpha", &[])],
             ..Prefs::default()
         };
         let text = cleared.to_toml().unwrap();
         assert_eq!(Prefs::from_toml(&text).unwrap(), cleared, "{text}");
+    }
+
+    #[test]
+    fn legacy_agent_keys_are_carried_into_the_agent_settings() {
+        let text = r#"
+ai_provider = "codex"
+ai_instructions = "Write in French."
+review_agent_command = "cc --model opus"
+
+[[launch_agents]]
+name = "Claude"
+command = "cc"
+"#;
+        let (prefs, migrated) = Prefs::parse(text).unwrap();
+
+        assert!(migrated, "the file is rewritten without its legacy keys");
+        let names: Vec<&str> = prefs.agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Claude", "Codex", "Cc"]);
+        assert_eq!(prefs.agents[0], Agent::from_legacy("Claude", "cc"));
+        assert_eq!(
+            prefs
+                .commit_message
+                .request_in(&prefs.agents)
+                .unwrap()
+                .command,
+            "codex exec \"$HELM_PROMPT\""
+        );
+        assert!(prefs
+            .commit_message
+            .prompt
+            .contains("Additional instructions:\nWrite in French."));
+        assert_eq!(
+            prefs.review.command_in(&prefs.agents),
+            Some("cc --model opus \"$HELM_PROMPT\"")
+        );
+
+        let rewritten = prefs.to_toml().unwrap();
+        let (reloaded, migrated_again) = Prefs::parse(&rewritten).unwrap();
+        assert_eq!(reloaded, prefs);
+        assert!(!migrated_again);
+    }
+
+    #[test]
+    fn a_new_agent_key_wins_over_its_legacy_counterpart() {
+        let text = r#"
+review_agent_command = "codex"
+
+[review]
+agent = "Mine"
+"#;
+        let prefs = Prefs::from_toml(text).unwrap();
+        assert_eq!(prefs.review.agent, "Mine");
     }
 
     #[test]
@@ -966,31 +1070,6 @@ mod tests {
     }
 
     #[test]
-    fn ai_prefs_default_to_claude_and_round_trip_in_kebab_case() {
-        let defaults = Prefs::default();
-        assert_eq!(defaults.ai_provider, AiProvider::Claude);
-        assert_eq!(defaults.ai_instructions, "");
-        assert_eq!(
-            Prefs::from_toml("").unwrap().ai_provider,
-            AiProvider::Claude
-        );
-
-        let prefs = Prefs {
-            ai_provider: AiProvider::Opencode,
-            ai_instructions: "Use conventional commits.".to_owned(),
-            ..Prefs::default()
-        };
-        let text = prefs.to_toml().unwrap();
-        assert!(
-            text.contains("ai_provider = \"opencode\""),
-            "unexpected format:\n{text}"
-        );
-        let restored = Prefs::from_toml(&text).unwrap();
-        assert_eq!(restored.ai_provider, AiProvider::Opencode);
-        assert_eq!(restored.ai_instructions, "Use conventional commits.");
-    }
-
-    #[test]
     fn editor_defaults_to_vscode_and_round_trips() {
         assert_eq!(Prefs::default().editor, Editor::VsCode);
         assert_eq!(
@@ -1038,24 +1117,6 @@ mod tests {
             "table must come before the arrays-of-tables:\n{text}"
         );
         assert_eq!(Prefs::from_toml(&text).unwrap(), prefs);
-    }
-
-    #[test]
-    fn review_agent_command_round_trips_default_empty_custom() {
-        assert_eq!(Prefs::default().review_agent_command, "claude");
-
-        for value in ["claude", "", "claude --model opus"] {
-            let prefs = Prefs {
-                review_agent_command: value.to_owned(),
-                ..Prefs::default()
-            };
-            let round = Prefs::from_toml(&prefs.to_toml().unwrap()).unwrap();
-            assert_eq!(round.review_agent_command, value);
-        }
-
-        // Absent from older TOML ⇒ defaults to "claude".
-        let upgraded = Prefs::from_toml("show_git = true").unwrap();
-        assert_eq!(upgraded.review_agent_command, "claude");
     }
 
     #[test]

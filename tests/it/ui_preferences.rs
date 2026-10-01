@@ -4,16 +4,16 @@ use std::rc::Rc;
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
-use helm::ai::AiProvider;
+use helm::agents::{Agent, CommitMessageSettings, Preset, ReviewSettings};
 use helm::git::sync::PullDefault;
 use helm::keybindings::{Action, Keymap, Shortcut};
 use helm::pull_requests::runner::SourceStatus;
-use helm::remote::launch::LaunchAgent;
 use helm::terminal::links::Editor;
 use helm::theme::{Palette, ThemeMode};
 use helm::ui::preferences::{
-    preferences_page, setting_divider, setting_row, settings_card, KeyboardState, PhoneDeviceRow,
-    PhoneView, PrSourcesView, PreferencesSection, ProjectView, UpdatesView, NO_PAIRED_DEVICE,
+    preferences_page, setting_divider, setting_row, settings_card, AgentsView, KeyboardState,
+    PhoneDeviceRow, PhoneView, PrSourcesView, PreferencesSection, ProjectView, UpdatesView,
+    NO_PAIRED_DEVICE,
 };
 use helm::update::{UpdateState, Version};
 
@@ -26,20 +26,18 @@ struct PageProbe {
     light_theme: Rc<RefCell<String>>,
     dark_theme: Rc<RefCell<String>>,
     pull: Rc<RefCell<PullDefault>>,
-    ai_provider: Rc<RefCell<AiProvider>>,
-    ai_instructions: Rc<RefCell<String>>,
-    review_agent: Rc<RefCell<String>>,
+    commit_message: Rc<RefCell<CommitMessageSettings>>,
+    review: Rc<RefCell<ReviewSettings>>,
     editor: Rc<RefCell<Editor>>,
     notify: Rc<RefCell<bool>>,
-    launch_agents: Rc<RefCell<Vec<LaunchAgent>>>,
+    agents: Rc<RefCell<Vec<Agent>>>,
     keymap: Rc<RefCell<Keymap>>,
     keyboard: Rc<RefCell<KeyboardState>>,
     theme_changes: Rc<RefCell<usize>>,
     pull_changes: Rc<RefCell<usize>>,
-    ai_changes: Rc<RefCell<usize>>,
     editor_changes: Rc<RefCell<usize>>,
     notify_changes: Rc<RefCell<usize>>,
-    launch_agent_changes: Rc<RefCell<usize>>,
+    agent_changes: Rc<RefCell<usize>>,
     keymap_changes: Rc<RefCell<usize>>,
     backs: Rc<RefCell<usize>>,
     update_checks: Rc<RefCell<usize>>,
@@ -94,20 +92,18 @@ fn page_harness_full(
         light_theme: Rc::new(RefCell::new("helm".to_owned())),
         dark_theme: Rc::new(RefCell::new("helm".to_owned())),
         pull: Rc::new(RefCell::new(pull)),
-        ai_provider: Rc::new(RefCell::new(AiProvider::default())),
-        ai_instructions: Rc::new(RefCell::new(String::new())),
-        review_agent: Rc::new(RefCell::new(String::new())),
+        commit_message: Rc::new(RefCell::new(CommitMessageSettings::default())),
+        review: Rc::new(RefCell::new(ReviewSettings::default())),
         editor: Rc::new(RefCell::new(Editor::default())),
         notify: Rc::new(RefCell::new(true)),
-        launch_agents: Rc::new(RefCell::new(LaunchAgent::defaults())),
+        agents: Rc::new(RefCell::new(Agent::defaults())),
         keymap: Rc::new(RefCell::new(Keymap::default())),
         keyboard: Rc::new(RefCell::new(KeyboardState::default())),
         theme_changes: Rc::new(RefCell::new(0)),
         pull_changes: Rc::new(RefCell::new(0)),
-        ai_changes: Rc::new(RefCell::new(0)),
         editor_changes: Rc::new(RefCell::new(0)),
         notify_changes: Rc::new(RefCell::new(0)),
-        launch_agent_changes: Rc::new(RefCell::new(0)),
+        agent_changes: Rc::new(RefCell::new(0)),
         keymap_changes: Rc::new(RefCell::new(0)),
         backs: Rc::new(RefCell::new(0)),
         update_checks: Rc::new(RefCell::new(0)),
@@ -118,20 +114,18 @@ fn page_harness_full(
     let light_theme = probe.light_theme.clone();
     let dark_theme = probe.dark_theme.clone();
     let pull = probe.pull.clone();
-    let ai_provider = probe.ai_provider.clone();
-    let ai_instructions = probe.ai_instructions.clone();
-    let review_agent = probe.review_agent.clone();
+    let commit_message = probe.commit_message.clone();
+    let review = probe.review.clone();
     let editor = probe.editor.clone();
     let notify = probe.notify.clone();
-    let launch_agents = probe.launch_agents.clone();
+    let agents = probe.agents.clone();
     let keymap = probe.keymap.clone();
     let keyboard = probe.keyboard.clone();
     let theme_changes = probe.theme_changes.clone();
     let pull_changes = probe.pull_changes.clone();
-    let ai_changes = probe.ai_changes.clone();
     let editor_changes = probe.editor_changes.clone();
     let notify_changes = probe.notify_changes.clone();
-    let launch_agent_changes = probe.launch_agent_changes.clone();
+    let agent_changes = probe.agent_changes.clone();
     let keymap_changes = probe.keymap_changes.clone();
     let backs = probe.backs.clone();
     let update_checks = probe.update_checks.clone();
@@ -150,15 +144,16 @@ fn page_harness_full(
             &mut light_theme.borrow_mut(),
             &mut dark_theme.borrow_mut(),
             &mut pull.borrow_mut(),
-            &mut ai_provider.borrow_mut(),
-            &mut ai_instructions.borrow_mut(),
-            &mut review_agent.borrow_mut(),
             &mut editor.borrow_mut(),
             &mut bitbucket_email,
             &mut bitbucket_token,
             &pr_sources,
             &mut notify.borrow_mut(),
-            &mut launch_agents.borrow_mut(),
+            AgentsView {
+                agents: &mut agents.borrow_mut(),
+                commit_message: &mut commit_message.borrow_mut(),
+                review: &mut review.borrow_mut(),
+            },
             PhoneView {
                 start_at_launch: &mut false,
                 devices: &[],
@@ -176,17 +171,14 @@ fn page_harness_full(
         if action.pull_changed {
             *pull_changes.borrow_mut() += 1;
         }
-        if action.ai_changed {
-            *ai_changes.borrow_mut() += 1;
-        }
         if action.editor_changed {
             *editor_changes.borrow_mut() += 1;
         }
         if action.agent_notify_changed {
             *notify_changes.borrow_mut() += 1;
         }
-        if action.launch_agents_changed {
-            *launch_agent_changes.borrow_mut() += 1;
+        if action.agents_changed {
+            *agent_changes.borrow_mut() += 1;
         }
         if action.keymap_changed {
             *keymap_changes.borrow_mut() += 1;
@@ -261,29 +253,37 @@ fn clicking_back_signals_the_exit() {
 
 #[test]
 fn toggling_completion_notifications_flips_the_pref_and_signals() {
-    let (mut harness, probe) = page_harness(ThemeMode::Auto);
-    harness.get_by_label("Agents").click();
-    harness.run();
+    let (mut harness, probe) = agents_section();
     assert_eq!(*probe.section.borrow(), PreferencesSection::Agents);
     assert!(*probe.notify.borrow(), "notifications default on");
 
-    harness.get_by_role(egui::accesskit::Role::CheckBox).click();
+    harness
+        .get_all_by_role(egui::accesskit::Role::CheckBox)
+        .next()
+        .unwrap()
+        .click();
     harness.run();
 
     assert!(!*probe.notify.borrow(), "the toggle flips the pref off");
     assert_eq!(*probe.notify_changes.borrow(), 1);
 }
 
+/// Tall enough to lay the whole section out: kittest cannot click a control
+/// scrolled out of the window.
 fn agents_section() -> (Harness<'static>, PageProbe) {
-    let (mut harness, probe) = page_harness(ThemeMode::Auto);
+    let (mut harness, probe) = page_harness_sized(
+        ThemeMode::Auto,
+        PullDefault::default(),
+        egui::vec2(800.0, 2400.0),
+    );
     harness.get_by_label("Agents").click();
     harness.run();
     (harness, probe)
 }
 
-fn launch_agent_names(probe: &PageProbe) -> Vec<String> {
+fn agent_names(probe: &PageProbe) -> Vec<String> {
     probe
-        .launch_agents
+        .agents
         .borrow()
         .iter()
         .map(|agent| agent.name.clone())
@@ -291,41 +291,190 @@ fn launch_agent_names(probe: &PageProbe) -> Vec<String> {
 }
 
 #[test]
-fn removing_a_phone_agent_drops_its_row_and_reports_a_change() {
+fn removing_an_agent_drops_its_row_and_reports_a_change() {
     let (mut harness, probe) = agents_section();
+    click_button(&mut harness, "Codex, codex", "Button");
     harness.get_by_label("Remove agent Codex").click();
     harness.run();
 
-    assert_eq!(launch_agent_names(&probe), ["Claude Code", "opencode"]);
-    assert_eq!(*probe.launch_agent_changes.borrow(), 1);
+    assert_eq!(agent_names(&probe), ["Claude Code", "opencode"]);
+    assert_eq!(*probe.agent_changes.borrow(), 1);
+}
+
+fn click_button(harness: &mut Harness<'_>, label: &str, role: &str) {
+    harness
+        .get_all_by_label(label)
+        .find(|n| format!("{:?}", n.accesskit_node().role()) == role)
+        .unwrap_or_else(|| panic!("no {role} \"{label}\""))
+        .click();
+    harness.run();
+}
+
+fn text_input_count(harness: &Harness<'_>) -> usize {
+    harness
+        .query_all_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .count()
 }
 
 #[test]
-fn an_added_phone_agent_takes_the_typed_name_in_its_focused_row() {
+fn agents_stay_folded_and_only_one_opens_at_a_time() {
+    let (mut harness, _probe) = agents_section();
+    assert_eq!(text_input_count(&harness), 0);
+
+    click_button(&mut harness, "Codex, codex", "Button");
+    let one_agent_open = text_input_count(&harness);
+    assert_eq!(one_agent_open, 4);
+
+    click_button(&mut harness, "opencode, opencode", "Button");
+    assert_eq!(text_input_count(&harness), one_agent_open);
+    harness.get_by_label("Remove agent opencode");
+}
+
+#[test]
+fn an_empty_added_agent_takes_the_typed_name_in_its_focused_block() {
     let (mut harness, probe) = agents_section();
-    harness.get_by_label("Add agent").click();
-    harness.run();
+    click_button(&mut harness, "Add agent", "Button");
+    click_button(&mut harness, "Empty agent", "Button");
     harness
         .get_by(|n| format!("{:?}", n.role()) == "TextInput" && n.is_focused())
         .type_text("Aider");
     harness.run();
 
     assert_eq!(
-        launch_agent_names(&probe),
+        agent_names(&probe),
         ["Claude Code", "Codex", "opencode", "Aider"]
     );
-    assert!(*probe.launch_agent_changes.borrow() >= 2);
+    assert!(*probe.agent_changes.borrow() >= 2);
 }
 
 #[test]
-fn a_phone_agent_the_watcher_cannot_detect_is_flagged() {
+fn an_agent_added_from_a_preset_comes_with_its_three_commands() {
     let (mut harness, probe) = agents_section();
-    assert!(harness.query_by_label_contains("won't detect").is_none());
-
-    probe.launch_agents.borrow_mut()[1].command = "cursor-agent --fast".to_owned();
+    probe.agents.borrow_mut().clear();
     harness.run();
 
+    click_button(&mut harness, "Add agent", "Button");
+    click_button(&mut harness, "Codex", "Button");
+
+    assert_eq!(*probe.agents.borrow(), [Preset::Codex.agent()]);
+    assert_eq!(*probe.agent_changes.borrow(), 1);
+}
+
+#[test]
+fn an_agent_the_watcher_cannot_detect_is_flagged() {
+    let (mut harness, probe) = agents_section();
+    click_button(&mut harness, "Claude Code, claude", "Button");
+    assert!(harness.query_by_label_contains("won't detect").is_none());
+
+    probe.agents.borrow_mut()[1].command = "cursor-agent --fast".to_owned();
+    harness.run();
+    click_button(&mut harness, "Codex, cursor-agent --fast", "Button");
+
     harness.get_by_label("helm won't detect cursor-agent as an agent — the phone won't list it");
+}
+
+/// Picks `agent` in the nth agent dropdown still on the default choice: the
+/// commit message card's first, the review card's second.
+fn choose_agent(harness: &mut Harness<'_>, nth: usize, agent: &str) {
+    harness
+        .get_all_by_label("Claude Code")
+        .filter(|n| format!("{:?}", n.accesskit_node().role()) == "Button")
+        .nth(nth)
+        .unwrap()
+        .click();
+    harness.run();
+    click_button(harness, agent, "RadioButton");
+}
+
+#[test]
+fn the_commit_message_takes_the_agent_picked_in_its_dropdown() {
+    let (mut harness, probe) = agents_section();
+
+    choose_agent(&mut harness, 0, "Codex");
+
+    assert_eq!(probe.commit_message.borrow().agent, "Codex");
+    assert_eq!(probe.review.borrow().agent, "Claude Code");
+    assert_eq!(*probe.agent_changes.borrow(), 1);
+}
+
+#[test]
+fn the_review_takes_the_agent_picked_in_its_dropdown() {
+    let (mut harness, probe) = agents_section();
+
+    choose_agent(&mut harness, 1, "opencode");
+
+    assert_eq!(probe.review.borrow().agent, "opencode");
+    assert_eq!(probe.commit_message.borrow().agent, "Claude Code");
+}
+
+#[test]
+fn a_renamed_agent_keeps_the_actions_that_chose_it() {
+    let (mut harness, probe) = agents_section();
+    click_button(&mut harness, "Claude Code, claude", "Button");
+    harness
+        .get_all_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .next()
+        .unwrap()
+        .click();
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput" && n.is_focused())
+        .type_text("!");
+    harness.run();
+
+    let renamed = probe.agents.borrow()[0].name.clone();
+    assert_ne!(renamed, "Claude Code");
+    assert_eq!(probe.commit_message.borrow().agent, renamed);
+    assert_eq!(probe.review.borrow().agent, renamed);
+}
+
+#[test]
+fn an_agent_without_the_needed_command_is_not_a_choice() {
+    let (mut harness, probe) = agents_section();
+    assert!(harness.query_by_label("Choose an agent").is_none());
+
+    probe.agents.borrow_mut()[0].headless_command.clear();
+    harness.run();
+
+    harness.get_by_label("Choose an agent");
+}
+
+#[test]
+fn a_menu_opened_without_a_choice_lists_the_agents_once_they_can() {
+    let (mut harness, probe) = agents_section();
+    let agents = std::mem::take(&mut *probe.agents.borrow_mut());
+    harness.run();
+    click_button(&mut harness, "Choose an agent", "Button");
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    *probe.agents.borrow_mut() = agents;
+    harness.run();
+    click_button(&mut harness, "Claude Code", "Button");
+
+    let choice = harness
+        .get_all_by_label("opencode")
+        .find(|n| format!("{:?}", n.accesskit_node().role()) == "RadioButton")
+        .unwrap();
+    let bounds = choice.accesskit_node().raw_bounds().unwrap();
+    assert!(bounds.height() < 30.0, "the choice wraps: {bounds:?}");
+}
+
+#[test]
+fn an_edited_prompt_offers_to_restore_its_default() {
+    let (mut harness, probe) = agents_section();
+    assert!(harness.query_by_label_contains("Restore default").is_none());
+
+    probe.commit_message.borrow_mut().prompt = "Short.".to_owned();
+    harness.run();
+    click_button(&mut harness, "Commit message prompt, Edited", "Button");
+    click_button(&mut harness, "Restore default", "Button");
+
+    assert_eq!(
+        probe.commit_message.borrow().prompt,
+        CommitMessageSettings::default().prompt
+    );
+    assert_eq!(*probe.agent_changes.borrow(), 1);
 }
 
 #[test]
@@ -522,24 +671,6 @@ fn radio_status(harness: &Harness<'_>, label: &str) -> String {
     format!("{:?}", node.accesskit_node().toggled())
 }
 
-/// Number of provider **dropdown buttons** (role Button, not a menu radio) that
-/// show `label`: the open menu repeats the current provider as a radio, so a
-/// plain `get_by_label` would be ambiguous.
-fn provider_button_count(harness: &Harness<'_>, label: &str) -> usize {
-    harness
-        .get_all_by_label(label)
-        .filter(|n| format!("{:?}", n.accesskit_node().role()) == "Button")
-        .count()
-}
-
-fn click_provider_button(harness: &Harness<'_>, label: &str) {
-    harness
-        .get_all_by_label(label)
-        .find(|n| format!("{:?}", n.accesskit_node().role()) == "Button")
-        .unwrap_or_else(|| panic!("dropdown button \"{label}\" missing"))
-        .click();
-}
-
 #[test]
 fn the_git_section_shows_the_pull_row_with_the_current_default() {
     let (harness, _probe) = git_section(PullDefault::default());
@@ -626,109 +757,6 @@ fn re_selecting_the_current_default_reports_no_change() {
         *probe.pull_changes.borrow(),
         0,
         "re-selecting the current default must not rewrite the prefs"
-    );
-}
-
-// ---- Git section: AI commit message ----
-
-#[test]
-fn the_git_section_shows_the_ai_provider_and_instructions_rows() {
-    let (harness, _probe) = git_section(PullDefault::default());
-    harness.get_by_label("AI provider");
-    harness.get_by_label("CLI used to generate the commit message");
-    assert_eq!(
-        provider_button_count(&harness, "Claude Code"),
-        1,
-        "the dropdown shows the provider's product name",
-    );
-    harness.get_by_label("AI instructions");
-    harness.get_by_label("Extra guidance added to the commit message prompt");
-}
-
-#[test]
-fn opening_the_provider_dropdown_lists_the_three_clis_with_the_current_checked() {
-    let (mut harness, _probe) = git_section(PullDefault::default());
-    click_provider_button(&harness, "Claude Code");
-    harness.run();
-
-    harness.get_by_label("Codex");
-    harness.get_by_label("opencode");
-    assert_eq!(
-        radio_status(&harness, "Claude Code"),
-        "Some(True)",
-        "the current provider is checked"
-    );
-    assert_eq!(radio_status(&harness, "Codex"), "Some(False)");
-}
-
-#[test]
-fn selecting_a_provider_updates_it_and_reports_one_change() {
-    let (mut harness, probe) = git_section(PullDefault::default());
-    click_provider_button(&harness, "Claude Code");
-    harness.run();
-    harness.get_by_label("Codex").click();
-    harness.run();
-
-    assert_eq!(*probe.ai_provider.borrow(), AiProvider::Codex);
-    assert_eq!(
-        *probe.ai_changes.borrow(),
-        1,
-        "the selection reports exactly one change (to persist)"
-    );
-    assert_eq!(
-        provider_button_count(&harness, "Codex"),
-        1,
-        "the dropdown button follows the new provider"
-    );
-}
-
-#[test]
-fn typing_instructions_mutates_the_text_and_reports_changes() {
-    let (mut harness, probe) = git_section(PullDefault::default());
-    // The section's only multiline field: the instructions TextEdit.
-    // `type_text` only sends the text event — focus first.
-    harness
-        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
-        .focus();
-    harness.run();
-    harness
-        .get_by(|n| format!("{:?}", n.role()) == "MultilineTextInput")
-        .type_text("Use conventional commits");
-    harness.run();
-
-    assert_eq!(*probe.ai_instructions.borrow(), "Use conventional commits");
-    assert!(
-        *probe.ai_changes.borrow() >= 1,
-        "the input reports at least one change (to persist)"
-    );
-}
-
-// ---- Git section: in-diff review agent (M-RC) ----
-
-#[test]
-fn the_git_section_shows_the_review_agent_row() {
-    let (harness, _probe) = git_section(PullDefault::default());
-    harness.get_by_label("Review agent");
-    harness.get_by_label("CLI the in-diff review's Send button launches with your comments");
-}
-
-#[test]
-fn typing_a_review_agent_command_mutates_it_and_reports_a_change() {
-    let (mut harness, probe) = git_section(PullDefault::default());
-    // The section's only singleline input is the Review agent command field.
-    harness
-        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
-        .focus();
-    harness.run();
-    harness
-        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
-        .type_text("claude --model opus");
-    harness.run();
-
-    assert_eq!(*probe.review_agent.borrow(), "claude --model opus");
-    assert!(
-        *probe.ai_changes.borrow() >= 1,
-        "the input reports at least one change (to persist)"
     );
 }
 
@@ -976,15 +1004,16 @@ fn project_harness(
                 &mut "helm".to_owned(),
                 &mut "helm".to_owned(),
                 &mut PullDefault::default(),
-                &mut AiProvider::default(),
-                &mut String::new(),
-                &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),
                 &mut String::new(),
                 &idle_pr_sources(),
                 &mut notify,
-                &mut LaunchAgent::defaults(),
+                AgentsView {
+                    agents: &mut Agent::defaults(),
+                    commit_message: &mut CommitMessageSettings::default(),
+                    review: &mut ReviewSettings::default(),
+                },
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1098,15 +1127,16 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                 &mut "helm".to_owned(),
                 &mut "helm".to_owned(),
                 &mut PullDefault::default(),
-                &mut AiProvider::default(),
-                &mut String::new(),
-                &mut String::new(),
                 &mut Editor::default(),
                 &mut email.borrow_mut(),
                 &mut token.borrow_mut(),
                 &pr_sources,
                 &mut true,
-                &mut LaunchAgent::defaults(),
+                AgentsView {
+                    agents: &mut Agent::defaults(),
+                    commit_message: &mut CommitMessageSettings::default(),
+                    review: &mut ReviewSettings::default(),
+                },
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1576,15 +1606,16 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                 &mut "helm".to_owned(),
                 &mut "helm".to_owned(),
                 &mut PullDefault::default(),
-                &mut AiProvider::default(),
-                &mut String::new(),
-                &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),
                 &mut String::new(),
                 &idle_pr_sources(),
                 &mut true,
-                &mut LaunchAgent::defaults(),
+                AgentsView {
+                    agents: &mut Agent::defaults(),
+                    commit_message: &mut CommitMessageSettings::default(),
+                    review: &mut ReviewSettings::default(),
+                },
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1656,15 +1687,16 @@ fn phone_harness(devices: &[&str]) -> (Harness<'static>, Rc<RefCell<PhoneProbe>>
                 &mut "helm".to_owned(),
                 &mut "helm".to_owned(),
                 &mut PullDefault::default(),
-                &mut AiProvider::default(),
-                &mut String::new(),
-                &mut String::new(),
                 &mut Editor::default(),
                 &mut String::new(),
                 &mut String::new(),
                 &idle_pr_sources(),
                 &mut true,
-                &mut LaunchAgent::defaults(),
+                AgentsView {
+                    agents: &mut Agent::defaults(),
+                    commit_message: &mut CommitMessageSettings::default(),
+                    review: &mut ReviewSettings::default(),
+                },
                 PhoneView {
                     start_at_launch: &mut start_at_launch,
                     devices: &devices,

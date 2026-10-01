@@ -361,7 +361,7 @@ and by `helm pr time` ([`cli.md`](cli.md) §11).
   ⇒ Checkout falls back to **Open in browser**.
 - **GitLab / self-hosted** forges unsupported (`parse_remote` ⇒ skipped).
 
-## 11. In-app review (M-PR2/M-PR3 — diff, line & inline comments, replies, conversation, submit, Ask Claude)
+## 11. In-app review (M-PR2/M-PR3 — diff, line & inline comments, replies, conversation, submit, Ask {agent})
 
 The detail panel is a **diff-centric review surface**: the changed files of the
 PR shown **without cloning the branch**, each diff annotatable, with a composer to
@@ -661,7 +661,7 @@ same one as commit/working-tree review.
   (`PrReview.agent_notes`) are independent `FileComments` stores; the diff routes a
   `SaveComment`/`DeleteComment` to one by its `ReviewPool`. The forge pool feeds the
   composer's **Submit review (N)** (count = `review::count(draft)`); the agent pool
-  feeds the diff's **Send to {agent}** recap and the whole-PR **Ask Claude** prompt
+  feeds the diff's **Send to {agent}** recap and the whole-PR **Ask {agent}** prompt
   — so review comments destined for the forge are never sent to the agent.
 - **Forge submission (write).** The rail footer composer carries an optional
   **summary** and a primary button whose label names what will be sent — the
@@ -683,11 +683,13 @@ same one as commit/working-tree review.
   On success the draft/summary/verdict reset and the detail **refetches** so the
   posted thread reappears; on failure a one-line error surfaces and the draft is
   kept.
-- **Ask Claude on a thread.** Each existing thread shows an **Ask {agent}** pill
+- **Ask {agent} on a thread.** `{agent}` is the review agent's name
+  ([`preferences.md`](preferences.md) §4 *Agents*), as are the command and the
+  prompts. Each existing thread shows an **Ask {agent}** pill
   emitting `ReviewIntent::AskAgentOnThread { file, line }`. The app builds a
   prompt from that thread's comments and launches the agent in the PR's worktree
   (resolved/created as in §7) — the same launch path as the whole-PR **Ask
-  Claude**, scoped to one thread.
+  {agent}**, scoped to one thread.
 
 **M-PR3 — richer reviewing** (folded into the same surface):
 
