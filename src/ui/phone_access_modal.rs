@@ -2,6 +2,7 @@
 //! URL, the URL itself, the connected devices and a Stop. Pure rendering — the app
 //! owns the server; the modal reports the user's intent.
 
+use crate::remote::firewall::FirewallBlock;
 use crate::remote::qr::QrMatrix;
 use crate::theme::Palette;
 
@@ -19,17 +20,22 @@ const NETWORK_NOTE: &str = "Plain HTTP on your local network: use it on a networ
 pub const COPY_LABEL: &str = "Copy link";
 pub const CLOSE_LABEL: &str = "Close";
 pub const STOP_LABEL: &str = "Stop phone access";
+pub const FIREWALL_TITLE: &str = "Firewall blocks the phone";
+pub const FIREWALL_SETTINGS_LABEL: &str = "Open settings ›";
+const FIREWALL_TINT: f32 = 0.12;
 
 pub struct PhoneAccessView<'a> {
     pub pairing_url: &'a str,
     pub qr: Option<&'a QrMatrix>,
     pub clients: usize,
+    pub firewall: Option<FirewallBlock>,
 }
 
 #[derive(Default)]
 pub struct PhoneAccessAction {
     pub copy_url: bool,
     pub stop: bool,
+    pub open_firewall_settings: bool,
     /// Close the modal, access stays on (Close, `Esc`, click outside).
     pub dismiss: bool,
 }
@@ -57,6 +63,10 @@ pub fn phone_access_modal(
                     .size(TEXT_SIZE)
                     .color(palette.text_muted),
             );
+            if let Some(block) = view.firewall {
+                ui.add_space(10.0);
+                action.open_firewall_settings = firewall_banner(ui, palette, block);
+            }
             ui.add_space(12.0);
             ui.vertical_centered(|ui| {
                 if let Some(qr) = view.qr {
@@ -117,6 +127,54 @@ pub fn devices_label(clients: usize) -> String {
         1 => "1 device connected".to_owned(),
         n => format!("{n} devices connected"),
     }
+}
+
+pub fn firewall_message(block: FirewallBlock) -> &'static str {
+    match block {
+        FirewallBlock::AllIncoming => "Block all incoming connections is on.",
+        FirewallBlock::Helm => "helm is set to block incoming connections.",
+    }
+}
+
+fn firewall_banner(ui: &mut egui::Ui, palette: &Palette, block: FirewallBlock) -> bool {
+    egui::Frame::new()
+        .fill(palette.git_conflict.gamma_multiply(FIREWALL_TINT))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                let (icon, _) = ui
+                    .allocate_exact_size(egui::Vec2::splat(TITLE_SIZE + 2.0), egui::Sense::hover());
+                crate::ui::paint_icon(
+                    ui.painter(),
+                    icon.center(),
+                    TITLE_SIZE,
+                    lucide_icons::Icon::AlertTriangle,
+                    palette.git_conflict,
+                );
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(FIREWALL_TITLE)
+                            .size(TEXT_SIZE)
+                            .color(palette.text_primary)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(firewall_message(block))
+                            .size(TEXT_SIZE - 1.0)
+                            .color(palette.text_muted),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    ui.button(FIREWALL_SETTINGS_LABEL).clicked()
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
 }
 
 /// Black on white whatever the theme: a scanner needs the contrast.
