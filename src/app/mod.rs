@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPane};
 use crate::agent_watch::AgentBadge;
 use crate::ai::{AiProvider, AiRunner};
-use crate::git::ai_rebase::{AiRebaseReport, AiRebaseRequest, AiRebaseRunner};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -28,7 +27,6 @@ use crate::terminal::links::{Editor, LinkAction};
 use crate::terminal::palette::TermPalette;
 use crate::terminal::pane::{Pane, PaneUid};
 use crate::theme::{self, ThemeMode};
-use crate::ui::ai_rebase_modal::{ai_rebase_modal, ai_rebase_report_modal, AiRebasePage};
 use crate::ui::conflict_view::{
     conflict_view, ConflictEditorAction, ConflictEditorState, ResolveRequest,
 };
@@ -435,12 +433,6 @@ enum Modal {
     /// the working tree cannot be undone — confirmed before it runs. `path` is the
     /// open file, captured when the intent is raised.
     DiscardHunk { path: String, hunk: usize },
-    /// AI rebase recap (git.md §9): commits to replay + extra AI instructions;
-    /// Start hands the request to the session's AI rebase runner.
-    AiRebase(AiRebasePage),
-    /// AI rebase report: the provider's account once the run completed, under
-    /// the outcome verified on the repo.
-    AiRebaseReport(AiRebaseReport),
     /// Feedback report (specs/feedback.md): Suggestion/Bug + description, filed
     /// as a GitHub issue on the helm repo via the browser.
     Feedback(FeedbackPage),
@@ -471,9 +463,7 @@ impl Modal {
             | Modal::ResetHard { .. }
             | Modal::AbortOp
             | Modal::ForcePush { .. }
-            | Modal::DiscardHunk { .. }
-            | Modal::AiRebase(_)
-            | Modal::AiRebaseReport(_) => true,
+            | Modal::DiscardHunk { .. } => true,
             Modal::DeleteWorktree(_)
             | Modal::RenameWorktree(_)
             | Modal::CreateWorktree(_)
@@ -625,9 +615,6 @@ pub struct HelmApp {
     /// loaded at boot, saved on change in Preferences.
     ai_provider: AiProvider,
     ai_instructions: String,
-    /// Provider of the AI rebase (git.md §9), configured separately from the
-    /// commit-message one — the rebase invocation is agentic (runs git itself).
-    ai_rebase_provider: AiProvider,
     /// CLI the in-diff review's "Send to {agent}" button launches (M-RC),
     /// persisted in `prefs.toml`: loaded at boot, saved on change in Preferences.
     review_agent_command: String,
@@ -863,7 +850,6 @@ impl HelmApp {
             pull_default: prefs.pull_default,
             ai_provider: prefs.ai_provider,
             ai_instructions: prefs.ai_instructions,
-            ai_rebase_provider: prefs.ai_rebase_provider,
             review_agent_command: prefs.review_agent_command,
             review: HashMap::new(),
             editor: prefs.editor,
@@ -1058,21 +1044,6 @@ impl HelmApp {
                 &mut self.toasts,
                 now,
             );
-            // End of an AI rebase: refresh status (+ graph in Graph mode) and
-            // show the provider's report under its verified outcome — a report
-            // modal takes precedence over whatever modal is open (losing the
-            // account of a history rewrite would be worse). Failures go to a
-            // toast; the banner tells a rebase left in progress either way.
-            if let Some(reply) = git.ai_rebase.try_recv() {
-                git.worker.send(GitCommand::Status);
-                if graph_mode {
-                    git.reload_graph();
-                }
-                match reply {
-                    Ok(report) => self.modal = Some(Modal::AiRebaseReport(report)),
-                    Err(err) => self.toasts.error(err.message(), now),
-                }
-            }
             // Wake the idle app so the next poll fires (reactive mode).
             ctx.request_repaint_after(GIT_POLL_INTERVAL);
         }

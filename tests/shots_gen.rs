@@ -26,7 +26,6 @@ use helm::terminal::links::Editor;
 use helm::terminal::palette::TermPalette;
 use helm::theme::Palette;
 use helm::ui::agents_view::{agents_page, AgentRow, WallView};
-use helm::ui::ai_rebase_modal::{ai_rebase_modal, AiRebasePage};
 use helm::ui::conflict_view::{conflict_view, ConflictEditorState};
 use helm::ui::diff_view::{diff_view, DiffSurface, DiffViewState};
 use helm::ui::file_list::FileMenuOutput;
@@ -1984,88 +1983,6 @@ fn gen_worktrees() {
 }
 
 #[test]
-fn gen_ai_rebase() {
-    let palette = Palette::dark();
-    let harness = Harness::builder()
-        .with_size(egui::vec2(1280.0, 800.0))
-        .with_pixels_per_point(2.0)
-        .build_ui(move |ui| {
-            boot(ui);
-            let keymap = Keymap::default();
-            let status = hero_status();
-            let mut git_state = GitPanelState::default();
-            let graph = demo_graph();
-            let toolbar = demo_toolbar();
-            let detail = commit_detail_login();
-            app_shell(
-                ui,
-                &palette,
-                &keymap,
-                &status,
-                &mut git_state,
-                None,
-                true,
-                Some(&detail),
-                |ui| {
-                    central_switch(ui, &palette, true, &keymap, Some("helm"), None, true);
-                    let mut editor = BranchEditor::default();
-                    let mut lanes = LaneCache::default();
-                    let mut search = GraphSearch::default();
-                    graph_toolbar(ui, &palette, &toolbar, &mut editor);
-                    let _ = graph_view(
-                        ui,
-                        &palette,
-                        &GraphViewState {
-                            graph: Some(&graph),
-                            wip: None,
-                            selected: Some(oid(5)),
-                            scroll_to_head: false,
-                            keyboard_nav: false,
-                            can_pull_request: false,
-                        },
-                        &mut lanes,
-                        &mut editor,
-                        &mut search,
-                    );
-                },
-            );
-
-            let mut page = AiRebasePage {
-                current: "feature/login".to_owned(),
-                onto: "main".to_owned(),
-                loading: false,
-                error: None,
-                commits: vec![
-                    RebaseCommit {
-                        oid: oid(5),
-                        short_id: "a4f9e21".to_owned(),
-                        summary: "Add the login form + inline validation".to_owned(),
-                        message: String::new(),
-                        author: "David Bonan".to_owned(),
-                    },
-                    RebaseCommit {
-                        oid: oid(7),
-                        short_id: "c08b3da".to_owned(),
-                        summary: "Scaffold the auth module".to_owned(),
-                        message: String::new(),
-                        author: "David Bonan".to_owned(),
-                    },
-                    RebaseCommit {
-                        oid: oid(8),
-                        short_id: "f1029ab".to_owned(),
-                        summary: "Wire the session store".to_owned(),
-                        message: String::new(),
-                        author: "David Bonan".to_owned(),
-                    },
-                ],
-                instructions: "Squash everything into a single commit.".to_owned(),
-            };
-            let _ = ai_rebase_modal(ui, &palette, &mut page, AiProvider::Claude, false);
-        });
-    finish(harness, "ai_rebase");
-}
-
-#[test]
 fn gen_agents() {
     let palette = Palette::dark();
     let harness = Harness::builder()
@@ -2124,7 +2041,6 @@ fn gen_preferences() {
             let mut pull = PullDefault::default();
             let mut ai = AiProvider::Claude;
             let mut ai_instr = String::new();
-            let mut ai_rebase = AiProvider::Claude;
             let mut editor = Editor::default();
             let mut notify = true;
             let mut keymap = Keymap::default();
@@ -2152,7 +2068,6 @@ fn gen_preferences() {
                 &mut pull,
                 &mut ai,
                 &mut ai_instr,
-                &mut ai_rebase,
                 &mut String::from("claude"),
                 &mut editor,
                 &mut bitbucket_email,

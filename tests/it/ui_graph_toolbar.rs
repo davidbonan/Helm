@@ -316,47 +316,6 @@ fn a_mutation_outside_the_toolbar_ignores_every_click() {
 }
 
 #[test]
-fn an_ai_rebase_shows_a_timed_chip_whose_cancel_emits_the_intent() {
-    let state = ToolbarState {
-        busy: Some(BusyAction::AiRebase {
-            seconds: 75,
-            cancelling: false,
-        }),
-        ..ready()
-    };
-    let (actions, _) = drive(state, |h, _| {
-        h.get_by_label("AI rebase · 1:15");
-        h.get_by_label("Pull").click();
-        h.step();
-        h.get_by_label("Cancel").click();
-    });
-    assert!(actions.iter().any(|a| a.cancel_ai_rebase));
-    assert!(
-        actions.iter().all(|a| a.sync.is_none()),
-        "the rest of the toolbar stays inert during the run"
-    );
-}
-
-#[test]
-fn a_cancelling_ai_rebase_turns_the_button_inert() {
-    let state = ToolbarState {
-        busy: Some(BusyAction::AiRebase {
-            seconds: 130,
-            cancelling: true,
-        }),
-        ..ready()
-    };
-    let (actions, _) = drive(state, |h, _| {
-        h.get_by_label("AI rebase · 2:10");
-        h.get_by_label("Cancelling…").click();
-    });
-    assert!(
-        actions.iter().all(|a| !a.cancel_ai_rebase),
-        "a second cancel has nothing to do"
-    );
-}
-
-#[test]
 fn stash_and_pop_emit_their_intents() {
     let (actions, _) = drive(ready(), |h, _| {
         h.get_by_label("Stash").click();

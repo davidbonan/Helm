@@ -232,7 +232,6 @@ pub fn preferences_page(
     pull_default: &mut PullDefault,
     ai_provider: &mut AiProvider,
     ai_instructions: &mut String,
-    ai_rebase_provider: &mut AiProvider,
     review_agent_command: &mut String,
     editor: &mut Editor,
     bitbucket_email: &mut String,
@@ -399,18 +398,6 @@ pub fn preferences_page(
                     if instructions_row(ui, palette, ai_instructions) {
                         action.ai_changed = true;
                     }
-                    setting_divider(ui, palette);
-                    setting_row(
-                        ui,
-                        palette,
-                        "AI rebase provider",
-                        Some("CLI that performs the AI rebase — runs git itself, never pushes"),
-                        |ui| {
-                            if provider_dropdown(ui, palette, ai_rebase_provider) {
-                                action.ai_changed = true;
-                            }
-                        },
-                    );
                     setting_divider(ui, palette);
                     if run_command_row(
                         ui,
@@ -774,9 +761,8 @@ fn pull_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut PullDefault
 }
 
 /// AI provider dropdown: button labeled with the current provider + chevron,
-/// radio menu of the 3 supported CLIs (same product names for the commit-message
-/// and the AI-rebase rows — `AiProvider::display_name`). Mutates `current` on
-/// selection and returns `true` if the provider changed — never executes.
+/// radio menu of the 3 supported CLIs (`AiProvider::display_name`). Mutates
+/// `current` on selection and returns `true` if the provider changed — never executes.
 fn provider_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut AiProvider) -> bool {
     let response = dropdown_button(ui, palette, current.display_name());
     let mut changed = false;

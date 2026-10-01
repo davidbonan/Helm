@@ -398,7 +398,7 @@ effect** (§2).
   with **auto-maintenance disabled** (`gc.auto=0`, `maintenance.auto=false`) so the
   cadence never repacks: a fetch only writes loose `refs/remotes` + objects, disjoint
   from the index/local refs the mutation lock guards. A tick is **skipped** while the
-  mutation lock is held (manual network op / AI rebase, which move the same refs);
+  mutation lock is held (manual network op, which moves the same refs);
   failures (offline/auth) are swallowed — invisible
   until a ref actually moves. **Local branches are never advanced** (that stays a pull/checkout); only
   the remote-tracking refs the graph draws are refreshed.
@@ -491,7 +491,7 @@ decided list of §1; everything else stays **read only**.
   [`worktrees.md`](worktrees.md) §6) + **Create branch** (below; on every ref) +
   **Rebase onto `<branch>`** (below; absent
   on the current branch) + **Interactive rebase onto `<branch>`** (below; same
-  eligibility) + **AI rebase onto `<branch>`** (below; same eligibility) +
+  eligibility) +
   **Merge `<branch>` into `<current>`** (below; same eligibility) +
   **Rename** (below; local branches only) +
   **Copy branch name** (the ref's full name
@@ -510,7 +510,7 @@ decided list of §1; everything else stays **read only**.
   the chips' for **all** the row's refs (tags included, with the tag entries
   above). A single ref keeps the flat entries; several nest them
   into **Checkout** / **Create worktree** / **Create branch** / **Rebase onto** /
-  **Interactive rebase onto** / **AI rebase onto** / **Merge** / **Rename** /
+  **Interactive rebase onto** / **Merge** / **Rename** /
   **Copy branch
   name** / **Delete**
   submenus — one entry per ref, the deletions and the merges still explicitly
@@ -608,48 +608,6 @@ decided list of §1; everything else stays **read only**.
   **in progress** (same rule as the plain rebase: toast + banner §10,
   resolution in the in-app conflict editor or the terminal, or **Abort** from the
   banner).
-- **AI rebase from the chips' menu**: **AI rebase onto `<branch>`** (same
-  eligibility as the other rebase flavors) opens a **recap modal** — loader
-  while the worker lists `onto..HEAD` (same plan source as the interactive
-  page, same 500-commit cap), then the rebase **not yet started**: current
-  branch → target, the commits to replay (newest on top) and an **AI
-  instructions** box handed verbatim to the provider (e.g. "Squash everything
-  into a single commit"). Nothing runs before **Start AI rebase**;
-  Cancel/`Esc` closes. An op already in progress or a detached HEAD ⇒ refusal
-  toast before the modal opens (like the interactive flavor). **Start** hands
-  the request to the **AI rebase runner**: the configured **agentic** provider
-  ([`preferences.md`](preferences.md) §4 — `claude -p` with Bash and the file
-  tools pre-approved and `git push` **denied**, `codex exec --full-auto`,
-  `opencode run`) runs **in the repo** and performs the rebase itself —
-  replays, resolves conflicts, honors the instructions; the prompt contract
-  forbids pushing or touching any remote and asks to `git rebase --abort` if
-  unsafe. Guards re-checked at execution: clean repo state, HEAD still on the
-  recap's branch, **clean working tree** (stricter than the plain rebase on
-  purpose — the provider must never be tempted to stash or commit the user's
-  WIP; untracked files don't block), plan re-derived and compared (stale
-  recap ⇒ clean refusal "reopen AI rebase"). An accepted Start ⇒ auto-expiring
-  toast ("AI rebase started — …") and the modal **closes during the run** —
-  the terminal stays usable. The run holds the repo's **mutation lock** for
-  its whole duration (minutes are normal — 30 min timeout): staging, commits
-  and sync ops are refused meanwhile, and the toolbar shows a named chip
-  — spinner + **AI rebase · m:ss** (elapsed time) + **Cancel** — instead of
-  the anonymous loader, all buttons greyed out. **Cancel** kills the provider,
-  **aborts** any rebase it left in progress (branch restored) and reports the
-  verified result ("Cancelled — …"); the button turns inert ("Cancelling…")
-  until the reply lands. Switching repos (or quitting) mid-run cancels the
-  same way — a provider never outlives its session, it would keep rewriting
-  history with no lock. On return: status + graph refresh, then a **report
-  modal**: the provider's account (what it did, each conflict and how it was
-  resolved — for codex, read from `--output-last-message` rather than its
-  chatty stdout) under an outcome headline **verified on the repo**, never
-  believed from the report — **Completed** (state clean, HEAD moved) /
-  **Branch unchanged** / **Rebase left in progress** (banner + terminal or
-  Abort take over, like any conflict §10); **Copy report** puts the account on
-  the clipboard. The 30-min **timeout** kills the provider like a cancel and
-  restores the same way (abort + verified state in the failure toast); a
-  provider that stops **on its own** (missing binary, quota, crash, deliberate
-  abort) leaves the repo as it left it — failure toast, the lasting state
-  still told by the banner. helm never pushes on the provider's behalf.
 - **Create branch from the chips' menu**: **Create branch** opens the same
   **inline field** as the toolbar Branch button (§10), but anchored on the
   **clicked ref's row** in place of its chips. The field opens **empty** (a

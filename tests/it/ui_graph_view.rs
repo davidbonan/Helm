@@ -94,7 +94,6 @@ struct ViewState {
     create_worktree: Option<String>,
     rebase_onto: Option<String>,
     interactive_rebase_onto: Option<String>,
-    ai_rebase_onto: Option<String>,
     merge: Option<String>,
     delete: Option<DeleteBranchTarget>,
     stash_apply: Option<git2::Oid>,
@@ -197,9 +196,6 @@ fn harness_full(
             if let Some(branch) = action.interactive_rebase_onto {
                 state.interactive_rebase_onto = Some(branch);
             }
-            if let Some(branch) = action.ai_rebase_onto {
-                state.ai_rebase_onto = Some(branch);
-            }
             if let Some(branch) = action.merge {
                 state.merge = Some(branch);
             }
@@ -277,7 +273,6 @@ fn harness_full(
             create_worktree: None,
             rebase_onto: None,
             interactive_rebase_onto: None,
-            ai_rebase_onto: None,
             merge: None,
             delete: None,
             stash_apply: None,
@@ -1036,27 +1031,6 @@ fn right_click_on_branch_chip_can_open_an_interactive_rebase() {
 }
 
 #[test]
-fn right_click_on_branch_chip_can_open_an_ai_rebase() {
-    let mut harness = harness(
-        two_branch_graph(graph_ref("feat/x", RefKind::Local, false)),
-        None,
-    );
-    harness.run();
-
-    let row = harness.get_by_label("0000001 First commit").rect();
-    right_click_at(&mut harness, egui::pos2(row.left() + 20.0, row.center().y));
-    harness.run();
-
-    harness.get_by_label("AI rebase onto feat/x").click();
-    harness.run();
-
-    assert_eq!(harness.state().ai_rebase_onto.as_deref(), Some("feat/x"));
-    // The other rebase intents stay untouched: nothing runs on the click.
-    assert_eq!(harness.state().rebase_onto, None);
-    assert_eq!(harness.state().interactive_rebase_onto, None);
-}
-
-#[test]
 fn right_click_on_branch_chip_can_merge_it_into_the_current_branch() {
     let mut harness = harness(
         two_branch_graph(graph_ref("feat/x", RefKind::Local, false)),
@@ -1696,10 +1670,6 @@ fn right_click_on_the_head_chip_offers_copy_but_no_checkout() {
         harness
             .query_by_label("Interactive rebase onto main")
             .is_none(),
-        "a branch never rebases onto itself"
-    );
-    assert!(
-        harness.query_by_label("AI rebase onto main").is_none(),
         "a branch never rebases onto itself"
     );
     assert!(

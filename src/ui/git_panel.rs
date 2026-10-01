@@ -171,8 +171,7 @@ pub struct GitPanelState {
     /// by the app: it takes the text input, so the sidebar's ↑/↓ file navigation and
     /// `Cmd+Enter` are disarmed until it closes (keybindings.md §4).
     pub inline_editing: bool,
-    /// A long op (sync, AI rebase — minutes) holds the repo's mutation lock —
-    /// per-frame projection of `GitSession::lock_busy()` written by the app:
+    /// A long op (sync) holds the repo's mutation lock — per-frame projection of `GitSession::lock_busy()` written by the app:
     /// the staging / discard / commit actions are greyed out, since the worker
     /// refuses every mutation meanwhile (git.md §9).
     pub lock_busy: bool,

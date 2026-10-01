@@ -152,10 +152,6 @@ pub struct GraphAction {
     /// (plan per commit) targeting this ref — nothing runs before its Start
     /// (git.md §9).
     pub interactive_rebase_onto: Option<String>,
-    /// **AI rebase onto …** entry: the caller opens the recap modal (commits +
-    /// extra AI instructions) targeting this ref — nothing runs before its
-    /// Start (git.md §9).
-    pub ai_rebase_onto: Option<String>,
     /// **Merge … into …** entry of a branch context menu: merge of the targeted
     /// ref into the current branch, run by the caller on the sync runner (one
     /// op at a time, spinner + toasts — git.md §9).
@@ -435,7 +431,6 @@ enum MenuIntent {
     Rename(RenameRequest),
     RebaseOnto(String),
     InteractiveRebaseOnto(String),
-    AiRebaseOnto(String),
     Merge(String),
     CreatePullRequest(String),
     Delete(DeleteBranchTarget),
@@ -465,7 +460,6 @@ impl MenuIntent {
             MenuIntent::InteractiveRebaseOnto(branch) => {
                 action.interactive_rebase_onto = Some(branch.clone())
             }
-            MenuIntent::AiRebaseOnto(branch) => action.ai_rebase_onto = Some(branch.clone()),
             MenuIntent::Merge(branch) => action.merge = Some(branch.clone()),
             MenuIntent::CreatePullRequest(dest) => action.create_pull_request = Some(dest.clone()),
             MenuIntent::Delete(target) => action.delete = Some(target.clone()),
@@ -493,7 +487,7 @@ struct MenuBranch {
     create_worktree: bool,
     /// Rebase target eligibility — [`rebase_onto_target`]: any branch ref but
     /// the checked-out one (rebasing a branch onto itself is a no-op). Drives
-    /// the three rebase entries **and** the Merge entry (same exclusions:
+    /// the two rebase entries **and** the Merge entry (same exclusions:
     /// merging a branch into itself is a no-op too).
     rebase_onto: bool,
     /// **Create branch** source — [`create_branch_target`]: any ref (branch or
@@ -1314,7 +1308,7 @@ fn entry_button(ui: &mut egui::Ui, entry: &MenuEntry, action: &mut GraphAction, 
 }
 
 /// Sections of a branch menu, one per action — Checkout / Create worktree /
-/// Rebase onto / Interactive rebase onto / AI rebase onto / Merge / Copy branch
+/// Rebase onto / Interactive rebase onto / Merge / Copy branch
 /// name / Delete — the empty ones dropped (git.md §9).
 /// A lone branch
 /// keeps flat entries (untitled sections, labeled by the action); several nest
@@ -1473,12 +1467,11 @@ fn branch_sections(branches: &[MenuBranch], head: Option<&str>, can_pr: bool) ->
                 })
                 .collect(),
         },
-        // The three rebase flavors share their eligibility (`rebase_onto`) and,
+        // The two rebase flavors share their eligibility (`rebase_onto`) and,
         // unlike `label`, their flat entries name the target (like Delete):
         // "Rebase onto" alone would not say which way the rebase goes.
         rebase_section("Rebase onto", MenuIntent::RebaseOnto),
         rebase_section("Interactive rebase onto", MenuIntent::InteractiveRebaseOnto),
-        rebase_section("AI rebase onto", MenuIntent::AiRebaseOnto),
         // Same eligibility as the rebase flavors; the entries name both sides
         // (like Delete): "Merge" alone would not say which way the merge goes.
         MenuSection {
@@ -3492,7 +3485,6 @@ mod tests {
                 "Create branch",
                 "Rebase onto feat",
                 "Interactive rebase onto feat",
-                "AI rebase onto feat",
                 "Merge feat into main",
                 "Rename",
                 "Copy branch name",
@@ -3521,7 +3513,6 @@ mod tests {
                 "Create branch",
                 "Rebase onto feat",
                 "Interactive rebase onto feat",
-                "AI rebase onto feat",
                 "Merge feat into main",
                 "Rename",
                 "Copy branch name",
@@ -3549,10 +3540,6 @@ mod tests {
         );
         assert_eq!(
             sections[5].entries[0].intent,
-            MenuIntent::AiRebaseOnto("feat".into())
-        );
-        assert_eq!(
-            sections[6].entries[0].intent,
             MenuIntent::Merge("feat".into())
         );
     }
@@ -3574,7 +3561,6 @@ mod tests {
                 Some("Create branch"),
                 Some("Rebase onto"),
                 Some("Interactive rebase onto"),
-                Some("AI rebase onto"),
                 Some("Merge"),
                 Some("Rename"),
                 Some("Copy branch name"),
@@ -3613,17 +3599,10 @@ mod tests {
                 intent: MenuIntent::InteractiveRebaseOnto("feat".into()),
             }]
         );
-        assert_eq!(
-            sections[4].entries,
-            [MenuEntry {
-                label: "feat".into(),
-                intent: MenuIntent::AiRebaseOnto("feat".into()),
-            }]
-        );
         // Merge entries stay explicitly named (like Delete): the direction
         // would otherwise be ambiguous under the nested title.
         assert_eq!(
-            sections[5].entries,
+            sections[4].entries,
             [MenuEntry {
                 label: "Merge feat into main".into(),
                 intent: MenuIntent::Merge("feat".into()),
@@ -3632,15 +3611,15 @@ mod tests {
         // Rename applies to every local ref (the current branch included), so
         // both branches appear under the nested title.
         assert_eq!(
-            sections[6]
+            sections[5]
                 .entries
                 .iter()
                 .map(|e| e.label.as_str())
                 .collect::<Vec<_>>(),
             ["main", "feat"]
         );
-        assert_eq!(sections[7].entries.len(), 2);
-        assert_eq!(sections[8].entries[0].label, "Delete feat");
+        assert_eq!(sections[6].entries.len(), 2);
+        assert_eq!(sections[7].entries[0].label, "Delete feat");
     }
 
     #[test]

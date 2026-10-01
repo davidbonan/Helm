@@ -155,7 +155,7 @@ fully independent workspace with its own tabs, splits and git session.
 
 Details → [`specs/worktrees.md`](specs/worktrees.md)
 
-### Git graph — every ref, and AI rebase
+### Git graph — every ref, and interactive rebase
 
 Flip the center zone from terminal to **commit graph** with `⌘⇧G`. It walks
 **all** your local refs — branches, remotes, tags — laying out the lanes with
@@ -166,28 +166,15 @@ decorations, and turns history into something you can actually navigate.
 - **Search** — `⌘F` filters the loaded commits and cycles through matches.
 - **Act from the graph** — double-click a branch chip to check it out (automatic
   safety stash, smart remote handling), or right-click any chip for **checkout ·
-  worktree · branch · rebase · interactive rebase · AI rebase · delete**.
+  worktree · branch · rebase · interactive rebase · delete**.
 
 <p align="center">
   <img src="specs/screenshots/git-graph.png" alt="Helm — commit graph across all refs with commit detail" width="960">
 </p>
 
-**AI rebase** — right-click a branch and pick **AI rebase onto `<branch>`**. Helm
-hands the replay to your configured agentic CLI (`claude -p`,
-`codex exec --full-auto`, `opencode run`): it runs *inside the repo*, replays your
-commits and **resolves the conflicts itself**, honoring a free-text instruction
-like *"squash everything into a single commit."*
-
-- **You stay at the helm** — a recap modal shows the source → target and the
-  commits to replay before anything runs. `git push` is **denied** to the agent,
-  and the result is verified against the repo.
-- **Or drive it yourself** — a full **Interactive rebase** page (Pick / Reword /
-  Squash / Fixup / Drop, validated live, todo injected without ever opening an
-  editor).
-
-<p align="center">
-  <img src="specs/screenshots/ai-rebase.png" alt="Helm — AI rebase recap modal" width="960">
-</p>
+**Interactive rebase** — right-click a branch and pick **Interactive rebase onto
+`<branch>`**: a full plan page (Pick / Reword / Squash / Fixup / Drop, validated
+live, todo injected without ever opening an editor).
 
 ### Staging — git down to the line
 

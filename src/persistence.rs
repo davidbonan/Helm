@@ -108,9 +108,6 @@ pub struct Prefs {
     pub ai_provider: AiProvider,
     /// Instructions appended to the commit message prompt.
     pub ai_instructions: String,
-    /// AI CLI that performs the AI rebase (agentic — runs git itself, git.md §9);
-    /// configured separately from the commit-message provider.
-    pub ai_rebase_provider: AiProvider,
     /// IDE opening a file from a terminal Cmd+click link (terminal.md §12): its
     /// CLI template is spawned with the file path and line (`Editor::template`).
     pub editor: Editor,
@@ -188,7 +185,6 @@ impl Default for Prefs {
             pull_default: PullDefault::default(),
             ai_provider: AiProvider::default(),
             ai_instructions: String::new(),
-            ai_rebase_provider: AiProvider::default(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
             phone_access_at_launch: false,
@@ -552,7 +548,6 @@ mod tests {
             pull_default: PullDefault::FfOnly,
             ai_provider: AiProvider::Codex,
             ai_instructions: "Always write in French.".to_owned(),
-            ai_rebase_provider: AiProvider::Opencode,
             editor: Editor::Zed,
             notify_on_agent_completion: false,
             phone_access_at_launch: true,
@@ -975,20 +970,14 @@ mod tests {
         let defaults = Prefs::default();
         assert_eq!(defaults.ai_provider, AiProvider::Claude);
         assert_eq!(defaults.ai_instructions, "");
-        assert_eq!(defaults.ai_rebase_provider, AiProvider::Claude);
         assert_eq!(
             Prefs::from_toml("").unwrap().ai_provider,
-            AiProvider::Claude
-        );
-        assert_eq!(
-            Prefs::from_toml("").unwrap().ai_rebase_provider,
             AiProvider::Claude
         );
 
         let prefs = Prefs {
             ai_provider: AiProvider::Opencode,
             ai_instructions: "Use conventional commits.".to_owned(),
-            ai_rebase_provider: AiProvider::Codex,
             ..Prefs::default()
         };
         let text = prefs.to_toml().unwrap();
@@ -996,14 +985,9 @@ mod tests {
             text.contains("ai_provider = \"opencode\""),
             "unexpected format:\n{text}"
         );
-        assert!(
-            text.contains("ai_rebase_provider = \"codex\""),
-            "unexpected format:\n{text}"
-        );
         let restored = Prefs::from_toml(&text).unwrap();
         assert_eq!(restored.ai_provider, AiProvider::Opencode);
         assert_eq!(restored.ai_instructions, "Use conventional commits.");
-        assert_eq!(restored.ai_rebase_provider, AiProvider::Codex);
     }
 
     #[test]

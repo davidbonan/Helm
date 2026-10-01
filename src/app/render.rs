@@ -225,7 +225,6 @@ impl HelmApp {
             &mut self.pull_default,
             &mut self.ai_provider,
             &mut self.ai_instructions,
-            &mut self.ai_rebase_provider,
             &mut self.review_agent_command,
             &mut self.editor,
             &mut self.bitbucket_email,
@@ -271,16 +270,14 @@ impl HelmApp {
             });
         }
         if action.ai_changed {
-            let (ai_provider, ai_instructions, ai_rebase_provider, review_agent_command) = (
+            let (ai_provider, ai_instructions, review_agent_command) = (
                 self.ai_provider,
                 self.ai_instructions.clone(),
-                self.ai_rebase_provider,
                 self.review_agent_command.clone(),
             );
             self.persist(move |prefs| Prefs {
                 ai_provider,
                 ai_instructions,
-                ai_rebase_provider,
                 review_agent_command,
                 ..prefs
             });
@@ -1687,15 +1684,6 @@ impl HelmApp {
                         ctx.request_repaint();
                     }
                 }
-                // Cancel on the AI rebase chip: the runner kills the provider,
-                // aborts a rebase left in progress and reports the verified
-                // result — the chip shows "Cancelling…" until the reply lands.
-                if toolbar_action.cancel_ai_rebase {
-                    if let Some(git) = self.git.as_ref() {
-                        git.ai_rebase.cancel();
-                        ctx.request_repaint();
-                    }
-                }
                 if let Some(default) = toolbar_action.set_default {
                     // Selection **without execution** (git.md §10).
                     self.pull_default = default;
@@ -1870,28 +1858,6 @@ impl HelmApp {
                             .error("HEAD is detached — check out a branch to rebase", now);
                     } else {
                         self.rebase_page = Some(RebasePage::loading(git.branch.label(), &onto));
-                        git.worker.send(GitCommand::RebaseTodo { onto });
-                    }
-                    ctx.request_repaint();
-                }
-                // AI rebase entry (git.md §9): opens the recap modal on the
-                // clicked ref — nothing runs before its Start. Same up-front
-                // refusals as the interactive flavor.
-                if let (Some(onto), Some(git)) = (graph_action.ai_rebase_onto, self.git.as_mut()) {
-                    let now = ctx.input(|i| i.time);
-                    if git.op_in_progress {
-                        self.toasts.error(
-                            "A merge or rebase is already in progress — resolve or abort it first",
-                            now,
-                        );
-                    } else if matches!(git.branch, Branch::Detached(_)) {
-                        self.toasts
-                            .error("HEAD is detached — check out a branch to rebase", now);
-                    } else {
-                        self.modal = Some(Modal::AiRebase(AiRebasePage::loading(
-                            git.branch.label(),
-                            &onto,
-                        )));
                         git.worker.send(GitCommand::RebaseTodo { onto });
                     }
                     ctx.request_repaint();
@@ -2819,56 +2785,6 @@ impl HelmApp {
             return;
         }
 
-        // AI rebase recap (git.md §9): Start hands the request to the session's
-        // runner — the modal closes while it runs (toolbar spinner + mutation
-        // lock tell the busy state) and the report reopens a modal from the
-        // drain. Busy ⇒ Start greyed out, same rule as the toolbar.
-        if let Some(Modal::AiRebase(page)) = self.modal.as_mut() {
-            let busy = self
-                .git
-                .as_ref()
-                .is_some_and(|git| git.busy_action().is_some());
-            let action = ai_rebase_modal(ui, &palette, page, self.ai_rebase_provider, busy);
-            if action.start {
-                let request = AiRebaseRequest {
-                    current: page.current.clone(),
-                    onto: page.onto.clone(),
-                    instructions: page.instructions.clone(),
-                    expected: page.expected(),
-                };
-                if let Some(git) = self.git.as_mut() {
-                    let (current, onto) = (request.current.clone(), request.onto.clone());
-                    let now = ctx.input(|i| i.time);
-                    if git.ai_rebase.request(self.ai_rebase_provider, request) {
-                        self.modal = None;
-                        // The run takes minutes: confirm the start right away
-                        // (the toolbar chip carries the live state from here).
-                        self.toasts.success(
-                            format!(
-                                "AI rebase started — {} is rebasing '{current}' onto '{onto}'",
-                                self.ai_rebase_provider.command()
-                            ),
-                            now,
-                        );
-                    } else {
-                        // One mutating op at a time (git.md §10): the modal
-                        // stays open for a retry.
-                        self.toasts
-                            .error("Another Git operation is in progress", now);
-                    }
-                    ctx.request_repaint();
-                }
-            } else if action.dismiss {
-                self.modal = None;
-            }
-            return;
-        }
-        if let Some(Modal::AiRebaseReport(report)) = self.modal.as_ref() {
-            if ai_rebase_report_modal(ui, &palette, report) {
-                self.modal = None;
-            }
-            return;
-        }
         if matches!(self.modal, Some(Modal::CommandPalette(_))) {
             self.render_command_palette(ui, &palette, ctx);
             return;
@@ -2971,8 +2887,6 @@ impl HelmApp {
                 Modal::CreateWorktree(_)
                 | Modal::RenameWorktree(_)
                 | Modal::DeleteTag { .. }
-                | Modal::AiRebase(_)
-                | Modal::AiRebaseReport(_)
                 | Modal::Feedback(_)
                 | Modal::CommandPalette(_)
                 | Modal::PhoneAccess
@@ -3113,8 +3027,6 @@ impl HelmApp {
                         Modal::CreateWorktree(_)
                         | Modal::RenameWorktree(_)
                         | Modal::DeleteTag { .. }
-                        | Modal::AiRebase(_)
-                        | Modal::AiRebaseReport(_)
                         | Modal::Feedback(_)
                         | Modal::CommandPalette(_)
                         | Modal::PhoneAccess

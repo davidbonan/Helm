@@ -1,4 +1,3 @@
-pub mod ai_rebase;
 pub mod branch;
 pub mod cli;
 pub mod commit;
