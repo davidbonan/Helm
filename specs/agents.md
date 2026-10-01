@@ -175,7 +175,8 @@ Naming the project once, as a heading rather than as a first item in the row, is
 the chips their room. Each carries the agent's **state
 indicator** (accent arc spinner / green dot + faint static halo / hollow grey ring) and
 then only what tells one of that project's agents from the next, **a line each**: its
-worktree's **branch** in mono over the **tab** of the terminal it runs in, quieter — side
+worktree's **branch** in mono over the **name of the terminal** it runs in
+([`terminal.md`](terminal.md) §4: its pane's own name, else its tab's), quieter — side
 by side the two read as one long string, stacked they read as two facts. Where the
 project, the branch *and* the tab all match another agent's (a worktree running four
 `Claude Code` tabs), the tab takes a **`#n`** in workspace order: nothing else is left to

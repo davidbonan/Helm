@@ -216,7 +216,7 @@ the phone's scheme): chrome on `bg.sidebar`, content on `bg.canvas` / the termin
 palette ([`design-system.md`](design-system.md) §1).
 
 - **Agents**: large title, blurred when the list scrolls under it; one rounded card
-  per project — branch over tab (the tab alone when detached; the agent's name tells
+  per project — branch over tab (the terminal's name, [`terminal.md`](terminal.md) §4; the tab alone when detached; the agent's name tells
   nothing, every one is *Claude*), a state pill (badge +
   *Working* / *Done* / *Idle*, same semantics and colors as the sidebar), chevron.
   Tap ⇒ terminal view. Empty ⇒ *No agent running*.
@@ -232,10 +232,14 @@ palette ([`design-system.md`](design-system.md) §1).
   else, upward, it requests `history`. With `app_scrolls` the mirror never scrolls
   natively (`overflow-y: hidden`, `touch-action: none`): a few pixels of native
   scroll would have taken the whole gesture from the page. Its lines take no touch
-  (`pointer-events: none`): every frame replaces them, and a touch whose target left
-  the DOM stops reaching the mirror. Released while moving, the scroll **glides**
-  on, slowing down like iOS's own (0.998 / ms). Claude Code scrolls one line per
-  wheel event, so the content follows the finger 1:1.
+  (`pointer-events: none`): a frame replaces the lines that changed, and a touch
+  whose target left the DOM stops reaching the mirror. Released while moving, the
+  scroll **glides** on, slowing down like iOS's own (0.998 / ms). Claude Code
+  scrolls one line per wheel event, so the content follows the finger 1:1.
+- **Text selection**: iOS's own (long press, handles, *Copy* — `navigator.clipboard`
+  needs a secure context). While a selection is open in the mirror, frames are
+  **held** (the latest one is painted once it closes) and a swipe no longer scrolls
+  the app: a replaced line drops the selection on it, and a handle drag is a swipe.
 - **Keyboard**: the page is pinned to the visual viewport (height *and*
   `offsetTop`), so the dock rides right above the iOS keyboard. Measured on the
   simulator (iOS 27): WebKit reports the final viewport the moment the keyboard

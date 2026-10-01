@@ -371,7 +371,7 @@ impl HelmApp {
                     leading: Leading::Icon(Icon::Bot),
                     title: entry.group_name.clone(),
                     context: entry.branch.clone().map(|branch| (Icon::GitBranch, branch)),
-                    detail: Some(format!("{} · {}", entry.agent, entry.tab_name)),
+                    detail: Some(format!("{} · {}", entry.agent, entry.pane_name)),
                     badge: agent_badge_label(entry.badge).map(str::to_owned),
                     opens_screen: false,
                     enter_label: "Focus",

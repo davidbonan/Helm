@@ -44,7 +44,7 @@ pub(crate) struct AgentEntry {
     pub(crate) group_name: String,
     pub(crate) branch: Option<String>,
     pub(crate) tab_id: TabId,
-    pub(crate) tab_name: String,
+    pub(crate) pane_name: String,
     pub(crate) pane_id: PaneId,
     pub(crate) agent: &'static str,
     pub(crate) badge: AgentBadge,

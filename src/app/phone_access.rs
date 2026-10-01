@@ -228,7 +228,7 @@ impl HelmApp {
             let Some(index) = self.caches.keys.iter().position(|k| k == &key.0) else {
                 continue;
             };
-            for state in tab_panes.values() {
+            for (pane_id, state) in tab_panes {
                 let TerminalState::Live(pane) = state else {
                     continue;
                 };
@@ -238,7 +238,7 @@ impl HelmApp {
                     branch: self.caches.branch_labels.get(&key.0).cloned(),
                     tab: self
                         .workspace
-                        .tab_label(key.1)
+                        .pane_label(key.1, *pane_id)
                         .unwrap_or_else(|| "Terminal".to_owned()),
                     handle: pane.handle(),
                 });
