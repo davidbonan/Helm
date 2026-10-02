@@ -61,6 +61,8 @@ toml = "1.1"
 # TLS. httparse reads the few HTTP requests the server answers.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 httparse = "1"
+# The paths the phone asks for (specs/remote.md §7.3) arrive percent-encoded.
+percent-encoding = "2"
 # Paired phones (specs/remote.md §3.2): only the SHA-256 of a device token is
 # stored. Same digest stack as tungstenite's sha1.
 sha2 = { version = "0.11", default-features = false }

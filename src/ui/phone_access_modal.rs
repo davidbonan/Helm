@@ -15,7 +15,7 @@ const QR_QUIET_MODULES: usize = 4;
 const TITLE: &str = "Open on phone";
 pub const QR_LABEL: &str = "Pairing QR code";
 pub const LIVE_WARNING: &str =
-    "Phone access is on — anyone with this code can type into your agents.";
+    "Phone access is on — anyone with this code can type into your agents and read their files.";
 const NETWORK_NOTE: &str = "Plain HTTP on your local network: use it on a network you trust.";
 pub const COPY_LABEL: &str = "Copy link";
 pub const CLOSE_LABEL: &str = "Close";

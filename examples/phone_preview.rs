@@ -2,6 +2,7 @@
 //! `cargo run --example phone_preview -- [--light] [--loopback] [-- <agent command>...]` prints
 //! the pairing URL; a command after `--` runs in the first pane, e.g. `claude --resume <id>`.
 //! The **+** sheet launches the fake agent (as *Claude Code*) in a throwaway directory.
+//! Every pane's files (§7.3) are those of the directory the preview runs in.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,7 @@ fn exposed(pane: &Pane, project: &str, tab: &str) -> ExposedPane {
         project: project.to_owned(),
         branch: Some("main".to_owned()),
         tab: tab.to_owned(),
+        worktree: std::env::current_dir().unwrap(),
         handle: pane.handle(),
     }
 }

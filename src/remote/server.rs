@@ -3,8 +3,9 @@
 //! Who gets in is the paired devices' book, which outlives the server. Nothing
 //! waits on the UI thread.
 
-use std::io;
+use std::io::{self, Seek, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -17,7 +18,8 @@ use crate::remote::access::{session_cookie, session_token, Access, AccessAlert, 
 use crate::remote::address::{interfaces, lan_address};
 use crate::remote::awake::KeepAwake;
 use crate::remote::devices::{device_name, wall_ms, PairedDevices};
-use crate::remote::http::{read_head, RequestHead, Response};
+use crate::remote::files::{self, OpenedFile};
+use crate::remote::http::{read_head, RequestHead, RequestedRange, Response};
 use crate::remote::launch::Launcher;
 use crate::remote::network::current_gateway_mac;
 use crate::remote::protocol::PageTheme;
@@ -300,13 +302,19 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
         "/pair" if visitor.is_some() => to_agents(),
         "/pair" => return pair(&mut stream, &head, shared),
         "/ws" if head.is_websocket_upgrade() => return upgrade(stream, &head, visitor, shared),
-        "/" | "/app.js" | "/app.css" if visitor.is_none() => unpaired(),
+        "/" | "/app.js" | "/app.css" | "/files" | "/file" if visitor.is_none() => unpaired(),
         "/" => return index(&mut stream, &head, shared),
+        "/files" => return list_files(&mut stream, &head, shared),
+        "/file" => return send_file(&mut stream, &head, shared),
         "/app.js" => Response::new("200 OK", "text/javascript", APP_JS.as_bytes()),
         "/app.css" => Response::new("200 OK", "text/css", APP_CSS.as_bytes()),
-        _ => Response::new("404 Not Found", "text/plain", b""),
+        _ => not_found(),
     };
     let _ = response.write_to(&mut stream);
+}
+
+fn not_found() -> Response<'static> {
+    Response::new("404 Not Found", "text/plain", b"")
 }
 
 fn unpaired() -> Response<'static> {
@@ -351,6 +359,64 @@ fn index_page(theme: &PageTheme) -> String {
         ),
         1,
     )
+}
+
+/// What `path` names inside the worktree of the agent in `pane`.
+fn worktree_path(head: &RequestHead, shared: &Shared) -> Option<PathBuf> {
+    let pane = head.query_param("pane")?.parse().ok()?;
+    let worktree = shared.services.registry.agent_worktree(pane)?;
+    let relative = head.decoded_query_param("path").unwrap_or_default();
+    files::resolve(&worktree, &relative)
+}
+
+fn list_files(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
+    let listing = worktree_path(head, shared).and_then(|dir| files::list(&dir).ok());
+    let Some(listing) = listing else {
+        let _ = not_found().write_to(stream);
+        return;
+    };
+    let json = serde_json::to_vec(&listing).expect("a listing serializes");
+    let _ = Response::new("200 OK", "application/json", &json).write_to(stream);
+}
+
+/// The whole file, or the part a `Range` asks for: iOS plays no media without it.
+fn send_file(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
+    let opened = worktree_path(head, shared).and_then(|path| OpenedFile::open(&path));
+    let Some(mut opened) = opened else {
+        let _ = not_found().write_to(stream);
+        return;
+    };
+    let len = opened.len;
+    let part = match RequestedRange::of(head.header("range"), len) {
+        RequestedRange::Whole => None,
+        RequestedRange::Part(part) => Some(part),
+        RequestedRange::Unsatisfiable => {
+            let _ = Response::new("416 Range Not Satisfiable", "text/plain", b"")
+                .with("Content-Range", format!("bytes */{len}"))
+                .write_to(stream);
+            return;
+        }
+    };
+    let status = match part {
+        Some(_) => "206 Partial Content",
+        None => "200 OK",
+    };
+    let mut response = Response::new(status, opened.content_type, b"")
+        .with("Accept-Ranges", "bytes".to_owned())
+        .with("X-Content-Type-Options", "nosniff".to_owned());
+    if let Some(part) = &part {
+        let range = format!("bytes {}-{}/{len}", part.start, part.end - 1);
+        response = response.with("Content-Range", range);
+    }
+    let sent = part.unwrap_or(0..len);
+    if opened.runs_scripts() {
+        let sandbox = "sandbox allow-scripts".to_owned();
+        response = response.with("Content-Security-Policy", sandbox);
+    }
+    if opened.file.seek(SeekFrom::Start(sent.start)).is_err() {
+        return;
+    }
+    let _ = response.write_streaming(stream, &mut opened.file, sent.end - sent.start);
 }
 
 /// The offered code, spent, becomes a paired device and its session cookie; the

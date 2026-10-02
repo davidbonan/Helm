@@ -5,8 +5,9 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use alacritty_terminal::grid::Dimensions;
 
@@ -78,9 +79,14 @@ impl Fixture {
             vec![WatchedPane::of(&agent), WatchedPane::of(&shell)],
             HashSet::new(),
         );
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
         let registry = Registry::default();
         registry.publish(
-            vec![exposed(&agent, "Tab 1"), exposed(&shell, "Tab 2")],
+            vec![
+                exposed(&agent, "Tab 1", &worktree),
+                exposed(&shell, "Tab 2", &worktree),
+            ],
             Some(watcher.link()),
             theme::preset("helm", true),
         );
@@ -112,6 +118,11 @@ impl Fixture {
         url[url.find("/pair").unwrap()..].to_owned()
     }
 
+    /// The directory both panes are published with.
+    fn worktree(&self) -> PathBuf {
+        self.dir.path().join("worktree")
+    }
+
     fn server(&self) -> &PhoneServer {
         self.server.as_ref().expect("a running server")
     }
@@ -129,12 +140,17 @@ impl Fixture {
     }
 
     fn get(&self, path_and_query: &str, cookie: Option<&str>) -> String {
+        let cookie = cookie.map_or(String::new(), |c| format!("Cookie: {c}\r\n"));
+        self.get_with(path_and_query, &cookie)
+    }
+
+    /// `headers`: whole lines, each ended by `\r\n`.
+    fn get_with(&self, path_and_query: &str, headers: &str) -> String {
         let host = self.origin().trim_start_matches("http://").to_owned();
         let mut stream = TcpStream::connect(&host).unwrap();
-        let cookie = cookie.map_or(String::new(), |c| format!("Cookie: {c}\r\n"));
         write!(
             stream,
-            "GET {path_and_query} HTTP/1.1\r\nHost: {host}\r\n{cookie}\r\n"
+            "GET {path_and_query} HTTP/1.1\r\nHost: {host}\r\n{headers}\r\n"
         )
         .unwrap();
         let mut response = String::new();
@@ -197,12 +213,13 @@ fn session_cookie_of(response: &str) -> Option<String> {
     Some(set_cookie.split(';').next()?.to_owned())
 }
 
-fn exposed(pane: &Pane, tab: &str) -> ExposedPane {
+fn exposed(pane: &Pane, tab: &str, worktree: &Path) -> ExposedPane {
     ExposedPane {
         uid: pane.uid(),
         project: "api".to_owned(),
         branch: Some("main".to_owned()),
         tab: tab.to_owned(),
+        worktree: worktree.to_path_buf(),
         handle: pane.handle(),
     }
 }
@@ -593,6 +610,142 @@ fn a_watching_phone_sizes_the_agent_until_it_leaves() {
         given_back,
         "the Mac gets its size back once the phone leaves"
     );
+}
+
+/// A paired phone in front of an agent whose worktree holds files of every kind,
+/// beside a secret that sits outside it.
+struct FilesFixture {
+    fixture: Fixture,
+    cookie: String,
+}
+
+impl FilesFixture {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let worktree = fixture.worktree();
+        std::fs::write(fixture.dir.path().join("secret.txt"), "outside").unwrap();
+        std::fs::create_dir(worktree.join(".git")).unwrap();
+        std::fs::write(worktree.join(".git/config"), "[core]").unwrap();
+        std::fs::create_dir(worktree.join("out")).unwrap();
+        std::fs::write(worktree.join("shot.png"), "0123456789").unwrap();
+        std::fs::write(worktree.join("notes.log"), "plain words").unwrap();
+        std::fs::write(worktree.join("report.html"), "<p>report</p>").unwrap();
+        std::os::unix::fs::symlink("../secret.txt", worktree.join("leak.txt")).unwrap();
+        age(&worktree.join("shot.png"), 30);
+        age(&worktree.join("out"), 20);
+        age(&worktree.join("notes.log"), 10);
+        let listed = wait_until(|| !fixture.registry.agents().is_empty());
+        assert!(listed, "the watcher sees the fixture's agent");
+        let cookie = fixture.pair();
+        Self { fixture, cookie }
+    }
+
+    fn get(&self, route: &str, pane: &Pane, path: &str, range: Option<&str>) -> String {
+        let range = range.map_or(String::new(), |r| format!("Range: {r}\r\n"));
+        let headers = format!("Cookie: {}\r\n{range}", self.cookie);
+        let query = format!("/{route}?pane={}&path={path}", pane.uid().get());
+        self.fixture.get_with(&query, &headers)
+    }
+
+    fn file(&self, path: &str) -> String {
+        self.get("file", &self.fixture.agent, path, None)
+    }
+}
+
+/// Sets the entry's modification time `seconds` back.
+fn age(path: &Path, seconds: u64) {
+    let then = SystemTime::now() - Duration::from_secs(seconds);
+    std::fs::File::open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+fn body_of(response: &str) -> &str {
+    response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
+#[test]
+fn a_worktree_folder_lists_newest_first_without_git_nor_symlinks() {
+    let files = FilesFixture::new();
+
+    let response = files.get("files", &files.fixture.agent, "", None);
+
+    files.fixture.close();
+    let listing: Value = serde_json::from_str(body_of(&response)).expect(&response);
+    let names: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["report.html", "notes.log", "out", "shot.png"]);
+    assert_eq!(listing["entries"][2]["dir"], true);
+    assert_eq!(listing["entries"][3]["size"], 10);
+}
+
+#[test]
+fn a_file_goes_out_with_its_type_whole_or_the_range_asked_for() {
+    let files = FilesFixture::new();
+
+    let whole = files.file("shot.png");
+    let part = files.get("file", &files.fixture.agent, "shot.png", Some("bytes=2-4"));
+    let past = files.get("file", &files.fixture.agent, "shot.png", Some("bytes=50-"));
+    let unknown_extension = files.file("notes.log");
+
+    files.fixture.close();
+    assert!(whole.starts_with("HTTP/1.1 200"), "{whole}");
+    assert!(whole.contains("Content-Type: image/png\r\n"));
+    assert_eq!(body_of(&whole), "0123456789");
+    assert!(part.starts_with("HTTP/1.1 206"), "{part}");
+    assert!(part.contains("Content-Range: bytes 2-4/10\r\n"));
+    assert_eq!(body_of(&part), "234");
+    assert!(past.starts_with("HTTP/1.1 416"), "{past}");
+    assert!(unknown_extension.contains("Content-Type: text/plain; charset=utf-8\r\n"));
+}
+
+#[test]
+fn an_html_file_goes_out_sandboxed() {
+    let files = FilesFixture::new();
+
+    let report = files.file("report.html");
+
+    files.fixture.close();
+    assert!(report.starts_with("HTTP/1.1 200"), "{report}");
+    assert!(report.contains("Content-Security-Policy: sandbox allow-scripts\r\n"));
+}
+
+#[test]
+fn nothing_outside_the_worktree_nor_its_git_directory_is_served() {
+    let files = FilesFixture::new();
+
+    let parent = files.file("..%2Fsecret.txt");
+    let symlink = files.file("leak.txt");
+    let git = files.file(".git%2Fconfig");
+    let git_listing = files.get("files", &files.fixture.agent, ".git", None);
+
+    files.fixture.close();
+    for refused in [parent, symlink, git, git_listing] {
+        assert!(refused.starts_with("HTTP/1.1 404"), "{refused}");
+    }
+}
+
+#[test]
+fn files_are_served_to_a_paired_phone_for_an_agents_pane_only() {
+    let files = FilesFixture::new();
+
+    let plain_shell = files.get("file", &files.fixture.shell, "shot.png", None);
+    let unpaired = files.fixture.get(
+        &format!(
+            "/file?pane={}&path=shot.png",
+            files.fixture.agent.uid().get()
+        ),
+        None,
+    );
+
+    files.fixture.close();
+    assert!(plain_shell.starts_with("HTTP/1.1 404"), "{plain_shell}");
+    assert!(unpaired.starts_with("HTTP/1.1 401"), "{unpaired}");
 }
 
 /// This process's power assertions: a helm running beside the tests holds its own.
