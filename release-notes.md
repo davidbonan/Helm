@@ -1,5 +1,12 @@
 # Release notes
 
+## 3.4.1
+
+- Emoji are drawn in color everywhere — terminal, pull requests, sidebar,
+  tabs — with the system emoji font, as in Ghostty.
+- Terminal: an emoji followed by a variation selector (⚠️) no longer shows
+  a stray box.
+
 ## 3.4.0
 
 - New Preferences › Agents: one list of agents — Claude Code, Codex and
@@ -80,13 +87,3 @@
   or A−/A+ on the phone picks the reading size.
 - Plain HTTP on your local network: use it on a trusted Wi-Fi. *Stop phone
   access* ends it; it also stops after 2 h with no phone connected.
-
-## 2.8.0
-
-- `Cmd+P` opens the **command palette**: reach the actions spread across
-  the sidebar, git toolbar and context menus by typing, no mouse. Commands
-  that don't apply to the current worktree are hidden.
-- Sub-screens for **Running servers** (stop any live Run strip, across
-  projects), **Stashes** and **Checkout branch**; `Esc` goes back.
-- On an empty query, your last command and most used ones lead the list
-  under **Recent**.
