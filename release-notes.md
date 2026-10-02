@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.5.0
+
+- Phone: open the files of an agent's worktree. A new **Files** button in
+  the terminal header browses its folders, newest first, and shows images,
+  video, audio and text; **Open** hands the file to Safari.
+
 ## 3.4.1
 
 - Emoji are drawn in color everywhere — terminal, pull requests, sidebar,
@@ -74,16 +80,3 @@
 - A worktree's right-click menu can now delete it **together with its branch**:
   *Delete worktree and local branch*, or *… and local + remote branch* (also
   removed from the remote it tracks). Nothing is touched if the remote refuses.
-
-## 3.0.1
-
-- **Open on phone** (command palette): scan the QR code with your
-  phone on the same Wi-Fi to follow your agents from anywhere in the house —
-  the list with their badges, the live terminal, a reply field and quick keys
-  (`Esc`, `1`–`3`, arrows, `⇥`, `^C`, `⏎`) to answer permission prompts.
-  Keeps working with the Mac locked.
-- While you drive an agent from the phone, it redraws at the phone's size; a
-  pill on the Mac pane says so, and a click there takes the size back. Pinch
-  or A−/A+ on the phone picks the reading size.
-- Plain HTTP on your local network: use it on a trusted Wi-Fi. *Stop phone
-  access* ends it; it also stops after 2 h with no phone connected.
