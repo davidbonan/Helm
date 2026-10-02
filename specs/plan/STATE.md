@@ -6,6 +6,25 @@
 
 ---
 
+## ☑ Milestone — M-PhoneFiles · Open the worktree's files from the phone
+
+Spec: [`specs/remote.md`](../remote.md) §1, §3.3, §6, §7.3, §8, §9. Per the user:
+every file of the agent's worktree, not media only. Counter: **3/3**.
+
+- ☑ **PF1 — Files domain + routes.** `remote::files` (resolve inside the worktree,
+  list a directory, content type); `http` `Range` + streamed body; `GET /files`,
+  `GET /file`; `ExposedPane::worktree`. *Tests*: 1 unit (`http`) + 5 business e2e
+  (`remote_e2e`).
+- ☑ **PF2 — Phone page.** Files button, files view, viewer, routes.
+- ☑ **PF3 — Phone verification.** Simulator (`mobile` skill), dark + light: folder,
+  image, video playing, audio, text, HTML sandboxed;
+  `verify-artifacts/20261002_phone-files/`. Navigation by taps replayed in Chrome.
+
+Not done: on the simulator an AXe tap reloads the page (seen on `main` too), so the
+back button was checked in Chrome only — to confirm on a real iPhone.
+
+---
+
 ## ☑ Milestone — M-Emoji · Color emoji everywhere
 
 Spec: [`specs/terminal.md`](../terminal.md) §4,

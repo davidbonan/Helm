@@ -14,12 +14,14 @@ to install. Module: `remote` (+ `agent_watch` off the UI thread, §4).
 | Sending an instruction, quick keys for prompts | Non-agent terminals (plain shells, Run strips) |
 | Launching a configured agent in a new tab of a workspace project or worktree (§7.2) | Initial prompt at launch (the composer sends the first one) |
 | Works with the Mac locked / helm hidden | HTTPS, Tailscale, push notifications |
+| Browsing and opening the files of an agent's worktree (§7.3) | Editing, uploading or deleting a file |
 
 **Agents only**: a pane is exposed while `agent_watch` sees an agent in its
 foreground (badge ≠ `None`, [`agents.md`](agents.md) §2). The phone never reaches
 a plain shell: the attack surface is the agents, not the Mac. A launch (§7.2)
 names an agent of the Mac's list and a workspace entry by id: the phone never
-sends a command line nor a path.
+sends a command line nor an absolute path. The files it opens (§7.3) are named
+relative to an agent's worktree and resolved inside it.
 
 ## 2. Entry point — command palette only
 
@@ -32,7 +34,8 @@ Two palette commands ([`keybindings.md`](keybindings.md) §6), one visible at a 
 | **Stop phone access** | access on | Stops access (§3) |
 
 Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
-access is on — anyone with this code can type into your agents*, the connected
+access is on — anyone with this code can type into your agents and read their
+files*, the connected
 device count, and a **Stop** button. The code is single-use and lives 5 min: once
 used or expired, the open modal shows a fresh one. When the macOS firewall keeps
 the phone out — *Block all incoming connections*, or helm's own rule set to block
@@ -99,6 +102,10 @@ network, not on a shared one; rotation, the two-address alert and revocation
 bound what a sniffed cookie is worth. LAN only, by decision: no off-LAN access,
 no Tailscale for now. The pairing modal states it; §10 lists the upgrade paths.
 
+A paired device reads **every file of the worktrees its agents run in** (§7.3),
+secrets included (`.env`, keys): what the agent itself can read there, the phone
+can. Only `.git` and whatever resolves outside the worktree stay out of reach.
+
 ### 3.4 Start at launch
 Preference *Start at launch* (`phone_access_at_launch`, off by default). The
 networks where a device was paired are recorded by their **gateway MAC**
@@ -140,7 +147,7 @@ moves to a **watcher thread** (refactor, first task):
   `Arc<PaneActivity>` + `Arc<PaneSizing>` clones, keyed by an opaque id minted at registration. The UI
   registers a pane when it opens and unregisters it when it drops; exposure is
   filtered by the watcher's badge.
-- **Server**: `std::net` + `httparse` for the three HTTP routes, `tungstenite`
+- **Server**: `std::net` + `httparse` for the HTTP routes, `tungstenite`
   for the WebSocket, one thread per connection — the threads-and-channels model
   of the rest of helm (architecture §3), no async runtime. Not `tiny_http`: its
   upgrade hides the `TcpStream` behind a `Box<dyn ReadWrite>`, so one thread
@@ -170,7 +177,8 @@ battery still sleeps — accepted (§9).
 
 ## 6. Wire protocol
 
-HTTP: `GET /pair`, `GET /` (+ assets; rotates the session cookie, §3.2), `GET /ws` (upgrade). `GET /` inlines helm's
+HTTP: `GET /pair`, `GET /` (+ assets; rotates the session cookie, §3.2), `GET /ws` (upgrade),
+`GET /files` and `GET /file` (§7.3). `GET /` inlines helm's
 active theme on `<html>` (`data-theme` + the tokens as CSS variables): the first
 paint already wears it. Everything else runs
 on the WebSocket, one JSON object per text frame.
@@ -255,7 +263,7 @@ palette ([`design-system.md`](design-system.md) §1).
   Sticks to the bottom while new output arrives, unless the user scrolled up — also
   through the height transition (`ResizeObserver`).
 - **Terminal header**: back chevron, project over branch · tab, state
-  pill, A−/A+ segmented. Both lines keep their height while empty: on a direct
+  pill, a **Files** button (§7.3), A−/A+ segmented. Both lines keep their height while empty: on a direct
   load the rows are sized before the agents list fills them.
 - **Composer** (bottom, above the keyboard): an input card (`border.input`, accent
   when focused) holding the multi-line field and a round **Send** (`send`); empty
@@ -320,11 +328,52 @@ Clicking it, like any click in the pane, takes the size back.
   in its foreground; a command that fails (`command not found`) stays readable there. It enters the agents list
   with its badge, like any other.
 
+### 7.3 Files of the worktree
+
+What the agent wrote — a screenshot, a video, a report — opens on the phone.
+
+- **Scope**: the worktree of an **exposed agent's** pane (its workspace entry's
+  directory), all of it, gitignored files included. Never `.git`, never a path
+  that resolves outside the worktree (`..`, a symlink leaving it). Symlinks are
+  not listed. Read only.
+- **Routes**, both behind the session cookie, `404` for a pane with no agent or a
+  path out of scope:
+
+| Route | Answer |
+|-------|--------|
+| `GET /files?pane=<id>&path=<dir>` | `{entries: [{name, dir, size, modified_ms}], total}` — one directory, **newest first**, at most 500 entries (`total` counts them all) |
+| `GET /file?pane=<id>&path=<file>` | the file's bytes; `Range` honoured (`206`, `416`) — iOS plays no video or audio without it |
+
+  `path` is relative to the worktree, percent-encoded; empty = its root.
+  `Content-Type` from the extension for what a browser shows natively (images,
+  video, audio, PDF, HTML); anything else is `text/plain` when its first bytes are
+  UTF-8 text, `application/octet-stream` otherwise. `X-Content-Type-Options:
+  nosniff` always. HTML and SVG go out with `Content-Security-Policy: sandbox
+  allow-scripts`: opened as a page they run in an origin of their own, so a
+  script in a worktree file reaches neither the cookie nor the WebSocket (its
+  `Origin` is refused, §3.2).
+- **Files view** (`#/pane/<id>/files/<dir>`): header with back chevron, *Files*
+  over the directory's path; one card of rows — folder or file icon, name, size ·
+  age, a chevron on folders. A folder opens as a new history entry (back goes up);
+  a file opens the viewer. By folder rather than one flat list of recent files: a
+  build directory (`target/`, `node_modules/`) would fill such a list by itself.
+  Empty ⇒ *Empty folder*; more than 500 ⇒ *Showing the 500 most recent of <total>*.
+- **Viewer** (`#/pane/<id>/file/<path>`): header with back chevron, the file's
+  name and **Open** — the raw file in a new tab, Safari's own viewer (zoom, PDF,
+  rendered HTML, share sheet). Body by `Content-Type`: image fitted to the width,
+  video and audio with the native controls (`playsinline`), text in a monospace
+  block (first 256 KB, said so when cut); anything else *No preview — Open it in
+  Safari*.
+- **The mirror stays watched** while the files are open: the pane keeps the
+  phone's size, no redraw on the way back.
+
 ## 8. Testing
 
 | Level | What |
 |-------|------|
 | Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
+| Unit (files) | `Range` → whole / part / unsatisfiable (`a-b`, `a-`, `-n`, past the end, several ranges ignored) |
+| Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401` |
 | Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
 | App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle |
@@ -346,6 +395,10 @@ Clicking it, like any click in the pane, takes the size back.
   §2) never gets a badge: the phone keeps it read-only and never lists it
   (Preferences warns, [`preferences.md`](preferences.md) §4).
 - Mac asleep (lid closed on battery, manual sleep) ⇒ unreachable until wake.
+- Files: an HTML file opened in Safari loads none of the worktree files it links
+  to (its sandboxed origin sends no cookie): self-contained pages only. A pane
+  whose agent exited no longer serves its worktree. *Open* from a Home Screen web
+  app may land in a browser sheet without the cookie (§9, last item).
 - One LAN address: moving the Mac to another network stops access; *Start at
   launch* resumes it back on a recorded network — at the next frame helm draws
   (the check runs on the UI thread, §4).
@@ -359,3 +412,4 @@ Clicking it, like any click in the pane, takes the size back.
   mobile reading), mapped to a pane through a `SessionStart` hook.
 - **HTTPS / Tailscale** (encrypted, off-LAN, prerequisite for Web Push).
 - **Push notifications** on agent completion.
+- **Tappable paths** in the mirror, opening the viewer (§7.3) on the file named.

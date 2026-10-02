@@ -16,6 +16,8 @@
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25"/></symbol>
   <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
   <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.75 4.25c0-.83.67-1.5 1.5-1.5h2.6l1.5 1.75h5.4c.83 0 1.5.67 1.5 1.5v5.75c0 .83-.67 1.5-1.5 1.5h-9.5c-.83 0-1.5-.67-1.5-1.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4.25 1.75h4.5l3.5 3.5v7.5c0 .83-.67 1.5-1.5 1.5h-6.5c-.83 0-1.5-.67-1.5-1.5v-9.5c0-.83.67-1.5 1.5-1.5z"/><path d="M8.5 2v3.5H12"/></symbol>
   <symbol id="i-terminal" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="m4.75 6.25 2 1.75-2 1.75M8.5 10h2.75"/></symbol>
 </svg>
 <div id="app">
@@ -56,6 +58,7 @@
         <div id="term-subtitle" class="sub"></div>
       </div>
       <span id="term-badge"></span>
+      <button id="files-open" class="icon-button files-open" type="button" aria-label="Files"><svg class="icon"><use href="#i-folder"/></svg></button>
       <div class="zoom" role="group" aria-label="Text size">
         <button id="font-down" type="button" aria-label="Smaller text">A−</button>
         <button id="font-up" type="button" aria-label="Larger text">A+</button>
@@ -91,6 +94,29 @@
         <button id="send" class="send" type="submit" aria-label="Send"><svg class="icon"><use href="#i-send"/></svg></button>
       </form>
     </footer>
+  </section>
+
+  <section id="files-view" class="view" hidden>
+    <header class="bar">
+      <button id="files-back" class="icon-button back" type="button" aria-label="Back"><svg class="icon"><use href="#i-back"/></svg></button>
+      <div class="title">
+        <div class="name">Files</div>
+        <div id="files-path" class="sub"></div>
+      </div>
+    </header>
+    <main id="files" class="list"></main>
+  </section>
+
+  <section id="file-view" class="view" hidden>
+    <header class="bar">
+      <button id="file-back" class="icon-button back" type="button" aria-label="Back to files"><svg class="icon"><use href="#i-back"/></svg></button>
+      <div class="title">
+        <div id="file-name" class="name"></div>
+      </div>
+      <a id="file-raw" class="text-button" target="_blank" rel="noopener">Open</a>
+    </header>
+    <div id="file-notice" class="notice" hidden></div>
+    <div id="file-body" class="file-body"></div>
   </section>
 
   <section id="unpaired-view" class="view unpaired" hidden>

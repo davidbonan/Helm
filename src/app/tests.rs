@@ -4310,6 +4310,7 @@ fn a_phone_launched_pane_whose_entry_left_is_dropped_and_forgotten() {
             project: "gone".to_owned(),
             branch: None,
             tab: "Claude Code".to_owned(),
+            worktree: PathBuf::from("/tmp/gone"),
             handle: pane.handle(),
         },
         crate::agent_watch::watcher::WatchedPane::of(&pane),

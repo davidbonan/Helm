@@ -1,4 +1,4 @@
-// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer, launch sheet.
+// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer, launch sheet, files.
 "use strict";
 
 const HISTORY_PAGE = 200;
@@ -19,6 +19,8 @@ const CHOICE_KEY = "helm.launch";
 // watch that follows claims the real one.
 const CELL_WIDTH_EM = 0.6;
 const DOCK_ESTIMATE_PX = 160;
+const TEXT_PREVIEW_BYTES = 256 * 1024;
+const VIEWS = ["agents-view", "terminal-view", "files-view", "file-view", "unpaired-view"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,6 +70,14 @@ function saveChoice() {
   } catch (_) { /* private browsing: the choice is not remembered */ }
 }
 
+function showView(shown) {
+  for (const id of VIEWS) $(id).hidden = id !== shown;
+}
+
+function mirrorIsShown() {
+  return !$("terminal-view").hidden;
+}
+
 function escapeHtml(text) {
   return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
@@ -81,7 +91,7 @@ function connect() {
   state.socket = socket;
   socket.onopen = () => {
     $("link").hidden = true;
-    if (state.watched !== null) send({ type: "watch", id: state.watched, ...phoneSize() });
+    if (state.watched !== null && mirrorIsShown()) send({ type: "watch", id: state.watched, ...phoneSize() });
   };
   socket.onmessage = (event) => receive(JSON.parse(event.data));
   socket.onclose = () => {
@@ -116,7 +126,7 @@ function receive(message) {
   switch (message.type) {
     case "theme": applyTheme(message); break;
     case "agents": state.agents = message.agents; renderAgents(); renderHeader(); break;
-    case "screen": if (message.id === state.watched) renderScreen(message); break;
+    case "screen": if (message.id === state.watched && mirrorIsShown()) renderScreen(message); break;
     case "history": if (message.id === state.watched) prependHistory(message); break;
     case "ended": if (message.id === state.watched) endMirror(); break;
     case "targets": receiveTargets(message); break;
@@ -201,8 +211,7 @@ function openMirror(id) {
   state.screenLines = [];
   state.heldFrame = null;
   $("notice").hidden = true;
-  $("agents-view").hidden = true;
-  $("terminal-view").hidden = false;
+  showView("terminal-view");
   renderHeader();
   const launchedHere = state.launchedLabels.get(id);
   if (launchedHere && !state.agents.some((a) => a.id === id)) showNotice(`Starting ${launchedHere.tab}…`);
@@ -213,8 +222,7 @@ function closeMirror() {
   if (state.watched !== null) send({ type: "unwatch" });
   state.watched = null;
   toggleCommands(false);
-  $("terminal-view").hidden = true;
-  $("agents-view").hidden = false;
+  showView("agents-view");
 }
 
 function endMirror() {
@@ -372,7 +380,7 @@ function phoneSize() {
 function requestResize() {
   clearTimeout(state.resizeTimer);
   state.resizeTimer = setTimeout(() => {
-    if (state.watched !== null) send({ type: "resize", id: state.watched, ...phoneSize() });
+    if (state.watched !== null && mirrorIsShown()) send({ type: "resize", id: state.watched, ...phoneSize() });
   }, RESIZE_DEBOUNCE_MS);
 }
 
@@ -591,6 +599,142 @@ function launchFailed(message) {
   $("launch-error").hidden = false;
 }
 
+// Files of an agent's worktree (specs/remote.md §7.3): one folder at a time, newest first.
+
+function worktreeUrl(route, pane, path) {
+  return `/${route}?pane=${pane}&path=${encodeURIComponent(path)}`;
+}
+
+function worktreeHash(view, pane, path) {
+  return `#/pane/${pane}/${view}/${encodeURIComponent(path)}`;
+}
+
+// `null` while the Mac is unreachable.
+async function fetchWorktree(url, options) {
+  try {
+    return await fetch(url, { cache: "no-store", ...options });
+  } catch (_) {
+    return null;
+  }
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+function formatAge(modifiedMs) {
+  const minutes = Math.floor((Date.now() - modifiedMs) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ago`;
+  return new Date(modifiedMs).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function fileRow(pane, dir, entry) {
+  const path = dir ? `${dir}/${entry.name}` : entry.name;
+  const age = formatAge(entry.modified_ms);
+  const detail = entry.dir ? age : `${formatSize(entry.size)} · ${age}`;
+  return `<a class="row${entry.dir ? " folder" : ""}" href="${worktreeHash(entry.dir ? "files" : "file", pane, path)}">
+    ${icon(entry.dir ? "folder" : "file")}
+    <span class="who"><div class="name">${escapeHtml(entry.name)}</div><div class="sub"><span>${detail}</span></div></span>
+    ${entry.dir ? icon("chevron") : ""}</a>`;
+}
+
+function filesMessage(title, text) {
+  return `<div class="empty">${icon("folder")}<p class="empty-title">${title}</p><p>${text}</p></div>`;
+}
+
+function filesHtml(pane, dir, listing) {
+  if (listing.entries.length === 0) return filesMessage("Empty folder", "Nothing here yet.");
+  const rows = listing.entries.map((entry) => fileRow(pane, dir, entry)).join("");
+  const more = listing.total > listing.entries.length
+    ? `<p class="files-more">Showing the ${listing.entries.length} most recent of ${listing.total}</p>`
+    : "";
+  return `<div class="card">${rows}</div>${more}`;
+}
+
+async function openFiles(pane, dir) {
+  const agent = state.agents.find((a) => a.id === pane);
+  const shown = location.hash;
+  showView("files-view");
+  $("files-path").innerHTML = `<span>${escapeHtml([agent && agent.project, dir].filter(Boolean).join("/") || "/")}</span>`;
+  $("files").innerHTML = "";
+  const response = await fetchWorktree(worktreeUrl("files", pane, dir));
+  if (location.hash !== shown) return;
+  if (response && response.status === 401) return showUnpaired();
+  $("files").innerHTML = response && response.ok
+    ? filesHtml(pane, dir, await response.json())
+    : filesMessage("Folder not available", "The agent has exited, the folder is gone or the Mac is out of reach.");
+}
+
+function showFileNotice(text) {
+  $("file-notice").textContent = text;
+  $("file-notice").hidden = false;
+}
+
+function closeFile() {
+  $("file-body").replaceChildren();
+  $("file-notice").hidden = true;
+}
+
+function mediaElement(family, url) {
+  const media = document.createElement(family === "image" ? "img" : family);
+  media.src = url;
+  if (family !== "image") {
+    media.controls = true;
+    media.playsInline = true;
+  }
+  return media;
+}
+
+// The total of a `Content-Range: bytes 0-n/total`.
+function fullSize(response) {
+  return Number((response.headers.get("Content-Range") || "").split("/")[1]);
+}
+
+async function textPreview(response) {
+  const text = document.createElement("pre");
+  text.textContent = await response.text();
+  const size = fullSize(response);
+  if (size > TEXT_PREVIEW_BYTES) showFileNotice(`Showing the first ${formatSize(TEXT_PREVIEW_BYTES)} of ${formatSize(size)}.`);
+  return text;
+}
+
+// The head of the file tells its type; an image or a media element then loads it by itself.
+async function openFile(pane, path) {
+  const url = worktreeUrl("file", pane, path);
+  const shown = location.hash;
+  showView("file-view");
+  $("file-name").textContent = path.split("/").pop();
+  $("file-raw").href = url;
+  const response = await fetchWorktree(url, { headers: { Range: `bytes=0-${TEXT_PREVIEW_BYTES - 1}` } });
+  if (location.hash !== shown) return;
+  if (response && response.status === 401) return showUnpaired();
+  if (response && response.status === 416) return showFileNotice("This file is empty.");
+  if (!response || !response.ok) {
+    return showFileNotice("This file is not available — the agent has exited, the file is gone or the Mac is out of reach.");
+  }
+  const [family] = response.headers.get("Content-Type").split("/");
+  if (["image", "video", "audio"].includes(family)) {
+    response.body.cancel();
+    $("file-body").replaceChildren(mediaElement(family, url));
+  } else if (family === "text") {
+    const text = await textPreview(response);
+    if (location.hash === shown) $("file-body").replaceChildren(text);
+  } else {
+    response.body.cancel();
+    showFileNotice("No preview — open it in Safari.");
+  }
+}
+
 // Composer
 
 function autosize() {
@@ -675,8 +819,7 @@ function fitViewport() {
 }
 
 function showUnpaired() {
-  for (const view of document.querySelectorAll(".view")) view.hidden = true;
-  $("unpaired-view").hidden = false;
+  showView("unpaired-view");
 }
 
 // Wiring
@@ -686,6 +829,9 @@ $("agents").addEventListener("click", (event) => {
   if (row) location.hash = `#/pane/${row.dataset.id}`;
 });
 $("back").addEventListener("click", () => history.back());
+$("files-back").addEventListener("click", () => history.back());
+$("file-back").addEventListener("click", () => history.back());
+$("files-open").addEventListener("click", () => { location.hash = worktreeHash("files", state.watched, ""); });
 $("new-agent").addEventListener("click", () => { location.hash = LAUNCH_ROUTE; });
 $("launch-cancel").addEventListener("click", () => history.back());
 $("launch").addEventListener("click", (event) => {
@@ -760,11 +906,15 @@ document.addEventListener("selectionchange", () => {
 });
 
 // The sheet is a history entry: Safari's back-swipe snapshot of the list is then taken without it.
+// A pane's files keep its mirror watched: back on the terminal, the agent has not redrawn.
 function route() {
-  const match = location.hash.match(/^#\/pane\/(\d+)$/);
+  const match = location.hash.match(/^#\/pane\/(\d+)(?:\/(files|file)\/(.*))?$/);
   if (location.hash !== LAUNCH_ROUTE) closeLaunch();
-  if (match) openMirror(Number(match[1]));
-  else closeMirror();
+  closeFile();
+  if (!match) closeMirror();
+  else if (match[2] === "files") openFiles(Number(match[1]), decodeURIComponent(match[3]));
+  else if (match[2] === "file") openFile(Number(match[1]), decodeURIComponent(match[3]));
+  else openMirror(Number(match[1]));
   if (location.hash === LAUNCH_ROUTE) openLaunch();
 }
 window.addEventListener("hashchange", route);

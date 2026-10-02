@@ -163,6 +163,7 @@ Decided (overview.md §4). Runtime foundation in `Cargo.toml`: `eframe`/`egui`,
 | `crossbeam-channel` | UI ⇄ worker channels (git, PTY) |
 | `libc` | libproc binding (`proc_pidinfo`): current `cwd` of a pane inherited on split (terminal.md §2) |
 | `tungstenite` + `httparse` | Phone access server: WebSocket framing + HTTP request heads over `std::net` ([`remote.md`](remote.md) §4) |
+| `percent-encoding` | Phone access server: decoding the worktree paths the phone asks for ([`remote.md`](remote.md) §7.3) |
 
 `git2` is compiled **`default-features = false`**: no https/ssh transport —
 push/pull/fetch are out of MVP (git.md §1), so neither `openssl` nor `libssh2`

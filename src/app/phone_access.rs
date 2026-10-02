@@ -279,6 +279,9 @@ impl HelmApp {
             let Some(index) = self.caches.keys.iter().position(|k| k == &key.0) else {
                 continue;
             };
+            let Some(repo) = self.workspace.repo(index) else {
+                continue;
+            };
             for (pane_id, state) in tab_panes {
                 let TerminalState::Live(pane) = state else {
                     continue;
@@ -291,6 +294,7 @@ impl HelmApp {
                         .workspace
                         .pane_label(key.1, *pane_id)
                         .unwrap_or_else(|| "Terminal".to_owned()),
+                    worktree: repo.path.clone(),
                     handle: pane.handle(),
                 });
             }

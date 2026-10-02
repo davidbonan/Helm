@@ -104,6 +104,7 @@ impl Launcher {
                 project: target.project,
                 branch: target.branch,
                 tab: agent.name,
+                worktree: target.path.clone(),
                 handle: pane.handle(),
             },
             WatchedPane::of(&pane),

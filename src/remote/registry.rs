@@ -4,6 +4,7 @@
 //! what it may launch (§7.2), and the panes it launched that the UI has not
 //! adopted yet.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::agent_watch::watcher::{PaneReading, WatchedPane, WatcherLink};
@@ -21,6 +22,8 @@ pub struct ExposedPane {
     pub project: String,
     pub branch: Option<String>,
     pub tab: String,
+    /// The workspace entry's directory: what the phone may browse (§7.3).
+    pub worktree: PathBuf,
     pub handle: PaneHandle,
 }
 
@@ -124,6 +127,14 @@ impl Registry {
             .collect()
     }
 
+    /// The worktree whose files the phone may read: an exposed agent's only.
+    pub fn agent_worktree(&self, id: u64) -> Option<PathBuf> {
+        self.agents()
+            .into_iter()
+            .find(|agent| agent.pane.uid.get() == id)
+            .map(|agent| agent.pane.worktree)
+    }
+
     /// A pane still published, whatever its agent; `None` once the UI dropped it.
     pub fn pane(&self, id: u64) -> Option<ExposedPane> {
         self.lock()
@@ -183,6 +194,7 @@ mod tests {
             project: "api".to_owned(),
             branch: None,
             tab: tab.to_owned(),
+            worktree: PathBuf::from("/tmp/api"),
             handle: pane.handle(),
         }
     }
