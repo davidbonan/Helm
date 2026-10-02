@@ -4,6 +4,7 @@ pub mod commit_detail;
 pub mod conflict_view;
 pub mod detail;
 pub mod diff_view;
+pub mod emoji;
 pub mod feedback_modal;
 pub mod file_list;
 pub mod git_panel;

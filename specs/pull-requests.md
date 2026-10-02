@@ -398,7 +398,9 @@ same one as commit/working-tree review.
     the `accent.ai` hue stays reserved for AI surfaces), the **body in a card**
     (`bg_surface` + `border_subtle`) **rendered as markdown** (an in-house
     `pulldown-cmark` renderer, as are the comment bodies — it controls font size,
-    line-height and letter-spacing so prose blocks don't read as a dense wall), then
+    line-height and letter-spacing so prose blocks don't read as a dense wall; **emoji
+    in color** — system emoji font, as in the terminal, terminal.md §4 — in the bodies
+    and in the PR titles), then
     Checks, then the **conversation card** (below). No author block over the body:
     author, branches and age are the surface header's second line, and repeating them
     under the tabs reads as a rendering slip rather than as context. On `bg_canvas`, in

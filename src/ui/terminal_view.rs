@@ -3,7 +3,9 @@ use std::path::Path;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
+use egui::emath::GuiRounding as _;
 
+use crate::emoji::{has_emoji_presentation, is_variation_selector};
 use crate::keybindings::Shortcut;
 use crate::terminal::emu::{
     mouse_protocol, mouse_report, wheel_bytes, MouseButton, MouseKind, MouseMods, MouseProtocol,
@@ -19,6 +21,7 @@ use crate::terminal::palette::{Rgb, TermPalette};
 use crate::terminal::selection::{covers, selected_text, Cell, Selection, SelectionMode};
 use crate::terminal::sizing::GridSize;
 use crate::theme::Palette;
+use crate::ui::emoji::emoji_texture;
 use crate::ui::{paint_icon, with_alpha};
 
 const SELECTION_ALPHA: u8 = 110;
@@ -201,12 +204,38 @@ struct CellView {
     spacer: bool,
     /// OSC 8 hyperlink target carried by the cell, if any (terminal.md §12).
     link: Option<String>,
+    /// Color emoji painted in place of the font glyph (terminal.md §4).
+    emoji: Option<EmojiSprite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EmojiSprite {
+    span: usize,
+    texture: egui::TextureId,
 }
 
 impl CellView {
+    /// egui has no shaping: a variation selector (U+FE00–FE0F) paints as the missing-glyph box.
     fn push_text(&self, out: &mut String) {
         out.push(self.c);
-        out.extend(self.zerowidth.iter().copied());
+        out.extend(
+            self.zerowidth
+                .iter()
+                .filter(|c| !is_variation_selector(**c)),
+        );
+    }
+
+    fn emoji_cluster(&self) -> Option<String> {
+        if self.spacer || !has_emoji_presentation(self.c, &self.zerowidth) {
+            return None;
+        }
+        let mut cluster = String::from(self.c);
+        cluster.extend(self.zerowidth.iter());
+        Some(cluster)
+    }
+
+    fn is_blank(&self) -> bool {
+        self.c == ' ' && self.zerowidth.is_empty() && !self.spacer
     }
 
     fn text(&self) -> String {
@@ -283,6 +312,7 @@ fn snapshot(grid: &SharedTerm, palette: &TermPalette) -> GridSnapshot {
                     .flags
                     .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
                 link: cell.hyperlink().map(|h| h.uri().to_string()),
+                emoji: None,
             });
         }
         wrapped.push(cols > 0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE));
@@ -295,6 +325,35 @@ fn snapshot(grid: &SharedTerm, palette: &TermPalette) -> GridSnapshot {
         cursor_line: (cursor.line.0 + offset).max(0) as usize,
         cursor_col: cursor.column.0,
         mouse,
+    }
+}
+
+/// A wide emoji owns its two cells; a narrow one (`\u{26A0}\u{FE0F}`: one cell in the
+/// grid) spreads over the blank cell after it, like Ghostty, else stays in its own.
+fn emoji_span(cells: &[CellView], col: usize) -> usize {
+    if cells[col].wide || cells.get(col + 1).is_some_and(CellView::is_blank) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Resolved ahead of `row_paint_ops`: a texture upload cannot happen under the fonts lock.
+fn attach_emoji_sprites(ctx: &egui::Context, rows: &mut [Vec<CellView>], cell_size: egui::Vec2) {
+    let cell_px = cell_size * ctx.pixels_per_point();
+    for cells in rows {
+        for col in 0..cells.len() {
+            let Some(cluster) = cells[col].emoji_cluster() else {
+                continue;
+            };
+            let span = emoji_span(cells, col);
+            let box_px = [
+                (span as f32 * cell_px.x).round() as usize,
+                cell_px.y.round() as usize,
+            ];
+            cells[col].emoji =
+                emoji_texture(ctx, &cluster, box_px).map(|texture| EmojiSprite { span, texture });
+        }
     }
 }
 
@@ -445,6 +504,10 @@ enum PaintOp {
         shape: CellShape,
         color: egui::Color32,
     },
+    Emoji {
+        col: usize,
+        sprite: EmojiSprite,
+    },
 }
 
 fn cell_format(cell: &CellView, font: egui::FontId, row_h: f32) -> egui::TextFormat {
@@ -536,6 +599,11 @@ fn row_paint_ops(
             col += 1;
             continue;
         }
+        if let Some(sprite) = cell.emoji {
+            ops.push(PaintOp::Emoji { col, sprite });
+            col += sprite.span;
+            continue;
+        }
         let span = if cell.wide { 2 } else { 1 };
         if cell.zerowidth.is_empty() {
             if let Some(shape) = cell_shape(cell.c) {
@@ -574,6 +642,7 @@ fn row_paint_ops(
             let next = &cells[col];
             if next.spacer
                 || next.wide
+                || next.emoji.is_some()
                 || (next.fg, next.italic, next.underline) != key
                 || (next.zerowidth.is_empty() && cell_shape(next.c).is_some())
                 || (fonts.glyph_width(&font, next.c) - char_w).abs() > ADVANCE_EPSILON
@@ -654,6 +723,15 @@ fn paint_row_ops(
                     grid_cell_rect(origin, *col, *span, char_w, row_h),
                     *shape,
                     *color,
+                );
+            }
+            PaintOp::Emoji { col, sprite } => {
+                painter.image(
+                    sprite.texture,
+                    grid_cell_rect(origin, *col, sprite.span, char_w, row_h)
+                        .round_to_pixels(painter.pixels_per_point()),
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
                 );
             }
         }
@@ -749,6 +827,7 @@ pub fn cell_metrics(ctx: &egui::Context, font_size: f32) -> (f32, f32) {
                 wide: false,
                 spacer: false,
                 link: None,
+                emoji: None,
             }],
             font_size,
             cell_h,
@@ -902,8 +981,9 @@ pub fn terminal_view_readonly(
     font_size: f32,
     exited: bool,
 ) -> ReadonlyTerminalOutput {
-    let snap = snapshot(grid, palette);
+    let mut snap = snapshot(grid, palette);
     let (char_w, row_h) = cell_metrics(ui.ctx(), font_size);
+    attach_emoji_sprites(ui.ctx(), &mut snap.rows, egui::vec2(char_w, row_h));
     let area = ui.available_size();
     let grid_area = egui::vec2(area.x, (area.y - BOTTOM_PAD).max(0.0));
     let region = paint_grid(
@@ -962,8 +1042,9 @@ pub fn terminal_view(
     // byte-identical (terminal.md §12).
     link_cwd: Option<&Path>,
 ) -> TerminalInput {
-    let snap = snapshot(grid, palette);
+    let mut snap = snapshot(grid, palette);
     let (char_w, row_h) = cell_metrics(ui.ctx(), font_size);
+    attach_emoji_sprites(ui.ctx(), &mut snap.rows, egui::vec2(char_w, row_h));
     let area = ui.available_size();
     // The background fills the whole area, but the grid stops BOTTOM_PAD above the
     // edge so the last line doesn't touch the bottom of the window.
@@ -2036,6 +2117,7 @@ mod tests {
             wide: false,
             spacer: false,
             link: None,
+            emoji: None,
         }
     }
 
@@ -2225,6 +2307,68 @@ mod tests {
         assert_eq!(snap.rows[0][0].c, 'e');
         assert_eq!(snap.rows[0][0].zerowidth, ['\u{0302}']);
         assert_eq!(snap.rows[0][0].text(), "e\u{0302}");
+    }
+
+    #[test]
+    fn the_painted_text_drops_the_emoji_variation_selector() {
+        let term = crate::terminal::emu::shared_term(2, 12);
+        let palette = TermPalette::variant(crate::terminal::palette::TermTheme::Dark);
+        crate::terminal::emu::feed(&term, "\u{26A0}\u{FE0F}".as_bytes());
+
+        let snap = snapshot(&term, &palette);
+
+        assert_eq!(
+            snap.rows[0][0].text(),
+            "\u{26A0}",
+            "no font carries a glyph for the selector: painted, it shows as a box"
+        );
+    }
+
+    fn emoji_ops(cells: &mut Vec<CellView>) -> Vec<(usize, usize)> {
+        let ctx = fonts_ctx();
+        attach_emoji_sprites(&ctx, std::slice::from_mut(cells), egui::vec2(8.0, 16.0));
+        ops_for(cells)
+            .0
+            .iter()
+            .filter_map(|op| match op {
+                PaintOp::Emoji { col, sprite } => Some((*col, sprite.span)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn warning_emoji() -> CellView {
+        let mut cell = cv('\u{26A0}');
+        cell.zerowidth.push('\u{FE0F}');
+        cell
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_narrow_emoji_spreads_over_the_blank_cell_after_it() {
+        let mut cells = vec![cv('a'), warning_emoji(), cv(' '), cv('b')];
+
+        assert_eq!(emoji_ops(&mut cells), [(1, 2)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_narrow_emoji_stays_in_its_cell_before_text() {
+        let mut cells = vec![warning_emoji(), cv('b')];
+
+        assert_eq!(emoji_ops(&mut cells), [(0, 1)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_wide_emoji_takes_its_two_cells() {
+        let mut rocket = cv('\u{1F680}');
+        rocket.wide = true;
+        let mut ghost = cv(' ');
+        ghost.spacer = true;
+        let mut cells = vec![rocket, ghost, cv('b')];
+
+        assert_eq!(emoji_ops(&mut cells), [(0, 2)]);
     }
 
     #[test]

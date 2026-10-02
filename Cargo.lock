@@ -829,6 +829,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-text"
+version = "20.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d2790b5c08465d49f8dc05c8bcae9fea467855947db39b0f8145c091aaced5"
+dependencies = [
+ "core-foundation 0.9.4",
+ "core-graphics",
+ "foreign-types",
+ "libc",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1738,6 +1750,9 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "block2 0.5.1",
+ "core-foundation 0.9.4",
+ "core-graphics",
+ "core-text",
  "crossbeam-channel",
  "directories",
  "eframe",

@@ -144,6 +144,12 @@ objc2-app-kit = { version = "0.2", features = [
     "NSWindow",
 ] }
 raw-window-handle = "0.6"
+# Color emoji of the terminal grid (terminal.md §4): egui only rasterizes
+# monochrome outlines, the system emoji font is drawn through CoreText.
+# core-graphics / core-foundation: the versions already in the tree.
+core-text = "20"
+core-graphics = "0.23"
+core-foundation = "0.9"
 
 [profile.release]
 lto = "thin"

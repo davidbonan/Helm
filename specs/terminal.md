@@ -97,6 +97,14 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
   Dingbats** (system: what Menlo lacks of the Dingbats) → egui fonts. A glyph a fallback serves
   wider than its cells is **shrunk to fit** them (Ghostty/Kitty), never allowed to
   spill over the neighboring columns.
+- **Color emoji** (like Ghostty): a cell whose character has the emoji
+  presentation — by default (🚀, ✅) or asked by the variation selector `U+FE0F`
+  (⚠️) — is drawn from the system emoji font (Apple Color Emoji, through
+  CoreText: egui fonts are monochrome outlines), fitted and centered in its cells.
+  `U+FE0E`, or no selector on a text-default character (⚠), keeps the mono glyph.
+  An emoji the grid counts as one cell (⚠️) spreads over the next cell when that
+  one is blank, else is shrunk into its own. A variation selector is never painted
+  as a glyph.
 - Cursor: solid block when the pane has focus, hollow outline otherwise.
 - **Unfocused split dim** (Ghostty `unfocused-split-opacity`): in a tab with
   several panes, the focused pane stays at full opacity and the others are

@@ -2077,11 +2077,9 @@ fn resolved_thread_row(
             (right - GAP_MD - left).max(40.0),
         );
         let galley = painter.layout_job(job);
-        painter.galley(
-            egui::pos2(left, rect.bottom() - 11.0 - galley.size().y),
-            galley,
-            palette.text_secondary,
-        );
+        let origin = egui::pos2(left, rect.bottom() - 11.0 - galley.size().y);
+        painter.galley(origin, galley.clone(), palette.text_secondary);
+        crate::ui::emoji::paint_emoji(painter, origin, &galley);
     }
     let label = format!("{anchor} · {count}");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
@@ -2096,8 +2094,10 @@ fn elided_job(
     color: egui::Color32,
     max_width: f32,
 ) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
+    let mut job = egui::text::LayoutJob::default();
+    crate::ui::emoji::append_text(
+        &mut job,
+        text,
         egui::text::TextFormat {
             font_id: font,
             color,
@@ -3364,7 +3364,7 @@ pub(crate) fn markdown(ui: &mut egui::Ui, palette: &Palette, text: &str) {
             },
             ..Default::default()
         };
-        job.append(run, 0.0, format);
+        crate::ui::emoji::append_text(job, run, format);
     };
     let flush = |ui: &mut egui::Ui,
                  job: &mut egui::text::LayoutJob,
@@ -3944,6 +3944,7 @@ struct MdLink {
 fn prose(ui: &mut egui::Ui, job: egui::text::LayoutJob, links: &[MdLink]) {
     let galley = ui.painter().layout_job(job);
     let response = ui.add(egui::Label::new(galley.clone()));
+    crate::ui::emoji::paint_emoji(ui.painter(), response.rect.min, &galley);
     let origin = response.rect.min.to_vec2();
     for (i, link) in links.iter().enumerate() {
         for (j, rect) in link_rects(&galley, &link.range).into_iter().enumerate() {
@@ -6922,18 +6923,14 @@ fn cell_text(
     center_y: f32,
     max_w: f32,
 ) -> f32 {
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat::simple(font, color),
-    );
+    let mut job = egui::text::LayoutJob::default();
+    crate::ui::emoji::append_text(&mut job, text, egui::TextFormat::simple(font, color));
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
     let galley = ui.painter().layout_job(job);
     let width = galley.size().x;
-    ui.painter().galley(
-        egui::pos2(left, center_y - galley.size().y / 2.0),
-        galley,
-        color,
-    );
+    let origin = egui::pos2(left, center_y - galley.size().y / 2.0);
+    ui.painter().galley(origin, galley.clone(), color);
+    crate::ui::emoji::paint_emoji(ui.painter(), origin, &galley);
     left + width
 }
 

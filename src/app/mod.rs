@@ -4757,6 +4757,7 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             url_scheme::arm(&cc.egui_ctx);
             crate::ipc::arm(&cc.egui_ctx);
             theme::install_fonts(&cc.egui_ctx);
+            crate::ui::emoji::install(&cc.egui_ctx);
             let mut prefs = Prefs::load();
             if prefs.purge_missing_repos() {
                 if let Err(err) = prefs.save() {

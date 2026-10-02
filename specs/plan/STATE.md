@@ -6,6 +6,31 @@
 
 ---
 
+## ☑ Milestone — M-Emoji · Color emoji everywhere
+
+Spec: [`specs/terminal.md`](../terminal.md) §4,
+[`specs/pull-requests.md`](../pull-requests.md) §11. Per the user: emoji drawn as in
+Ghostty, in color — the PR view, then the whole app (design-system.md §2).
+Counter: **4/4**.
+
+- ☑ **E1 — Emoji domain.** `emoji`: presentation (variation selectors, default
+  emoji), CoreText bitmap fitted to a pixel box. *Tests*: 4 unit.
+- ☑ **E2 — Grid rendering.** Sprite per cell (texture cached in egui memory), narrow
+  emoji spread over the blank cell after it; the selector no longer paints as a
+  box. *Tests*: 4 unit + headless capture.
+- ☑ **E3 — PR view text.** `ui::emoji`: `append_text` (transparent placeholder,
+  selectors dropped) + `paint_emoji`; markdown prose, titles and cells, thread
+  excerpts. *Tests*: 2 unit + headless capture.
+- ☑ **E4 — Whole app.** `ui::emoji::install`: an egui plugin hides the emoji glyphs
+  of every painted text and paints their bitmap. *Tests*: 2 unit + headless
+  captures (app, widgets).
+
+Not done: ZWJ sequences, skin tones and flags stay separate glyphs; the phone
+mirror is untouched; text on a layer of its own (graph ref chips) and rotated text
+keep the mono glyph.
+
+---
+
 ## ☑ Milestone — M-Agents · One agents table behind every AI action
 
 Spec: [`specs/preferences.md`](../preferences.md) §4 *Agents* + §5,

@@ -65,6 +65,12 @@ take the intent color (added for Stage, deleted for Unstage/Discard).
 *Sizes anchored on the measurement of the title (~22pt cap-height) and a nav item
 (~12.5pt); the others are proportional, to be refined on prototype.*
 
+**Emoji** are drawn in color everywhere (system emoji font — Apple Color Emoji —
+through CoreText; egui fonts are monochrome): a square of one em painted over the
+glyph egui laid out, which is hidden. `U+FE0F` asks for the emoji of a text-default
+character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own rule
+(terminal.md §4).
+
 ## 3. Spacing & metrics (logical pt, approx)
 
 | Element                          | Value |
