@@ -85,7 +85,7 @@ pub fn classify(comm: &str, argv: &[String]) -> Option<&'static str> {
     agent_name(argv.first()?.rsplit('/').next()?)
 }
 
-/// True when launching `program` (a command's first word, possibly a path) runs
+/// True when launching `program` (the word a command invokes, possibly a path) runs
 /// an agent the watcher recognizes by its invoked name.
 pub fn is_watched_program(program: &str) -> bool {
     program.rsplit('/').next().and_then(agent_name).is_some()

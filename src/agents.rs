@@ -110,7 +110,20 @@ impl Agent {
 }
 
 fn program_of(command: &str) -> Option<&str> {
-    command.split_whitespace().next()
+    command
+        .split_whitespace()
+        .find(|word| !is_env_assignment(word))
+}
+
+fn is_env_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    !name.starts_with(|first: char| first.is_ascii_digit())
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
 }
 
 fn prompt_command_of(invocation: &str) -> String {
@@ -559,8 +572,9 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_is_detected_by_the_invoked_name_of_its_first_word() {
+    fn an_agent_is_detected_by_the_invoked_name_of_its_program() {
         assert!(Agent::new("Claude", "claude --model opus").is_detected());
+        assert!(Agent::new("Perso", "CLAUDE_CONFIG_DIR=~/.claude-perso claude").is_detected());
         assert!(Agent::new("Claude", "/opt/bin/claude-code").is_detected());
         assert!(!Agent::new("Cursor", "cursor-agent").is_detected());
         assert!(!Agent::new("Wrapped", "npx claude").is_detected());
