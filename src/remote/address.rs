@@ -1,9 +1,12 @@
 //! The address the phone server binds to (specs/remote.md §3.1): one private
 //! IPv4 of an up interface, `en0` first — never `0.0.0.0`, so a VPN or a second
-//! interface stays unexposed.
+//! interface stays unexposed. It moves with the DHCP lease.
 
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
+
+use crate::remote::devices::PairedDevices;
+use crate::remote::network::current_gateway_mac;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interface {
@@ -24,6 +27,33 @@ pub fn lan_address(interfaces: &[Interface]) -> Option<Ipv4Addr> {
         .find(|i| i.name == PREFERRED)
         .or_else(|| candidates().next())
         .map(|i| i.addr)
+}
+
+/// What the network offers the server right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lan {
+    Address(Ipv4Addr),
+    /// Between two leases, or on a network whose gateway has not answered yet.
+    Unsettled,
+    /// A network no phone was paired on.
+    Unrecorded,
+}
+
+/// `bound` while it is still up; else the LAN address, on a recorded network only.
+pub fn current_lan(bound: Option<Ipv4Addr>, devices: &PairedDevices) -> Lan {
+    let interfaces = interfaces();
+    let still_up = bound.filter(|ip| interfaces.iter().any(|i| i.is_up && i.addr == *ip));
+    if let Some(ip) = still_up {
+        return Lan::Address(ip);
+    }
+    let Some(ip) = lan_address(&interfaces) else {
+        return Lan::Unsettled;
+    };
+    match current_gateway_mac() {
+        None => Lan::Unsettled,
+        Some(mac) if devices.read(|book| book.is_recorded_network(&mac)) => Lan::Address(ip),
+        Some(_) => Lan::Unrecorded,
+    }
 }
 
 /// The machine's IPv4 interfaces (`getifaddrs`).

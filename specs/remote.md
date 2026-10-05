@@ -56,9 +56,10 @@ revoked, §3.2).
 
 **Start**: *Open on phone*, or at launch on the pairing network (§3.4) — pick the
 LAN address (§3.1), bind the server, begin the no-sleep activity (§5). **Stop**, on
-whichever comes first: *Stop phone access*, the LAN address disappearing, helm
-quitting. No idle stop: a phone locked on the couch keeps its access. Stop closes
-every connection, frees the port and ends the no-sleep activity; pairings stay.
+whichever comes first: *Stop phone access*, the Mac joining a network no phone was
+paired on (§3.1), helm quitting. No idle stop: a phone locked on the couch keeps
+its access. Stop closes every connection, frees the port and ends the no-sleep
+activity; pairings stay.
 
 ### 3.1 Address
 First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
@@ -67,6 +68,14 @@ First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
 last bound port is tried first, so the phone's bookmark keeps working; taken ⇒
 the OS picks one, which is saved. None found ⇒ the command fails with *No local
 network*. A phone's cookie belongs to the host's IP: a new IP (DHCP) ⇒ rescan.
+
+**The address is followed**, from the accept thread (no frame needed, §4): every
+2 s it checks that the bound address is still up. Gone (a lease refused, a Wi-Fi
+roam) ⇒ the listener and every socket of that address close, access stays on, and
+the server binds the next LAN address as soon as there is one **on a recorded
+network** (gateway MAC, §3.4) — the same address back keeps the bookmark and the
+cookie. No address yet, or a gateway not answering yet ⇒ it keeps waiting. An
+address on a network no phone was paired on ⇒ access stops.
 
 ### 3.2 Pairing & sessions
 - **Pairing code**: 128 random bits (`arc4random_buf`), hex, **single use**, valid
@@ -373,7 +382,7 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
 |-------|------|
 | Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
 | Unit (files) | `Range` → whole / part / unsatisfiable (`a-b`, `a-`, `-n`, past the end, several ranges ignored) |
-| Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401` |
+| Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401`; the address going away closes the listener and the sockets, back ⇒ served again on the same origin, access never stopped; an unrecorded network stops access |
 | Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
 | App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle |
@@ -399,10 +408,12 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
   to (its sandboxed origin sends no cookie): self-contained pages only. A pane
   whose agent exited no longer serves its worktree. *Open* from a Home Screen web
   app may land in a browser sheet without the cookie (§9, last item).
-- One LAN address: moving the Mac to another network stops access; *Start at
-  launch* resumes it back on a recorded network — at the next frame helm draws
-  (the check runs on the UI thread, §4).
-- The Mac's IP changes (DHCP) ⇒ the cookie no longer matches the host: rescan.
+- One LAN address: moving the Mac to a network no phone was paired on stops
+  access; *Start at launch* resumes it back on a recorded network — at the next
+  frame helm draws (the check runs on the UI thread, §4).
+- The Mac's IP changes (DHCP) ⇒ access follows it (§3.1), but the cookie no longer
+  matches the host: rescan. A static lease on the router avoids it.
+- Access started on a network with no pairing yet stops if its address goes away.
 - An iOS Home Screen web app may keep its own cookies, apart from Safari
   (unverified on a device): then pair from inside it.
 

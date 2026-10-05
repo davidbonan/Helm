@@ -6,6 +6,21 @@
 
 ---
 
+## ☑ Milestone — M-PhoneLease · Phone access follows the Mac's address
+
+Spec: [`specs/remote.md`](../remote.md) §3, §3.1, §8, §9. Per the user: access
+never stops by itself on the home network; no `.local` name (the Mac may not
+advertise it), the URL stays the IP. Counter: **1/1**.
+
+- ☑ **L1 — Followed address.** `remote::address` `Lan` + `current_lan`; the accept
+  thread rebinds on a recorded network, closes the sockets of the address left,
+  stops on an unrecorded network. *Tests*: 2 business e2e (`remote_e2e`).
+
+Not done: a new IP still needs a rescan (cookie bound to the host) — a static
+lease on the router avoids it.
+
+---
+
 ## ☑ Milestone — M-PhoneFiles · Open the worktree's files from the phone
 
 Spec: [`specs/remote.md`](../remote.md) §1, §3.3, §6, §7.3, §8, §9. Per the user:
