@@ -4,6 +4,7 @@
 //! write it, the UI never rewrites it whole.
 
 use std::io::Write;
+use std::net::Ipv4Addr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -62,6 +63,9 @@ pub struct DeviceBook {
     /// Last port the server bound: tried first, so the phone's bookmark holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// Last address the server bound: another one leaves the bookmarks dead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<Ipv4Addr>,
     /// Gateway MACs of the networks a device paired on (§3.4).
     #[serde(default)]
     pub networks: Vec<String>,

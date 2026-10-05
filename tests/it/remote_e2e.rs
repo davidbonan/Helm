@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
@@ -109,12 +109,12 @@ impl Fixture {
     }
 
     fn origin(&self) -> String {
-        self.server().origin().to_owned()
+        self.server().origin().expect("a bound server")
     }
 
     /// The path and query of a freshly offered pairing code.
     fn pairing_path(&self) -> String {
-        let url = self.server().offer_pairing();
+        let url = self.server().offer_pairing().expect("a bound server");
         url[url.find("/pair").unwrap()..].to_owned()
     }
 
@@ -139,6 +139,23 @@ impl Fixture {
         ));
     }
 
+    /// A server restarted on a network the test moves: the address the returned
+    /// value holds is what the server finds at its next look.
+    fn restart_server_on_a_moving_lan(&mut self) -> Arc<Mutex<Option<Ipv4Addr>>> {
+        self.server = None;
+        let (launcher, _) = Launcher::channel(|| {});
+        let services = services(&self.registry, launcher, &self.devices, &self.alerts);
+        let lan = Arc::new(Mutex::new(Some(LOOPBACK)));
+        let found = Arc::clone(&lan);
+        let locate = move |_| *found.lock().unwrap();
+        self.server = Some(PhoneServer::start_following(LOOPBACK, locate, services).unwrap());
+        lan
+    }
+
+    fn host(&self) -> String {
+        self.origin().trim_start_matches("http://").to_owned()
+    }
+
     fn get(&self, path_and_query: &str, cookie: Option<&str>) -> String {
         let cookie = cookie.map_or(String::new(), |c| format!("Cookie: {c}\r\n"));
         self.get_with(path_and_query, &cookie)
@@ -146,7 +163,7 @@ impl Fixture {
 
     /// `headers`: whole lines, each ended by `\r\n`.
     fn get_with(&self, path_and_query: &str, headers: &str) -> String {
-        let host = self.origin().trim_start_matches("http://").to_owned();
+        let host = self.host();
         let mut stream = TcpStream::connect(&host).unwrap();
         write!(
             stream,
@@ -165,7 +182,7 @@ impl Fixture {
     }
 
     fn connect(&self, cookie: &str) -> WebSocket<TcpStream> {
-        let host = self.origin().trim_start_matches("http://").to_owned();
+        let host = self.host();
         let stream = TcpStream::connect(&host).unwrap();
         let mut request = format!("ws://{host}/ws").into_client_request().unwrap();
         request
@@ -189,20 +206,43 @@ impl Fixture {
     }
 }
 
+const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
 fn start_server(
     registry: &Registry,
     launcher: Launcher,
     devices: &PairedDevices,
     alerts: &Arc<Mutex<Vec<AccessAlert>>>,
 ) -> PhoneServer {
+    let services = services(registry, launcher, devices, alerts);
+    PhoneServer::start_on_address(LOOPBACK, services).unwrap()
+}
+
+fn services(
+    registry: &Registry,
+    launcher: Launcher,
+    devices: &PairedDevices,
+    alerts: &Arc<Mutex<Vec<AccessAlert>>>,
+) -> PhoneServices {
     let alerts = Arc::clone(alerts);
-    let services = PhoneServices {
+    PhoneServices {
         registry: registry.clone(),
         launcher,
         devices: devices.clone(),
         alert: Arc::new(move |alert| alerts.lock().unwrap().push(alert)),
-    };
-    PhoneServer::start_on_address([127, 0, 0, 1].into(), services).unwrap()
+    }
+}
+
+/// The server closed `ws`, or its connection broke.
+fn is_closed(ws: &mut WebSocket<TcpStream>) -> bool {
+    match ws.read() {
+        Ok(message) => message.is_close(),
+        Err(tungstenite::Error::Io(err)) => !matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        Err(_) => true,
+    }
 }
 
 /// The `name=value` of a response's session `Set-Cookie`.
@@ -349,6 +389,87 @@ fn a_pairing_outlives_the_server() {
 }
 
 #[test]
+fn an_idle_phone_keeps_hearing_from_the_mac() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+
+    let pinged = wait_for(&mut ws, "ping", |_| true);
+
+    fixture.close();
+    assert!(
+        pinged.is_some(),
+        "a page with nothing to show still hears the Mac"
+    );
+}
+
+#[test]
+fn a_phone_that_stops_answering_is_dropped() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
+
+    let dropped = wait_until_within(Duration::from_secs(15), || {
+        fixture.server().connected_devices().is_empty()
+    });
+
+    fixture.close();
+    assert!(
+        dropped,
+        "a phone answering no ping no longer counts as connected"
+    );
+}
+
+#[test]
+fn access_follows_the_address_across_a_lease() {
+    let mut fixture = Fixture::new();
+    let lan = fixture.restart_server_on_a_moving_lan();
+    let cookie = fixture.pair();
+    let host = fixture.host();
+    let mut ws = fixture.connect(&cookie);
+    wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
+
+    *lan.lock().unwrap() = None;
+    let closed = wait_until_within(Duration::from_secs(5), || is_closed(&mut ws));
+    let refused = TcpStream::connect(&host).is_err();
+    let unbound = fixture.server().origin().is_none();
+    let may_sleep = !power_assertions().contains(REASON);
+    *lan.lock().unwrap() = Some(LOOPBACK);
+    let back = wait_until_within(Duration::from_secs(10), || {
+        TcpStream::connect(&host).is_ok()
+    });
+    let page = fixture.get("/app.css", Some(&cookie));
+    let moved = fixture.alerts.lock().unwrap().contains(&AccessAlert::Moved);
+
+    fixture.close();
+    assert!(closed, "a socket of the address left is closed");
+    assert!(refused && unbound, "nothing listens between two leases");
+    assert!(may_sleep, "the Mac is kept awake only while reachable");
+    assert!(
+        back,
+        "the phone's bookmark is served again on the same address"
+    );
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(!moved, "the same address back is no news");
+}
+
+#[test]
+fn a_new_address_is_reported_once_a_phone_is_paired() {
+    let mut fixture = Fixture::new();
+    fixture.pair();
+    fixture
+        .devices
+        .edit(|book| book.ip = Some([10, 0, 0, 9].into()));
+
+    fixture.restart_server();
+    let alerts = fixture.alerts.lock().unwrap().clone();
+
+    fixture.close();
+    assert!(alerts.contains(&AccessAlert::Moved), "{alerts:?}");
+}
+
+#[test]
 fn a_revoked_phone_is_shut_out_and_its_socket_closes() {
     let fixture = Fixture::new();
     let cookie = fixture.pair();
@@ -357,14 +478,7 @@ fn a_revoked_phone_is_shut_out_and_its_socket_closes() {
     let connected = fixture.server().connected_devices();
 
     fixture.devices.edit(|book| book.revoke_all());
-    let closed = wait_until_within(Duration::from_secs(3), || match ws.read() {
-        Ok(message) => message.is_close(),
-        Err(tungstenite::Error::Io(err)) => !matches!(
-            err.kind(),
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-        ),
-        Err(_) => true,
-    });
+    let closed = wait_until_within(Duration::from_secs(3), || is_closed(&mut ws));
     let page = fixture.get("/app.css", Some(&cookie));
     let left = wait_until_within(Duration::from_secs(3), || {
         fixture.server().connected_devices().is_empty()

@@ -1,9 +1,12 @@
 //! The address the phone server binds to (specs/remote.md §3.1): one private
 //! IPv4 of an up interface, `en0` first — never `0.0.0.0`, so a VPN or a second
-//! interface stays unexposed.
+//! interface stays unexposed. It moves with the DHCP lease.
 
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
+
+use crate::remote::devices::PairedDevices;
+use crate::remote::network::current_gateway_mac;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interface {
@@ -24,6 +27,21 @@ pub fn lan_address(interfaces: &[Interface]) -> Option<Ipv4Addr> {
         .find(|i| i.name == PREFERRED)
         .or_else(|| candidates().next())
         .map(|i| i.addr)
+}
+
+/// Where the server may listen now: `bound` while it is still up; else the LAN
+/// address, once the Mac is on a network a phone was paired on.
+pub fn current_lan(bound: Option<Ipv4Addr>, devices: &PairedDevices) -> Option<Ipv4Addr> {
+    let interfaces = interfaces();
+    let still_up = bound.filter(|ip| interfaces.iter().any(|i| i.is_up && i.addr == *ip));
+    if still_up.is_some() {
+        return still_up;
+    }
+    let ip = lan_address(&interfaces)?;
+    let gateway = current_gateway_mac()?;
+    devices
+        .read(|book| book.is_recorded_network(&gateway))
+        .then_some(ip)
 }
 
 /// The machine's IPv4 interfaces (`getifaddrs`).

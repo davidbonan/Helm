@@ -1,6 +1,7 @@
 //! One connected phone (specs/remote.md §6): a single thread alternates between
 //! reading its messages (short read timeout) and pushing what changed — the agent
-//! list and the watched screen, at most every [`FRAME`].
+//! list and the watched screen, at most every [`FRAME`]. Pings both ways tell a
+//! lost phone from an idle one.
 
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -28,6 +29,11 @@ const DRIVEN_FRAME: Duration = Duration::from_millis(16);
 /// How long after the phone's last input the frames keep that pace.
 const DRIVEN_FOR: Duration = Duration::from_millis(600);
 
+const PING_EVERY: Duration = Duration::from_secs(3);
+
+/// A phone answering no ping for this long is gone: its pane gets its size back.
+const SILENT_FOR: Duration = Duration::from_secs(10);
+
 /// Scrollback lines a single `history` request may ask for.
 const MAX_HISTORY_PAGE: usize = 500;
 
@@ -52,6 +58,8 @@ pub struct PhoneSocket {
     last_push: Option<Instant>,
     driven_until: Option<Instant>,
     read_timeout: Duration,
+    pinged: Instant,
+    heard: Instant,
 }
 
 impl PhoneSocket {
@@ -71,6 +79,8 @@ impl PhoneSocket {
             last_push: None,
             driven_until: None,
             read_timeout: READ_TIMEOUT,
+            pinged: Instant::now(),
+            heard: Instant::now(),
         }
     }
 
@@ -90,18 +100,19 @@ impl PhoneSocket {
                 self.read_timeout = frame;
             }
             match self.ws.read() {
-                Ok(Message::Text(text)) => {
-                    if let Ok(message) = serde_json::from_str::<FromPhone>(&text) {
-                        if self.answer(message).is_err() {
-                            return;
-                        }
+                Ok(Message::Close(_)) => return,
+                Ok(message) => {
+                    self.heard = Instant::now();
+                    if self.answer_frame(&message).is_err() {
+                        return;
                     }
                 }
-                Ok(Message::Close(_)) => return,
-                Ok(_) => {}
                 Err(tungstenite::Error::Io(err))
                     if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
                 Err(_) => return,
+            }
+            if self.heard.elapsed() >= SILENT_FOR || self.ping_when_due().is_err() {
+                return;
             }
             if self.last_push.is_none_or(|at| at.elapsed() >= frame) {
                 self.last_push = Some(Instant::now());
@@ -110,6 +121,27 @@ impl PhoneSocket {
                 }
             }
         }
+    }
+
+    fn answer_frame(&mut self, frame: &Message) -> tungstenite::Result<()> {
+        let Message::Text(text) = frame else {
+            return Ok(());
+        };
+        match serde_json::from_str::<FromPhone>(text) {
+            Ok(message) => self.answer(message),
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// The WebSocket ping is answered by the browser itself, the `ping` message is
+    /// what the page hears.
+    fn ping_when_due(&mut self) -> tungstenite::Result<()> {
+        if self.pinged.elapsed() < PING_EVERY {
+            return Ok(());
+        }
+        self.pinged = Instant::now();
+        self.ws.send(Message::Ping(Default::default()))?;
+        self.push(&ToPhone::Ping)
     }
 
     fn answer(&mut self, message: FromPhone) -> tungstenite::Result<()> {

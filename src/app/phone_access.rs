@@ -8,13 +8,10 @@ use crate::remote::qr::QrMatrix;
 use crate::remote::registry::{ExposedPane, Registry};
 use crate::remote::server::{PhoneServer, PhoneServices, StartError};
 use crate::theme::Palette;
-use crate::ui::phone_access_modal::{phone_access_modal, PhoneAccessView};
+use crate::ui::phone_access_modal::{phone_access_modal, OfferedPairingView, PhoneAccessView};
 
 /// While the device count may move, the open modal repaints at this pace.
 const MODAL_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// How often *Start at launch* looks at the network while access is off.
-const NETWORK_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often the open modal re-reads the firewall, so a fix in Settings clears its banner.
 const FIREWALL_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
@@ -23,11 +20,8 @@ const FIREWALL_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 pub(super) struct PhoneStarter {
     /// A *Stop phone access* holds *Start at launch* off until the next *Open on phone*.
     held_off: bool,
-    last_check: Option<f64>,
-    /// The gateway lookup in flight: two subprocesses, kept off the UI thread.
-    pending: Option<crossbeam_channel::Receiver<Option<String>>>,
-    gateway_mac: fn() -> Option<String>,
     bind: fn(PhoneServices) -> Result<PhoneServer, StartError>,
+    bind_on_recorded_network: fn(PhoneServices) -> std::io::Result<PhoneServer>,
     firewall: fn() -> Option<FirewallBlock>,
 }
 
@@ -35,10 +29,8 @@ impl Default for PhoneStarter {
     fn default() -> Self {
         Self {
             held_off: false,
-            last_check: None,
-            pending: None,
-            gateway_mac: crate::remote::network::current_gateway_mac,
             bind: PhoneServer::start,
+            bind_on_recorded_network: PhoneServer::start_on_recorded_network,
             firewall: crate::remote::firewall::helm_blocked,
         }
     }
@@ -47,46 +39,14 @@ impl Default for PhoneStarter {
 impl PhoneStarter {
     #[cfg(test)]
     pub(super) fn seamed(
-        gateway_mac: fn() -> Option<String>,
         bind: fn(PhoneServices) -> Result<PhoneServer, StartError>,
+        bind_on_recorded_network: fn(PhoneServices) -> std::io::Result<PhoneServer>,
     ) -> Self {
         Self {
-            gateway_mac,
             bind,
+            bind_on_recorded_network,
             ..Self::default()
         }
-    }
-
-    /// Starts a gateway lookup every [`NETWORK_CHECK`]; returns its answer on the
-    /// frame it lands.
-    fn check_network(&mut self, ctx: &egui::Context, now: f64) -> Option<String> {
-        if let Some(pending) = &self.pending {
-            return match pending.try_recv() {
-                Err(crossbeam_channel::TryRecvError::Empty) => None,
-                landed => {
-                    self.pending = None;
-                    landed.ok().flatten()
-                }
-            };
-        }
-        if self
-            .last_check
-            .is_some_and(|at| now - at < NETWORK_CHECK.as_secs_f64())
-        {
-            return None;
-        }
-        self.last_check = Some(now);
-        let (sender, receiver) = crossbeam_channel::bounded(1);
-        let (lookup, repaint) = (self.gateway_mac, ctx.clone());
-        let _ = std::thread::Builder::new()
-            .name("phone-network".into())
-            .spawn(move || {
-                let _ = sender.send(lookup());
-                repaint.request_repaint();
-            });
-        self.pending = Some(receiver);
-        ctx.request_repaint_after(NETWORK_CHECK);
-        None
     }
 }
 
@@ -152,17 +112,21 @@ impl PhoneAccess {
         self.server.connected_devices()
     }
 
-    /// A fresh code when none is shown yet, or the shown one was used or expired.
+    /// A fresh code when none is shown yet, or the shown one was used, expired or
+    /// left behind by a change of address; none while the server is unbound.
     fn refresh_offered_pairing(&mut self) {
         let shown = self.offered.as_ref().map(|offered| offered.url.as_str());
         if shown.is_some() && self.server.pairing_url().as_deref() == shown {
             return;
         }
-        let url = self.server.offer_pairing();
-        self.offered = Some(OfferedPairing {
+        self.offered = self.server.offer_pairing().map(|url| OfferedPairing {
             qr: QrMatrix::encode(&url),
             url,
         });
+    }
+
+    pub(super) fn is_bound(&self) -> bool {
+        self.server.origin().is_some()
     }
 }
 
@@ -171,11 +135,12 @@ impl HelmApp {
         self.phone.is_some()
     }
 
-    /// *Open on phone*: starts access when off, then shows the pairing modal with
-    /// a fresh code. Lifts a hold-off of *Start at launch*.
+    /// *Open on phone*: binds access where the Mac is now when it is off or
+    /// waiting for a recorded network, then shows the pairing modal with a fresh
+    /// code. Lifts a hold-off of *Start at launch*.
     pub(super) fn open_on_phone(&mut self, ctx: &egui::Context, now: f64) {
         self.phone_starter.held_off = false;
-        if self.phone.is_none() {
+        if !self.phone.as_ref().is_some_and(PhoneAccess::is_bound) {
             if let Err(message) = self.start_phone_access(ctx) {
                 self.toasts.error(message, now);
                 return;
@@ -189,6 +154,18 @@ impl HelmApp {
 
     /// Binds the server on the LAN; the error says why it could not.
     fn start_phone_access(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let bind = self.phone_starter.bind;
+        self.start_phone_server(ctx, bind).map_err(|err| match err {
+            StartError::NoLocalNetwork => "Phone access needs a local network (Wi-Fi)".to_owned(),
+            StartError::Bind(err) => format!("Phone access failed — {err}"),
+        })
+    }
+
+    fn start_phone_server<E>(
+        &mut self,
+        ctx: &egui::Context,
+        start: fn(PhoneServices) -> Result<PhoneServer, E>,
+    ) -> Result<(), E> {
         let registry = Registry::default();
         let (launcher, launches) = Launcher::channel(repaint_pacer(ctx));
         let services = PhoneServices {
@@ -199,11 +176,7 @@ impl HelmApp {
                 crate::notify::post(&alert.title(), &alert.body());
             }),
         };
-        let server = (self.phone_starter.bind)(services).map_err(|err| match err {
-            StartError::NoLocalNetwork => "Phone access needs a local network (Wi-Fi)".to_owned(),
-            StartError::Bind(err) => format!("Phone access failed — {err}"),
-        })?;
-        self.adopt_phone_server(server, registry, launches);
+        self.adopt_phone_server(start(services)?, registry, launches);
         Ok(())
     }
 
@@ -237,37 +210,24 @@ impl HelmApp {
         }
     }
 
-    /// At the agent poll: republish the live panes, take note of a stop the server
-    /// decided on its own (LAN address gone), or — access off — start it on a
-    /// recorded network.
-    pub(super) fn sync_phone_access(&mut self, ctx: &egui::Context, now: f64) {
-        let Some(phone) = &self.phone else {
-            self.start_phone_access_on_recorded_network(ctx, now);
-            return;
-        };
-        if !phone.server.is_running() {
-            self.end_phone_access();
-            self.toasts.success("Phone access stopped", now);
-            return;
+    /// At the agent poll: republish the live panes, or — access off — start it as
+    /// *Start at launch* asks.
+    pub(super) fn sync_phone_access(&mut self, ctx: &egui::Context) {
+        if self.phone.is_none() {
+            self.start_phone_access_at_launch(ctx);
         }
         self.publish_phone_panes();
     }
 
-    /// *Start at launch* (remote.md §3.4): silent — no modal, no toast.
-    fn start_phone_access_on_recorded_network(&mut self, ctx: &egui::Context, now: f64) {
+    /// *Start at launch* (remote.md §3.4): silent — no modal, no toast. The server
+    /// binds by itself whenever the Mac is on a recorded network.
+    fn start_phone_access_at_launch(&mut self, ctx: &egui::Context) {
         let recorded_any = self.phone_devices.read(|book| !book.networks.is_empty());
         if !self.phone_access_at_launch || self.phone_starter.held_off || !recorded_any {
             return;
         }
-        let Some(gateway_mac) = self.phone_starter.check_network(ctx, now) else {
-            return;
-        };
-        if self
-            .phone_devices
-            .read(|book| book.is_recorded_network(&gateway_mac))
-        {
-            let _ = self.start_phone_access(ctx);
-        }
+        let bind = self.phone_starter.bind_on_recorded_network;
+        let _ = self.start_phone_server(ctx, bind);
     }
 
     fn publish_phone_panes(&self) {
@@ -381,20 +341,18 @@ impl HelmApp {
         phone.refresh_offered_pairing();
         let now = ctx.input(|i| i.time);
         let firewall = phone.firewall.poll(ctx, now, self.phone_starter.firewall);
-        let Some(offered) = &phone.offered else {
-            return;
-        };
-        let pairing_url = offered.url.clone();
         let view = PhoneAccessView {
-            pairing_url: &pairing_url,
-            qr: offered.qr.as_ref(),
+            pairing: phone.offered.as_ref().map(|offered| OfferedPairingView {
+                url: &offered.url,
+                qr: offered.qr.as_ref(),
+            }),
             clients: phone.server.clients(),
             firewall,
         };
         let action = phone_access_modal(ui, palette, &view);
-        if action.copy_url {
-            ctx.copy_text(pairing_url);
-            self.toasts.success("Link copied", ctx.input(|i| i.time));
+        if let Some(offered) = phone.offered.as_ref().filter(|_| action.copy_url) {
+            ctx.copy_text(offered.url.clone());
+            self.toasts.success("Link copied", now);
         }
         if action.open_firewall_settings {
             crate::remote::firewall::open_settings();

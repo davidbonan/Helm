@@ -37,7 +37,9 @@ Pairing modal: QR code of the pairing URL, the URL as text (copyable), *Phone
 access is on — anyone with this code can type into your agents and read their
 files*, the connected
 device count, and a **Stop** button. The code is single-use and lives 5 min: once
-used or expired, the open modal shows a fresh one. When the macOS firewall keeps
+used or expired, the open modal shows a fresh one; while the server has no
+address to listen on (§3.1) it shows *Waiting for the network — the code comes
+back with it* in place of the code. When the macOS firewall keeps
 the phone out — *Block all incoming connections*, or helm's own rule set to block
 (`socketfilterfw`, no admin rights; re-read every 2 s while open) — a banner says
 so with **Open settings ›** (Firewall pane). While access is on, a
@@ -50,15 +52,17 @@ modal. Hidden while off: starting and stopping stay in the palette. Paired devic
 
 ## 3. Access lifecycle & security
 
-Two lifetimes: the **server** (bound while access is on) and the **pairings**
+Two lifetimes: the **server** (bound while access is on and the network allows,
+§3.1) and the **pairings**
 (a phone scans once, its pairing survives stops and restarts of helm until
 revoked, §3.2).
 
-**Start**: *Open on phone*, or at launch on the pairing network (§3.4) — pick the
-LAN address (§3.1), bind the server, begin the no-sleep activity (§5). **Stop**, on
-whichever comes first: *Stop phone access*, the LAN address disappearing, helm
-quitting. No idle stop: a phone locked on the couch keeps its access. Stop closes
-every connection, frees the port and ends the no-sleep activity; pairings stay.
+**Start**: *Open on phone* — pick the LAN address (§3.1) and bind the server at
+once, whatever the network — or *Start at launch* (§3.4). **Stop**: *Stop phone
+access* or helm quitting, nothing else. No idle stop, and no stop by the network:
+a phone locked on the couch keeps its access, and a Mac back home is reachable
+again without a frame drawn. Stop closes every connection and frees the port;
+pairings stay.
 
 ### 3.1 Address
 First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
@@ -67,6 +71,16 @@ First up, non-loopback **private IPv4** (`10/8`, `172.16/12`, `192.168/16`) from
 last bound port is tried first, so the phone's bookmark keeps working; taken ⇒
 the OS picks one, which is saved. None found ⇒ the command fails with *No local
 network*. A phone's cookie belongs to the host's IP: a new IP (DHCP) ⇒ rescan.
+
+**The address is followed**, from the accept thread (no frame needed, §4): every
+2 s it checks that the bound address is still up. Gone (a lease refused, a Wi-Fi
+roam, another network) ⇒ the listener and every socket of that address close and
+the server stays **unbound**: nothing listens, the Mac may sleep (§5). Every 5 s
+it then looks for a LAN address **on a recorded network** (gateway MAC, §3.4) and
+binds it. The same address back keeps the bookmark and the cookie; another one —
+also across a restart of helm, the last address is kept beside the port — posts
+*Phone access has a new address* (§3.2) once a phone is paired. On a network no
+phone was paired on, only *Open on phone* binds.
 
 ### 3.2 Pairing & sessions
 - **Pairing code**: 128 random bits (`arc4random_buf`), hex, **single use**, valid
@@ -93,8 +107,10 @@ network*. A phone's cookie belongs to the host's IP: a new IP (DHCP) ⇒ rescan.
 - **Alerts** (native notification, [`agents.md`](agents.md) §5 backend): *New
   phone paired — <name>*; *<name> is connected from two addresses — revoke it in
   Preferences if one isn't yours*, when a device opens a WebSocket while another
-  of its sockets is live from a different IP. Posted from the server thread: they
-  fire with helm hidden.
+  of its sockets is live from a different IP; *Phone access has a new address —
+  your phone's bookmark no longer works: run Open on phone and scan the code
+  again*, when the server binds another address than the last one (§3.1). Posted
+  from the server thread: they fire with helm hidden.
 
 ### 3.3 Accepted risk
 Plain HTTP: the cookie travels in clear on the Wi-Fi. Acceptable on a home
@@ -110,10 +126,10 @@ can. Only `.git` and whatever resolves outside the worktree stay out of reach.
 Preference *Start at launch* (`phone_access_at_launch`, off by default). The
 networks where a device was paired are recorded by their **gateway MAC**
 (`route -n get default` → gateway IP, `arp -n <ip>` → MAC; no location
-permission, unlike the SSID). While the preference is on and access is off, helm
-checks every 30 s: on a recorded network ⇒ starts access silently (no modal). A
+permission, unlike the SSID). While the preference is on, access is off and a
+network is recorded, helm starts access silently (no modal), **unbound**: the
+server binds by itself whenever the Mac is on a recorded network (§3.1). A
 *Stop phone access* holds it off until the next *Open on phone* or helm restart.
-Moving back home after the LAN address went away resumes access the same way.
 
 ## 4. Architecture — nothing waits on the UI thread
 
@@ -170,9 +186,10 @@ like typing on the Mac.
 
 ## 5. Keeping the Mac reachable
 
-While access is on, helm holds an `NSProcessInfo` activity
+While the server is bound, helm holds an `NSProcessInfo` activity
 (`NSActivityUserInitiated`: idle **system** sleep disabled, App Nap off); the
-**display** may sleep and the screen may lock. Ended at stop. A lid closed on
+**display** may sleep and the screen may lock. Ended at stop and while unbound
+(§3.1): off its networks the Mac sleeps as usual. A lid closed on
 battery still sleeps — accepted (§9).
 
 ## 6. Wire protocol
@@ -195,6 +212,12 @@ Server → phone:
 | `targets` | `{entries: [{id, project, branch, worktree}], agents: [{id, name}]}` | on connect, then when the workspace or the agent list changes |
 | `launched` | `{id}` | reply to `launch`: the new pane, watchable at once |
 | `launch_failed` | `{message}` | reply to `launch`: unknown entry / agent, spawn error |
+| `ping` | — | every 3 s, with a WebSocket ping frame |
+
+**Liveness**: nothing else flows while the agents idle, and a dead TCP link closes
+no socket by itself. The page drops a socket silent for 10 s and reconnects; the
+server drops a phone that answered no frame for 10 s (the browser answers the
+WebSocket ping by itself), which gives the watched pane its size back.
 
 `lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
 resolved to `#rrggbb` through the pane's `TermPalette`, dim and inverse already
@@ -278,8 +301,9 @@ palette ([`design-system.md`](design-system.md) §1).
   composer (`send`); a tap elsewhere closes the menu.
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
-- **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
-  suspends background tabs), reconnect and re-`watch`; a `401` shows *This
+- **Reconnect**: on socket loss, a socket silent for 10 s (§6) or
+  `visibilitychange` back to visible (iOS suspends background tabs), reconnect
+  and re-`watch`; a `401` shows *This
   phone isn't paired — on your Mac, run Open on phone and scan the code* (revoked,
   dropped after 30 days, rotated away, or a new IP). Hidden, the page closes its socket: the
   phone stops driving (§7.1).
@@ -374,9 +398,9 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
 | Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
 | Unit (files) | `Range` → whole / part / unsatisfiable (`a-b`, `a-`, `-n`, past the end, several ranges ignored) |
 | Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401` |
-| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed`; an idle phone receives `ping`; a phone that stops reading is dropped within 10 s; the address going away closes the listener and the sockets and releases the sleep assertion, back ⇒ served again on the same origin with no alert; another address than the last one posts *new address* |
 | App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
-| UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle |
+| UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle; unbound, the modal says it waits and offers no code; *Open on phone* binds an access waiting for its network |
 | Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |
 | Manual | iPhone Safari on the LAN: pair, follow a live Claude Code turn, answer a permission prompt, lock the Mac 10 min then resume |
 
@@ -399,10 +423,14 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
   to (its sandboxed origin sends no cookie): self-contained pages only. A pane
   whose agent exited no longer serves its worktree. *Open* from a Home Screen web
   app may land in a browser sheet without the cookie (§9, last item).
-- One LAN address: moving the Mac to another network stops access; *Start at
-  launch* resumes it back on a recorded network — at the next frame helm draws
-  (the check runs on the UI thread, §4).
-- The Mac's IP changes (DHCP) ⇒ the cookie no longer matches the host: rescan.
+- One LAN address: on a network no phone was paired on the server stays unbound
+  until *Open on phone*.
+- The Mac's IP changes (DHCP) ⇒ access follows it (§3.1), but the cookie no longer
+  matches the host: rescan (the Mac says so). A static lease on the router avoids
+  it. No `.local` name instead of the IP: a Mac may not advertise it
+  (`NoMulticastAdvertisements`), a network may filter mDNS.
+- Access started on a network with no pairing yet waits unbound if its address
+  goes away: *Open on phone* again.
 - An iOS Home Screen web app may keep its own cookies, apart from Safari
   (unverified on a device): then pair from inside it.
 
