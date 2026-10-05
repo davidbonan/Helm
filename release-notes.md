@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.5.1
+
+- Preferences › Agents: a start command prefixed by environment variables
+  (`CLAUDE_CONFIG_DIR=~/.claude-perso claude`) no longer shows the
+  "helm won't detect … as an agent" warning.
+
 ## 3.5.0
 
 - Phone: open the files of an agent's worktree. A new **Files** button in
@@ -74,9 +80,3 @@
   refresh no longer scans the whole working tree twice per second. Change counts
   of the inactive repos in the sidebar now refresh every 30 s (instantly when you
   come back to the app); the active repo stays live.
-
-## 3.1.0
-
-- A worktree's right-click menu can now delete it **together with its branch**:
-  *Delete worktree and local branch*, or *… and local + remote branch* (also
-  removed from the remote it tracks). Nothing is touched if the remote refuses.
