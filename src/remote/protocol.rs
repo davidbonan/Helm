@@ -196,6 +196,8 @@ pub enum ToPhone {
     LaunchFailed {
         message: String,
     },
+    /// The Mac is still there: an idle agent list sends nothing else.
+    Ping,
 }
 
 impl ToPhone {

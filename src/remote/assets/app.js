@@ -3,6 +3,9 @@
 
 const HISTORY_PAGE = 200;
 const RECONNECT_MS = 1500;
+// The Mac pings every 3 s: a socket silent for this long is dead, whatever its readyState says.
+const SILENT_MS = 10000;
+const SILENCE_CHECK_MS = 2000;
 const LAUNCH_ROUTE = "#/new";
 const FONT_MIN = 3;
 const FONT_MAX = 20;
@@ -26,6 +29,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   socket: null,
+  heardAt: 0,
   agents: [],
   watched: null,
   writable: false,
@@ -90,19 +94,32 @@ function connect() {
   const socket = new WebSocket(`ws://${location.host}/ws`);
   state.socket = socket;
   socket.onopen = () => {
+    state.heardAt = Date.now();
     $("link").hidden = true;
     if (state.watched !== null && mirrorIsShown()) send({ type: "watch", id: state.watched, ...phoneSize() });
   };
-  socket.onmessage = (event) => receive(JSON.parse(event.data));
-  socket.onclose = () => {
-    if (state.socket !== socket) return;
-    state.socket = null;
-    $("link").hidden = false;
-    if (state.launching) launchFailed("The connection to the Mac dropped — try again.");
-    checkAccess().then((granted) => {
-      if (granted) setTimeout(connect, RECONNECT_MS);
-    });
+  socket.onmessage = (event) => {
+    state.heardAt = Date.now();
+    receive(JSON.parse(event.data));
   };
+  socket.onclose = () => {
+    if (state.socket === socket) lose(socket);
+  };
+}
+
+function lose(socket) {
+  state.socket = null;
+  socket.close();
+  $("link").hidden = false;
+  if (state.launching) launchFailed("The connection to the Mac dropped — try again.");
+  checkAccess().then((granted) => {
+    if (granted) setTimeout(connect, RECONNECT_MS);
+  });
+}
+
+function loseSilentSocket() {
+  const socket = state.socket;
+  if (socket && socket.readyState === WebSocket.OPEN && Date.now() - state.heardAt > SILENT_MS) lose(socket);
 }
 
 async function checkAccess() {
@@ -921,9 +938,12 @@ window.addEventListener("hashchange", route);
 
 // Hidden, the phone stops driving: closing the socket gives the Mac its size back.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") connect();
-  else if (state.socket) state.socket.close();
+  if (document.visibilityState === "visible") {
+    loseSilentSocket();
+    connect();
+  } else if (state.socket) state.socket.close();
 });
+setInterval(loseSilentSocket, SILENCE_CHECK_MS);
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", fitViewport);
   window.visualViewport.addEventListener("scroll", fitViewport);

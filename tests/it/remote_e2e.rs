@@ -390,6 +390,39 @@ fn a_pairing_outlives_the_server() {
 }
 
 #[test]
+fn an_idle_phone_keeps_hearing_from_the_mac() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+
+    let pinged = wait_for(&mut ws, "ping", |_| true);
+
+    fixture.close();
+    assert!(
+        pinged.is_some(),
+        "a page with nothing to show still hears the Mac"
+    );
+}
+
+#[test]
+fn a_phone_that_stops_answering_is_dropped() {
+    let fixture = Fixture::new();
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+    wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
+
+    let dropped = wait_until_within(Duration::from_secs(15), || {
+        fixture.server().connected_devices().is_empty()
+    });
+
+    fixture.close();
+    assert!(
+        dropped,
+        "a phone answering no ping no longer counts as connected"
+    );
+}
+
+#[test]
 fn access_follows_the_address_across_a_lease() {
     let mut fixture = Fixture::new();
     let lan = fixture.restart_server_on_a_moving_lan();

@@ -204,6 +204,12 @@ Server → phone:
 | `targets` | `{entries: [{id, project, branch, worktree}], agents: [{id, name}]}` | on connect, then when the workspace or the agent list changes |
 | `launched` | `{id}` | reply to `launch`: the new pane, watchable at once |
 | `launch_failed` | `{message}` | reply to `launch`: unknown entry / agent, spawn error |
+| `ping` | — | every 3 s, with a WebSocket ping frame |
+
+**Liveness**: nothing else flows while the agents idle, and a dead TCP link closes
+no socket by itself. The page drops a socket silent for 10 s and reconnects; the
+server drops a phone that answered no frame for 10 s (the browser answers the
+WebSocket ping by itself), which gives the watched pane its size back.
 
 `lines` = rows of **runs** `{t, fg, bg, bold, italic, underline}`, colors
 resolved to `#rrggbb` through the pane's `TermPalette`, dim and inverse already
@@ -287,8 +293,9 @@ palette ([`design-system.md`](design-system.md) §1).
   composer (`send`); a tap elsewhere closes the menu.
   Encoded by the same byte table as the Mac terminal (`key_bytes`, moved from
   `ui::terminal_view` to the terminal domain so `remote` does not import the UI).
-- **Reconnect**: on socket loss or `visibilitychange` back to visible (iOS
-  suspends background tabs), reconnect and re-`watch`; a `401` shows *This
+- **Reconnect**: on socket loss, a socket silent for 10 s (§6) or
+  `visibilitychange` back to visible (iOS suspends background tabs), reconnect
+  and re-`watch`; a `401` shows *This
   phone isn't paired — on your Mac, run Open on phone and scan the code* (revoked,
   dropped after 30 days, rotated away, or a new IP). Hidden, the page closes its socket: the
   phone stops driving (§7.1).
@@ -383,7 +390,7 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
 | Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
 | Unit (files) | `Range` → whole / part / unsatisfiable (`a-b`, `a-`, `-n`, past the end, several ranges ignored) |
 | Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401`; the address going away closes the listener and the sockets, back ⇒ served again on the same origin, access never stopped; an unrecorded network stops access |
-| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed` |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed`; an idle phone receives `ping`; a phone that stops reading is dropped within 10 s |
 | App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle |
 | Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |
