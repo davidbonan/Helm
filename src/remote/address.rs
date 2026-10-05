@@ -29,31 +29,19 @@ pub fn lan_address(interfaces: &[Interface]) -> Option<Ipv4Addr> {
         .map(|i| i.addr)
 }
 
-/// What the network offers the server right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lan {
-    Address(Ipv4Addr),
-    /// Between two leases, or on a network whose gateway has not answered yet.
-    Unsettled,
-    /// A network no phone was paired on.
-    Unrecorded,
-}
-
-/// `bound` while it is still up; else the LAN address, on a recorded network only.
-pub fn current_lan(bound: Option<Ipv4Addr>, devices: &PairedDevices) -> Lan {
+/// Where the server may listen now: `bound` while it is still up; else the LAN
+/// address, once the Mac is on a network a phone was paired on.
+pub fn current_lan(bound: Option<Ipv4Addr>, devices: &PairedDevices) -> Option<Ipv4Addr> {
     let interfaces = interfaces();
     let still_up = bound.filter(|ip| interfaces.iter().any(|i| i.is_up && i.addr == *ip));
-    if let Some(ip) = still_up {
-        return Lan::Address(ip);
+    if still_up.is_some() {
+        return still_up;
     }
-    let Some(ip) = lan_address(&interfaces) else {
-        return Lan::Unsettled;
-    };
-    match current_gateway_mac() {
-        None => Lan::Unsettled,
-        Some(mac) if devices.read(|book| book.is_recorded_network(&mac)) => Lan::Address(ip),
-        Some(_) => Lan::Unrecorded,
-    }
+    let ip = lan_address(&interfaces)?;
+    let gateway = current_gateway_mac()?;
+    devices
+        .read(|book| book.is_recorded_network(&gateway))
+        .then_some(ip)
 }
 
 /// The machine's IPv4 interfaces (`getifaddrs`).

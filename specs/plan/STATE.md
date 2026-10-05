@@ -6,15 +6,23 @@
 
 ---
 
-## ☑ Milestone — M-PhoneLease · Phone access follows the Mac's address
+## ☑ Milestone — M-PhoneLease · Phone access that never drops by itself
 
-Spec: [`specs/remote.md`](../remote.md) §3, §3.1, §8, §9. Per the user: access
-never stops by itself on the home network; no `.local` name (the Mac may not
-advertise it), the URL stays the IP. Counter: **1/1**.
+Spec: [`specs/remote.md`](../remote.md) §2, §3, §3.1, §3.2, §3.4, §5, §6, §8, §9.
+Per the user: access never stops by itself; no `.local` name (the Mac may not
+advertise it), the URL stays the IP. Counter: **4/4**.
 
-- ☑ **L1 — Followed address.** `remote::address` `Lan` + `current_lan`; the accept
-  thread rebinds on a recorded network, closes the sockets of the address left,
-  stops on an unrecorded network. *Tests*: 2 business e2e (`remote_e2e`).
+- ☑ **L1 — Followed address.** `remote::address::current_lan`; the accept thread
+  closes the sockets of the address left and rebinds on a recorded network.
+  *Tests*: 1 business e2e (`remote_e2e`).
+- ☑ **L2 — Liveness.** `ping` + WebSocket ping every 3 s; the page drops a socket
+  silent for 10 s, the server a phone silent for 10 s. *Tests*: 2 business e2e.
+- ☑ **L3 — No stop by the network.** Server unbound off its networks (sleep
+  assertion tied to the listener), bound again with no frame; *Start at launch*
+  starts it unbound, the UI polling of the gateway is gone; *Open on phone* binds
+  a waiting access; the modal says it waits. *Tests*: 4 app + 1 UI e2e.
+- ☑ **L4 — New address alert.** Last address kept in `phone_devices.toml`;
+  another one posts *Phone access has a new address*. *Tests*: 1 business e2e.
 
 Not done: a new IP still needs a rescan (cookie bound to the host) — a static
 lease on the router avoids it.

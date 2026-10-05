@@ -1,6 +1,6 @@
 //! The phone server's lifecycle (specs/remote.md §3, §4): bound to one LAN address
-//! and following it as the lease changes, a thread per connection, stopped on drop
-//! or when the Mac joins another network.
+//! and following it as the lease changes, unbound while the Mac is off the networks
+//! a phone was paired on, a thread per connection, stopped on drop only.
 //! Who gets in is the paired devices' book, which outlives the server. Nothing
 //! waits on the UI thread.
 
@@ -16,7 +16,7 @@ use tungstenite::protocol::Role;
 use tungstenite::WebSocket;
 
 use crate::remote::access::{session_cookie, session_token, Access, AccessAlert, PairingCode};
-use crate::remote::address::{current_lan, interfaces, lan_address, Lan};
+use crate::remote::address::{current_lan, interfaces, lan_address};
 use crate::remote::awake::KeepAwake;
 use crate::remote::devices::{device_name, wall_ms, PairedDevices};
 use crate::remote::files::{self, OpenedFile};
@@ -30,6 +30,8 @@ use crate::terminal::activity::now_ms;
 
 const ACCEPT_POLL: Duration = Duration::from_millis(100);
 const ADDRESS_CHECK: Duration = Duration::from_secs(2);
+/// Unbound, each look at the network costs two subprocesses.
+const NETWORK_CHECK: Duration = Duration::from_secs(5);
 const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 /// A phone that stops reading (a suspended Safari tab) must not pin its thread.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,23 +75,25 @@ pub struct PhoneServer {
     accept: Option<JoinHandle<()>>,
 }
 
-/// Where the network is now, asked with the bound address.
-type Locate = Box<dyn Fn(Option<Ipv4Addr>) -> Lan + Send>;
+/// Where the server may listen now, asked with the bound address.
+type Locate = Box<dyn Fn(Option<Ipv4Addr>) -> Option<Ipv4Addr> + Send>;
 
+/// The Mac stays awake exactly while a phone can reach it.
 struct Bound {
     ip: Ipv4Addr,
     listener: TcpListener,
+    _awake: KeepAwake,
 }
 
 struct Shared {
-    access: Mutex<Access>,
+    /// `None` while unbound.
+    access: Mutex<Option<Access>>,
     services: PhoneServices,
     pairing: Mutex<Option<PairingCode>>,
     sockets: Mutex<Vec<LiveSocket>>,
     stopped: AtomicBool,
     /// A socket opened on an address closes once that address is left.
     addresses_left: AtomicU64,
-    awake: Mutex<Option<KeepAwake>>,
 }
 
 /// An open WebSocket, by the device it serves and the address it comes from.
@@ -107,35 +111,60 @@ struct Visitor {
 }
 
 impl Shared {
-    fn access(&self) -> MutexGuard<'_, Access> {
+    fn access(&self) -> MutexGuard<'_, Option<Access>> {
         self.access
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Where to go on listening as the network moves: nowhere while it is
-    /// unsettled; another network stops access.
-    fn follow(&self, mut bound: Option<Bound>, lan: Lan) -> Option<Bound> {
-        if matches!((&bound, lan), (Some(bound), Lan::Address(ip)) if bound.ip == ip) {
+    /// Where to go on listening as the network moves: nowhere while it offers no
+    /// address.
+    fn follow(&self, mut bound: Option<Bound>, lan: Option<Ipv4Addr>) -> Option<Bound> {
+        if lan.is_some() && lan == bound.as_ref().map(|bound| bound.ip) {
             return bound;
         }
         if bound.take().is_some() {
+            *self.access() = None;
             self.addresses_left.fetch_add(1, Ordering::Relaxed);
         }
-        match lan {
-            Lan::Address(ip) => self.rebind(ip),
-            Lan::Unsettled => None,
-            Lan::Unrecorded => {
-                self.stop();
-                None
-            }
+        self.listen_on(lan?).ok()
+    }
+
+    fn listen_on(&self, ip: Ipv4Addr) -> io::Result<Bound> {
+        let remembered = self.services.devices.read(|book| book.port);
+        let listener = match remembered.and_then(|port| TcpListener::bind((ip, port)).ok()) {
+            Some(listener) => listener,
+            None => TcpListener::bind((ip, 0))?,
+        };
+        listener.set_nonblocking(true)?;
+        let server = listener.local_addr()?;
+        self.remember_address(ip, server.port());
+        *self.access() = Some(Access::new(server));
+        Ok(Bound {
+            ip,
+            listener,
+            _awake: KeepAwake::begin(),
+        })
+    }
+
+    /// The bookmark of a paired phone pointing at another address is reported dead.
+    fn remember_address(&self, ip: Ipv4Addr, port: u16) {
+        let devices = &self.services.devices;
+        let (bookmarked, any_paired) =
+            devices.read(|book| (book.ip.zip(book.port), !book.devices.is_empty()));
+        if bookmarked == Some((ip, port)) {
+            return;
+        }
+        devices.edit(|book| (book.ip, book.port) = (Some(ip), Some(port)));
+        if bookmarked.is_some() && any_paired {
+            (self.services.alert)(AccessAlert::Moved);
         }
     }
 
-    fn rebind(&self, ip: Ipv4Addr) -> Option<Bound> {
-        let bound = bind(ip, &self.services.devices).ok()?;
-        *self.access() = Access::new(bound.listener.local_addr().ok()?);
-        Some(bound)
+    fn accepts_origin(&self, origin: Option<&str>) -> bool {
+        self.access()
+            .as_ref()
+            .is_some_and(|access| access.accepts_origin(origin))
     }
 
     fn addresses_left(&self) -> u64 {
@@ -204,10 +233,6 @@ impl Shared {
 
     fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
-        self.awake
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
     }
 
     fn is_stopped(&self) -> bool {
@@ -216,69 +241,81 @@ impl Shared {
 }
 
 impl PhoneServer {
-    /// On the machine's LAN address, followed across its leases; access stops on
-    /// a network no phone was paired on.
+    /// At once on the machine's LAN address, whatever the network (the user's
+    /// *Open on phone*); from then on as [`Self::start_on_recorded_network`].
     pub fn start(services: PhoneServices) -> Result<Self, StartError> {
         let ip = lan_address(&interfaces()).ok_or(StartError::NoLocalNetwork)?;
-        let devices = services.devices.clone();
-        let locate = move |bound| current_lan(bound, &devices);
-        Self::start_following(ip, locate, services).map_err(StartError::Bind)
+        let locate = lan_of(&services.devices);
+        Self::start_from(Some(ip), locate, services).map_err(StartError::Bind)
+    }
+
+    /// Bound whenever the Mac is on a network a phone was paired on, its address
+    /// followed across the leases; unbound anywhere else.
+    pub fn start_on_recorded_network(services: PhoneServices) -> io::Result<Self> {
+        let locate = lan_of(&services.devices);
+        Self::start_from(None, locate, services)
     }
 
     /// On `ip` for good (tests bind the loopback).
     pub fn start_on_address(ip: Ipv4Addr, services: PhoneServices) -> io::Result<Self> {
-        Self::start_following(ip, move |_| Lan::Address(ip), services)
+        Self::start_following(ip, move |_| Some(ip), services)
     }
 
     /// From `ip`, then wherever `locate` — asked with the bound address — says
-    /// the network is.
+    /// the server may listen.
     pub fn start_following(
         ip: Ipv4Addr,
-        locate: impl Fn(Option<Ipv4Addr>) -> Lan + Send + 'static,
+        locate: impl Fn(Option<Ipv4Addr>) -> Option<Ipv4Addr> + Send + 'static,
         services: PhoneServices,
     ) -> io::Result<Self> {
-        let locate: Locate = Box::new(locate);
-        let bound = bind(ip, &services.devices)?;
+        Self::start_from(Some(ip), Box::new(locate), services)
+    }
+
+    fn start_from(
+        ip: Option<Ipv4Addr>,
+        locate: Locate,
+        services: PhoneServices,
+    ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
-            access: Mutex::new(Access::new(bound.listener.local_addr()?)),
+            access: Mutex::new(None),
             services,
             pairing: Mutex::new(None),
             sockets: Mutex::new(Vec::new()),
             stopped: AtomicBool::new(false),
             addresses_left: AtomicU64::new(0),
-            awake: Mutex::new(Some(KeepAwake::begin())),
         });
+        let bound = ip.map(|ip| shared.listen_on(ip)).transpose()?;
         let accepting = Arc::clone(&shared);
         let accept = std::thread::Builder::new()
             .name("phone-accept".into())
-            .spawn(move || accept_loop(Some(bound), &accepting, locate))?;
+            .spawn(move || accept_loop(bound, &accepting, locate))?;
         Ok(Self {
             shared,
             accept: Some(accept),
         })
     }
 
-    /// `http://<ip>:<port>` of the address bound last.
-    pub fn origin(&self) -> String {
-        self.shared.access().origin().to_owned()
+    /// `http://<ip>:<port>`; `None` while unbound.
+    pub fn origin(&self) -> Option<String> {
+        let access = self.shared.access();
+        Some(access.as_ref()?.origin().to_owned())
     }
 
     /// Mints a fresh pairing code, replacing the previous one; its URL is what the
-    /// QR code encodes.
-    pub fn offer_pairing(&self) -> String {
+    /// QR code encodes. `None` while unbound.
+    pub fn offer_pairing(&self) -> Option<String> {
         let code = PairingCode::mint(now_ms());
-        let url = self.shared.access().pairing_url(&code);
+        let url = self.shared.access().as_ref()?.pairing_url(&code);
         *self.shared.pairing() = Some(code);
-        url
+        Some(url)
     }
 
-    /// The offered code's URL while it can still pair: `None` once used or expired.
+    /// The offered code's URL while it can still pair: `None` once used or
+    /// expired, and while unbound.
     pub fn pairing_url(&self) -> Option<String> {
-        self.shared
-            .pairing()
-            .as_ref()
-            .filter(|code| code.is_live(now_ms()))
-            .map(|code| self.shared.access().pairing_url(code))
+        let pairing = self.shared.pairing();
+        let code = pairing.as_ref().filter(|code| code.is_live(now_ms()))?;
+        Some(self.shared.access().as_ref()?.pairing_url(code))
     }
 
     pub fn clients(&self) -> usize {
@@ -298,11 +335,11 @@ impl PhoneServer {
         }
         names
     }
+}
 
-    /// `false` once access stopped on its own (another network).
-    pub fn is_running(&self) -> bool {
-        !self.shared.is_stopped()
-    }
+fn lan_of(devices: &PairedDevices) -> Locate {
+    let devices = devices.clone();
+    Box::new(move |bound| current_lan(bound, &devices))
 }
 
 impl Drop for PhoneServer {
@@ -316,7 +353,7 @@ impl Drop for PhoneServer {
 
 /// Connection threads are detached: they see `stopped` within [`READ_TIMEOUT`].
 fn accept_loop(mut bound: Option<Bound>, shared: &Arc<Shared>, locate: Locate) {
-    let mut address_checked = Instant::now();
+    let mut network_checked: Option<Instant> = None;
     while !shared.is_stopped() {
         match bound.as_ref().map(|bound| bound.listener.accept()) {
             Some(Ok((stream, _))) => {
@@ -327,8 +364,12 @@ fn accept_loop(mut bound: Option<Bound>, shared: &Arc<Shared>, locate: Locate) {
             }
             _ => std::thread::sleep(ACCEPT_POLL),
         }
-        if address_checked.elapsed() >= ADDRESS_CHECK {
-            address_checked = Instant::now();
+        let check_every = match bound {
+            Some(_) => ADDRESS_CHECK,
+            None => NETWORK_CHECK,
+        };
+        if network_checked.is_none_or(|at| at.elapsed() >= check_every) {
+            network_checked = Some(Instant::now());
             let lan = locate(bound.as_ref().map(|bound| bound.ip));
             bound = shared.follow(bound, lan);
         }
@@ -499,7 +540,7 @@ fn pair(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
 /// is revoked.
 fn upgrade(mut stream: TcpStream, head: &RequestHead, visitor: Option<Visitor>, shared: &Shared) {
     let key = head.header("sec-websocket-key");
-    let visitor = visitor.filter(|_| shared.access().accepts_origin(head.header("origin")));
+    let visitor = visitor.filter(|_| shared.accepts_origin(head.header("origin")));
     let (Some(key), Some(visitor), Ok(peer)) = (key, visitor, stream.peer_addr()) else {
         let _ = Response::new("401 Unauthorized", "text/plain", b"").write_to(&mut stream);
         return;
@@ -532,25 +573,4 @@ fn upgrade(mut stream: TcpStream, head: &RequestHead, visitor: Option<Visitor>, 
             || !shared.is_paired(&socket.device)
     });
     shared.close_socket(&socket);
-}
-
-fn bind(ip: Ipv4Addr, devices: &PairedDevices) -> io::Result<Bound> {
-    let listener = bind_remembered_port(ip, devices)?;
-    listener.set_nonblocking(true)?;
-    Ok(Bound { ip, listener })
-}
-
-/// The port the phone's bookmark points at, when still free; else a new one,
-/// remembered.
-fn bind_remembered_port(ip: Ipv4Addr, devices: &PairedDevices) -> io::Result<TcpListener> {
-    let remembered = devices.read(|book| book.port);
-    let listener = match remembered.and_then(|port| TcpListener::bind((ip, port)).ok()) {
-        Some(listener) => listener,
-        None => TcpListener::bind((ip, 0))?,
-    };
-    let port = listener.local_addr()?.port();
-    if remembered != Some(port) {
-        devices.edit(|book| book.port = Some(port));
-    }
-    Ok(listener)
 }

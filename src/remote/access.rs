@@ -124,8 +124,14 @@ pub fn session_token(cookie_header: Option<&str>) -> Option<&str> {
 /// from the server thread, so with helm hidden too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessAlert {
-    Paired { device: String },
-    TwoAddresses { device: String },
+    Paired {
+        device: String,
+    },
+    TwoAddresses {
+        device: String,
+    },
+    /// The server left the address the paired phones bookmarked.
+    Moved,
 }
 
 impl AccessAlert {
@@ -133,6 +139,7 @@ impl AccessAlert {
         match self {
             Self::Paired { .. } => "New phone paired".to_owned(),
             Self::TwoAddresses { device } => format!("{device} is connected from two addresses"),
+            Self::Moved => "Phone access has a new address".to_owned(),
         }
     }
 
@@ -143,6 +150,10 @@ impl AccessAlert {
             ),
             Self::TwoAddresses { .. } => {
                 "If one isn't yours, revoke it in Preferences › Phone.".to_owned()
+            }
+            Self::Moved => {
+                "Your phone's bookmark no longer works: run Open on phone and scan the code again."
+                    .to_owned()
             }
         }
     }

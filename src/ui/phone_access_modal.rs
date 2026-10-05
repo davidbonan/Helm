@@ -1,5 +1,6 @@
 //! Pairing modal of phone access (specs/remote.md §2): the QR code of the pairing
-//! URL, the URL itself, the connected devices and a Stop. Pure rendering — the app
+//! URL and the URL itself — or that access waits for the network —, the connected
+//! devices and a Stop. Pure rendering — the app
 //! owns the server; the modal reports the user's intent.
 
 use crate::remote::firewall::FirewallBlock;
@@ -18,15 +19,21 @@ pub const LIVE_WARNING: &str =
     "Phone access is on — anyone with this code can type into your agents and read their files.";
 const NETWORK_NOTE: &str = "Plain HTTP on your local network: use it on a network you trust.";
 pub const COPY_LABEL: &str = "Copy link";
+pub const WAITING_LABEL: &str = "Waiting for the network — the code comes back with it.";
 pub const CLOSE_LABEL: &str = "Close";
 pub const STOP_LABEL: &str = "Stop phone access";
 pub const FIREWALL_TITLE: &str = "Firewall blocks the phone";
 pub const FIREWALL_SETTINGS_LABEL: &str = "Open settings ›";
 const FIREWALL_TINT: f32 = 0.12;
 
-pub struct PhoneAccessView<'a> {
-    pub pairing_url: &'a str,
+pub struct OfferedPairingView<'a> {
+    pub url: &'a str,
     pub qr: Option<&'a QrMatrix>,
+}
+
+pub struct PhoneAccessView<'a> {
+    /// `None` while the server has no address to listen on.
+    pub pairing: Option<OfferedPairingView<'a>>,
     pub clients: usize,
     pub firewall: Option<FirewallBlock>,
 }
@@ -68,19 +75,14 @@ pub fn phone_access_modal(
                 action.open_firewall_settings = firewall_banner(ui, palette, block);
             }
             ui.add_space(12.0);
-            ui.vertical_centered(|ui| {
-                if let Some(qr) = view.qr {
-                    qr_code(ui, qr);
-                }
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(view.pairing_url)
-                        .monospace()
-                        .size(TEXT_SIZE - 1.0)
-                        .color(palette.text_secondary),
-                );
-                if ui.button(COPY_LABEL).clicked() {
-                    action.copy_url = true;
+            ui.vertical_centered(|ui| match &view.pairing {
+                Some(pairing) => action.copy_url = offered_pairing(ui, palette, pairing),
+                None => {
+                    ui.label(
+                        egui::RichText::new(WAITING_LABEL)
+                            .size(TEXT_SIZE)
+                            .color(palette.text_secondary),
+                    );
                 }
             });
             ui.add_space(12.0);
@@ -119,6 +121,21 @@ pub fn phone_access_modal(
         action.dismiss = true;
     }
     action
+}
+
+/// `true` when the link is to be copied.
+fn offered_pairing(ui: &mut egui::Ui, palette: &Palette, pairing: &OfferedPairingView) -> bool {
+    if let Some(qr) = pairing.qr {
+        qr_code(ui, qr);
+    }
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(pairing.url)
+            .monospace()
+            .size(TEXT_SIZE - 1.0)
+            .color(palette.text_secondary),
+    );
+    ui.button(COPY_LABEL).clicked()
 }
 
 pub fn devices_label(clients: usize) -> String {

@@ -1085,7 +1085,7 @@ impl HelmApp {
             self.caches.agents.clear();
             self.agent_watcher = None;
             self.agent_readings = Readings::default();
-            self.sync_phone_access(ctx, ctx.input(|i| i.time));
+            self.sync_phone_access(ctx);
             return;
         }
         // Idle wake-up: the watched set and the focus reach the watcher at this
@@ -1103,7 +1103,7 @@ impl HelmApp {
                     AgentWatcher::spawn(move || ctx.request_repaint())
                 })
                 .track(watched, focused);
-            self.sync_phone_access(ctx, now);
+            self.sync_phone_access(ctx);
         }
         let changed = self
             .agent_watcher

@@ -14,7 +14,6 @@ use alacritty_terminal::grid::Dimensions;
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::agents::Agent;
 use helm::remote::access::AccessAlert;
-use helm::remote::address::Lan;
 use helm::remote::awake::{KeepAwake, REASON};
 use helm::remote::devices::PairedDevices;
 use helm::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
@@ -110,12 +109,12 @@ impl Fixture {
     }
 
     fn origin(&self) -> String {
-        self.server().origin().to_owned()
+        self.server().origin().expect("a bound server")
     }
 
     /// The path and query of a freshly offered pairing code.
     fn pairing_path(&self) -> String {
-        let url = self.server().offer_pairing();
+        let url = self.server().offer_pairing().expect("a bound server");
         url[url.find("/pair").unwrap()..].to_owned()
     }
 
@@ -140,13 +139,13 @@ impl Fixture {
         ));
     }
 
-    /// A server restarted on a network the test moves: what the returned value
-    /// holds is what the server finds at its next look.
-    fn restart_server_on_a_moving_lan(&mut self) -> Arc<Mutex<Lan>> {
+    /// A server restarted on a network the test moves: the address the returned
+    /// value holds is what the server finds at its next look.
+    fn restart_server_on_a_moving_lan(&mut self) -> Arc<Mutex<Option<Ipv4Addr>>> {
         self.server = None;
         let (launcher, _) = Launcher::channel(|| {});
         let services = services(&self.registry, launcher, &self.devices, &self.alerts);
-        let lan = Arc::new(Mutex::new(Lan::Address(LOOPBACK)));
+        let lan = Arc::new(Mutex::new(Some(LOOPBACK)));
         let found = Arc::clone(&lan);
         let locate = move |_| *found.lock().unwrap();
         self.server = Some(PhoneServer::start_following(LOOPBACK, locate, services).unwrap());
@@ -431,35 +430,43 @@ fn access_follows_the_address_across_a_lease() {
     let mut ws = fixture.connect(&cookie);
     wait_for(&mut ws, "agents", |_| true).expect("the paired phone is served");
 
-    *lan.lock().unwrap() = Lan::Unsettled;
+    *lan.lock().unwrap() = None;
     let closed = wait_until_within(Duration::from_secs(5), || is_closed(&mut ws));
     let refused = TcpStream::connect(&host).is_err();
-    *lan.lock().unwrap() = Lan::Address(LOOPBACK);
-    let back = wait_until_within(Duration::from_secs(5), || TcpStream::connect(&host).is_ok());
+    let unbound = fixture.server().origin().is_none();
+    let may_sleep = !power_assertions().contains(REASON);
+    *lan.lock().unwrap() = Some(LOOPBACK);
+    let back = wait_until_within(Duration::from_secs(10), || {
+        TcpStream::connect(&host).is_ok()
+    });
     let page = fixture.get("/app.css", Some(&cookie));
-    let running = fixture.server().is_running();
+    let moved = fixture.alerts.lock().unwrap().contains(&AccessAlert::Moved);
 
     fixture.close();
     assert!(closed, "a socket of the address left is closed");
-    assert!(refused, "nothing listens between two leases");
+    assert!(refused && unbound, "nothing listens between two leases");
+    assert!(may_sleep, "the Mac is kept awake only while reachable");
     assert!(
         back,
-        "the phone's bookmark is served again on the new lease"
+        "the phone's bookmark is served again on the same address"
     );
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
-    assert!(running, "access never stopped");
+    assert!(!moved, "the same address back is no news");
 }
 
 #[test]
-fn another_network_stops_access() {
+fn a_new_address_is_reported_once_a_phone_is_paired() {
     let mut fixture = Fixture::new();
-    let lan = fixture.restart_server_on_a_moving_lan();
+    fixture.pair();
+    fixture
+        .devices
+        .edit(|book| book.ip = Some([10, 0, 0, 9].into()));
 
-    *lan.lock().unwrap() = Lan::Unrecorded;
-    let stopped = wait_until_within(Duration::from_secs(5), || !fixture.server().is_running());
+    fixture.restart_server();
+    let alerts = fixture.alerts.lock().unwrap().clone();
 
     fixture.close();
-    assert!(stopped);
+    assert!(alerts.contains(&AccessAlert::Moved), "{alerts:?}");
 }
 
 #[test]

@@ -4202,62 +4202,81 @@ fn revoke_in_preferences_drops_that_device_from_the_book() {
 
 const HOME_GATEWAY: &str = "38:06:e6:45:5e:10";
 
-/// *Start at launch* on, `home` recorded, the gateway reading `HOME_GATEWAY`
-/// when `at_home`, and the server bound on the loopback.
-fn app_starting_at_launch(at_home: bool) -> HelmApp {
+fn loopback_server(
+    services: crate::remote::server::PhoneServices,
+) -> std::io::Result<crate::remote::server::PhoneServer> {
+    crate::remote::server::PhoneServer::start_on_address([127, 0, 0, 1].into(), services)
+}
+
+/// *Start at launch* on, a network recorded, the server bound on the loopback.
+fn app_starting_at_launch() -> HelmApp {
     let mut app = app_with(&["a"]);
     app.phone_access_at_launch = true;
     app.phone_devices
         .edit(|book| book.record_network(HOME_GATEWAY));
-    let gateway: fn() -> Option<String> = if at_home {
-        || Some(HOME_GATEWAY.to_owned())
-    } else {
-        || Some("00:11:22:33:44:55".to_owned())
-    };
-    app.phone_starter = phone_access::PhoneStarter::seamed(gateway, |services| {
-        crate::remote::server::PhoneServer::start_on_address([127, 0, 0, 1].into(), services)
-            .map_err(crate::remote::server::StartError::Bind)
-    });
+    app.phone_starter = phone_access::PhoneStarter::seamed(
+        |services| loopback_server(services).map_err(crate::remote::server::StartError::Bind),
+        loopback_server,
+    );
     app
 }
 
-/// Agent polls until access is on, or a few seconds went by.
-fn poll_until_phone_access(app: &mut HelmApp, ctx: &egui::Context) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while std::time::Instant::now() < deadline && !app.is_phone_access_on() {
-        app.sync_phone_access(ctx, 0.0);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    app.is_phone_access_on()
-}
-
 #[test]
-fn start_at_launch_turns_access_on_on_a_recorded_network_without_the_modal() {
-    let mut app = app_starting_at_launch(true);
+fn start_at_launch_turns_access_on_without_the_modal() {
+    let mut app = app_starting_at_launch();
 
-    assert!(poll_until_phone_access(&mut app, &egui::Context::default()));
+    app.sync_phone_access(&egui::Context::default());
+
+    assert!(app.is_phone_access_on());
     assert!(app.modal.is_none(), "silent: no pairing modal");
 }
 
 #[test]
-fn start_at_launch_leaves_access_off_on_another_network() {
-    let mut app = app_starting_at_launch(false);
+fn start_at_launch_waits_for_a_first_pairing() {
+    let mut app = app_starting_at_launch();
+    app.phone_devices.edit(|book| book.networks.clear());
 
-    assert!(!poll_until_phone_access(
-        &mut app,
-        &egui::Context::default()
-    ));
+    app.sync_phone_access(&egui::Context::default());
+
+    assert!(!app.is_phone_access_on());
 }
 
 #[test]
 fn a_manual_stop_holds_start_at_launch_off() {
-    let mut app = app_starting_at_launch(true);
+    let mut app = app_starting_at_launch();
     let ctx = egui::Context::default();
-    assert!(poll_until_phone_access(&mut app, &ctx));
+    app.sync_phone_access(&ctx);
 
     app.stop_phone_access();
+    app.sync_phone_access(&ctx);
 
-    assert!(!poll_until_phone_access(&mut app, &ctx));
+    assert!(!app.is_phone_access_on());
+}
+
+#[test]
+fn open_on_phone_binds_an_access_waiting_for_its_network() {
+    let mut app = app_starting_at_launch();
+    let registry = crate::remote::registry::Registry::default();
+    let (launcher, launches) = crate::remote::launch::Launcher::channel(|| {});
+    let services = crate::remote::server::PhoneServices::unpersisted(registry.clone(), launcher);
+    let waiting = crate::remote::server::PhoneServer::start_following(
+        [127, 0, 0, 1].into(),
+        |_| None,
+        services,
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while waiting.origin().is_some() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(waiting.origin().is_none(), "the network offers no address");
+    app.adopt_phone_server(waiting, registry, launches);
+
+    app.open_on_phone(&egui::Context::default(), 0.0);
+
+    let bound = app.phone.as_ref().is_some_and(|phone| phone.is_bound());
+    assert!(bound, "the user's command binds where the Mac is now");
+    assert!(matches!(app.modal, Some(Modal::PhoneAccess)));
 }
 
 fn cat_pane() -> Pane {

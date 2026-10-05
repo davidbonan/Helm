@@ -119,7 +119,7 @@ fn main() {
     } else {
         PhoneServer::start(services).expect("a LAN address, like the real phone")
     };
-    println!("{}", server.offer_pairing());
+    println!("{}", server.offer_pairing().expect("a bound server"));
     for pane in &panes {
         println!("#/pane/{}", pane.uid().get());
     }
