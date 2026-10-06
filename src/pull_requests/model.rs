@@ -8,8 +8,7 @@ use crate::git::forge::Forge;
 
 /// Which cloud forge produced a PR. The display string lives in `repo_label`;
 /// this is the glyph/source discriminator the list groups and chips key on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgeKind {
     GitHub,
     Bitbucket,
