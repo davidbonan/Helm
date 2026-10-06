@@ -112,6 +112,7 @@ function lose(socket) {
   socket.close();
   $("link").hidden = false;
   if (state.launching) launchFailed("The connection to the Mac dropped — try again.");
+  if (document.visibilityState === "hidden") return;
   checkAccess().then((granted) => {
     if (granted) setTimeout(connect, RECONNECT_MS);
   });

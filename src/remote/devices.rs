@@ -1,7 +1,8 @@
 //! Phones paired with helm (specs/remote.md §3.2, §3.4): a pairing outlives the
 //! server — helm keeps, per device, only the SHA-256 of its session token, rotated
-//! on every page load. Kept in its own TOML beside the prefs: the server threads
-//! write it, the UI never rewrites it whole.
+//! on every page load; the replaced token opens until the phone comes back with the
+//! new one. Kept in its own TOML beside the prefs: the server threads write it, the
+//! UI never rewrites it whole.
 
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -19,8 +20,8 @@ pub const DEVICES_FILE: &str = "phone_devices.toml";
 
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// After a rotation the replaced token still opens this long: the page's own
-/// requests in flight carry it.
+/// Once the phone came back with its new token, the replaced one still opens this
+/// long: the page's own requests in flight carry it.
 pub const ROTATION_GRACE_MS: u64 = 30 * 1000;
 
 /// A device unseen this long is dropped.
@@ -41,8 +42,9 @@ pub struct PairedDevice {
     token_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_sha256: Option<String>,
-    #[serde(default)]
-    rotated_at_ms: u64,
+    /// When a request first carried the current token; until then the previous one opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confirmed_at_ms: Option<u64>,
 }
 
 impl PairedDevice {
@@ -51,10 +53,25 @@ impl PairedDevice {
             return false;
         }
         constant_time_eq(&self.token_sha256, token_sha256)
-            || self.previous_sha256.as_deref().is_some_and(|previous| {
-                now_ms.saturating_sub(self.rotated_at_ms) < ROTATION_GRACE_MS
-                    && constant_time_eq(previous, token_sha256)
-            })
+            || self.previous_opens_with(token_sha256, now_ms)
+    }
+
+    fn previous_opens_with(&self, token_sha256: &str, now_ms: u64) -> bool {
+        let in_grace = self
+            .confirmed_at_ms
+            .is_none_or(|confirmed| now_ms.saturating_sub(confirmed) < ROTATION_GRACE_MS);
+        in_grace
+            && self
+                .previous_sha256
+                .as_deref()
+                .is_some_and(|previous| constant_time_eq(previous, token_sha256))
+    }
+
+    /// `token_sha256` is the current token, which no request carried yet.
+    fn is_unconfirmed(&self, token_sha256: &str) -> bool {
+        self.previous_sha256.is_some()
+            && self.confirmed_at_ms.is_none()
+            && constant_time_eq(&self.token_sha256, token_sha256)
     }
 }
 
@@ -84,7 +101,7 @@ impl DeviceBook {
             last_seen_ms: now_ms,
             token_sha256: sha256_hex(token.as_str()),
             previous_sha256: None,
-            rotated_at_ms: 0,
+            confirmed_at_ms: None,
         });
         token
     }
@@ -95,20 +112,38 @@ impl DeviceBook {
         self.devices.iter().find(|d| d.opens_with(&hash, now_ms))
     }
 
-    /// Replaces the token `token` opens with a new one, returned; the replaced one
-    /// keeps opening for [`ROTATION_GRACE_MS`]. Counts as a visit.
+    /// Replaces the token `token` opens with a new one, returned; the phone's own opens
+    /// until [`Self::confirm`], then for [`ROTATION_GRACE_MS`]. Counts as a visit.
     pub fn rotate(&mut self, token: &str, now_ms: u64) -> Option<Token> {
         let hash = sha256_hex(token);
         let device = self
             .devices
             .iter_mut()
             .find(|d| d.opens_with(&hash, now_ms))?;
+        let answer_was_lost =
+            device.confirmed_at_ms.is_none() && !constant_time_eq(&device.token_sha256, &hash);
         let fresh = Token::random(DEVICE_TOKEN_BYTES);
         let replaced = std::mem::replace(&mut device.token_sha256, sha256_hex(fresh.as_str()));
-        device.previous_sha256 = Some(replaced);
-        device.rotated_at_ms = now_ms;
+        if !answer_was_lost {
+            device.previous_sha256 = Some(replaced);
+        }
+        device.confirmed_at_ms = None;
         device.last_seen_ms = now_ms;
         Some(fresh)
+    }
+
+    /// `token` is a device's new token, which no request carried yet.
+    pub fn is_unconfirmed(&self, token: &str) -> bool {
+        let hash = sha256_hex(token);
+        self.devices.iter().any(|d| d.is_unconfirmed(&hash))
+    }
+
+    /// The phone came back with its new token: the replaced one starts its grace.
+    pub fn confirm(&mut self, token: &str, now_ms: u64) {
+        let hash = sha256_hex(token);
+        if let Some(device) = self.devices.iter_mut().find(|d| d.is_unconfirmed(&hash)) {
+            device.confirmed_at_ms = Some(now_ms);
+        }
     }
 
     pub fn is_paired(&self, id: &str) -> bool {
@@ -279,6 +314,7 @@ mod tests {
         let (mut book, old) = paired();
 
         let new = book.rotate(old.as_str(), NOW).unwrap();
+        book.confirm(new.as_str(), NOW);
 
         assert!(book.device(new.as_str(), NOW).is_some());
         assert!(book
@@ -286,6 +322,22 @@ mod tests {
             .is_some());
         assert!(book.device(old.as_str(), NOW + ROTATION_GRACE_MS).is_none());
         assert!(book.rotate(old.as_str(), NOW + ROTATION_GRACE_MS).is_none());
+    }
+
+    #[test]
+    fn a_rotation_whose_answer_was_lost_leaves_the_phone_paired() {
+        let (mut book, held) = paired();
+        let later = NOW + ROTATION_GRACE_MS;
+
+        let lost = book.rotate(held.as_str(), NOW).unwrap();
+        let received = book.rotate(held.as_str(), later).unwrap();
+        book.confirm(received.as_str(), later);
+
+        assert!(book.device(received.as_str(), later).is_some());
+        assert!(book.device(lost.as_str(), later).is_none());
+        assert!(book
+            .device(held.as_str(), later + ROTATION_GRACE_MS)
+            .is_none());
     }
 
     #[test]

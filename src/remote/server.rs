@@ -185,8 +185,14 @@ impl Shared {
 
     fn visitor(&self, head: &RequestHead) -> Option<Visitor> {
         let token = session_token(head.header("cookie"))?;
-        self.services.devices.read(|book| {
-            book.device(token, wall_ms()).map(|device| Visitor {
+        let devices = &self.services.devices;
+        let now_ms = wall_ms();
+        // An edit writes the book to disk: only a new token's first request pays it.
+        if devices.read(|book| book.is_unconfirmed(token)) {
+            devices.edit(|book| book.confirm(token, now_ms));
+        }
+        devices.read(|book| {
+            book.device(token, now_ms).map(|device| Visitor {
                 id: device.id.clone(),
                 name: device.name.clone(),
             })

@@ -374,6 +374,26 @@ fn a_page_load_rotates_the_session_cookie() {
 }
 
 #[test]
+fn the_first_request_carrying_a_rotated_cookie_confirms_it() {
+    let fixture = Fixture::new();
+    let page = fixture.get("/", Some(&fixture.pair()));
+    let rotated = session_cookie_of(&page).expect("the page load hands a new cookie");
+    let token = rotated.split_once('=').expect("name=value").1;
+    let is_unconfirmed = || fixture.devices.read(|book| book.is_unconfirmed(token));
+
+    let before = is_unconfirmed();
+    fixture.get("/app.css", Some(&rotated));
+    let after = is_unconfirmed();
+
+    fixture.close();
+    assert!(
+        before,
+        "the answer may have been lost: the old cookie opens"
+    );
+    assert!(!after, "the old cookie is on its 30 s grace");
+}
+
+#[test]
 fn a_pairing_outlives_the_server() {
     let mut fixture = Fixture::new();
     let cookie = fixture.pair();

@@ -94,8 +94,10 @@ phone was paired on, only *Open on phone* binds.
   name (from its `User-Agent`: *iPhone*, *iPad*, *Android phone*, else *Browser*),
   pairing date and last visit.
 - **Rotation**: every `GET /` (page load, reconnect probe) answers with a new
-  token in a fresh cookie; the previous one stays valid **30 s** (the page's own
-  requests in flight), then never again. A copied cookie is worth one visit: the
+  token in a fresh cookie; the previous one stays valid until a request comes
+  back with the new one — an answer lost on a weak Wi-Fi leaves the phone paired,
+  its next load rotates again — then **30 s** more (the page's own requests in
+  flight), then never again. A copied cookie is worth one visit: the
   phone's next load rotates it away, and if the thief rotates first, the phone
   finds itself unpaired — the visible alarm.
 - Every other request needs a paired device's cookie (constant-time compare of
@@ -305,7 +307,8 @@ palette ([`design-system.md`](design-system.md) §1).
   `visibilitychange` back to visible (iOS suspends background tabs), reconnect
   and re-`watch`; a `401` shows *This
   phone isn't paired — on your Mac, run Open on phone and scan the code* (revoked,
-  dropped after 30 days, rotated away, or a new IP). Hidden, the page closes its socket: the
+  dropped after 30 days, rotated away, or a new IP). Hidden, the page closes its socket and
+  probes nothing — a cookie rotated then would wait unconfirmed: the
   phone stops driving (§7.1).
 
 ### 7.1 One PTY, two screens — the latest to act sizes it
@@ -395,10 +398,10 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
 
 | Level | What |
 |-------|------|
-| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s, injected clock), 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
+| Unit | grid → `screen` runs (colors, attributes, wide chars, cursor); history paging; pairing code single-use + 5 min, device token hash match, rotation grace (30 s from the new token's first request, injected clock), a rotation whose answer was lost, 30-day drop, `User-Agent` → name, `phone_devices.toml` round-trip; `Origin` checks; gateway MAC parsed from `route` / `arp` output; address pick over fixture interfaces; quick-key → bytes; registry keeps a pending pane until a publish lists it or it is forgotten |
 | Unit (files) | `Range` → whole / part / unsatisfiable (`a-b`, `a-`, `-n`, past the end, several ranges ignored) |
 | Business e2e (files) | server on `127.0.0.1`, an agent pane on a real directory: `GET /files` lists newest first without `.git` nor a symlink; `GET /file` serves an image with its type, a `Range` as `206` with `Content-Range`, an unknown extension as text; HTML goes out sandboxed; `..`, `.git` and a symlink leaving the worktree answer `404`; a plain shell's pane answers `404`; no cookie answers `401` |
-| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed`; an idle phone receives `ping`; a phone that stops reading is dropped within 10 s; the address going away closes the listener and the sockets and releases the sleep assertion, back ⇒ served again on the same origin with no alert; another address than the last one posts *new address* |
+| Business e2e | watcher ticks a real PTY with the `fake_agent_named` fixture with **no UI frame**; server on `127.0.0.1`: pair → cookie → the code is spent → `GET /` rotates the cookie, the new one works and its first request confirms it → a server restarted on the same store accepts it → a revoked device gets `401` and its socket closes → `agents` lists the fake agent → `send` reaches the PTY → a plain shell pane is never listed; `launch` of a fake agent with **no UI frame** → `launched` → the pane is listed with its badge → `send` reaches it; unknown entry / agent → `launch_failed`; an idle phone receives `ping`; a phone that stops reading is dropped within 10 s; the address going away closes the listener and the sockets and releases the sleep assertion, back ⇒ served again on the same origin with no alert; another address than the last one posts *new address* |
 | App unit | *Start at launch*: on a recorded network access starts, elsewhere not, after a manual Stop not; a drained launch lands as a new, non-active tab of its entry; an entry gone meanwhile drops the pane and forgets it |
 | UI e2e (kittest) | palette shows *Open on phone* / *Stop phone access* by state; pairing modal renders QR + URL + device count; Preferences › *Phone* lists devices, Revoke / Revoke all, the *Start at launch* toggle; unbound, the modal says it waits and offers no code; *Open on phone* binds an access waiting for its network |
 | Simulator | `.claude/skills/mobile`: `examples/phone_preview` (real server, fake agents, `--light`, `--loopback`) opened in the iOS simulator's Safari, screenshots — rendering and theme, not taps or the keyboard |

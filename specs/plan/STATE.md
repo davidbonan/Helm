@@ -10,7 +10,7 @@
 
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §3.1, §3.2, §3.4, §5, §6, §8, §9.
 Per the user: access never stops by itself; no `.local` name (the Mac may not
-advertise it), the URL stays the IP. Counter: **4/4**.
+advertise it), the URL stays the IP. Counter: **5/5**.
 
 - ☑ **L1 — Followed address.** `remote::address::current_lan`; the accept thread
   closes the sockets of the address left and rebinds on a recorded network.
@@ -23,6 +23,9 @@ advertise it), the URL stays the IP. Counter: **4/4**.
   a waiting access; the modal says it waits. *Tests*: 4 app + 1 UI e2e.
 - ☑ **L4 — New address alert.** Last address kept in `phone_devices.toml`;
   another one posts *Phone access has a new address*. *Tests*: 1 business e2e.
+- ☑ **L5 — Lost rotation.** The replaced token opens until a request carries the
+  new one, then 30 s; hidden, the page probes nothing. *Tests*: 2 unit (`devices`)
+  + 1 business e2e.
 
 Not done: a new IP still needs a rescan (cookie bound to the host) — a static
 lease on the router avoids it.
