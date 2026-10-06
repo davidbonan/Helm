@@ -2464,7 +2464,6 @@ fn gen_pr_files() {
                 posting: false,
                 post_error: None,
                 current_user: Some("Sam Rivers"),
-                time_spent_secs: 4_500,
             };
             let _ = pull_requests_page(
                 ui,
@@ -2604,7 +2603,6 @@ fn gen_pr_detail() {
                 posting: false,
                 post_error: None,
                 current_user: Some("Sam Rivers"),
-                time_spent_secs: 4_500,
             };
             let _ = pull_requests_page(
                 ui,

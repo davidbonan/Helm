@@ -3206,7 +3206,6 @@ fn seed_review(
         summary: String::new(),
         posting: false,
         post_error: None,
-        time_spent_secs: 0,
     }
 }
 
@@ -3242,46 +3241,6 @@ fn group_probe_due_spaces_the_tick_but_not_focus_regain_or_membership_change() {
     ));
     assert!(group_probe_due(true, false, 0.0));
     assert!(group_probe_due(false, true, 0.0));
-}
-
-#[test]
-fn review_time_accrues_to_the_open_pr_and_is_written_once_counting_stops() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("web");
-    let mut app = HelmApp::with_workspace(Workspace::new());
-    let pr = github_pr("acme/web", 7);
-    let key = crate::pull_requests::runner::PrReviewKey {
-        forge_kind: pr.forge_kind,
-        repo_label: pr.repo_label.clone(),
-        number: pr.number,
-    };
-    app.pr_reviews
-        .insert(key.clone(), seed_review(&key, &pr, &root));
-    app.pr_active = Some(key.clone());
-    let log_path = tmp.path().join("review_time.toml");
-    app.review_time_path = Some(log_path.clone());
-
-    app.tick_review_time(0.0, true);
-    app.tick_review_time(2.5, true);
-    assert_eq!(app.pr_reviews[&key].time_spent_secs, 2);
-    assert_eq!(app.review_time.seconds_for(&pr), 2);
-    assert!(
-        !log_path.exists(),
-        "under a minute accrued: nothing written yet"
-    );
-
-    app.tick_review_time(3.0, false);
-    assert_eq!(
-        app.review_time.seconds_for(&pr),
-        2,
-        "an unfocused frame credits nothing"
-    );
-    let written = crate::pull_requests::review_time::ReviewTimeLog::load_from(&log_path);
-    assert_eq!(
-        written.seconds_for(&pr),
-        2,
-        "counting stopped: the log is on disk"
-    );
 }
 
 #[test]
