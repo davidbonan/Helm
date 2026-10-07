@@ -1,5 +1,17 @@
 # Release notes
 
+## 3.5.2
+
+- Phone: access no longer stops by itself. It survives the Mac leaving and
+  rejoining its network, even with helm hidden, and follows the Mac's address
+  when the router hands it a new one.
+- Phone: a weak Wi-Fi or a locked iPhone no longer unpairs the phone — no
+  more rescanning the QR code.
+- Phone: a lost connection is noticed instead of leaving a frozen screen, and
+  the Mac's pane gets its own size back.
+- Pull requests: review time tracking and the `helm pr time` command are
+  gone — the figure no longer reflected how reviews are done.
+
 ## 3.5.1
 
 - Preferences › Agents: a start command prefixed by environment variables
@@ -73,10 +85,3 @@
   watching an agent on the phone acknowledges its green badge.
 - Opening the keyboard on the phone no longer makes the page jump.
 - New `⌫` quick key, repeating while held, to clear a prompt `⇥` filled in.
-
-## 3.1.1
-
-- Much lighter on CPU with large repositories and big workspaces: the git status
-  refresh no longer scans the whole working tree twice per second. Change counts
-  of the inactive repos in the sidebar now refresh every 30 s (instantly when you
-  come back to the app); the active repo stays live.
