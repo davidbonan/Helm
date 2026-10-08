@@ -1,5 +1,19 @@
 # Release notes
 
+## 3.6.0
+
+- New **Files** tab in the right sidebar, beside Git: browse the worktree's
+  tree and open any file in a viewer over the center zone.
+- Click in the viewer's text to edit the whole file in place, like a hunk in
+  the diff.
+- Leave agent notes on viewer lines: they join the diff's notes in one batch,
+  sent to the agent together.
+- File-type icons in the Files tree and the diff and viewer headers.
+- Pull requests: right-click a PR to hide it from the Inbox (and show it
+  again from its role tab).
+- Terminal: Hebrew renders, and accents and other combining marks sit on
+  their letter instead of shifting the line.
+
 ## 3.5.2
 
 - Phone: access no longer stops by itself. It survives the Mac leaving and
@@ -76,12 +90,3 @@
 
 - New `/` button next to the phone's quick keys: a menu that sends
   Claude Code's `/clear`, `/compact` and `/model` in one tap.
-
-## 3.1.2
-
-- The phone page now wears helm's theme (dark or light, following the Mac) with a
-  cleaner layout: one card per project, state pills, branch over tab.
-- Swiping scrolls a full-screen agent like Claude Code smoothly on the iPhone, and
-  watching an agent on the phone acknowledges its green badge.
-- Opening the keyboard on the phone no longer makes the page jump.
-- New `⌫` quick key, repeating while held, to clear a prompt `⇥` filled in.
