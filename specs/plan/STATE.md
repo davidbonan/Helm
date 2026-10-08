@@ -18,7 +18,7 @@ Counter: **5/5**.
   case-insensitive), `.git` / non-UTF-8 skipped, symlink flagged not followed,
   2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: 7 unit +
   3 business e2e (`files_e2e`). Non-UTF-8 skip untested (APFS refuses such names).
-- ☑ **F2 — Tabs + persistence.** Git · Files strip in the card header, Git badge,
+- ☑ **F2 — Tabs + persistence.** Git · Files strip in the card header,
   Files header (branch chip + Collapse all), commit card hidden on Files, no tabs
   in Graph mode, `Cmd+Shift+E` (rebindable `toggle-files-tab`); per-worktree
   `Prefs.tab_states` (tab, unfolded, selection). *Tests*: 2 unit (prefs) + 4 UI e2e

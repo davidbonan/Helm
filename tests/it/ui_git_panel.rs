@@ -2047,24 +2047,10 @@ fn the_tab_strip_marks_the_active_tab_and_a_click_selects_the_other() {
 }
 
 #[test]
-fn the_git_tab_counts_the_changed_files_and_hides_the_count_at_zero() {
-    let two_changes = RepoStatus {
-        unstaged: vec![file("src/main.rs", ChangeKind::Modified)],
-        staged: vec![file("README.md", ChangeKind::Added)],
-    };
-    drive_with_state(two_changes, on_tab(SidebarTab::Files), |h| {
-        h.get_by_label("2");
-    });
-    drive_with_state(RepoStatus::default(), on_tab(SidebarTab::Git), |h| {
-        assert!(h.query_by_label("0").is_none());
-    });
-}
-
-#[test]
-fn the_files_tab_keeps_the_branch_chip_and_drops_the_git_body_and_commit_card() {
+fn the_files_tab_drops_the_git_body_and_commit_card() {
     let intents = drive_with_state(sample_status(), on_tab(SidebarTab::Files), |h| {
-        h.get_by_label("main");
         for gone in [
+            "main",
             "Refresh",
             "Discard all",
             "1 file changed",
@@ -2080,9 +2066,18 @@ fn the_files_tab_keeps_the_branch_chip_and_drops_the_git_body_and_commit_card() 
 }
 
 #[test]
+fn the_tab_strip_leaves_the_branch_to_the_workspace_sidebar() {
+    drive_with_state(sample_status(), on_tab(SidebarTab::Git), |h| {
+        h.get_by_label("Refresh");
+        assert!(h.query_by_label("main").is_none());
+    });
+}
+
+#[test]
 fn without_a_tab_the_header_keeps_its_git_title() {
     drive_with_state(sample_status(), GitPanelState::default(), |h| {
         h.get_by_label("Git");
+        h.get_by_label("main");
         h.get_by_label("Refresh");
         assert!(h.query_by_label("Files").is_none());
     });

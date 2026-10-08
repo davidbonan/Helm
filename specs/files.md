@@ -20,11 +20,10 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
   a two-tab strip **Git** · **Files** (folder icon), aligned left. Active tab:
   `text.primary` + 2px `accent` underline; inactive: `text.secondary`, hover
   `text.primary` ([`design-system.md`](design-system.md) §4).
-- **Git** tab: the sidebar as today (branch chip, Discard all / Refresh, summary,
-  Unstaged / Staged, commit card). Its label carries the **N files changed**
-  count as a muted badge, hidden at 0, so changes stay visible from Files.
-- **Files** tab: the header keeps the **branch chip**; Discard all / Refresh give
-  way to a single **Collapse all** icon. The tree takes the **whole sidebar
+- **Git** tab: the sidebar as today (Discard all / Refresh, summary, Unstaged /
+  Staged, commit card). No count on its label, and no branch chip beside the tabs:
+  the workspace sidebar already names the branch.
+- **Files** tab: Discard all / Refresh give way to a single **Collapse all** icon. The tree takes the **whole sidebar
   height** — the commit card belongs to Git and is hidden here.
 - **Graph mode**: no tabs; the sidebar shows the WIP status or the commit detail
   as today ([`git.md`](git.md) §9). Back in Terminal mode, the worktree's last
@@ -116,4 +115,4 @@ are dropped silently. Default: Git tab, everything folded.
 |-------|--------|
 | Unit | Sort (folders first, natural, case-insensitive); status → folder dot priority; `.git` and non-UTF-8 skipped; 2,000 cap |
 | Business e2e | Real repo: ignored entry flagged, untracked/modified tints, symlink not followed, re-list picks up a new file |
-| UI e2e (kittest) | Tabs switch and persist per worktree; Git badge count; unfold + click opens viewer with content; `↑/↓/←/→` navigation; Graph mode hides tabs; binary/too-large placeholders |
+| UI e2e (kittest) | Tabs switch and persist per worktree; unfold + click opens viewer with content; `↑/↓/←/→` navigation; Graph mode hides tabs; binary/too-large placeholders |

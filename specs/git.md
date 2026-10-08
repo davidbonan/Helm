@@ -84,8 +84,8 @@ Light/dark mockup redesign: the sidebar is made of **two cards** on `bg.canvas`,
 
 **Main card** — bands separated by full-width rules:
 
-1. **Header**: **Git** · **Files** tabs ([`files.md`](files.md) §2) + **branch chip** (mono, §6);
-   on the right, **Discard all** (trash — destructive, behind the modal) and
+1. **Header**: **Git** · **Files** tabs ([`files.md`](files.md) §2) — in Graph mode
+   the **Git** title + **branch chip** (mono, §6) instead; on the right, **Discard all** (trash — destructive, behind the modal) and
    **Refresh** icons.
 2. **Summary**: "**N files changed**" (entries of both sections) + totals
    **+A** / **−D** (sum of the deltas of both sections; a half-staged file

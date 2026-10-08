@@ -7,7 +7,6 @@ use crate::git::file_tree::{self, TreeRow};
 use crate::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SIZE};
-use crate::ui::detail::count_chip;
 use crate::ui::file_list::{
     self, file_menu_entries, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput,
     FileViewMode, PATH_SIZE, ROW_HEIGHT,
@@ -888,26 +887,24 @@ fn header_band(
     band(ui, HEADER_BAND_H, |ui| {
         match state.sidebar_tab {
             Some(active) => {
-                let strip = TabStrip {
-                    active,
-                    changed_files: status.changed_file_count(),
-                };
-                if let Some(tab) = tab_strip(ui, palette, strip) {
+                if let Some(tab) = tab_strip(ui, palette, active) {
                     intents.push(GitIntent::SelectTab(tab));
                 }
             }
-            None => git_title(ui, palette),
+            None => {
+                git_title(ui, palette);
+                ui.add_space(4.0);
+                // Reserve the right-side actions (view toggle + refresh + discard, plus
+                // the implicit item_spacing between them) so a long branch name truncates
+                // instead of covering them.
+                let actions_w = 3.0 * ICON_HIT + 4.0 + ui.spacing().item_spacing.x + ACTION_GAP;
+                branch_chip(ui, palette, branch, ui.available_width() - actions_w);
+            }
         }
-        ui.add_space(4.0);
         if state.sidebar_tab == Some(SidebarTab::Files) {
-            files_header_actions(ui, palette, branch, intents);
+            files_header_actions(ui, palette, intents);
             return;
         }
-        // Reserve the right-side actions (view toggle + refresh + discard, plus
-        // the implicit item_spacing between them) so a long branch name truncates
-        // instead of covering them.
-        let actions_w = 3.0 * ICON_HIT + 4.0 + ui.spacing().item_spacing.x + ACTION_GAP;
-        branch_chip(ui, palette, branch, ui.available_width() - actions_w);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if state.mutation_busy {
                 // Same footprint as the icon button so the band doesn't shift;
@@ -961,32 +958,23 @@ fn git_title(ui: &mut egui::Ui, palette: &Palette) {
     );
 }
 
-#[derive(Clone, Copy)]
-struct TabStrip {
-    active: SidebarTab,
-    changed_files: usize,
-}
-
 /// Git · Files strip (files.md §2): returns the tab clicked this frame.
-fn tab_strip(ui: &mut egui::Ui, palette: &Palette, strip: TabStrip) -> Option<SidebarTab> {
+fn tab_strip(ui: &mut egui::Ui, palette: &Palette, active: SidebarTab) -> Option<SidebarTab> {
     let mut clicked = None;
     for tab in [SidebarTab::Git, SidebarTab::Files] {
-        if tab_button(ui, palette, tab, strip) {
+        if tab_button(ui, palette, tab, tab == active) {
             clicked = Some(tab);
         }
     }
     clicked
 }
 
-/// Icon + label (+ the Git tab's changed-files count, hidden at 0), underlined in
-/// `accent` when active.
-fn tab_button(ui: &mut egui::Ui, palette: &Palette, tab: SidebarTab, strip: TabStrip) -> bool {
+/// Icon + label, underlined in `accent` when active.
+fn tab_button(ui: &mut egui::Ui, palette: &Palette, tab: SidebarTab, active: bool) -> bool {
     let (label, icon) = match tab {
         SidebarTab::Git => ("Git", lucide_icons::Icon::GitBranch),
         SidebarTab::Files => ("Files", lucide_icons::Icon::Folder),
     };
-    let active = tab == strip.active;
-    let badge = (tab == SidebarTab::Git && strip.changed_files > 0).then_some(strip.changed_files);
     // Rests on the card divider laid out right below the band.
     let underline_y = ui.max_rect().bottom() + ui.spacing().item_spacing.y - TAB_UNDERLINE_H / 2.0;
     let response = ui
@@ -1012,9 +1000,6 @@ fn tab_button(ui: &mut egui::Ui, palette: &Palette, tab: SidebarTab, strip: TabS
                 );
                 let (text_rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
                 ui.painter().galley(text_rect.min, galley, color);
-                if let Some(count) = badge {
-                    count_chip(ui, palette, count);
-                }
                 ui.add_space(TAB_PAD_X);
             },
         )
@@ -1032,15 +1017,8 @@ fn tab_button(ui: &mut egui::Ui, palette: &Palette, tab: SidebarTab, strip: TabS
     response.clicked()
 }
 
-/// Files tab header (files.md §2): the branch chip, then Collapse all alone on the right.
-fn files_header_actions(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    branch: &str,
-    intents: &mut Vec<GitIntent>,
-) {
-    let actions_w = ICON_HIT + ui.spacing().item_spacing.x;
-    branch_chip(ui, palette, branch, ui.available_width() - actions_w);
+/// Files tab header (files.md §2): Collapse all alone on the right.
+fn files_header_actions(ui: &mut egui::Ui, palette: &Palette, intents: &mut Vec<GitIntent>) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if icon_button(
             ui,
