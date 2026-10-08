@@ -29,6 +29,7 @@ pub enum Action {
     ToggleWorkspaceSidebar,
     ToggleGitSidebar,
     ToggleGraph,
+    ToggleFilesTab,
     NextRepo,
     PrevRepo,
     SplitRight,
@@ -52,13 +53,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::OpenFolder,
         Self::NewTab,
         Self::TogglePreferences,
         Self::ToggleWorkspaceSidebar,
         Self::ToggleGitSidebar,
         Self::ToggleGraph,
+        Self::ToggleFilesTab,
         Self::NextRepo,
         Self::PrevRepo,
         Self::SplitRight,
@@ -89,6 +91,7 @@ impl Action {
             Self::ToggleWorkspaceSidebar => "toggle-workspace-sidebar",
             Self::ToggleGitSidebar => "toggle-git-sidebar",
             Self::ToggleGraph => "toggle-graph",
+            Self::ToggleFilesTab => "toggle-files-tab",
             Self::NextRepo => "next-repo",
             Self::PrevRepo => "prev-repo",
             Self::SplitRight => "split-right",
@@ -126,6 +129,7 @@ impl Action {
             // "/" rather than the spec's "⇄": the bundled fonts have no glyph
             // for U+21C4 (renders as tofu in the Keyboard section).
             Self::ToggleGraph => "Toggle Terminal / Git",
+            Self::ToggleFilesTab => "Toggle Git / Files tab",
             Self::NextRepo => "Next repo",
             Self::PrevRepo => "Previous repo",
             Self::SplitRight => "Split right",
@@ -157,6 +161,7 @@ impl Action {
             | Self::ToggleWorkspaceSidebar
             | Self::ToggleGitSidebar
             | Self::ToggleGraph
+            | Self::ToggleFilesTab
             | Self::NextRepo
             | Self::PrevRepo
             | Self::Run
@@ -190,6 +195,7 @@ impl Action {
             Self::ToggleWorkspaceSidebar => Shortcut::cmd(Key::B),
             Self::ToggleGitSidebar => Shortcut::cmd(Key::G),
             Self::ToggleGraph => Shortcut::cmd_shift(Key::G),
+            Self::ToggleFilesTab => Shortcut::cmd_shift(Key::E),
             Self::NextRepo => Shortcut::ctrl(Key::Tab),
             Self::PrevRepo => Shortcut::ctrl_shift(Key::Tab),
             Self::SplitRight => Shortcut::cmd(Key::D),

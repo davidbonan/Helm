@@ -2,6 +2,7 @@
 //! as the Files tab's tree lists them (specs/files.md §3): read only, never
 //! outside the worktree, never its `.git`.
 
+pub mod tab;
 pub mod tint;
 
 use std::cmp::Ordering;

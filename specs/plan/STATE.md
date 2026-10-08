@@ -11,17 +11,18 @@
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
 [`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
 worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
-Counter: **1/5**.
+Counter: **2/5**.
 
 - ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
   `remote::files` (phone keeps newest first), tree order (folders first, natural,
   case-insensitive), `.git` / non-UTF-8 skipped, symlink flagged not followed,
   2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: 7 unit +
   3 business e2e (`files_e2e`). Non-UTF-8 skip untested (APFS refuses such names).
-- ☐ **F2 — Tabs + persistence.** Git · Files strip in the card header, Git badge,
+- ☑ **F2 — Tabs + persistence.** Git · Files strip in the card header, Git badge,
   Files header (branch chip + Collapse all), commit card hidden on Files, no tabs
-  in Graph mode, `Cmd+Shift+E`; per-worktree `Prefs` (tab, unfolded, selection).
-  *Tests*: unit (prefs round-trip) + UI e2e.
+  in Graph mode, `Cmd+Shift+E` (rebindable `toggle-files-tab`); per-worktree
+  `Prefs.tab_states` (tab, unfolded, selection). *Tests*: 2 unit (prefs) + 4 UI e2e
+  (`ui_git_panel`) + 4 app (kittest page, keys); headless dark + light.
 - ☐ **F3 — Tree.** Lazy listing on the git worker, rows (indent, chevron, icon,
   muted ignored, git tint + folder dot), keyboard (`↑↓←→ Enter`, disarm on
   terminal focus), re-list on the poll while visible, selection falls back to the

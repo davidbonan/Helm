@@ -2962,6 +2962,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         pr_rail_collapsed: false,
         keybindings: std::collections::BTreeMap::new(),
         command_usage: Default::default(),
+        tab_states: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };
 
@@ -4372,4 +4373,119 @@ fn the_command_last_run_from_the_palette_leads_it_next_time() {
         panic!("the palette stays open on its screen");
     };
     assert_eq!(palette.screen(), Screen::RunningServers);
+}
+
+/// The full page with the git sidebar open and the keys routed as `update` does;
+/// every repo's pane is stubbed so no shell spawns.
+fn sidebar_page(names: &[&str]) -> egui_kittest::Harness<'static, HelmApp> {
+    let mut app = app_with(names);
+    for repo in 0..names.len() {
+        let key = key_of(&app.workspace, repo, 0);
+        app.caches.panes.insert(key, tagged_panes("stub"));
+    }
+    app.sidebars.git = true;
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.handle_keys(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        )
+}
+
+fn files_tab_toggled(harness: &egui_kittest::Harness<'_, HelmApp>) -> String {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    format!(
+        "{:?}",
+        harness.get_by_label("Files").accesskit_node().toggled()
+    )
+}
+
+const CMD_SHIFT: egui::Modifiers = egui::Modifiers {
+    command: true,
+    mac_cmd: true,
+    shift: true,
+    ..egui::Modifiers::NONE
+};
+
+#[test]
+fn each_worktree_brings_back_its_own_sidebar_tab() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = sidebar_page(&["a", "b"]);
+    harness.run();
+
+    harness.get_by_label("Files").click();
+    harness.run();
+    assert_eq!(files_tab_toggled(&harness), "Some(True)");
+    harness.state_mut().workspace.set_active(1);
+    harness.run();
+    assert_eq!(
+        files_tab_toggled(&harness),
+        "Some(False)",
+        "b starts on Git"
+    );
+    harness.state_mut().workspace.set_active(0);
+    harness.run();
+
+    assert_eq!(files_tab_toggled(&harness), "Some(True)");
+    assert_eq!(
+        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
+        SidebarTab::Files
+    );
+}
+
+#[test]
+fn cmd_shift_e_toggles_the_tab_reveals_the_sidebar_and_keeps_the_diff() {
+    let mut harness = sidebar_page(&["a"]);
+    harness.state_mut().sidebars.git = false;
+    let source = DiffSource::WorkingTree { staged: false };
+    DiffState::open(
+        &mut harness.state_mut().diff,
+        source,
+        "README.md".to_owned(),
+    );
+    harness.run();
+
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run();
+
+    let app = harness.state();
+    assert!(
+        app.sidebars.git,
+        "the hidden sidebar opens on the Files tab"
+    );
+    assert_eq!(app.shown_sidebar_tab(), Some(SidebarTab::Files));
+    assert!(app.diff.is_some(), "switching tab never closes the diff");
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run();
+    assert_eq!(harness.state().shown_sidebar_tab(), Some(SidebarTab::Git));
+}
+
+#[test]
+fn graph_mode_has_no_tabs_and_ignores_cmd_shift_e() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = sidebar_page(&["a"]);
+    harness.state_mut().central_mode = CentralMode::Graph;
+    harness.run_steps(2);
+
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run_steps(2);
+
+    assert!(harness.query_by_label("Files").is_none());
+    assert_eq!(
+        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
+        SidebarTab::Git
+    );
+}
+
+#[test]
+fn cmd_shift_e_without_a_repo_leaves_the_sidebar_hidden() {
+    let mut app = HelmApp::default();
+
+    app.toggle_sidebar_tab();
+
+    assert!(!app.sidebars.git);
 }

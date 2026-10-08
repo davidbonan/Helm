@@ -6,6 +6,7 @@ use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPa
 use crate::agent_watch::AgentBadge;
 use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
 use crate::ai::AiRunner;
+use crate::files::tab::{SidebarTab, TabState};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -1767,6 +1768,34 @@ impl HelmApp {
         Response::Runs {
             runs: vec![self.run_entry_of(&target)],
         }
+    }
+
+    /// The active worktree's right sidebar tab, shown in Terminal mode only (files.md §2).
+    fn shown_sidebar_tab(&self) -> Option<SidebarTab> {
+        if self.central_mode != CentralMode::Terminal {
+            return None;
+        }
+        let repo = self.workspace.active_repo()?;
+        Some(self.prefs.sidebar_tab(&repo.path))
+    }
+
+    fn edit_active_tab_state(&mut self, edit: impl FnOnce(&mut TabState)) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            prefs.edit_tab_state(&worktree, edit);
+            prefs
+        });
+    }
+
+    /// `Cmd+Shift+E` (keybindings.md §1): Git ⇄ Files, revealing the sidebar.
+    fn toggle_sidebar_tab(&mut self) {
+        let Some(tab) = self.shown_sidebar_tab() else {
+            return;
+        };
+        self.edit_active_tab_state(|state| state.tab = tab.other());
+        self.sidebars.git = true;
     }
 
     fn active_repo_key(&self) -> Option<RepoKey> {

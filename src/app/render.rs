@@ -555,6 +555,9 @@ impl HelmApp {
         if action_pressed(ctx, &self.keymap, Action::FocusFinishedAgent) {
             self.focus_first_finished_agent(ctx);
         }
+        if action_pressed(ctx, &self.keymap, Action::ToggleFilesTab) {
+            self.toggle_sidebar_tab();
+        }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);
         route_tab_keys(ctx, &self.keymap, &mut self.workspace);
@@ -630,6 +633,7 @@ impl HelmApp {
             ),
         });
         let font_size = self.font_zoom.point_size();
+        self.git_panel_state.sidebar_tab = self.shown_sidebar_tab();
         // The active row follows the git session's live snapshot (checkout from the
         // terminal or the graph, edits, commits) without waiting for a sync trigger.
         if let Some(g) = &self.git {
@@ -2270,6 +2274,26 @@ impl HelmApp {
         intents.append(&mut diff_intents);
         for intent in review_intents {
             self.apply_review_intent(intent, ctx);
+        }
+
+        let mut selected_tab = None;
+        let mut collapse_all = false;
+        intents.retain(|intent| match intent {
+            GitIntent::SelectTab(tab) => {
+                selected_tab = Some(*tab);
+                false
+            }
+            GitIntent::CollapseAllFolders => {
+                collapse_all = true;
+                false
+            }
+            _ => true,
+        });
+        if let Some(tab) = selected_tab {
+            self.edit_active_tab_state(|state| state.tab = tab);
+        }
+        if collapse_all {
+            self.edit_active_tab_state(|state| state.unfolded.clear());
         }
 
         let mut generate_requested = false;

@@ -170,6 +170,7 @@ fixed. The §1–§3 tables are the defaults.
 | Global | `toggle-workspace-sidebar` | `Cmd+B` |
 | Global | `toggle-git-sidebar` | `Cmd+G` |
 | Global | `toggle-graph` | `Cmd+Shift+G` |
+| Global | `toggle-files-tab` | `Cmd+Shift+E` |
 | Global | `next-repo` / `prev-repo` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Terminal | `split-right` / `split-down` | `Cmd+D` / `Cmd+Shift+D` |
 | Terminal | `close-pane` | `Cmd+W` |
