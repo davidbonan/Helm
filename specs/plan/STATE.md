@@ -6,6 +6,20 @@
 
 ---
 
+## ☑ Milestone — M-InboxHide · Hide a PR from the Inbox
+
+Spec: [`specs/pull-requests.md`](../pull-requests.md) §5. Per the user: take a PR
+out of the Inbox, keep it under To review / Mine. Counter: **1/1**.
+
+- ☑ **H1 — Hide from Inbox.** `model::InboxHidden` (persisted,
+  `Prefs.pr_inbox_hidden`); `ListTab::accepts` takes it; row right-click
+  **Hide from Inbox** / **Show in Inbox** (`toggle_inbox_hidden`); closed PRs
+  dropped on a landed fetch (`without_closed`); muted **Hidden from Inbox** row flag
+  under the role tabs. *Tests*: 2 model unit + 1 view unit + 1 UI e2e
+  (`a_row_hidden_by_right_click_leaves_the_inbox_until_shown_again`).
+
+---
+
 ## ☑ Milestone — M-PhoneLease · Phone access that never drops by itself
 
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §3.1, §3.2, §3.4, §5, §6, §8, §9.

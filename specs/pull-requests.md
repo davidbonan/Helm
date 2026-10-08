@@ -117,7 +117,13 @@ round was drawn on is French, but the label language is a frozen decision.
   as one reading `14`). **Inbox** is the landing tab and carries only what the user
   has to act on: the **Waiting on your review** band plus their own PRs still
   **In review** — a PR they already approved, a draft, a red build or a ready-to-merge
-  one of theirs is noise there and lives under the role tabs. Every fetched PR is open
+  one of theirs is noise there and lives under the role tabs. A row the Inbox would
+  carry answers a **right-click** with **Hide from Inbox**: the PR leaves the Inbox
+  and its count, and keeps its place under the role tabs, where the same menu reads
+  **Show in Inbox**. Hiding is by hand both ways — activity on the PR never brings
+  it back — and **persisted** (`Prefs.pr_inbox_hidden`, `model::InboxHidden`, keyed
+  by forge + repo + number); an entry is dropped once its PR is gone from a repo
+  that still lists others. Every fetched PR is open
   by construction (§1), so the tabs are views over the same cache: no extra query, and
   **no Merged tab** (merged PRs are out of the fetch's scope).
 - **List**, grouped by **what each PR is waiting on** rather than by role or date
@@ -152,7 +158,8 @@ round was drawn on is French, but the label language is a frozen decision.
   author** band the row reads a notch quieter. On the right, the **flags** —
   *Review first* (the base of a stack), *Changes requested*, *Checks failing* /
   *running*, *Draft*, amber **blocks N** (`model::blocked_count`: how many listed PRs
-  target this one's source branch) — then the **comment** tally and, on the right edge,
+  target this one's source branch), a muted **Hidden from Inbox** on a row taken out of
+  it — then the **comment** tally and, on the right edge,
   the **assigned reviewers**: overlapping avatars, each ringed and badged in the color
   of where it stands (green check approved, red minus changes requested; a reviewer who
   has not ruled wears neither, an empty mark being itself a verdict), the rest

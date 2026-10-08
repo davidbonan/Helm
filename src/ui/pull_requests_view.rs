@@ -15,8 +15,8 @@ use crate::git::commit_detail::CommitFile;
 use crate::git::diff::{FileDiff, LineOrigin};
 use crate::git::file_tree::{self, TreeRow};
 use crate::pull_requests::model::{
-    hunk_snippet, ActionGroup, Checks, PrComment, PrCommit, PrDetail, PrState, PullRequest, Review,
-    ReviewVerdict, SnippetKind, SnippetLine, StackRow,
+    hunk_snippet, ActionGroup, Checks, InboxHidden, PrComment, PrCommit, PrDetail, PrState,
+    PullRequest, Review, ReviewVerdict, SnippetKind, SnippetLine, StackRow,
 };
 use crate::review::{FileComments, ForgeThreads, ReviewIntent};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, SECTION_TITLE_SIZE};
@@ -261,6 +261,9 @@ pub struct PullRequestsPageAction {
     pub merge: Option<usize>,
     /// **Merge** was clicked in the review surface header — the open PR (§11).
     pub merge_open: bool,
+    /// **Hide from Inbox** / **Show in Inbox** was picked in a list row's context
+    /// menu: the app flips that PR in the persisted set (pull-requests.md §5).
+    pub toggle_inbox_hidden: Option<usize>,
 }
 
 /// Per-source banners for the browse list (pull-requests.md §5): each forge's
@@ -348,6 +351,7 @@ pub fn pull_requests_page(
     ui: &mut egui::Ui,
     palette: &Palette,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     selected: Option<usize>,
     hints: &PrSourceHints<'_>,
     review: Option<&mut PrReviewView<'_>>,
@@ -375,6 +379,7 @@ pub fn pull_requests_page(
                     ui,
                     palette,
                     prs,
+                    inbox_hidden,
                     selected,
                     hints,
                     list_body_rect(rect),
@@ -414,7 +419,16 @@ pub fn pull_requests_page(
             ui.data_mut(|d| d.remove_temp::<f64>(back_slide_id()));
             ui.add_space(f32::from(TITLEBAR_HEIGHT));
             let body = ui.available_rect_before_wrap();
-            render_list(ui, palette, prs, selected, hints, body, &mut action);
+            render_list(
+                ui,
+                palette,
+                prs,
+                inbox_hidden,
+                selected,
+                hints,
+                body,
+                &mut action,
+            );
         }
     }
     action
@@ -5063,10 +5077,12 @@ fn rail_resize_handle(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_list(
     ui: &mut egui::Ui,
     palette: &Palette,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     selected: Option<usize>,
     hints: &PrSourceHints<'_>,
     rect: egui::Rect,
@@ -5080,18 +5096,19 @@ fn render_list(
     // The header names how many rows survive the filters, so it needs the count before
     // it draws — and the controls it draws may change the filters again, which is what
     // the second pass below picks up.
-    let shown = visible_indices(prs, &state).len();
+    let shown = visible_indices(prs, inbox_hidden, &state).len();
     list_header(
         ui,
         palette,
         header_rect,
         prs,
+        inbox_hidden,
         hints,
         shown,
         &mut state,
         action,
     );
-    let visible = visible_indices(prs, &state);
+    let visible = visible_indices(prs, inbox_hidden, &state);
 
     let body_rect = egui::Rect::from_x_y_ranges(
         rect.x_range(),
@@ -5135,7 +5152,15 @@ fn render_list(
                             .collect();
                         state.sort.apply(prs, &mut indices);
                         band(
-                            ui, palette, group, &indices, prs, selected, &mut state, action,
+                            ui,
+                            palette,
+                            group,
+                            &indices,
+                            prs,
+                            inbox_hidden,
+                            selected,
+                            &mut state,
+                            action,
                         );
                     }
                     list_footer(ui, palette, visible.len());
@@ -5147,10 +5172,14 @@ fn render_list(
 
 /// Which PRs the current tab, project filter and query leave standing, as indices into
 /// `prs`. Tab first — it drives the counts the rest of the header reports.
-fn visible_indices(prs: &[PullRequest], state: &ListState) -> Vec<usize> {
+fn visible_indices(
+    prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
+    state: &ListState,
+) -> Vec<usize> {
     prs.iter()
         .enumerate()
-        .filter(|(_, pr)| state.tab.accepts(pr))
+        .filter(|(_, pr)| state.tab.accepts(pr, inbox_hidden))
         .filter(|(_, pr)| !state.hidden_projects.contains(&pr.repo_label))
         .filter(|(_, pr)| crate::pull_requests::model::matches_search(pr, &state.query))
         .map(|(i, _)| i)
@@ -5237,6 +5266,7 @@ fn list_header(
     palette: &Palette,
     rect: egui::Rect,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     hints: &PrSourceHints<'_>,
     shown: usize,
     state: &mut ListState,
@@ -5357,7 +5387,7 @@ fn list_header(
         rect.x_range(),
         egui::Rangef::new(rect.top() + PAGE_HEADER_HEIGHT, rect.bottom()),
     );
-    tab_bar(ui, palette, tabs, prs, state);
+    tab_bar(ui, palette, tabs, prs, inbox_hidden, state);
 }
 
 /// What sits in a header control's leading slot. `Spinner` reserves the same slot
@@ -5679,11 +5709,15 @@ fn tab_bar(
     palette: &Palette,
     rect: egui::Rect,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     state: &mut ListState,
 ) {
     let mut x = rect.left() + PANEL_PAD_X;
     for tab in crate::pull_requests::model::ListTab::ALL {
-        let count = prs.iter().filter(|pr| tab.accepts(pr)).count();
+        let count = prs
+            .iter()
+            .filter(|pr| tab.accepts(pr, inbox_hidden))
+            .count();
         let label = tab.label();
         let active = state.tab == tab;
         let font = egui::FontId::new(
@@ -5863,6 +5897,7 @@ fn band(
     group: ActionGroup,
     indices: &[usize],
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     selected: Option<usize>,
     state: &mut ListState,
     action: &mut PullRequestsPageAction,
@@ -5872,7 +5907,17 @@ fn band(
     }
     section_header(ui, palette, group, indices.len());
     for block in crate::pull_requests::model::list_blocks(prs, indices) {
-        list_block(ui, palette, prs, group, &block, selected, state, action);
+        list_block(
+            ui,
+            palette,
+            prs,
+            inbox_hidden,
+            group,
+            &block,
+            selected,
+            state,
+            action,
+        );
         ui.add_space(LIST_BLOCK_GAP);
     }
     ui.add_space(GAP_SM);
@@ -5887,6 +5932,7 @@ fn list_block(
     ui: &mut egui::Ui,
     palette: &Palette,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     group: ActionGroup,
     block: &crate::pull_requests::model::ListBlock,
     selected: Option<usize>,
@@ -5956,6 +6002,7 @@ fn list_block(
             ui,
             palette,
             prs,
+            inbox_hidden,
             *idx,
             group,
             selected == Some(*idx),
@@ -6216,11 +6263,18 @@ enum RowTag {
     Draft,
     /// How many listed PRs are waiting on this one.
     Blocks(usize),
+    /// The Inbox would carry this PR, had the user not taken it out.
+    HiddenFromInbox,
 }
 
 /// Which flags a row wears. Pure so the composition is unit-testable — the chips
 /// themselves are painted, like every other row ornament.
-fn row_tags(prs: &[PullRequest], idx: usize, stack_base: bool) -> Vec<RowTag> {
+fn row_tags(
+    prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
+    idx: usize,
+    stack_base: bool,
+) -> Vec<RowTag> {
     let pr = &prs[idx];
     let mut tags = Vec::new();
     if stack_base {
@@ -6242,6 +6296,9 @@ fn row_tags(prs: &[PullRequest], idx: usize, stack_base: bool) -> Vec<RowTag> {
     if blocks > 0 {
         tags.push(RowTag::Blocks(blocks));
     }
+    if pr.is_mine_to_act_on() && inbox_hidden.contains(pr) {
+        tags.push(RowTag::HiddenFromInbox);
+    }
     tags
 }
 
@@ -6254,6 +6311,7 @@ impl RowTag {
             RowTag::ChecksRunning => "Checks running".to_owned(),
             RowTag::Draft => "Draft".to_owned(),
             RowTag::Blocks(n) => format!("blocks {n}"),
+            RowTag::HiddenFromInbox => "Hidden from Inbox".to_owned(),
         }
     }
 
@@ -6264,6 +6322,7 @@ impl RowTag {
             RowTag::ChecksFailing => Some(Icon::X),
             RowTag::ChecksRunning => Some(Icon::Clock),
             RowTag::Blocks(_) => Some(Icon::Layers),
+            RowTag::HiddenFromInbox => Some(Icon::EyeOff),
         }
     }
 
@@ -6272,9 +6331,32 @@ impl RowTag {
             RowTag::ReviewFirst => palette.accent,
             RowTag::ChangesRequested | RowTag::ChecksFailing => palette.git_deleted,
             RowTag::ChecksRunning | RowTag::Blocks(_) => palette.git_modified,
-            RowTag::Draft => palette.text_muted,
+            RowTag::Draft | RowTag::HiddenFromInbox => palette.text_muted,
         }
     }
+}
+
+/// A row's right-click menu (pull-requests.md §5): takes the PR out of the Inbox, or
+/// brings a hidden one back. Offered only on PRs the Inbox would carry.
+fn inbox_context_menu(
+    response: &egui::Response,
+    hidden: bool,
+    idx: usize,
+    action: &mut PullRequestsPageAction,
+) {
+    let label = if hidden {
+        "Show in Inbox"
+    } else {
+        "Hide from Inbox"
+    };
+    egui::Popup::context_menu(response)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            if ui.button(label).clicked() {
+                action.toggle_inbox_hidden = Some(idx);
+                ui.close();
+            }
+        });
 }
 
 /// One list row (pull-requests.md §5), carved out of its block's card. The gutter
@@ -6286,6 +6368,7 @@ fn pr_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     prs: &[PullRequest],
+    inbox_hidden: &InboxHidden,
     idx: usize,
     band: ActionGroup,
     selected: bool,
@@ -6348,7 +6431,7 @@ fn pr_row(
 
     // The right-hand cluster first: the flags size themselves, and what they leave is
     // the measure the title has to fit in.
-    let tags = row_tags(prs, idx, stack.is_some_and(|s| s.row.n == 1));
+    let tags = row_tags(prs, inbox_hidden, idx, stack.is_some_and(|s| s.row.n == 1));
     let tags_left = paint_row_tags(ui, palette, &tags, cols.tags_right, center_y);
     let main_right = (tags_left - ROW_COL_GAP).max(cols.main.min);
 
@@ -6467,6 +6550,9 @@ fn pr_row(
     });
     if response.clicked() {
         action.select = Some(idx);
+    }
+    if pr.is_mine_to_act_on() {
+        inbox_context_menu(&response, inbox_hidden.contains(pr), idx, action);
     }
 }
 
@@ -7037,12 +7123,23 @@ mod tests {
     }
 
     #[test]
+    fn a_row_taken_out_of_the_inbox_says_so() {
+        let prs = vec![tagged(PrState::Open, Review::Pending, Checks::Passing)];
+        let mut inbox_hidden = InboxHidden::default();
+        inbox_hidden.toggle(&prs[0]);
+        assert_eq!(
+            row_tags(&prs, &inbox_hidden, 0, false),
+            [RowTag::HiddenFromInbox]
+        );
+    }
+
+    #[test]
     fn a_settled_row_wears_no_flags() {
         let prs = vec![tagged(PrState::Open, Review::Pending, Checks::Passing)];
-        assert!(row_tags(&prs, 0, false).is_empty());
+        assert!(row_tags(&prs, &InboxHidden::default(), 0, false).is_empty());
         // Nor does an absent CI invent one.
         let prs = vec![tagged(PrState::Open, Review::Pending, Checks::None)];
-        assert!(row_tags(&prs, 0, false).is_empty());
+        assert!(row_tags(&prs, &InboxHidden::default(), 0, false).is_empty());
     }
 
     #[test]
@@ -7053,7 +7150,7 @@ mod tests {
             Checks::Failing,
         )];
         assert_eq!(
-            row_tags(&prs, 0, true),
+            row_tags(&prs, &InboxHidden::default(), 0, true),
             [
                 RowTag::ReviewFirst,
                 RowTag::ChangesRequested,
@@ -7071,14 +7168,20 @@ mod tests {
         child.number = 2;
         child.dest_branch = "a".to_owned();
         let prs = vec![base, child];
-        assert_eq!(row_tags(&prs, 0, false), [RowTag::Blocks(1)]);
-        assert!(row_tags(&prs, 1, false).is_empty());
+        assert_eq!(
+            row_tags(&prs, &InboxHidden::default(), 0, false),
+            [RowTag::Blocks(1)]
+        );
+        assert!(row_tags(&prs, &InboxHidden::default(), 1, false).is_empty());
     }
 
     #[test]
     fn a_running_build_flags_itself_apart_from_a_failing_one() {
         let prs = vec![tagged(PrState::Open, Review::Pending, Checks::Pending)];
-        assert_eq!(row_tags(&prs, 0, false), [RowTag::ChecksRunning]);
+        assert_eq!(
+            row_tags(&prs, &InboxHidden::default(), 0, false),
+            [RowTag::ChecksRunning]
+        );
     }
 
     /// Play a whole run — start, the moves, release — at `t`, and say whether it fired.
