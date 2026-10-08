@@ -6,6 +6,16 @@
 
 ---
 
+## ◐ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
+
+Spec: [`specs/files.md`](../files.md) §3.1. Counter: **0/1**.
+
+- ☐ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
+  type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
+  *Tests*: unit (lookup order, case, unknown) + UI e2e + headless dark/light.
+
+---
+
 ## ☑ Milestone — M-Files · Files tab in the right sidebar
 
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,

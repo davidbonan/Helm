@@ -55,6 +55,22 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
   full relative path in the tooltip.
 - **Empty worktree** (only `.git`): *No files*.
 
+### 3.1 File-type icons
+
+- A file's icon is the **Nerd Font** glyph of its type (the embedded JetBrains Mono
+  Nerd Font, no extra dependency), painted in that type's **brand color** — the
+  nvim-web-devicons table: e.g. Rust orange, TypeScript blue, JSON yellow,
+  Markdown, TOML, YAML, Dockerfile, shell, images, lock files…
+- Lookup order: **exact name** (`Cargo.toml`, `Cargo.lock`, `Dockerfile`,
+  `Makefile`, `.gitignore`, `package.json`, `LICENSE`, `README.md`…), then the
+  **extension**, case-insensitive (last one; a few doubles like `.d.ts`); unknown ⇒
+  the current plain file icon in `text.secondary`.
+- Colors are theme tokens, one per type, readable on `bg.canvas` in **both** modes
+  (a light variant where the brand color is too pale on white).
+- Folders keep the Lucide folder icon; symlinks keep the link glyph.
+- Shown in the **tree** and in the **header** of the viewer and of the diff view
+  (status lists, commit detail and PR files keep their git status icon).
+
 ## 4. Viewer
 
 - Click a file ⇒ the **viewer** opens as an overlay over the center zone, same
