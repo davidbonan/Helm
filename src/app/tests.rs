@@ -4905,7 +4905,7 @@ fn a_viewer_edit_lands_on_disk_and_the_viewer_shows_it() {
             .max(1.0)
     });
     let at = egui::pos2(
-        row.left() + 3.0 * char_w + 20.0 + 0.5 * char_w,
+        row.left() + crate::ui::diff_view::GUTTER_SLOT_W + 3.0 * char_w + 20.0 + 0.5 * char_w,
         row.center().y,
     );
     let away = harness.get_by_label("13 B").rect().center();
@@ -4936,4 +4936,91 @@ fn a_viewer_edit_lands_on_disk_and_the_viewer_shows_it() {
         "got {:?}",
         harness.state().toasts.items()
     );
+}
+
+/// Types `note` into the note editor once it holds the input, and saves it with a bare
+/// Enter.
+fn write_note(harness: &mut egui_kittest::Harness<'_, HelmApp>, note: &str) {
+    step_until(harness, |harness| {
+        harness.state().git_panel_state.inline_editing
+    });
+    harness.step();
+    harness.event(egui::Event::Text(note.to_owned()));
+    harness.step();
+    harness.key_press(egui::Key::Enter);
+    harness.step();
+}
+
+#[test]
+fn a_viewer_note_editor_disarms_the_commit_shortcut() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    assert!(!harness.state().git_panel_state.inline_editing);
+
+    harness.get_by_label("Comment line").click();
+    step_until(&mut harness, |harness| {
+        harness.state().git_panel_state.inline_editing
+    });
+}
+
+#[test]
+fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    std::fs::write(tmp.path().join("src/old/x.rs"), "keep();\nfix();\n").unwrap();
+    let mut harness = viewer_page(&tmp);
+    let app = harness.state_mut();
+    app.agents = vec![Agent {
+        prompt_command: "/bin/echo \"$HELM_PROMPT\"".to_owned(),
+        ..Agent::new("Echo", "/bin/echo")
+    }];
+    app.review_agent = ReviewSettings {
+        agent: "Echo".to_owned(),
+        ..ReviewSettings::default()
+    };
+    open_from_tree(&mut harness);
+    harness.get_by_label("Comment line").click();
+    write_note(&mut harness, "viewer note");
+
+    let dir = tmp.path().to_path_buf();
+    let app = harness.state_mut();
+    app.prefs
+        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
+        path: "src/main.rs".to_owned(),
+        staged: false,
+    });
+    app.git_panel_state.file_nav_active = true;
+    step_until(&mut harness, shows("src/old/x.rs"));
+    harness.key_press(egui::Key::ArrowDown);
+    step_until(&mut harness, shows(" 2 +fix();"));
+    harness
+        .get_all_by_label("Comment line")
+        .last()
+        .unwrap()
+        .click();
+    write_note(&mut harness, "diff note");
+
+    let key = harness.state().active_repo_key().unwrap();
+    let batch = crate::review::render_comments(&harness.state().review[&key]);
+    for part in [
+        "## src/main.rs",
+        "- L1 `fn main() {}`\n  viewer note",
+        "## src/old/x.rs",
+        "- L2 `fix();`\n  diff note",
+    ] {
+        assert!(batch.contains(part), "{part:?} missing from {batch}");
+    }
+
+    harness.get_by_label("Review notes").click();
+    harness.step();
+    harness.get_by_label("Send to Echo").click();
+    harness.step();
+
+    let app = harness.state();
+    assert!(!app.review.contains_key(&key), "sent, the batch is cleared");
+    assert_eq!(app.central_mode, CentralMode::Terminal);
+    assert!(app.diff.is_none() && app.viewer.is_none());
 }

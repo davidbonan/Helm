@@ -19,6 +19,7 @@ pub mod pull_requests_view;
 pub mod rebase_view;
 pub mod release_notes;
 pub mod repo_sidebar;
+pub mod review_notes;
 pub mod run_panel;
 pub mod spinner;
 pub mod syntax_highlight;

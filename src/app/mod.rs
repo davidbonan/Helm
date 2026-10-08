@@ -35,7 +35,7 @@ use crate::ui::conflict_view::{
 };
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
-use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile};
+use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
 use crate::ui::git_panel::{
     abort_op_modal, discard_hunk_modal, EditRefusal, GitIntent, GitPanelState,
 };
@@ -57,6 +57,7 @@ use crate::ui::repo_sidebar::{
     delete_worktree_modal, CreateSelection, DeleteModalAction, DeletePrompt, ProjectHeader,
     ProjectVisibility, RepoRow, SidebarAction, SidebarItem,
 };
+use crate::ui::review_notes::NoteBatch;
 use crate::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 use crate::ui::terminal_view::{
     cell_metrics, phone_sized_banner, terminal_tree, terminal_view, terminal_view_readonly,
@@ -1847,7 +1848,7 @@ impl HelmApp {
             .unwrap_or(self.prefs.run_panel_collapsed)
     }
 
-    /// Applies a review action raised by the diff view (M-RC): the editing
+    /// Applies a review action raised by the diff view or the file viewer (M-RC): the editing
     /// intents mutate the active repo's in-memory comment store; `SendToAgent`
     /// spawns the agent tab.
     fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent, ctx: &egui::Context) {

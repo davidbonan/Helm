@@ -6,16 +6,20 @@ use helm::files::file_type::FileType;
 use helm::git::diff::ImageBlob;
 use helm::git::edit::EditRequest;
 use helm::git::status::ChangeKind;
+use helm::review::{FileComments, LineComment, ReviewIntent, ReviewPool};
 use helm::theme::Palette;
-use helm::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile};
+use helm::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
 use helm::ui::git_panel::{EditRefusal, GitIntent};
+use helm::ui::review_notes::NoteBatch;
 
-/// The viewer over `snapshot`, what it emitted, and whether closing was asked.
+/// The viewer over `snapshot` with the worktree's notes, what it emitted, and whether
+/// closing was asked.
 struct Viewer {
     snapshot: FileSnapshot,
     change: Option<ChangeKind>,
+    comments: FileComments,
     view: FileViewerState,
-    intents: Vec<GitIntent>,
+    out: ViewerIntents,
     closed: bool,
 }
 
@@ -30,6 +34,14 @@ fn snapshot(path: &str, size: u64, content: Content) -> FileSnapshot {
 }
 
 fn harness_on(snapshot: FileSnapshot, change: Option<ChangeKind>) -> Harness<'static, Viewer> {
+    harness_with_notes(snapshot, change, FileComments::new())
+}
+
+fn harness_with_notes(
+    snapshot: FileSnapshot,
+    change: Option<ChangeKind>,
+    comments: FileComments,
+) -> Harness<'static, Viewer> {
     let palette = Palette::dark();
     let mut harness = Harness::new_ui_state(
         move |ui, viewer: &mut Viewer| {
@@ -37,14 +49,19 @@ fn harness_on(snapshot: FileSnapshot, change: Option<ChangeKind>) -> Harness<'st
                 palette: &palette,
                 snapshot: &viewer.snapshot,
                 change: viewer.change,
+                batch: NoteBatch {
+                    comments: &viewer.comments,
+                    agent: "claude",
+                },
             };
-            viewer.closed |= file_viewer(ui, &file, &mut viewer.view, &mut viewer.intents);
+            viewer.closed |= file_viewer(ui, &file, &mut viewer.view, &mut viewer.out);
         },
         Viewer {
             snapshot,
             change,
+            comments,
             view: FileViewerState::default(),
-            intents: Vec::new(),
+            out: ViewerIntents::default(),
             closed: false,
         },
     );
@@ -212,8 +229,8 @@ fn text_cell(harness: &mut Harness<'_, Viewer>, label: &str, col: usize) -> egui
             .glyph_width(&egui::FontId::monospace(12.0), ' ')
             .max(1.0)
     });
-    // Three-digit gutter, its padding, then the content's own.
-    let content_left = row.left() + 3.0 * char_w + 12.0 + 8.0;
+    // The note button's slot, the three-digit gutter, its padding, then the content's own.
+    let content_left = row.left() + 22.0 + 3.0 * char_w + 12.0 + 8.0;
     egui::pos2(content_left + (col as f32 + 0.5) * char_w, row.center().y)
 }
 
@@ -247,7 +264,8 @@ fn click_away(harness: &mut Harness<'_, Viewer>) {
 fn writes(harness: &Harness<'_, Viewer>) -> Vec<EditRequest> {
     harness
         .state()
-        .intents
+        .out
+        .git
         .iter()
         .filter_map(|intent| match intent {
             GitIntent::FlushEdit(request) => Some(request.clone()),
@@ -259,7 +277,8 @@ fn writes(harness: &Harness<'_, Viewer>) -> Vec<EditRequest> {
 fn refusals(harness: &Harness<'_, Viewer>) -> Vec<EditRefusal> {
     harness
         .state()
-        .intents
+        .out
+        .git
         .iter()
         .filter_map(|intent| match intent {
             GitIntent::EditRefused { reason, .. } => Some(*reason),
@@ -524,7 +543,8 @@ fn a_refused_write_offers_reload_and_overwrite() {
     reload.run();
     assert!(reload
         .state()
-        .intents
+        .out
+        .git
         .contains(&GitIntent::OpenFile("src/main.rs".to_owned())));
     assert!(reload.query_by_label("Overwrite").is_none(), "answered");
 }
@@ -561,4 +581,237 @@ fn the_read_of_what_was_written_replaces_it_without_a_change() {
         Some(vec!["one".to_owned(), "two!".to_owned()]),
         "the next editor opens on what the disk now holds"
     );
+}
+
+fn note_on(path: &str, line: u32, code: &str, note: &str) -> FileComments {
+    let mut comments = FileComments::new();
+    helm::review::add_comment(
+        &mut comments,
+        path,
+        LineComment {
+            old_lineno: None,
+            new_lineno: Some(line),
+            code: code.to_owned(),
+            note: note.to_owned(),
+        },
+    );
+    comments
+}
+
+fn notes_on_main_rs(comments: FileComments) -> Harness<'static, Viewer> {
+    harness_with_notes(snapshot("src/main.rs", 26, text(&LINES)), None, comments)
+}
+
+fn reviews<'a>(harness: &'a Harness<'_, Viewer>) -> &'a [ReviewIntent] {
+    &harness.state().out.review
+}
+
+fn type_note(harness: &mut Harness<'_, Viewer>, note: &str) {
+    harness
+        .get_by(|node| format!("{:?}", node.role()) == "MultilineTextInput")
+        .type_text(note);
+    harness.run();
+}
+
+fn press_enter(harness: &mut Harness<'_, Viewer>, modifiers: egui::Modifiers) {
+    harness.event(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    });
+    harness.run();
+}
+
+/// Opens the note editor under line `line` (1-based) through its gutter button.
+fn open_note(harness: &mut Harness<'_, Viewer>, line: usize) {
+    harness
+        .get_all_by_label("Comment line")
+        .nth(line - 1)
+        .unwrap()
+        .click();
+    harness.run();
+}
+
+fn sparkles_painted(harness: &Harness<'_, Viewer>) -> usize {
+    let glyph = lucide_icons::Icon::Sparkles.unicode().to_string();
+    harness
+        .output()
+        .shapes
+        .iter()
+        .filter(|clipped| matches!(&clipped.shape, egui::Shape::Text(shape) if shape.galley.job.text == glyph))
+        .count()
+}
+
+#[test]
+fn hovering_a_line_shows_its_note_button() {
+    let mut harness = main_rs();
+    assert_eq!(sparkles_painted(&harness), 0, "no button at rest");
+
+    let pos = text_cell(&mut harness, "2     run();", 2);
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.run();
+
+    assert_eq!(
+        sparkles_painted(&harness),
+        1,
+        "the hovered line's button only"
+    );
+}
+
+#[test]
+fn enter_in_the_note_editor_saves_it_on_the_working_tree_line() {
+    let mut harness = main_rs();
+    open_note(&mut harness, 2);
+    assert!(harness.state().view.note_editing());
+
+    type_note(&mut harness, "rename run");
+    press_enter(&mut harness, egui::Modifiers::NONE);
+
+    assert_eq!(
+        reviews(&harness),
+        [ReviewIntent::SaveComment {
+            pool: ReviewPool::Agent,
+            file: "src/main.rs".to_owned(),
+            comment: LineComment {
+                old_lineno: None,
+                new_lineno: Some(2),
+                code: "    run();".to_owned(),
+                note: "rename run".to_owned(),
+            },
+        }],
+        "a queued note, anchored as a WIP diff note on an added line, nothing sent"
+    );
+    assert!(!harness.state().view.note_editing());
+}
+
+#[test]
+fn a_saved_note_is_a_card_under_its_line_that_pushes_the_next_one_down() {
+    let harness = notes_on_main_rs(note_on("src/main.rs", 2, "    run();", "rename run"));
+
+    let line = harness.get_by_label("2     run();").rect();
+    let card = harness.get_by_label("Edit review note").rect();
+    let next = harness.get_by_label("3 }").rect();
+    assert!(card.top() >= line.bottom(), "{card:?} under {line:?}");
+    assert!(next.top() >= card.bottom(), "{next:?} under {card:?}");
+    assert!(harness
+        .query_all_by_label_contains("rename run")
+        .next()
+        .is_some());
+}
+
+#[test]
+fn clicking_a_card_edits_its_note_and_cmd_enter_saves_then_sends() {
+    let mut harness = notes_on_main_rs(note_on("src/main.rs", 2, "    run();", "rename run"));
+    harness.get_by_label("Edit review note").click();
+    harness.run();
+
+    press_enter(&mut harness, egui::Modifiers::COMMAND);
+
+    let reviews = reviews(&harness);
+    assert!(
+        matches!(
+            reviews,
+            [ReviewIntent::SaveComment { comment, .. }, ReviewIntent::SendToAgent]
+                if comment.note == "rename run" && comment.new_lineno == Some(2)
+        ),
+        "the editor opens on the saved note, ⌘↵ saves it then sends: {reviews:?}"
+    );
+}
+
+#[test]
+fn esc_closes_the_note_editor_then_the_viewer() {
+    let mut harness = main_rs();
+    open_note(&mut harness, 1);
+    type_note(&mut harness, "dropped");
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.run();
+
+    assert!(
+        !harness.state().view.note_editing(),
+        "the first Esc closes the note"
+    );
+    assert!(!harness.state().closed, "…without closing the viewer");
+    assert!(reviews(&harness).is_empty(), "nothing is saved");
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().closed);
+}
+
+#[test]
+fn the_recap_chip_lists_the_whole_batch_and_sends_it() {
+    let mut comments = note_on("src/main.rs", 2, "    run();", "rename run");
+    helm::review::add_comment(
+        &mut comments,
+        "src/lib.rs",
+        LineComment {
+            old_lineno: None,
+            new_lineno: Some(9),
+            code: "pub fn run() {}".to_owned(),
+            note: "from the diff".to_owned(),
+        },
+    );
+    let mut harness = notes_on_main_rs(comments);
+
+    harness.get_by_label("Review notes").click();
+    harness.run();
+    for note in ["rename run", "from the diff"] {
+        assert!(
+            harness.query_all_by_label_contains(note).next().is_some(),
+            "the popover lists {note:?}"
+        );
+    }
+    harness.get_by_label("Send to claude").click();
+    harness.run();
+
+    assert_eq!(reviews(&harness), [ReviewIntent::SendToAgent]);
+}
+
+#[test]
+fn notes_are_hidden_while_the_whole_file_editor_is_open() {
+    let mut harness = notes_on_main_rs(note_on("src/main.rs", 2, "    run();", "rename run"));
+    harness.get_by_label("Edit review note");
+
+    let pos = text_cell(&mut harness, "1 fn main() {", 0);
+    click_at(&mut harness, pos);
+
+    assert!(harness.state().view.is_editing());
+    assert!(harness.query_by_label("Edit review note").is_none());
+    assert!(harness.query_by_label("Comment line").is_none());
+}
+
+#[test]
+fn below_a_note_far_down_a_click_still_lands_on_its_line() {
+    let lines: Vec<String> = (0..300).map(|i| format!("line {i}")).collect();
+    let comments = note_on("long.txt", 150, "line 149", "look here");
+    let mut harness = harness_with_notes(
+        snapshot("long.txt", 3_000, Content::Text(lines)),
+        None,
+        comments,
+    );
+    let pos = harness.get_by_label("1 line 0").rect().center();
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -2_400.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::default(),
+    });
+    for _ in 0..30 {
+        harness.step();
+    }
+    let card = harness.get_by_label("Edit review note").rect();
+    let below = harness.get_by_label("152 line 151").rect();
+    assert!(below.top() >= card.bottom(), "{below:?} under {card:?}");
+
+    let pos = text_cell(&mut harness, "152 line 151", 2);
+    click_at(&mut harness, pos);
+    type_text(&mut harness, "X");
+
+    let buffer = buffer(&harness).expect("editor open");
+    assert_eq!(buffer.lines().nth(151), Some("liXne 151"));
 }

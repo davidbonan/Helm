@@ -9,7 +9,7 @@
 ## ◐ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
 Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.
-Counter: **3/5**.
+Counter: **4/5**.
 
 - ☑ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
   type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
@@ -20,7 +20,7 @@ Counter: **3/5**.
   write on leave via `EditFile`, divergence notice, `Esc` cascade, poll suspended,
   flush on open/switch/send, not-editable reasons, measured line cap. *Tests*:
   unit + business e2e (write, diverged) + UI e2e.
-- ☐ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
+- ☑ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
   shared per-worktree batch with the diff; send clears. *Tests*: UI e2e + app.
 - ☐ **FP5 — Verification.** `headless-verify`: icons, close icon, edit + save,
   note queued then sent with a diff note. Dark + light.

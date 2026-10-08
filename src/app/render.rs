@@ -599,7 +599,10 @@ impl HelmApp {
             .diff
             .as_ref()
             .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing())
-            || self.viewer.as_ref().is_some_and(|v| v.view.is_editing());
+            || self
+                .viewer
+                .as_ref()
+                .is_some_and(|v| v.view.is_editing() || v.view.note_editing());
     }
 
     pub(super) fn render_page(
@@ -1457,8 +1460,15 @@ impl HelmApp {
                                 palette: &palette,
                                 snapshot,
                                 change: viewed_change,
+                                batch: NoteBatch {
+                                    comments: review_comments,
+                                    agent: &review_agent,
+                                },
                             };
-                            close_viewer = file_viewer(ui, &file, view, &mut diff_intents);
+                            let mut out = ViewerIntents::default();
+                            close_viewer = file_viewer(ui, &file, view, &mut out);
+                            diff_intents.append(&mut out.git);
+                            review_intents.append(&mut out.review);
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {

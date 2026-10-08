@@ -1,21 +1,27 @@
 //! The file viewer over the center zone (specs/files.md §4): the diff view's card,
-//! highlighter and image preview over a worktree file, and its inline editor over the
-//! whole file (§4.1).
+//! highlighter and image preview over a worktree file, its inline editor over the
+//! whole file (§4.1) and its agent notes (§4.2).
+
+use std::collections::{BTreeMap, HashMap};
 
 use crate::files::content::{Content, FileSnapshot, Stamp};
 use crate::git::edit::EditRequest;
 use crate::git::status::ChangeKind;
+use crate::review::{ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::diff_view::{
-    close_button, header_file_icon, header_icon_of, image_preview, overlay_card,
-    paint_line_content, ImagePreview, CONTENT_TRAILING_PAD, HIGHLIGHT_BUDGET, LINE_HEIGHT,
-    LINE_PAD_X, LINE_SIZE, NUM_PAD_X, NUM_SIZE,
+    close_button, gutter_icon_button, header_file_icon, header_icon_of, image_preview,
+    overlay_card, paint_line_content, ImagePreview, CONTENT_TRAILING_PAD, GUTTER_SLOT_W,
+    HIGHLIGHT_BUDGET, LINE_HEIGHT, LINE_PAD_X, LINE_SIZE, NUM_PAD_X, NUM_SIZE,
 };
 use crate::ui::file_list::{paint_status_icon, status_color, status_icon, status_label};
 use crate::ui::git_panel::{EditRefusal, GitIntent};
 use crate::ui::inline_editor::{
     divergence_notice, editor_requested, editor_spans, inline_editor, save_requested, EditSession,
     EditTarget, EditorColumns, EditorLook, InlineEdit,
+};
+use crate::ui::review_notes::{
+    note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
 };
 use crate::ui::syntax_highlight::HighlightedFileCache;
 use crate::ui::text_selection::{
@@ -29,6 +35,8 @@ const CHIP_ALPHA: u8 = 30;
 /// Above this many lines the whole-file editor does not open (files.md §4.1): every
 /// keystroke lays the whole buffer out again, ~6 ms a frame at this cap.
 const MAX_EDIT_LINES: usize = 3_000;
+/// Height a note block is laid out at until it is drawn once: a one-line card.
+const NOTE_BLOCK_ESTIMATE: f32 = 33.0;
 
 /// What the viewer derived from the file on screen, its selection and its editor.
 #[derive(Debug, Default)]
@@ -44,6 +52,11 @@ pub struct FileViewerState {
     /// What leaving the editor sent to disk, shown in place of the last read until a
     /// read of it lands: the edit never flashes back to the text it replaced.
     written: Option<Written>,
+    /// The note editor open under a line, or in the recap popover (files.md §4.2).
+    notes: NoteSession,
+    /// Height of the note block under each line, as last drawn: the lines below it sit
+    /// that much lower.
+    note_heights: HashMap<usize, f32>,
 }
 
 #[derive(Debug)]
@@ -57,6 +70,12 @@ impl FileViewerState {
     /// live re-read waits for it to close (files.md §4.1).
     pub fn is_editing(&self) -> bool {
         self.editing.edit().is_some()
+    }
+
+    /// Whether a note editor is open — it holds the text input, so the app disarms the
+    /// sidebar keys, `Cmd+Enter` above all (keybindings.md §4).
+    pub fn note_editing(&self) -> bool {
+        self.notes.is_open()
     }
 
     /// The open whole-file editor, if any.
@@ -117,8 +136,8 @@ impl FileViewerState {
 
     /// Re-derives what the content on screen feeds once another read of it lands.
     /// A new read of the same file keeps its selection where the lines still reach;
-    /// another file starts with none. A read of what the editor just wrote keeps
-    /// everything: it is already on screen.
+    /// another file starts with none, and with no note editor open. A read of what the
+    /// editor just wrote keeps everything: it is already on screen.
     fn follow(&mut self, snapshot: &FileSnapshot) {
         let current = matches!(
             &self.shown,
@@ -130,6 +149,10 @@ impl FileViewerState {
         let same_file = matches!(&self.shown, Some((path, _)) if *path == snapshot.path);
         let lines = text_lines(snapshot);
         self.shown = Some((snapshot.path.clone(), snapshot.stamp));
+        if !same_file {
+            self.notes.cancel();
+            self.note_heights.clear();
+        }
         let landed = self
             .written
             .take()
@@ -152,6 +175,16 @@ impl FileViewerState {
     fn selected_text(&self, snapshot: &FileSnapshot) -> Option<String> {
         let lines: Vec<&str> = self.lines(snapshot)?.iter().map(String::as_str).collect();
         self.selection?.text_of(&lines)
+    }
+
+    /// `Esc` cascade (files.md §4.2): the editor first, where it rolls the buffer back,
+    /// then an open note editor, its draft dropped.
+    fn escape(&mut self) {
+        if self.is_editing() {
+            self.editing.cancel();
+        } else {
+            self.notes.cancel();
+        }
     }
 
     fn open_editor(
@@ -184,47 +217,60 @@ impl FileViewerState {
         self.editing.leave(intents);
     }
 
-    /// The rows; returns the caret a click or `Cmd+E` asks the editor to open at.
+    /// The rows and the notes under them; returns the caret a click or `Cmd+E` asks the
+    /// editor to open at. The notes' saves and sends land in `review`.
     fn show_text(
         &mut self,
         ui: &mut egui::Ui,
-        file: &ViewedFile<'_>,
-        lines: &[String],
+        text: &ShownText<'_>,
+        review: &mut Vec<ReviewIntent>,
     ) -> Option<TextPosition> {
+        let ShownText { file, lines } = *text;
         self.fill_highlight(ui, file, lines);
         let char_w = mono_char_width(ui);
         let gutter = Gutter::for_lines(lines.len(), char_w);
         let content_width =
             gutter.content_left(0.0) + self.widest_line as f32 * char_w + CONTENT_TRAILING_PAD;
-        let highlight = self
-            .highlight
-            .as_ref()
-            .and_then(|(_, cache)| cache.as_ref());
-        let editable = edit_refusal(Some(lines), file.snapshot.writable).is_none();
-        let mut text_rows = Vec::new();
+        let saved = saved_notes(file, lines.len());
+        let blocks = self.note_blocks(&saved, lines.len());
+        let mut frame = TextFrame {
+            rows: Rows {
+                palette: file.palette,
+                gutter,
+                char_w,
+                width: content_width.max(ui.available_width()),
+                highlight: self
+                    .highlight
+                    .as_ref()
+                    .and_then(|(_, cache)| cache.as_ref()),
+                selection: self.selection,
+                editable: edit_refusal(Some(lines), file.snapshot.writable).is_none(),
+            },
+            lines,
+            path: &file.snapshot.path,
+            saved: &saved,
+            tops: LineTops { blocks: &blocks },
+            notes_id: egui::Id::new(scroll_salt(file)).with("notes"),
+            notes: NoteCtx {
+                palette: file.palette,
+                session: &mut self.notes,
+                out: review,
+            },
+            measured: HashMap::new(),
+            text_rows: Vec::new(),
+        };
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut action = egui::ScrollArea::both()
             .id_salt(scroll_salt(file))
             .auto_shrink([false, false])
-            .show_rows(ui, LINE_HEIGHT, lines.len(), |ui, range| {
-                let rows = Rows {
-                    palette: file.palette,
-                    gutter,
-                    char_w,
-                    width: content_width.max(ui.available_width()),
-                    highlight,
-                    selection: self.selection,
-                    editable,
-                };
-                let mut action = None;
-                for index in range {
-                    action = rows
-                        .line(ui, index, &lines[index], &mut text_rows)
-                        .or(action);
-                }
-                action
-            })
+            .show_viewport(ui, |ui, viewport| frame.show(ui, viewport))
             .inner;
+        let TextFrame {
+            measured,
+            text_rows,
+            ..
+        } = frame;
+        self.remeasure(&blocks, &measured, ui.ctx());
         if let Some(selection) = dragged_selection(ui, &text_rows) {
             action = Some(RowAction::Select(selection));
         }
@@ -233,11 +279,58 @@ impl FileViewerState {
                 self.selection = Some(selection);
                 ui.ctx().request_repaint();
             }
+            // The click only takes the focus off the open note, which saves it.
+            RowAction::Edit(_) if self.notes.is_open() => {}
             RowAction::Edit(caret) => return Some(caret),
+            RowAction::Note(index) => {
+                self.notes
+                    .open(line_anchor(index), saved.get(&index).copied());
+            }
             RowAction::Select(_) => {}
             RowAction::Clear => self.selection = None,
         }
         None
+    }
+
+    /// The lines with a block under them — a saved note, or the note editor open there
+    /// — at the height they were last drawn.
+    fn note_blocks(&self, saved: &BTreeMap<usize, &str>, count: usize) -> BTreeMap<usize, f32> {
+        let editing = self
+            .notes
+            .editing_line()
+            .and_then(|anchor| line_index(anchor.new?))
+            .filter(|index| *index < count);
+        saved
+            .keys()
+            .copied()
+            .chain(editing)
+            .map(|index| {
+                let height = self.note_heights.get(&index).copied();
+                (index, height.unwrap_or(NOTE_BLOCK_ESTIMATE))
+            })
+            .collect()
+    }
+
+    /// Keeps the heights the blocks were drawn at; one that changed asks for another
+    /// frame, so the lines below it follow.
+    fn remeasure(
+        &mut self,
+        blocks: &BTreeMap<usize, f32>,
+        measured: &HashMap<usize, f32>,
+        ctx: &egui::Context,
+    ) {
+        let moved = measured.iter().any(|(index, height)| {
+            blocks
+                .get(index)
+                .is_none_or(|laid| (laid - height).abs() > 0.5)
+        });
+        self.note_heights = blocks
+            .iter()
+            .map(|(&index, &laid)| (index, measured.get(&index).copied().unwrap_or(laid)))
+            .collect();
+        if moved {
+            ctx.request_repaint();
+        }
     }
 
     /// The editor in place of the rows, in the same scroll area: the view keeps its
@@ -291,35 +384,42 @@ impl FileViewerState {
     }
 }
 
-/// The file as last read, and its change in the polled status (`None` if clean).
+/// The file as last read, its change in the polled status (`None` if clean), and the
+/// worktree's batch of agent notes.
 pub struct ViewedFile<'a> {
     pub palette: &'a Palette,
     pub snapshot: &'a FileSnapshot,
     pub change: Option<ChangeKind>,
+    pub batch: NoteBatch<'a>,
 }
 
-/// Renders the viewer; `true` when closing is asked (Close button or `Esc`). The
-/// editor's writes and refusals land in `intents`.
+/// What the viewer asks the app for: the editor's writes and refusals, the notes' saves
+/// and sends.
+#[derive(Debug, Default)]
+pub struct ViewerIntents {
+    pub git: Vec<GitIntent>,
+    pub review: Vec<ReviewIntent>,
+}
+
+/// Renders the viewer; `true` when closing is asked (Close button or `Esc`).
 pub fn file_viewer(
     ui: &mut egui::Ui,
     file: &ViewedFile<'_>,
     state: &mut FileViewerState,
-    intents: &mut Vec<GitIntent>,
+    out: &mut ViewerIntents,
 ) -> bool {
     state.follow(file.snapshot);
-    // `Esc` cascade (files.md §4.1): the editor first, where it rolls the buffer back,
-    // then the viewer.
     let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
-    let close_on_escape = escape && !state.is_editing();
+    let close_on_escape = escape && !state.is_editing() && !state.notes.is_open();
     if escape {
-        state.editing.cancel();
+        state.escape();
     }
     if state.is_editing() && save_requested(ui) {
-        state.leave_editor(file.palette.syntax, intents);
+        state.leave_editor(file.palette.syntax, &mut out.git);
     }
     if let Some(reason) = edit_refusal(state.lines(file.snapshot), file.snapshot.writable) {
         if editor_requested(ui) {
-            intents.push(GitIntent::EditRefused {
+            out.git.push(GitIntent::EditRefused {
                 path: file.snapshot.path.clone(),
                 reason,
             });
@@ -332,22 +432,27 @@ pub fn file_viewer(
     }
     let closed = overlay_card(file.palette)
         .show(ui, |ui| {
-            let closed = header(ui, file);
+            let mut notes = NoteCtx {
+                palette: file.palette,
+                session: &mut state.notes,
+                out: &mut out.review,
+            };
+            let closed = header(ui, file, &mut notes);
             ui.add_space(8.0);
-            if let Some(request) = divergence_notice(ui, file.palette, &mut state.editing, intents)
-            {
+            let notice = divergence_notice(ui, file.palette, &mut state.editing, &mut out.git);
+            if let Some(request) = notice {
                 state.drop_written();
-                intents.push(GitIntent::OpenFile(request.path));
+                out.git.push(GitIntent::OpenFile(request.path));
             }
-            body(ui, file, state, intents);
+            body(ui, file, state, out);
             closed
         })
         .inner;
     close_on_escape || closed
 }
 
-/// Path, size and git change; `true` when Close was clicked.
-fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>) -> bool {
+/// Path, size, git change and the notes' recap; `true` when Close was clicked.
+fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>, notes: &mut NoteCtx<'_>) -> bool {
     let palette = file.palette;
     let snapshot = file.snapshot;
     ui.horizontal(|ui| {
@@ -368,7 +473,9 @@ fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>) -> bool {
             change_chip(ui, palette, kind);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close_button(ui, palette)
+            let closed = close_button(ui, palette);
+            review_recap(ui, notes, &file.batch);
+            closed
         })
         .inner
     })
@@ -410,10 +517,10 @@ fn body(
     ui: &mut egui::Ui,
     file: &ViewedFile<'_>,
     state: &mut FileViewerState,
-    intents: &mut Vec<GitIntent>,
+    out: &mut ViewerIntents,
 ) {
     if state.is_editing() {
-        state.show_editor(ui, file, intents);
+        state.show_editor(ui, file, &mut out.git);
         return;
     }
     // Lent out for the frame: the rows read the lines while the state takes their clicks.
@@ -421,9 +528,10 @@ fn body(
     match shown_lines(written.as_ref(), file.snapshot) {
         Some([]) => placeholder(ui, file.palette, "Empty file"),
         Some(lines) => {
-            if let Some(caret) = state.show_text(ui, file, lines) {
+            let text = ShownText { file, lines };
+            if let Some(caret) = state.show_text(ui, &text, &mut out.review) {
                 let target = EditTarget::whole_file(&file.snapshot.path, lines);
-                state.open_editor(target, caret, intents);
+                state.open_editor(target, caret, &mut out.git);
             }
         }
         None => placeholder_body(ui, file, &mut state.image),
@@ -462,9 +570,12 @@ enum RowAction {
     Clear,
     /// Open the editor with its caret there.
     Edit(TextPosition),
+    /// Open the note editor under this line.
+    Note(usize),
 }
 
-/// The line-number column: as wide as the last number, three digits at least.
+/// The note button's slot, then the line-number column: as wide as the last number,
+/// three digits at least.
 #[derive(Clone, Copy)]
 struct Gutter {
     width: f32,
@@ -479,11 +590,11 @@ impl Gutter {
     }
 
     fn number_right(self, left: f32) -> f32 {
-        left + self.width - NUM_PAD_X
+        left + GUTTER_SLOT_W + self.width - NUM_PAD_X
     }
 
     fn content_left(self, left: f32) -> f32 {
-        left + self.width + LINE_PAD_X
+        left + GUTTER_SLOT_W + self.width + LINE_PAD_X
     }
 
     /// The editor numbers its rows where the rows did; the viewer has no sign column.
@@ -557,7 +668,19 @@ impl Rows<'_> {
         let label = format!("{number} {text}");
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
 
+        let note_clicked = gutter_icon_button(
+            ui,
+            self.palette,
+            rect,
+            response.hovered(),
+            0,
+            lucide_icons::Icon::Sparkles,
+            "Comment line",
+        );
         let at = text_click_position(&response, content_left, self.char_w, index, text_len);
+        if note_clicked {
+            return Some(RowAction::Note(index));
+        }
         if response.triple_clicked() || response.double_clicked() {
             return at
                 .and_then(|at| clicked_selection(&response, at))
@@ -586,6 +709,136 @@ impl Rows<'_> {
             col: col.min(text_len),
         })
     }
+}
+
+/// The lines on screen, and the file they belong to.
+#[derive(Clone, Copy)]
+struct ShownText<'a> {
+    file: &'a ViewedFile<'a>,
+    lines: &'a [String],
+}
+
+/// One frame of the text: its rows, and the note blocks under some of them.
+struct TextFrame<'a> {
+    rows: Rows<'a>,
+    lines: &'a [String],
+    path: &'a str,
+    saved: &'a BTreeMap<usize, &'a str>,
+    tops: LineTops<'a>,
+    /// Root of the note blocks' ids: a block keeps its editor's focus whatever scrolled
+    /// past above it.
+    notes_id: egui::Id,
+    notes: NoteCtx<'a>,
+    /// Height each block drawn this frame took.
+    measured: HashMap<usize, f32>,
+    text_rows: Vec<TextRow>,
+}
+
+impl TextFrame<'_> {
+    /// Lays the whole text out and draws the lines `viewport` reaches, each followed by
+    /// its note block; returns what a row asked for.
+    fn show(&mut self, ui: &mut egui::Ui, viewport: egui::Rect) -> Option<RowAction> {
+        let count = self.lines.len();
+        ui.set_height(self.tops.top(count));
+        let first = self.tops.line_at(viewport.min.y, count);
+        let content_top = ui.max_rect().top();
+        let bottom = content_top + viewport.max.y;
+        let visible = egui::Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            content_top + self.tops.top(first)..=bottom,
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(visible), |ui| {
+            // Same ids whatever is scrolled off above: one per line, one per block.
+            ui.skip_ahead_auto_ids(first + self.tops.blocks.range(..first).count());
+            let mut action = None;
+            for index in first..count {
+                if ui.cursor().top() >= bottom {
+                    break;
+                }
+                action = self
+                    .rows
+                    .line(ui, index, &self.lines[index], &mut self.text_rows)
+                    .or(action);
+                self.note_under(ui, index);
+            }
+            action
+        })
+        .inner
+    }
+
+    /// The note block under line `index`, if it has one, measured for the next frame.
+    fn note_under(&mut self, ui: &mut egui::Ui, index: usize) {
+        if !self.tops.blocks.contains_key(&index) {
+            return;
+        }
+        let line = NoteLine {
+            path: self.path,
+            anchor: line_anchor(index),
+            code: &self.lines[index],
+            saved: self.saved.get(&index).copied(),
+        };
+        let top = ui.cursor().top();
+        let block = egui::UiBuilder::new().id(self.notes_id.with(index));
+        ui.scope_builder(block, |ui| note_block(ui, &line, &mut self.notes));
+        self.measured.insert(index, ui.cursor().top() - top);
+    }
+}
+
+/// Where each line sits once the note blocks under some lines push the rest down.
+struct LineTops<'a> {
+    /// Height of the block under a line, by line index.
+    blocks: &'a BTreeMap<usize, f32>,
+}
+
+impl LineTops<'_> {
+    /// Top of line `line` from the top of the text; of `count`, the text's height.
+    fn top(&self, line: usize) -> f32 {
+        let pushed: f32 = self.blocks.range(..line).map(|(_, height)| height).sum();
+        line as f32 * LINE_HEIGHT + pushed
+    }
+
+    /// The line at height `y` of the text, a block counting as its line's.
+    fn line_at(&self, y: f32, count: usize) -> usize {
+        let mut pushed = 0.0;
+        for (&line, &height) in self.blocks {
+            let block_top = (line + 1) as f32 * LINE_HEIGHT + pushed;
+            if y < block_top {
+                break;
+            }
+            if y < block_top + height {
+                return line;
+            }
+            pushed += height;
+        }
+        let line = ((y - pushed) / LINE_HEIGHT).floor().max(0.0) as usize;
+        line.min(count.saturating_sub(1))
+    }
+}
+
+/// The batch's notes on this file's working-tree lines, by line index (files.md §4.2).
+fn saved_notes<'a>(file: &ViewedFile<'a>, count: usize) -> BTreeMap<usize, &'a str> {
+    let Some(comments) = file.batch.comments.get(&file.snapshot.path) else {
+        return BTreeMap::new();
+    };
+    comments
+        .iter()
+        .filter_map(|comment| Some((line_index(comment.new_lineno?)?, comment.note.as_str())))
+        .filter(|(index, _)| *index < count)
+        .collect()
+}
+
+/// A viewer note sits where a WIP diff note on an added or context line does: on the
+/// working-tree line, so both surfaces share one batch (files.md §4.2).
+fn line_anchor(index: usize) -> NoteAnchor {
+    NoteAnchor {
+        pool: ReviewPool::Agent,
+        old: None,
+        new: u32::try_from(index + 1).ok(),
+    }
+}
+
+fn line_index(lineno: u32) -> Option<usize> {
+    usize::try_from(lineno).ok()?.checked_sub(1)
 }
 
 fn text_lines(snapshot: &FileSnapshot) -> Vec<&str> {
