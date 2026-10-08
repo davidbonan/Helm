@@ -5,9 +5,9 @@ use crate::files::content::{Content, FileSnapshot, Stamp};
 use crate::git::status::ChangeKind;
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::diff_view::{
-    close_button, header_file_icon, image_preview, overlay_card, paint_line_content, ImagePreview,
-    CONTENT_TRAILING_PAD, HIGHLIGHT_BUDGET, LINE_HEIGHT, LINE_PAD_X, LINE_SIZE, NUM_PAD_X,
-    NUM_SIZE,
+    close_button, header_file_icon, header_icon_of, image_preview, overlay_card,
+    paint_line_content, ImagePreview, CONTENT_TRAILING_PAD, HIGHLIGHT_BUDGET, LINE_HEIGHT,
+    LINE_PAD_X, LINE_SIZE, NUM_PAD_X, NUM_SIZE,
 };
 use crate::ui::file_list::{paint_status_icon, status_color, status_icon, status_label};
 use crate::ui::syntax_highlight::HighlightedFileCache;
@@ -160,7 +160,11 @@ fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>) -> bool {
     let palette = file.palette;
     let snapshot = file.snapshot;
     ui.horizontal(|ui| {
-        header_file_icon(ui, palette, Some(palette.bg_surface));
+        header_file_icon(
+            ui,
+            header_icon_of(palette, &snapshot.path),
+            Some(palette.bg_surface),
+        );
         ui.label(path_job(palette, &snapshot.path));
         if !matches!(snapshot.content, Content::Missing) {
             ui.label(

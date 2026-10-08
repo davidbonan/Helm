@@ -1,6 +1,7 @@
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
+use helm::files::file_type::FileType;
 use helm::files::tab::{SidebarTab, TabEdit, TabState};
 use helm::files::tint::StatusTints;
 use helm::files::tree::{EntryKind, FolderListing, Listings, TreeEntry};
@@ -141,6 +142,50 @@ fn dot_colors(harness: &Harness<'_, World>) -> Vec<egui::Color32> {
             _ => None,
         })
         .collect()
+}
+
+/// Ink of the icon painted as `glyph` — a Nerd Font glyph paints in its fallback color.
+fn glyph_color(harness: &Harness<'_, World>, glyph: char) -> egui::Color32 {
+    harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.job.text == glyph.to_string() => {
+                Some(shape.fallback_color)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no glyph U+{:04X} painted", glyph as u32))
+}
+
+#[test]
+fn a_known_file_type_shows_its_glyph_in_its_color_muted_when_ignored() {
+    let palette = Palette::dark();
+    let mut world = sample_world(&[]);
+    world.listings.store(vec![folder(
+        "",
+        &[
+            ("Cargo.toml", EntryKind::File, false),
+            ("build.log", EntryKind::File, true),
+            ("notes.xyz", EntryKind::File, false),
+        ],
+    )]);
+    let harness = tree_harness(world);
+
+    assert_eq!(
+        glyph_color(&harness, FileType::Cargo.glyph()),
+        palette.file_type_color(FileType::Cargo)
+    );
+    assert_eq!(
+        glyph_color(&harness, FileType::Log.glyph()),
+        palette.text_muted
+    );
+    assert_eq!(
+        text_color(&harness, &lucide_icons::Icon::File.unicode().to_string()),
+        palette.text_secondary,
+        "an unknown type keeps the plain file icon"
+    );
 }
 
 #[test]

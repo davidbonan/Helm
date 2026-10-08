@@ -2,6 +2,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::files::content::{Content, FileSnapshot};
+use helm::files::file_type::FileType;
 use helm::git::diff::ImageBlob;
 use helm::git::status::ChangeKind;
 use helm::theme::Palette;
@@ -67,6 +68,25 @@ fn text_shows_each_line_after_its_number_under_the_path_size_and_change() {
     harness.get_by_label("src/main.rs");
     harness.get_by_label("840 B");
     harness.get_by_label("Modified");
+}
+
+#[test]
+fn the_header_shows_the_file_type_glyph_in_its_color() {
+    let palette = Palette::dark();
+    let harness = viewer("src/main.rs", 1, text(&["fn main() {}"]), None);
+
+    let glyph = FileType::Rust.glyph().to_string();
+    let ink = harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.job.text == glyph => {
+                Some(shape.fallback_color)
+            }
+            _ => None,
+        });
+    assert_eq!(ink, Some(palette.file_type_color(FileType::Rust)));
 }
 
 #[test]

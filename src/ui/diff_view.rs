@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
+use crate::files::file_type::file_type;
 use crate::git::diff::{DiffFingerprint, DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::git::edit::EditRequest;
 use crate::git::intraline::{Columns, IntralineChanges};
@@ -16,7 +17,7 @@ use crate::ui::text_selection::{
     clicked_selection, copy_requested, dragged_selection, paint_text_selection,
     text_click_position, TextPosition, TextRow, TextSelection,
 };
-use crate::ui::with_alpha;
+use crate::ui::{with_alpha, FileIcon};
 
 /// Per-hunk line selection, kept across frames. The key is the hunk index in
 /// `FileDiff::hunks`; the value maps each chosen line index in `Hunk::lines` to
@@ -1082,7 +1083,7 @@ fn diff_render(
                 // The card gives its icon a tile; a band's strip is already a fill, so
                 // a rounded tile on it is one shape too many.
                 let tile = (!chrome.band()).then_some(palette.bg_surface);
-                header_file_icon(ui, palette, tile);
+                header_file_icon(ui, header_icon_of(palette, &diff.path), tile);
                 ui.label(
                     egui::RichText::new(&diff.path)
                         .size(TITLE_SIZE)
@@ -3011,8 +3012,8 @@ pub(crate) fn overlay_card(palette: &Palette) -> egui::Frame {
         .corner_radius(egui::CornerRadius::same(RADIUS_CARD))
 }
 
-/// The file glyph opening an overlay header, set on a `tile` when one is given.
-pub(crate) fn header_file_icon(ui: &mut egui::Ui, palette: &Palette, tile: Option<egui::Color32>) {
+/// The icon opening an overlay header, set on a `tile` when one is given.
+pub(crate) fn header_file_icon(ui: &mut egui::Ui, icon: FileIcon, tile: Option<egui::Color32>) {
     let (icon_rect, _) = ui.allocate_exact_size(
         egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
         egui::Sense::hover(),
@@ -3021,13 +3022,24 @@ pub(crate) fn header_file_icon(ui: &mut egui::Ui, palette: &Palette, tile: Optio
         ui.painter()
             .rect_filled(icon_rect, egui::CornerRadius::same(6), fill);
     }
-    crate::ui::paint_icon(
-        ui.painter(),
-        icon_rect.center(),
-        FILE_ICON_SIZE,
-        lucide_icons::Icon::FileText,
-        palette.text_secondary,
-    );
+    let icon_box =
+        egui::Rect::from_center_size(icon_rect.center(), egui::Vec2::splat(FILE_ICON_SIZE));
+    icon.paint(ui.painter(), icon_box);
+}
+
+/// The file at `path` in an overlay header: its type's glyph (files.md §3.1), else
+/// a plain text file.
+pub(crate) fn header_icon_of(palette: &Palette, path: &str) -> FileIcon {
+    match file_type(path) {
+        Some(kind) => FileIcon::NerdFont {
+            glyph: kind.glyph(),
+            color: palette.file_type_color(kind),
+        },
+        None => FileIcon::Lucide {
+            icon: lucide_icons::Icon::FileText,
+            color: palette.text_secondary,
+        },
+    }
 }
 
 pub(crate) fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {

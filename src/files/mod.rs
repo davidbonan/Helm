@@ -3,6 +3,7 @@
 //! (§4): read only, never outside the worktree, never its `.git`.
 
 pub mod content;
+pub mod file_type;
 pub mod tab;
 pub mod tint;
 pub mod tree;

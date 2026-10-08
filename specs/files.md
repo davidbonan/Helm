@@ -65,7 +65,7 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
   `Makefile`, `.gitignore`, `package.json`, `LICENSE`, `README.md`…), then the
   **extension**, case-insensitive (last one; a few doubles like `.d.ts`); unknown ⇒
   the current plain file icon in `text.secondary`.
-- Colors are theme tokens, one per type, readable on `bg.canvas` in **both** modes
+- Colors are `file.*` theme tokens, one per brand hue shared by its types, readable on `bg.canvas` in **both** modes
   (a light variant where the brand color is too pale on white).
 - Folders keep the Lucide folder icon; symlinks keep the link glyph.
 - Shown in the **tree** and in the **header** of the viewer and of the diff view

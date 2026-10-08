@@ -28,6 +28,8 @@ pub mod toast;
 
 use std::path::Path;
 
+use egui::emath::GuiRounding as _;
+
 use crate::agent_watch::AgentBadge;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::status::RepoStatus;
@@ -146,6 +148,73 @@ pub(crate) fn paint_icon(
         egui::FontId::proportional(size),
         color,
     );
+}
+
+/// Share of the em a Lucide glyph's ink spans — what a Nerd Font glyph is fitted to.
+const LUCIDE_INK: f32 = 0.8;
+
+/// What stands before a file's name (files.md §3.1).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FileIcon {
+    Lucide {
+        icon: lucide_icons::Icon,
+        color: egui::Color32,
+    },
+    /// A file type's glyph, drawn from the mono family: there the Nerd Font face,
+    /// not Lucide, serves the private-use area they share.
+    NerdFont { glyph: char, color: egui::Color32 },
+}
+
+impl FileIcon {
+    /// Centred in `icon_box`, as large as a Lucide glyph of the box's height.
+    pub(crate) fn paint(self, painter: &egui::Painter, icon_box: egui::Rect) {
+        match self {
+            Self::Lucide { icon, color } => {
+                paint_icon(painter, icon_box.center(), icon_box.height(), icon, color);
+            }
+            Self::NerdFont { glyph, color } => {
+                let Some((galley, ink)) = fitted_nerd_glyph(painter, glyph, icon_box.height())
+                else {
+                    return;
+                };
+                let pos = (icon_box.center() - ink.center().to_vec2())
+                    .round_to_pixels(painter.pixels_per_point());
+                painter.galley(pos, galley, color);
+            }
+        }
+    }
+}
+
+/// `glyph` laid out so its ink spans what a Lucide glyph's does at `size`, with
+/// that ink's rect in the galley; `None` when the glyph has no ink.
+fn fitted_nerd_glyph(
+    painter: &egui::Painter,
+    glyph: char,
+    size: f32,
+) -> Option<(std::sync::Arc<egui::Galley>, egui::Rect)> {
+    let layout = |font_size| {
+        painter.layout_no_wrap(
+            glyph.to_string(),
+            egui::FontId::monospace(font_size),
+            egui::Color32::PLACEHOLDER,
+        )
+    };
+    let probe = glyph_ink(&layout(size))?;
+    let galley = layout(size * size * LUCIDE_INK / probe.width().max(probe.height()));
+    let ink = glyph_ink(&galley)?;
+    Some((galley, ink))
+}
+
+/// Where the first glyph of `galley` leaves ink, in galley coordinates.
+fn glyph_ink(galley: &egui::Galley) -> Option<egui::Rect> {
+    let row = galley.rows.first()?;
+    let glyph = row.glyphs.first()?;
+    (!glyph.uv_rect.is_nothing()).then(|| {
+        egui::Rect::from_min_size(
+            row.pos + glyph.pos.to_vec2() + glyph.uv_rect.offset,
+            glyph.uv_rect.size,
+        )
+    })
 }
 
 /// `YYYY-MM-DD` date (UTC) from Unix seconds.

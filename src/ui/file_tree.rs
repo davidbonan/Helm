@@ -1,11 +1,13 @@
 //! The Files tab's tree (specs/files.md §3, §5): one row per entry on show, keyboard
 //! moves once a row was clicked.
 
+use crate::files::file_type::file_type;
 use crate::files::tint::Tint;
 use crate::files::tree::{key_move, EntryRow, RowKind, TreeKey, TreeMove, TreeRow};
 use crate::theme::Palette;
 use crate::ui::file_list;
 use crate::ui::git_panel::GitIntent;
+use crate::ui::FileIcon;
 
 const ROW_HEIGHT: f32 = 26.0;
 const ROW_PAD_X: f32 = 10.0;
@@ -295,17 +297,10 @@ impl RowPainter<'_> {
         let y = rect.center().y;
         let chevron_x = rect.left() + ROW_PAD_X + indent(entry.depth);
         let icon_x = chevron_x + GLYPH_SIZE + GLYPH_GAP;
-        let (icon, chevron) = match entry.kind {
-            RowKind::Folder { unfolded: true } => (
-                lucide_icons::Icon::Folder,
-                Some(lucide_icons::Icon::ChevronDown),
-            ),
-            RowKind::Folder { unfolded: false } => (
-                lucide_icons::Icon::Folder,
-                Some(lucide_icons::Icon::ChevronRight),
-            ),
-            RowKind::File => (lucide_icons::Icon::File, None),
-            RowKind::Symlink => (lucide_icons::Icon::FileSymlink, None),
+        let chevron = match entry.kind {
+            RowKind::Folder { unfolded: true } => Some(lucide_icons::Icon::ChevronDown),
+            RowKind::Folder { unfolded: false } => Some(lucide_icons::Icon::ChevronRight),
+            RowKind::File | RowKind::Symlink => None,
         };
         if let Some(chevron) = chevron {
             let center = egui::pos2(chevron_x + GLYPH_SIZE / 2.0, y);
@@ -317,14 +312,41 @@ impl RowPainter<'_> {
                 self.palette.text_muted,
             );
         }
-        let icon_color = if entry.ignored {
+        let icon_box = egui::Rect::from_center_size(
+            egui::pos2(icon_x + GLYPH_SIZE / 2.0, y),
+            egui::Vec2::splat(GLYPH_SIZE),
+        );
+        self.icon(entry).paint(painter, icon_box);
+        icon_x + GLYPH_SIZE + NAME_GAP
+    }
+
+    /// A file of a known type shows its type's glyph (files.md §3.1); an ignored
+    /// entry keeps its shape, muted.
+    fn icon(&self, entry: &EntryRow) -> FileIcon {
+        let color = if entry.ignored {
             self.palette.text_muted
         } else {
             self.palette.text_secondary
         };
-        let center = egui::pos2(icon_x + GLYPH_SIZE / 2.0, y);
-        crate::ui::paint_icon(painter, center, GLYPH_SIZE, icon, icon_color);
-        icon_x + GLYPH_SIZE + NAME_GAP
+        let lucide = |icon| FileIcon::Lucide { icon, color };
+        match entry.kind {
+            RowKind::Folder { .. } => lucide(lucide_icons::Icon::Folder),
+            RowKind::Symlink => lucide(lucide_icons::Icon::FileSymlink),
+            RowKind::File => match file_type(entry.name()) {
+                None => lucide(lucide_icons::Icon::File),
+                Some(kind) => {
+                    let color = if entry.ignored {
+                        color
+                    } else {
+                        self.palette.file_type_color(kind)
+                    };
+                    FileIcon::NerdFont {
+                        glyph: kind.glyph(),
+                        color,
+                    }
+                }
+            },
+        }
     }
 
     fn paint_name(&self, ui: &egui::Ui, entry: &EntryRow, rect: egui::Rect) {
