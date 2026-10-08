@@ -215,14 +215,17 @@ struct EmojiSprite {
 }
 
 impl CellView {
-    /// egui has no shaping: a variation selector (U+FE00–FE0F) paints as the missing-glyph box.
     fn push_text(&self, out: &mut String) {
         out.push(self.c);
-        out.extend(
-            self.zerowidth
-                .iter()
-                .filter(|c| !is_variation_selector(**c)),
-        );
+        out.extend(self.marks());
+    }
+
+    /// egui has no shaping: a variation selector (U+FE00–FE0F) paints as the missing-glyph box.
+    fn marks(&self) -> impl Iterator<Item = char> + '_ {
+        self.zerowidth
+            .iter()
+            .copied()
+            .filter(|c| !is_variation_selector(*c))
     }
 
     fn emoji_cluster(&self) -> Option<String> {
@@ -245,7 +248,7 @@ impl CellView {
     }
 
     fn has_ink(&self) -> bool {
-        self.c != ' ' || !self.zerowidth.is_empty()
+        self.c != ' '
     }
 }
 
@@ -498,6 +501,12 @@ enum PaintOp {
         span: usize,
         galley: std::sync::Arc<egui::Galley>,
     },
+    /// Combining mark laid out alone, its ink centered over its base's `span` cells.
+    Mark {
+        col: usize,
+        span: usize,
+        galley: std::sync::Arc<egui::Galley>,
+    },
     Shape {
         col: usize,
         span: usize,
@@ -528,8 +537,34 @@ fn cell_format(cell: &CellView, font: egui::FontId, row_h: f32) -> egui::TextFor
 
 fn single_glyph_job(cell: &CellView, font: egui::FontId, row_h: f32) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    job.append(&cell.text(), 0.0, cell_format(cell, font, row_h));
+    job.append(&cell.c.to_string(), 0.0, cell_format(cell, font, row_h));
     job
+}
+
+/// egui has no shaping to anchor a mark on its base: laid out inline, a mark
+/// lands wherever its own advance and bearing put it — JetBrains Mono gives
+/// U+0302 a full cell (shifting the rest of the line), SF Hebrew draws its niqqud
+/// right of the origin, under the next letter. Each mark gets its own galley,
+/// centered on the base cell at paint time. A mark without ink (ZWJ, ZWNJ) is
+/// skipped.
+fn mark_galleys(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    cell: &CellView,
+    font: &egui::FontId,
+    row_h: f32,
+) -> Vec<std::sync::Arc<egui::Galley>> {
+    let format = egui::TextFormat {
+        underline: egui::Stroke::NONE,
+        ..cell_format(cell, font.clone(), row_h)
+    };
+    cell.marks()
+        .map(|mark| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&mark.to_string(), 0.0, format.clone());
+            fonts.layout_job(job)
+        })
+        .filter(|galley| galley.mesh_bounds.is_positive())
+        .collect()
 }
 
 /// A fallback glyph whose advance overflows its cells (Claude Code's `\u{273B}` spinner
@@ -631,6 +666,9 @@ fn row_paint_ops(
         if cell.wide || (advance - char_w).abs() > ADVANCE_EPSILON {
             let galley = fit_loose_glyph(fonts, cell, &font, span as f32 * char_w, row_h);
             ops.push(PaintOp::Loose { col, span, galley });
+            for galley in mark_galleys(fonts, cell, &font, row_h) {
+                ops.push(PaintOp::Mark { col, span, galley });
+            }
             col += span;
             continue;
         }
@@ -638,6 +676,7 @@ fn row_paint_ops(
         let start = col;
         let mut text = String::new();
         let mut has_ink = false;
+        let mut marks = Vec::new();
         while col < cells.len() {
             let next = &cells[col];
             if next.spacer
@@ -650,7 +689,14 @@ fn row_paint_ops(
                 break;
             }
             has_ink |= next.has_ink();
-            next.push_text(&mut text);
+            text.push(next.c);
+            for galley in mark_galleys(fonts, next, &font, row_h) {
+                marks.push(PaintOp::Mark {
+                    col,
+                    span: 1,
+                    galley,
+                });
+            }
             col += 1;
         }
         // A run of bare spaces has nothing to paint: the background is already laid down.
@@ -662,6 +708,7 @@ fn row_paint_ops(
                 galley: fonts.layout_job(job),
             });
         }
+        ops.append(&mut marks);
     }
     ops
 }
@@ -708,6 +755,14 @@ fn paint_row_ops(
                     + (*span as f32 * char_w - galley.size().x) / 2.0;
                 painter.galley(
                     egui::pos2(x, origin.y),
+                    galley.clone(),
+                    egui::Color32::WHITE,
+                );
+            }
+            PaintOp::Mark { col, span, galley } => {
+                let center = origin.x + (*col as f32 + *span as f32 / 2.0) * char_w;
+                painter.galley(
+                    egui::pos2(center - galley.mesh_bounds.center().x, origin.y),
                     galley.clone(),
                     egui::Color32::WHITE,
                 );
@@ -2194,17 +2249,27 @@ mod tests {
     }
 
     #[test]
-    fn combining_marks_are_rendered_with_their_base_cell() {
-        let mut cell = cv('e');
-        cell.zerowidth.push('\u{0302}');
-        let (ops, _) = ops_for(&[cell]);
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
-            PaintOp::Run { col, galley } => {
-                assert_eq!(*col, 0);
-                assert_eq!(galley.text(), "e\u{0302}");
+    fn combining_marks_overlay_their_base_cell_without_shifting_the_run() {
+        let mut accented = cv('e');
+        accented.zerowidth.push('\u{0302}');
+        let (ops, _) = ops_for(&[accented, cv('x')]);
+        match ops.as_slice() {
+            [PaintOp::Run {
+                col: 0,
+                galley: run,
+            }, PaintOp::Mark {
+                col: 0,
+                span: 1,
+                galley: mark,
+            }] => {
+                assert_eq!(
+                    run.text(),
+                    "ex",
+                    "the mark's advance must not push `x` off its cell"
+                );
+                assert_eq!(mark.text(), "\u{0302}");
             }
-            other => panic!("expected a Run, got {other:?}"),
+            other => panic!("expected the base run then its mark, got {other:?}"),
         }
     }
 
@@ -2213,10 +2278,9 @@ mod tests {
         let mut cell = cv(' ');
         cell.zerowidth.push('\u{0300}');
         let (ops, _) = ops_for(&[cell]);
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
-            PaintOp::Run { galley, .. } => assert_eq!(galley.text(), " \u{0300}"),
-            other => panic!("expected a Run, got {other:?}"),
+        match ops.as_slice() {
+            [PaintOp::Mark { col: 0, galley, .. }] => assert_eq!(galley.text(), "\u{0300}"),
+            other => panic!("expected a Mark, got {other:?}"),
         }
     }
 

@@ -94,9 +94,15 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
   braille, all on the cell grid) → SF Mono → **Menlo** (system: the Dingbats
   block U+2700–27BF — Claude Code's ✢✶✻✽ spinner, ✔✘ — drawn as a mono face does)
   → **Apple Symbols** (system: miscellaneous technical, Claude Code's ⎿) → **Zapf
-  Dingbats** (system: what Menlo lacks of the Dingbats) → egui fonts. A glyph a fallback serves
+  Dingbats** (system: what Menlo lacks of the Dingbats) → **SF Hebrew** (system:
+  Hebrew script, also behind SF Pro in the UI family) → egui fonts. A glyph a fallback serves
   wider than its cells is **shrunk to fit** them (Ghostty/Kitty), never allowed to
   spill over the neighboring columns.
+- **Combining marks** (accents, Hebrew niqqud): egui has no shaping, so each mark
+  is painted on its own, its ink centered over its base cell(s) — never laid out
+  inline, where its advance would shift the rest of the line. Limit: a mark the
+  font places off-center through GPOS anchors (shin/sin dot) lands centered.
+  No bidi: right-to-left text shows in logical order, like Ghostty.
 - **Color emoji** (like Ghostty): a cell whose character has the emoji
   presentation — by default (🚀, ✅) or asked by the variation selector `U+FE0F`
   (⚠️) — is drawn from the system emoji font (Apple Color Emoji, through

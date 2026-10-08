@@ -61,6 +61,8 @@ const MENLO_PATH: &str = "/System/Library/Fonts/Menlo.ttc";
 const MENLO_INDEX: u32 = 0;
 const APPLE_SYMBOLS_PATH: &str = "/System/Library/Fonts/Apple Symbols.ttf";
 const ZAPF_DINGBATS_PATH: &str = "/System/Library/Fonts/ZapfDingbats.ttf";
+// Script fallback: none of the faces above, nor egui's, has Hebrew.
+const HEBREW_FONT_PATH: &str = "/System/Library/Fonts/SFHebrew.ttf";
 
 const ITEM_SPACING_Y: f32 = 6.0;
 const PILL_PADDING_X: f32 = 10.0;
@@ -569,8 +571,12 @@ pub fn font_definitions() -> FontDefinitions {
         register_font(&mut fonts, "sf-pro", data, FontFamily::Proportional);
     }
     // Head insertions: final order jetbrains-mono → sf-mono → menlo →
-    // apple-symbols → zapf-dingbats → egui fonts. The symbol fallbacks come before
-    // Hack (egui), whose powerline glyphs have metrics foreign to the mono face.
+    // apple-symbols → zapf-dingbats → sf-hebrew → egui fonts. The symbol fallbacks
+    // come before Hack (egui), whose powerline glyphs have metrics foreign to the
+    // mono face.
+    if let Some(data) = load_font(HEBREW_FONT_PATH) {
+        register_font(&mut fonts, "sf-hebrew", data, FontFamily::Monospace);
+    }
     if let Some(data) = load_font(ZAPF_DINGBATS_PATH) {
         register_font(&mut fonts, "zapf-dingbats", data, FontFamily::Monospace);
     }
@@ -597,17 +603,23 @@ pub fn font_definitions() -> FontDefinitions {
     // Pro, ahead of the symbol fallbacks: it shares the private-use range with the
     // Nerd Font face, so the app icons must win there. The symbol fallbacks follow (tab
     // titles render proportional, and a process e.g. Claude Code can emit Nerd Font
-    // glyphs in its OSC title Lucide doesn't cover); both sit before egui's bundled
-    // fonts, which only fill glyphs SF Pro lacks. Normal text keeps SF Pro.
-    let symbol_fallbacks: Vec<String> =
-        ["jetbrains-mono", "menlo", "apple-symbols", "zapf-dingbats"]
-            .into_iter()
-            .filter(|name| fonts.font_data.contains_key(*name))
-            .map(str::to_owned)
-            .collect();
+    // glyphs in its OSC title Lucide doesn't cover), then the script fallback; all
+    // sit before egui's bundled fonts, which only fill glyphs SF Pro lacks. Normal
+    // text keeps SF Pro.
+    let mono_fallbacks: Vec<String> = [
+        "jetbrains-mono",
+        "menlo",
+        "apple-symbols",
+        "zapf-dingbats",
+        "sf-hebrew",
+    ]
+    .into_iter()
+    .filter(|name| fonts.font_data.contains_key(*name))
+    .map(str::to_owned)
+    .collect();
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(1, "lucide".to_owned());
-    for (i, name) in symbol_fallbacks.into_iter().enumerate() {
+    for (i, name) in mono_fallbacks.into_iter().enumerate() {
         proportional.insert(2 + i, name);
     }
     // Medium family: the medium face at the head, then the whole proportional
@@ -1164,6 +1176,22 @@ mod tests {
                     "the symbol fallbacks come before the egui fonts (Hack's powerline)"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn hebrew_with_its_vowel_points_has_glyphs_in_the_terminal_and_ui_families() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        for font in [
+            egui::FontId::monospace(BODY_SIZE),
+            egui::FontId::proportional(BODY_SIZE),
+        ] {
+            assert!(
+                ctx.fonts_mut(|f| f.has_glyphs(&font, "בָּשָׂר")),
+                "{font:?}: Hebrew paints as missing-glyph boxes"
+            );
         }
     }
 
