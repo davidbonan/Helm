@@ -103,6 +103,17 @@ fn esc_and_the_close_button_ask_to_close() {
 }
 
 #[test]
+fn the_close_control_is_a_square_icon_button_not_a_text_pill() {
+    let viewer = viewer("a.txt", 1, text(&["a"]), None);
+    let rect = viewer.get_by_label("Close").rect();
+    assert_eq!(
+        rect.width(),
+        rect.height(),
+        "icon button is square: {rect:?}"
+    );
+}
+
+#[test]
 fn binary_too_large_and_gone_files_show_their_placeholder() {
     let binary = viewer("blob.bin", 3 * 1024 * 1024, Content::Binary, None);
     let large = viewer("dump.sql", 2_621_440, Content::TooLarge, None);

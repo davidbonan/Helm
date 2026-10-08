@@ -1752,7 +1752,7 @@ fn icon_button(
     icon: lucide_icons::Icon,
     color: egui::Color32,
     label: &str,
-) -> bool {
+) -> egui::Response {
     let (rect, response, hovered) =
         crate::ui::clickable(ui, egui::vec2(LINE_HEIGHT, LINE_HEIGHT), true);
     if hovered {
@@ -1765,7 +1765,7 @@ fn icon_button(
     let tint = if hovered { color } else { palette.text_muted };
     crate::ui::paint_icon(ui.painter(), rect.center(), LINE_SIZE, icon, tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    response.clicked()
+    response
 }
 
 /// What the reply editor raised this frame (pull-requests.md §11).
@@ -2771,7 +2771,9 @@ fn review_popover(
                                 lucide_icons::Icon::Trash2,
                                 palette.git_deleted,
                                 "Delete review note",
-                            ) {
+                            )
+                            .clicked()
+                            {
                                 out.push(ReviewIntent::DeleteComment {
                                     pool: ReviewPool::Agent,
                                     file: file.clone(),
@@ -3043,16 +3045,15 @@ pub(crate) fn header_icon_of(palette: &Palette, path: &str) -> FileIcon {
 }
 
 pub(crate) fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
-    let response = ui.add(
-        egui::Button::new(
-            egui::RichText::new("Close")
-                .size(PILL_SIZE)
-                .color(palette.text_secondary),
-        )
-        .fill(palette.bg_surface)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL)),
-    );
-    response.on_hover_text("Close (Esc)").clicked()
+    icon_button(
+        ui,
+        palette,
+        lucide_icons::Icon::X,
+        palette.text_primary,
+        "Close",
+    )
+    .on_hover_text("Close (Esc)")
+    .clicked()
 }
 
 const ZOOM_STEP: f32 = 1.25;

@@ -9,12 +9,12 @@
 ## ◐ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
 Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.
-Counter: **1/5**.
+Counter: **2/5**.
 
 - ☑ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
   type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
   *Tests*: unit (lookup order, case, unknown) + UI e2e + headless dark/light.
-- ☐ **FP2 — Close icon.** Shared `X` icon button replaces the *Close* pill in the
+- ☑ **FP2 — Close icon.** Shared `X` icon button replaces the *Close* pill in the
   diff and viewer headers (tooltip *Close (Esc)*). *Tests*: UI e2e.
 - ☐ **FP3 — Viewer editing.** Click / `Cmd+E` opens the whole-file inline editor;
   write on leave via `EditFile`, divergence notice, `Esc` cascade, poll suspended,
