@@ -7,6 +7,7 @@ mod app_import_e2e;
 mod app_sync_e2e;
 mod cli_e2e;
 mod feedback_e2e;
+mod files_e2e;
 mod git_branch_e2e;
 mod git_cli_e2e;
 mod git_commit_detail_e2e;

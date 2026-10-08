@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use tungstenite::protocol::Role;
 use tungstenite::WebSocket;
 
+use crate::files;
 use crate::remote::access::{session_cookie, session_token, Access, AccessAlert, PairingCode};
 use crate::remote::address::{current_lan, interfaces, lan_address};
 use crate::remote::awake::KeepAwake;
 use crate::remote::devices::{device_name, wall_ms, PairedDevices};
-use crate::remote::files::{self, OpenedFile};
+use crate::remote::files::OpenedFile;
 use crate::remote::http::{read_head, RequestHead, RequestedRange, Response};
 use crate::remote::launch::Launcher;
 use crate::remote::network::current_gateway_mac;
@@ -469,7 +470,7 @@ fn worktree_path(head: &RequestHead, shared: &Shared) -> Option<PathBuf> {
 }
 
 fn list_files(stream: &mut TcpStream, head: &RequestHead, shared: &Shared) {
-    let listing = worktree_path(head, shared).and_then(|dir| files::list(&dir).ok());
+    let listing = worktree_path(head, shared).and_then(|dir| files::list_newest(&dir).ok());
     let Some(listing) = listing else {
         let _ = not_found().write_to(stream);
         return;

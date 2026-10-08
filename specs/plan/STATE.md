@@ -11,13 +11,13 @@
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
 [`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
 worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
-Counter: **0/5**.
+Counter: **1/5**.
 
-- ☐ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
+- ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
   `remote::files` (phone keeps newest first), tree order (folders first, natural,
   case-insensitive), `.git` / non-UTF-8 skipped, symlink flagged not followed,
-  2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: unit +
-  business e2e (real repo).
+  2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: 7 unit +
+  3 business e2e (`files_e2e`). Non-UTF-8 skip untested (APFS refuses such names).
 - ☐ **F2 — Tabs + persistence.** Git · Files strip in the card header, Git badge,
   Files header (branch chip + Collapse all), commit card hidden on Files, no tabs
   in Graph mode, `Cmd+Shift+E`; per-worktree `Prefs` (tab, unfolded, selection).
