@@ -10,8 +10,8 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 | **Git \| Files** tabs in the right sidebar header, Terminal mode only | Files tab in Graph mode (tree at a commit) |
 | Lazy tree of the **active worktree**: every entry but `.git`, gitignored ones dimmed | Filter / fuzzy search in the tree |
 | Git status tint on files and their parent folders | Any write: create, rename, move, delete, drag & drop |
-| Click a file ⇒ **read-only viewer** in the center zone (overlay, like the diff) | Context menu (Open in editor, Reveal in Finder, Copy path) |
-| Keyboard navigation in the tree, same arming rule as the git file list | Editing in the viewer (`Cmd+E`), insert a path into the terminal |
+| Click a file ⇒ **viewer** in the center zone (overlay, like the diff): click to edit, agent notes (§4.1, §4.2) | Context menu (Open in editor, Reveal in Finder, Copy path) |
+| Keyboard navigation in the tree, same arming rule as the git file list | Forge (PR) notes in the viewer, insert a path into the terminal |
 | Tab, unfolded folders and selection kept **per worktree**, persisted | FS watching (the poll stays the only refresh, [`git.md`](git.md) §7) |
 
 ## 2. Tabs
@@ -76,10 +76,12 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 - Click a file ⇒ the **viewer** opens as an overlay over the center zone, same
   chrome and dismissal as the diff view ([`git.md`](git.md) §4: `Esc` / close
   button returns to the terminal; a repo switch closes it).
-- **Header**: relative path (dimmed folder, accented name), size, git status chip
-  if changed. No action buttons.
+- **Header**: file-type icon (§3.1), relative path (dimmed folder, accented name),
+  size, git status chip if changed, the notes recap chip (§4.2); on the right the
+  **close icon** (`X`, tooltip *Close (Esc)*) — the same icon closes the diff view.
 - **Text**: line numbers + syntect highlighting, same syntaxes and fallback as the
-  diff ([`git.md`](git.md) §4). Read-only, selectable, `Cmd+C` copies.
+  diff ([`git.md`](git.md) §4). Selectable (drag, double/triple click), `Cmd+C`
+  copies.
 - **Image** (png, jpg, gif, webp, svg): the zoomable preview of the diff view.
 - **Other binary**, non-UTF-8, or over **2 MB / 50,000 lines** ([`git.md`](git.md)
   §8): *Binary file* / *File too large to display* + size, nothing else.
@@ -88,6 +90,45 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 - **Scroll position** kept per file (as the diff).
 - Opening a file that is also in Unstaged/Staged still opens the **viewer**, not
   the diff — the diff stays reachable from the Git tab.
+
+### 4.1 Editing
+
+Same semantics as the WIP diff's inline editor ([`git.md`](git.md) §4), on the
+**whole file** instead of a hunk:
+
+- A **click** (press + release, no drag) in the text opens the editor with the
+  caret where clicked; `Cmd+E` opens it on the hovered line. A drag still selects.
+- The editor is the diff's inline editor widget (syntax colored, own gutter, own
+  undo history) spanning the file; the view keeps its scroll.
+- **Leaving writes**: click outside the text or `Cmd+S` writes the buffer if it
+  changed, through the diff's write path (byte-exact precondition on the whole
+  file; divergence ⇒ the **Reload** / **Overwrite** notice). `Esc` drops the
+  buffer, nothing written; a second `Esc` closes the viewer. No idle write.
+- Opening another file, a diff, switching repo or sending a review **writes** an
+  open buffer first (as the diff does).
+- While the editor is open the live re-read (§4) is suspended; it resumes on exit.
+- **Not editable** (click does nothing, `Cmd+E` toasts the reason with *Open in
+  editor*): any placeholder state (binary, too large, image, missing, unreadable,
+  symlink), a file the process cannot write, or a file above the **editable line
+  cap** (measured at implementation so typing stays fluid; initial target
+  10,000 lines).
+
+### 4.2 Agent notes
+
+Same notes as the WIP diff ([`pull-requests.md`](pull-requests.md) §11, agent pool
+only):
+
+- Hovering a line shows the **note** button next to its number; click ⇒ the note
+  editor under the line (`Enter` *Save note* queues it, `Cmd+Enter` saves and
+  sends the batch, `Shift+Enter` newline, `Esc` cancels). A saved note shows as a
+  card under its line; clicking it edits it.
+- Anchor: the working-tree line number + its text, as a WIP diff note on an added /
+  context line — so viewer and diff notes are **one batch per worktree**: the
+  recap chip (viewer and diff headers) lists both, and *Send to {agent}* sends
+  them together, then clears the batch.
+- Notes are hidden while the editor is open; line numbers are not re-anchored
+  after an edit (same limit as the diff).
+- `Esc` cascade in the viewer: editor → note editor → close.
 
 ## 5. Keyboard
 

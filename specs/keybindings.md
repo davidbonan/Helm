@@ -88,6 +88,7 @@ put a terminal on the wall or take it off.
 | `↑` / `↓` (**Graph** mode) | Moves the **commit selection** row by row (**WIP** row included), scrolling the targeted row in the viewport — **no wrap** (paginated history). Inactive if a widget has keyboard focus or if the arrows already navigate elsewhere (rows below) |
 | `Cmd+F` (**Graph** mode) | Opens the **search box** (top-right of the graph): filters the loaded commits and cycles the matches. `Enter` / chevrons → next match (`Shift+Enter` → previous), each scrolled into view; `Esc` / ✕ closes ([`git.md`](git.md) §9) |
 | `↑` / `↓` (**commit** diff open) | Opens the diff of the previous / next file **of the commit** (sidebar list), with start/end wrap — same traversal as the status files |
+| `Click` / `Cmd+E` in the **file viewer** text | Opens the whole-file editor at that line ([`files.md`](files.md) §4.1); `Cmd+S` / `Esc` / `Cmd+Z` as in the inline editor |
 | `Esc` | Closes the diff view, returns to the repo's terminal |
 | `Esc` (diff opened from the **graph**) | Closes the commit diff, returns to the **graph** (post-MVP, [`git.md`](git.md) §9) |
 | `Enter` (note editor open) | *Save note* — validates the note into the review batch, which **queues**: nothing leaves. `Shift+Enter` inserts a newline instead |

@@ -8,11 +8,22 @@
 
 ## ◐ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
-Spec: [`specs/files.md`](../files.md) §3.1. Counter: **0/1**.
+Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.
+Counter: **0/5**.
 
 - ☐ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
   type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
   *Tests*: unit (lookup order, case, unknown) + UI e2e + headless dark/light.
+- ☐ **FP2 — Close icon.** Shared `X` icon button replaces the *Close* pill in the
+  diff and viewer headers (tooltip *Close (Esc)*). *Tests*: UI e2e.
+- ☐ **FP3 — Viewer editing.** Click / `Cmd+E` opens the whole-file inline editor;
+  write on leave via `EditFile`, divergence notice, `Esc` cascade, poll suspended,
+  flush on open/switch/send, not-editable reasons, measured line cap. *Tests*:
+  unit + business e2e (write, diverged) + UI e2e.
+- ☐ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
+  shared per-worktree batch with the diff; send clears. *Tests*: UI e2e + app.
+- ☐ **FP5 — Verification.** `headless-verify`: icons, close icon, edit + save,
+  note queued then sent with a diff note. Dark + light.
 
 ---
 

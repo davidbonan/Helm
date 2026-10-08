@@ -249,7 +249,7 @@ placeholder launches verbatim.
 - **Gutter & line numbers**: two number columns before each line
   (**old** no. | **new** no.) — context = both, deletion = old
   only, addition = new only; colored `+`/`−` sign between the gutter and the
-  content. View header: file icon + path + `+N −M` stats + **Close**.
+  content. View header: file-type icon ([`files.md`](files.md) §3.1) + path + `+N −M` stats + **close icon** (`X`, tooltip *Close (Esc)*).
 - **Hunk seam**: what separates two hunks is a **hairline**, not a filled band. The
   `@@ -19,7 +20,6 @@` line is **gone**: the numbers are in every row's gutter and the
   trailing context is the first row itself, so it restated what was already under it —
