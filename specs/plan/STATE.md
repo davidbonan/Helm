@@ -6,6 +6,34 @@
 
 ---
 
+## ◐ Milestone — M-Files · Files tab in the right sidebar
+
+Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
+[`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
+worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
+Counter: **0/5**.
+
+- ☐ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
+  `remote::files` (phone keeps newest first), tree order (folders first, natural,
+  case-insensitive), `.git` / non-UTF-8 skipped, symlink flagged not followed,
+  2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: unit +
+  business e2e (real repo).
+- ☐ **F2 — Tabs + persistence.** Git · Files strip in the card header, Git badge,
+  Files header (branch chip + Collapse all), commit card hidden on Files, no tabs
+  in Graph mode, `Cmd+Shift+E`; per-worktree `Prefs` (tab, unfolded, selection).
+  *Tests*: unit (prefs round-trip) + UI e2e.
+- ☐ **F3 — Tree.** Lazy listing on the git worker, rows (indent, chevron, icon,
+  muted ignored, git tint + folder dot), keyboard (`↑↓←→ Enter`, disarm on
+  terminal focus), re-list on the poll while visible, selection falls back to the
+  parent. *Tests*: business e2e + UI e2e.
+- ☐ **F4 — Viewer.** Overlay over the center zone (diff chrome, `Esc`), text with
+  line numbers + syntect, image preview, binary / too-large placeholders, live
+  reload on mtime/size change, scroll kept per file. *Tests*: unit + UI e2e.
+- ☐ **F5 — Verification.** `headless-verify`: tabs, tree, viewer (text, image,
+  binary), dark + light. Demonstrable milestone scenario (DoD).
+
+---
+
 ## ☑ Milestone — M-PhoneLease · Phone access that never drops by itself
 
 Spec: [`specs/remote.md`](../remote.md) §2, §3, §3.1, §3.2, §3.4, §5, §6, §8, §9.

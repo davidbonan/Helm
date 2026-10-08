@@ -27,6 +27,7 @@ is customizable from the Preferences page (§6).
 | `Cmd+,` | Toggle the full-window **Preferences page** ([`preferences.md`](preferences.md)); reopening = closing |
 | `Cmd+B` | Show / hide the **workspace sidebar** (left), with animation. Visible by default |
 | `Cmd+G` | Show / hide the **git sidebar** (right), with animation. Hidden by default; also drivable via the top-right icon |
+| `Cmd+Shift+E` | Toggle the right sidebar tab **Git ⇄ Files** in Terminal mode ([`files.md`](files.md) §2); reveals the sidebar if hidden. Graph mode or no active repo: no-op |
 | `Cmd+Shift+G` | Toggle the center zone **Terminal ⇄ Git** (equivalent to the header switch, [`git.md`](git.md) §9; entering Graph reveals the git sidebar). Without an active repo: no-op |
 | `Cmd+R` | **Run / Relaunch** the active project's server in the Run strip ([`git.md`](git.md) §3): starts it, or relaunches it if already running. Reveals the git sidebar and expands the strip; with no command resolved, opens the inline editor. Without an active repo: no-op |
 

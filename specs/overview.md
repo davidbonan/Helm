@@ -9,6 +9,7 @@
 | [`testing.md`](testing.md) | Feedback loop: 3 test levels (unit, business e2e, UI e2e egui_kittest) |
 | [`terminal.md`](terminal.md) | PTY, emulation, splits, focus, scrollback, palette, per-repo tabs |
 | [`git.md`](git.md) | Status, hunk/line staging, diff, commit, branch, refresh |
+| [`files.md`](files.md) | Files tab of the right sidebar: worktree tree (ignored dimmed, git tint), read-only viewer |
 | [`conflicts.md`](conflicts.md) | In-app 3-zone merge/rebase conflict editor: read stages, take checkboxes, resolve + Continue |
 | [`worktrees.md`](worktrees.md) | Worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree |
 | [`agents.md`](agents.md) | AI agent detection in terminals: sidebar activity badge (states, heuristic, limits) |
