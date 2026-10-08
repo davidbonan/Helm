@@ -380,28 +380,16 @@ impl HelmApp {
         }
         // Toasts above everything, in all modes (git.md §10).
         if let Some(action) = toast_overlay(ctx, &palette, &mut self.toasts) {
-            self.run_toast_action(action, ctx);
+            self.run_toast_action(action);
         }
     }
 
-    /// Carries out a toast's action button: the updater's Install (update.md §6), or
-    /// the external editor for a file the inline editor refused (git.md §4).
-    pub(super) fn run_toast_action(&mut self, action: ToastAction, ctx: &egui::Context) {
+    /// Carries out a toast's action button: the updater's Install (update.md §6).
+    pub(super) fn run_toast_action(&mut self, action: ToastAction) {
         match action {
             ToastAction::InstallUpdate => {
                 if let Some(runner) = self.update_runner.as_mut() {
                     runner.request_install();
-                }
-            }
-            ToastAction::OpenInEditor(path) => {
-                let link = LinkAction::File {
-                    path,
-                    line: None,
-                    column: None,
-                };
-                if let Err(err) = crate::terminal::links::execute(&link, self.editor.template()) {
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.error(err.message(), now);
                 }
             }
         }
@@ -555,6 +543,9 @@ impl HelmApp {
         if action_pressed(ctx, &self.keymap, Action::FocusFinishedAgent) {
             self.focus_first_finished_agent(ctx);
         }
+        if action_pressed(ctx, &self.keymap, Action::ToggleFilesTab) {
+            self.toggle_sidebar_tab();
+        }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);
         route_tab_keys(ctx, &self.keymap, &mut self.workspace);
@@ -566,6 +557,7 @@ impl HelmApp {
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
         self.sync_git_session(ctx);
+        self.sync_file_tree(ctx.input(|i| i.time));
         self.update_agent_watch(ctx);
         self.drain_worktree_sources();
         self.drain_worktree_create(ctx);
@@ -594,7 +586,11 @@ impl HelmApp {
         self.git_panel_state.inline_editing = self
             .diff
             .as_ref()
-            .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing());
+            .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing())
+            || self
+                .viewer
+                .as_ref()
+                .is_some_and(|v| v.view.is_editing() || v.view.note_editing());
     }
 
     pub(super) fn render_page(
@@ -630,6 +626,7 @@ impl HelmApp {
             ),
         });
         let font_size = self.font_zoom.point_size();
+        self.git_panel_state.sidebar_tab = self.shown_sidebar_tab();
         // The active row follows the git session's live snapshot (checkout from the
         // terminal or the graph, edits, commits) without waiting for a sync trigger.
         if let Some(g) = &self.git {
@@ -889,6 +886,13 @@ impl HelmApp {
         });
         let git_state = &mut self.git_panel_state;
         let diff = &mut self.diff;
+        let viewed_change = self
+            .viewer
+            .as_ref()
+            .and_then(|open| open.loaded.as_ref())
+            .zip(self.git.as_ref())
+            .and_then(|(snapshot, git)| git.status.change_of(&snapshot.path));
+        let viewer = &mut self.viewer;
         // Any git command running greys the page's Start button out — same
         // rule as the toolbar (computed from the same `busy` state).
         let sync_busy = toolbar_state.as_ref().is_some_and(|s| s.busy.is_some());
@@ -1021,6 +1025,7 @@ impl HelmApp {
         let mut open_link: Option<LinkAction> = None;
         let mut file_menu = crate::ui::file_list::FileMenuOutput::default();
         let mut close_diff = false;
+        let mut close_viewer = false;
         let mut open_commit_file_request = None;
         let mut pull_default_to_persist = None;
         let mut create_worktree_request = None;
@@ -1439,6 +1444,26 @@ impl HelmApp {
                                     intents: &mut review_intents,
                                 }),
                             );
+                        } else if let Some(FileViewer {
+                            loaded: Some(snapshot),
+                            view,
+                            ..
+                        }) = viewer.as_mut()
+                        {
+                            ui.add_space(f32::from(TITLEBAR_HEIGHT));
+                            let file = ViewedFile {
+                                palette: &palette,
+                                snapshot,
+                                change: viewed_change,
+                                batch: NoteBatch {
+                                    comments: review_comments,
+                                    agent: &review_agent,
+                                },
+                            };
+                            let mut out = ViewerIntents::default();
+                            close_viewer = file_viewer(ui, &file, view, &mut out);
+                            diff_intents.append(&mut out.git);
+                            review_intents.append(&mut out.review);
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -2036,6 +2061,7 @@ impl HelmApp {
                             path: path.clone(),
                         });
                         DiffState::open(diff, DiffSource::Commit(oid), path);
+                        *viewer = None;
                         ctx.request_repaint();
                     }
                 }
@@ -2046,6 +2072,7 @@ impl HelmApp {
                 // row (git.md §3).
                 if any_focused {
                     self.git_panel_state.file_nav_active = false;
+                    self.git_panel_state.file_tree.nav_armed = false;
                 }
                 // Only the working-tree overlay claims the DiffView zone: the commit
                 // diff is read-only and never had the §3 staging shortcuts.
@@ -2280,9 +2307,26 @@ impl HelmApp {
         if close_diff {
             self.diff = None;
         }
+        if close_viewer {
+            self.viewer = None;
+        }
         intents.append(&mut diff_intents);
         for intent in review_intents {
             self.apply_review_intent(intent, ctx);
+        }
+
+        let mut tab_edits = Vec::new();
+        intents.retain(|intent| match tab_edit(intent) {
+            Some(edit) => {
+                tab_edits.push(edit);
+                false
+            }
+            None => true,
+        });
+        if !tab_edits.is_empty() {
+            self.edit_active_tab_state(|state| {
+                tab_edits.into_iter().for_each(|edit| state.apply(edit))
+            });
         }
 
         let mut generate_requested = false;
@@ -2334,49 +2378,30 @@ impl HelmApp {
                         // already blurred it — this covers the paths that never do, the
                         // notice's *Reload* excepted (it drops the buffer deliberately,
                         // and has cleared the editor before emitting).
-                        git.flush_open_edit(&self.diff);
+                        git.flush_open_edit(&self.diff, &self.viewer);
                         git.worker.send(GitCommand::Diff {
                             path: path.clone(),
                             staged,
                         });
                         DiffState::open(&mut self.diff, DiffSource::WorkingTree { staged }, path);
+                        self.viewer = None;
+                        sent = true;
+                    }
+                    // The viewer takes the diff's place (files.md §4), its buffer
+                    // written on the way out like for another file.
+                    GitIntent::OpenFile(path) => {
+                        git.flush_open_edit(&self.diff, &self.viewer);
+                        self.diff = None;
+                        git.worker.send(GitCommand::ReadFile {
+                            path: path.clone(),
+                            known: None,
+                        });
+                        FileViewer::open(&mut self.viewer, path);
                         sent = true;
                     }
                     // Shared flat/tree mode (M40): applied + persisted after the
                     // loop, once the `&self.git` borrow is released.
                     GitIntent::SetFileView(view) => set_file_view = Some(view),
-                    // `Cmd+E` where no caret can open (git.md §4). The view names the
-                    // refusals it can see; for the file's own the worker judged it
-                    // (encoding, symlink, permissions) and the surface may simply be
-                    // read-only, so the one reason left to name here is the Staged side
-                    // of a file that also has unstaged changes — its index blob's line
-                    // numbers are not the working tree's.
-                    GitIntent::EditRefused { path, reason } => {
-                        let staged_side = matches!(
-                            self.diff.as_ref().map(|d| d.source),
-                            Some(DiffSource::WorkingTree { staged: true })
-                        );
-                        let also_unstaged = git.status.unstaged.iter().any(|f| f.path == path);
-                        let message = match reason {
-                            EditRefusal::DeletedLines => {
-                                "These lines are gone from the file — nothing to edit here"
-                            }
-                            EditRefusal::TooManyLines => "This hunk is too large to edit inline",
-                            EditRefusal::File if staged_side && also_unstaged => {
-                                "This file also has unstaged changes — edit it from Unstaged"
-                            }
-                            EditRefusal::File => "This file can't be edited inline",
-                        };
-                        let now = ctx.input(|i| i.time);
-                        match self.workspace.active_repo().map(|r| r.path.join(&path)) {
-                            Some(full) => self.toasts.info_with_action(
-                                message,
-                                ToastAction::OpenInEditor(full),
-                                now,
-                            ),
-                            None => self.toasts.error(message, now),
-                        }
-                    }
                     other => {
                         if let Some(command) = overlay_or_command(other, self.diff.as_ref()) {
                             if matches!(

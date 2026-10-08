@@ -47,6 +47,23 @@ of a pill: at rest the action pills stay neutral
 (`bg.surface` + `border.subtle` + `text.secondary`); on hover, background, border and text
 take the intent color (added for Stage, deleted for Unstage/Discard).
 
+**File-type icons** ([`files.md`](files.md) §3.1) take one `file.*` brand hue per
+type group, per **mode** (shared by every preset of that mode, ≥ 3:1 on each
+preset's `bg.canvas`):
+
+| Token         | Light     | Dark      | Types |
+|---------------|-----------|-----------|-------|
+| `file.red`    | `#C4302B` | `#E8615A` | Java, npm, PDF, Ruby, Scala, YAML |
+| `file.tan`    | `#8E5B36` | `#DEA584` | Rust, Cargo, `.d.ts` |
+| `file.orange` | `#B8521D` | `#EE8650` | Git, HTML, notebook, Svelte, SVG, Swift, TOML, video, XML, Zig |
+| `file.yellow` | `#86720A` | `#D7C64A` | archives, env, JavaScript, JSON, license, Python |
+| `file.green`  | `#3D7A22` | `#89D056` | C#, CSV, shell, text, Vue |
+| `file.cyan`   | `#0A7F9C` | `#3CC0E0` | audio, Go, JSX |
+| `file.blue`   | `#2D68B4` | `#6AA3E8` | C, C++, Dart, Docker, Lua, Nix, TSX, TypeScript |
+| `file.purple` | `#7A4CB2` | `#B28BDB` | CSS/Less, Elixir, Haskell, headers, images, Kotlin, PHP, Terraform, Wasm |
+| `file.pink`   | `#B5325F` | `#F06C98` | GraphQL, Sass |
+| `file.gray`   | `#5D6670` | `#A3ADB8` | config, EditorConfig, fonts, lock, log, Makefile, Markdown, README, SQL |
+
 ## 2. Typography
 
 - **UI**: macOS system font — SF Pro (`system-ui` / `-apple-system`).

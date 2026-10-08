@@ -1,8 +1,14 @@
 //! Background git session: drains the worker's replies into the per-repo
 //! caches (status / diff / graph / commit detail / rebase plan) consumed by the
-//! UI, plus the diff-overlay state and cache keys (git.md, architecture.md).
+//! UI, plus the diff-overlay and file-viewer state and cache keys (git.md,
+//! files.md, architecture.md).
+
+use std::collections::BTreeSet;
 
 use super::*;
+use crate::files::content::{FileSnapshot, ReadOutcome, Stamp};
+use crate::files::tint::StatusTints;
+use crate::files::tree::{shown_folders, Listings};
 
 /// Stable repo identity (M17-11): path canonicalized once at key creation — cache
 /// keys survive workspace reorders and removals, no positional reindexing.
@@ -199,6 +205,49 @@ pub(crate) struct DiffState {
     pub(crate) view: DiffViewState,
 }
 
+/// File open in the read-only viewer (files.md §4), over the center zone in the
+/// diff's place: opening either one closes the other. `Esc` or a repo switch
+/// closes it.
+pub(crate) struct FileViewer {
+    pub(crate) path: String,
+    /// The last read of `path` — or, until that lands, of the file open before
+    /// (arrow keys through the tree): kept on screen instead of flashing the
+    /// terminal for the worker's round-trip.
+    pub(crate) loaded: Option<FileSnapshot>,
+    pub(crate) view: FileViewerState,
+}
+
+impl FileViewer {
+    /// Opens `path` in the viewer, keeping what is on screen until it is read. An
+    /// editor still open was flushed by the caller (`GitSession::flush_open_edit`): it
+    /// closes rather than follow the viewer to another file.
+    pub(crate) fn open(slot: &mut Option<FileViewer>, path: String) {
+        let (loaded, mut view) = slot
+            .take()
+            .map(|open| (open.loaded, open.view))
+            .unwrap_or_default();
+        view.hand_off_editor();
+        *slot = Some(FileViewer { path, loaded, view });
+    }
+
+    /// Stamp of `path`'s content on screen; `None` until it was read, which makes
+    /// the next read unconditional.
+    fn known_stamp(&self) -> Option<Stamp> {
+        self.loaded
+            .as_ref()
+            .filter(|snapshot| snapshot.path == self.path)
+            .and_then(|snapshot| snapshot.stamp)
+    }
+
+    fn adopt(&mut self, outcome: ReadOutcome) {
+        if let ReadOutcome::Read(snapshot) = outcome {
+            if snapshot.path == self.path {
+                self.loaded = Some(snapshot);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiffSource {
     /// Status-section overlay (M6-3): workdir vs index (`staged == false`) or index
@@ -257,10 +306,10 @@ impl DiffState {
     /// The write an open inline editor still owes (git.md §4), against the section it was
     /// typed in. `None` on a read-only source — no caret ever opened there.
     pub(crate) fn pending_edit(&self) -> Option<EditRequest> {
-        let DiffSource::WorkingTree { staged } = self.source else {
+        let DiffSource::WorkingTree { .. } = self.source else {
             return None;
         };
-        self.view.pending_write(staged)
+        self.view.pending_write()
     }
 }
 
@@ -351,6 +400,12 @@ pub(crate) struct GitSession {
     /// instead of the vanished pre-amend oid.
     pub(crate) select_head_after_amend: bool,
     pub(crate) last_poll: f64,
+    /// The Files tab's folders read so far (files.md §3), and the polled status as
+    /// its rows tint it.
+    pub(crate) listings: Listings,
+    pub(crate) tints: StatusTints,
+    pub(crate) last_folders_poll: f64,
+    pub(crate) last_viewer_poll: f64,
 }
 
 /// Worker → UI wakeup: the callback every background runner gets so a reply
@@ -403,6 +458,10 @@ impl GitSession {
             graph_fresh: true,
             select_head_after_amend: false,
             last_poll: now,
+            listings: Listings::default(),
+            tints: StatusTints::default(),
+            last_folders_poll: now,
+            last_viewer_poll: now,
         }
     }
 
@@ -446,13 +505,55 @@ impl GitSession {
         }
     }
 
-    /// Writes an open inline editor's buffer before the diff that holds it is dropped —
-    /// keybindings.md §4: an action that tears the diff down flushes first, and a repo
-    /// switch or another file taking its place is not a discard. The buffer belongs to
-    /// **this** session's repo, so this runs before the session is parked: the worker
-    /// still applies a queued mutation once cancelled, and its `Drop` joins on one.
-    pub(crate) fn flush_open_edit(&self, diff: &Option<DiffState>) {
-        if let Some(request) = diff.as_ref().and_then(DiffState::pending_edit) {
+    /// Files tab (files.md §3, §6): the shown folders not read yet are listed right
+    /// away, all of them again on the poll cadence — a tick is skipped while the
+    /// previous listing runs.
+    pub(crate) fn poll_folders(&mut self, now: f64, unfolded: &BTreeSet<String>) {
+        let due = now - self.last_folders_poll >= GIT_POLL_INTERVAL.as_secs_f64();
+        if due {
+            self.last_folders_poll = now;
+        }
+        if self.worker.has_pending(ResultKind::Folders) {
+            return;
+        }
+        let folders = if due {
+            shown_folders(unfolded)
+        } else {
+            self.listings.unread(unfolded)
+        };
+        if !folders.is_empty() {
+            self.worker.send(GitCommand::ListFolders(folders));
+        }
+    }
+
+    /// The viewer's file (files.md §4) is re-read on the poll cadence, a tick skipped
+    /// while the previous read runs; the worker reads it only once its mtime or size
+    /// moved.
+    pub(crate) fn poll_viewer(&mut self, now: f64, viewer: &FileViewer) {
+        let due = now - self.last_viewer_poll >= GIT_POLL_INTERVAL.as_secs_f64();
+        // Nothing reflows under the caret: the re-read waits for the editor to close.
+        if !due || viewer.view.is_editing() || self.worker.has_pending(ResultKind::File) {
+            return;
+        }
+        self.last_viewer_poll = now;
+        self.worker.send(GitCommand::ReadFile {
+            path: viewer.path.clone(),
+            known: viewer.known_stamp(),
+        });
+    }
+
+    /// Writes an open inline editor's buffer before the diff or the viewer that holds it
+    /// is dropped — keybindings.md §4: an action that tears them down flushes first, and
+    /// a repo switch or another file taking their place is not a discard. The buffer
+    /// belongs to **this** session's repo, so this runs before the session is parked: the
+    /// worker still applies a queued mutation once cancelled, and its `Drop` joins on one.
+    pub(crate) fn flush_open_edit(&self, diff: &Option<DiffState>, viewer: &Option<FileViewer>) {
+        let pending = diff
+            .as_ref()
+            .and_then(DiffState::pending_edit)
+            .into_iter()
+            .chain(viewer.as_ref().and_then(|open| open.view.pending_write()));
+        for request in pending {
             self.worker.send(GitCommand::EditFile(request));
         }
     }
@@ -505,6 +606,7 @@ impl GitSession {
     pub(crate) fn drain(
         &mut self,
         diff: &mut Option<DiffState>,
+        viewer: &mut Option<FileViewer>,
         editor: &mut BranchEditor,
         panel: &mut GitPanelState,
         rebase_page: &mut Option<RebasePage>,
@@ -545,9 +647,20 @@ impl GitSession {
                     Self::on_conflicts(result, conflict_editor, toasts, now)
                 }
                 GitResult::Edit { request, result } => {
-                    self.on_edit(request, result, diff, toasts, now)
+                    self.on_edit(request, result, (diff, viewer), toasts, now)
                 }
                 GitResult::Refs(result) => self.on_refs(result, toasts, now),
+                // A repo that cannot open already reports through the status poll.
+                GitResult::Folders(result) => {
+                    if let Ok(listed) = result {
+                        self.listings.store(listed);
+                    }
+                }
+                GitResult::File(result) => {
+                    if let (Ok(outcome), Some(open)) = (result, viewer.as_mut()) {
+                        open.adopt(outcome);
+                    }
+                }
             }
         }
     }
@@ -587,6 +700,7 @@ impl GitSession {
                 };
                 if !stale {
                     self.status = snapshot.status;
+                    self.tints = StatusTints::of(&self.status);
                     self.branch = snapshot.branch;
                     self.stash_count = snapshot.stash_count;
                     self.has_remote = snapshot.has_remote;
@@ -706,20 +820,25 @@ impl GitSession {
         }
     }
 
-    /// Reply to an inline-editor save (git.md §4): the write already happened on the
-    /// worker, so this only reports and refreshes. A **NotStaged** landing is a
-    /// successful save whose file-level stage was skipped — the toast says where the
-    /// text went. The status and the open diff are re-requested behind every reply
-    /// rather than waiting for the poll: the failing cases (`Diverged`) are precisely
-    /// the ones where the displayed diff is known to be out of date.
+    /// Reply to an inline-editor save (git.md §4), from the diff or the viewer: the
+    /// write already happened on the worker, so this only reports and refreshes. A
+    /// **NotStaged** landing is a successful save whose file-level stage was skipped —
+    /// the toast says where the text went. The status and the open diff are re-requested
+    /// behind every reply rather than waiting for the poll: the failing cases
+    /// (`Diverged`) are precisely the ones where the displayed diff is known to be out of
+    /// date. The viewer re-reads on its own poll, which resumed with the editor closed.
     fn on_edit(
         &mut self,
         request: EditRequest,
         result: Result<Landing, EditError>,
-        diff: &mut Option<DiffState>,
+        (diff, viewer): (&mut Option<DiffState>, &mut Option<FileViewer>),
         toasts: &mut Toasts,
         now: f64,
     ) {
+        let viewed = viewer
+            .as_mut()
+            .filter(|open| open.path == request.path)
+            .map(|open| &mut open.view);
         // The editor the reply answers, if it is still open on the file it wrote: it
         // owns both outcomes — the anchor to advance and the divergence to arbitrate.
         let editor = diff
@@ -735,15 +854,28 @@ impl GitSession {
                 if let Some(view) = editor {
                     view.edit_written(&request);
                 }
+                if let Some(view) = viewed {
+                    view.edit_written(&request);
+                }
             }
             // The buffer is never dropped on a divergence (git.md §4): the notice puts
             // the choice — take the disk's version, or overwrite it — to the user. It
             // outlives the editor, since the write on the way out can be the refused one.
-            Err(EditError::Diverged) => match diff.as_mut().filter(|d| d.path == request.path) {
-                Some(open) => open.view.edit_diverged(request.clone()),
-                None => toasts.error(format!("Save failed — {}", EditError::Diverged), now),
-            },
-            Err(err) => toasts.error(format!("Save failed — {err}"), now),
+            Err(EditError::Diverged) => {
+                match (diff.as_mut().filter(|d| d.path == request.path), viewed) {
+                    (Some(open), _) => open.view.edit_diverged(request.clone()),
+                    (None, Some(view)) => view.edit_diverged(request.clone()),
+                    (None, None) => {
+                        toasts.error(format!("Save failed — {}", EditError::Diverged), now)
+                    }
+                }
+            }
+            Err(err) => {
+                if let Some(view) = viewed {
+                    view.drop_written();
+                }
+                toasts.error(format!("Save failed — {err}"), now)
+            }
         }
         self.worker.send(GitCommand::Status);
         if let Some(DiffState {
@@ -1077,6 +1209,8 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
         | GitCommand::Refs
+        | GitCommand::ListFolders(_)
+        | GitCommand::ReadFile { .. }
         | GitCommand::EditFile { .. } => "Git command failed",
     };
     format!("{action} — {}", err.message())

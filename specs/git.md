@@ -84,8 +84,8 @@ Light/dark mockup redesign: the sidebar is made of **two cards** on `bg.canvas`,
 
 **Main card** — bands separated by full-width rules:
 
-1. **Header**: git-branch icon + **Git** title + **branch chip** (mono, §6);
-   on the right, **Discard all** (trash — destructive, behind the modal) and
+1. **Header**: **Git** · **Files** tabs ([`files.md`](files.md) §2) — in Graph mode
+   the **Git** title + **branch chip** (mono, §6) instead; on the right, **Discard all** (trash — destructive, behind the modal) and
    **Refresh** icons.
 2. **Summary**: "**N files changed**" (entries of both sections) + totals
    **+A** / **−D** (sum of the deltas of both sections; a half-staged file
@@ -249,7 +249,7 @@ placeholder launches verbatim.
 - **Gutter & line numbers**: two number columns before each line
   (**old** no. | **new** no.) — context = both, deletion = old
   only, addition = new only; colored `+`/`−` sign between the gutter and the
-  content. View header: file icon + path + `+N −M` stats + **Close**.
+  content. View header: file-type icon ([`files.md`](files.md) §3.1) + path + `+N −M` stats + **close icon** (`X`, tooltip *Close (Esc)*).
 - **Hunk seam**: what separates two hunks is a **hairline**, not a filled band. The
   `@@ -19,7 +20,6 @@` line is **gone**: the numbers are in every row's gutter and the
   trailing context is the first row itself, so it restated what was already under it —
@@ -306,14 +306,13 @@ placeholder launches verbatim.
     no longer holds, the write happens **unstaged** and a toast says so. A file
     present in **both** sections is not editable from the Staged side (its new
     side is the index blob, whose numbering may be shifted): the click does
-    nothing, `Cmd+E` toasts the reason.
+    nothing.
   - **Not editable**, checked **before** the caret appears: non-UTF-8 content, a
     NUL byte, a symlink, a non-regular file, a binary or oversize diff (§8), a
     read-only surface (commit / PR review / frozen diff), a hunk above ~2,000
     lines, a hunk with **nothing on the new side** (it only deletes lines, so there
     is no working-tree text to put a caret on), or a file the process cannot write.
-    The click does nothing; `Cmd+E` raises a toast **naming the reason** and carrying
-    the **Open in editor** action (external editor, §3).
+    The click does nothing.
 
 **Mechanism (libgit2)**: we compute the file's diff, build a **filtered
 diff** containing only the selected hunks/lines, then apply it to

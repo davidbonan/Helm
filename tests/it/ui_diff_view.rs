@@ -11,7 +11,7 @@ use helm::theme::Palette;
 use helm::ui::diff_view::{
     content_x_offset, diff_view, numbers_x_offset, DiffReview, DiffSurface, DiffViewState,
 };
-use helm::ui::git_panel::{EditRefusal, GitIntent};
+use helm::ui::git_panel::GitIntent;
 
 fn line(origin: LineOrigin, content: &str) -> DiffLine {
     DiffLine {
@@ -2232,13 +2232,13 @@ fn a_content_click_opens_the_inline_editor_with_the_caret_where_it_landed() {
         .inline_edit()
         .cloned()
         .expect("a click in the content column opens the editor");
-    assert_eq!(edit.hunk, 0);
+    assert_eq!(edit.anchor, 0);
     assert_eq!(
-        edit.range,
+        edit.target.range,
         0..3,
         "the editor writes back the hunk's new side"
     );
-    assert_eq!(edit.original, vec!["fn main() {", "    new();", "}"]);
+    assert_eq!(edit.target.original, vec!["fn main() {", "    new();", "}"]);
     assert_eq!(
         edit.buffer, "fn main() {\n    Xnew();\n}",
         "the character must land at the clicked column of the clicked line"
@@ -2291,22 +2291,6 @@ fn the_open_editor_keeps_the_rows_horizontal_metrics() {
             editor.height(),
         );
     });
-}
-
-#[test]
-fn cmd_e_opens_the_editor_on_the_hovered_row() {
-    let state = drive_edit(editable_diff(), |h| {
-        let pos = content_cell(h, &editable_diff(), "new()", 0);
-        h.input_mut().events.push(egui::Event::PointerMoved(pos));
-        h.step();
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
-        h.step();
-    });
-
-    assert!(
-        state.borrow().inline_edit().is_some(),
-        "Cmd+E must open the editor on the hovered line, no pointer click needed"
-    );
 }
 
 #[test]
@@ -2420,7 +2404,7 @@ fn reopening_the_editor_starts_a_fresh_undo_history() {
 
     let edit = state.borrow().inline_edit().cloned().expect("editor open");
     assert_eq!(
-        edit.range,
+        edit.target.range,
         4..6,
         "the second editor anchors on its own hunk"
     );
@@ -2482,7 +2466,7 @@ fn a_reload_that_renumbers_the_hunks_drops_the_editor() {
         open_editor(h, &two_hunk_editable_diff(), "BBB");
     });
     assert_eq!(
-        state.borrow().inline_edit().map(|e| e.hunk),
+        state.borrow().inline_edit().map(|e| e.anchor),
         Some(1),
         "the editor opened on the second hunk"
     );
@@ -2777,7 +2761,7 @@ fn moving_the_caret_to_another_hunk_writes_the_buffer_it_leaves() {
     assert_eq!(written[0].range, 4..6, "the range the caret is leaving");
     assert_eq!(written[0].replacement, "QBBB\nsix");
     assert_eq!(
-        state.borrow().inline_edit().map(|edit| edit.hunk),
+        state.borrow().inline_edit().map(|edit| edit.anchor),
         Some(0),
         "the caret has moved to the clicked hunk"
     );
@@ -2791,6 +2775,7 @@ fn refused_write() -> EditRequest {
         original: vec!["fn main() {".into(), "    new();".into(), "}".into()],
         replacement: "fn main() {\n    typed();\n}".to_owned(),
         stage_after: false,
+        whole_file: false,
         force: false,
     }
 }
@@ -2854,26 +2839,6 @@ fn a_notice_answered_leaves_the_screen() {
             "an answered notice is gone"
         );
     });
-}
-
-#[test]
-fn cmd_e_on_a_file_that_takes_no_caret_asks_for_the_external_editor() {
-    let mut diff = editable_diff();
-    diff.editable = false;
-    let state = Rc::new(RefCell::new(DiffViewState::default()));
-    let intents = drive_editor(state, diff, false, 1.0 / 60.0, |h| {
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
-        h.run();
-    });
-
-    assert_eq!(
-        intents,
-        vec![GitIntent::EditRefused {
-            path: "src/main.rs".to_owned(),
-            reason: EditRefusal::File,
-        }],
-        "the keyboard ask gets an answer even where the click stays silent"
-    );
 }
 
 #[test]
@@ -2951,61 +2916,30 @@ fn deletion_only_diff() -> FileDiff {
 }
 
 #[test]
-fn a_hunk_with_no_new_side_names_its_refusal_instead_of_staying_silent() {
-    let state = Rc::new(RefCell::new(DiffViewState::default()));
-    let intents = drive_editor(
-        state.clone(),
-        deletion_only_diff(),
-        false,
-        1.0 / 60.0,
-        |h| {
-            let pos = content_cell(h, &deletion_only_diff(), "gone()", 0);
-            click_text_at(h, pos, 1);
-            h.run();
-            let hover = content_cell(h, &deletion_only_diff(), "gone()", 0);
-            h.input_mut().events.push(egui::Event::PointerMoved(hover));
-            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
-            h.run();
-        },
-    );
+fn a_hunk_with_no_new_side_takes_no_caret() {
+    let state = drive_edit(deletion_only_diff(), |h| {
+        let pos = content_cell(h, &deletion_only_diff(), "gone()", 0);
+        click_text_at(h, pos, 1);
+        h.run();
+    });
 
     assert!(
         state.borrow().inline_edit().is_none(),
         "a hunk that only deletes lines has no buffer to open"
     );
-    assert_eq!(
-        intents
-            .iter()
-            .filter(|intent| matches!(intent, GitIntent::EditRefused { .. }))
-            .collect::<Vec<_>>(),
-        vec![&GitIntent::EditRefused {
-            path: "src/main.rs".to_owned(),
-            reason: EditRefusal::DeletedLines,
-        }],
-        "got {intents:?}"
-    );
 }
 
 #[test]
-fn a_hunk_past_the_line_cap_names_its_refusal() {
+fn a_hunk_past_the_line_cap_takes_no_caret() {
     // `new_lines` past `MAX_EDIT_LINES` (2 000): the cap is judged on the hunk's claim,
     // before its new side is even read.
     let mut diff = editable_diff();
     diff.hunks[0].new_lines = 2_001;
-    let state = Rc::new(RefCell::new(DiffViewState::default()));
-    let intents = drive_editor(state.clone(), diff, false, 1.0 / 60.0, |h| {
+    let state = drive_edit(diff, |h| {
         let pos = content_cell(h, &editable_diff(), "new()", 0);
-        h.input_mut().events.push(egui::Event::PointerMoved(pos));
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+        click_text_at(h, pos, 1);
         h.run();
     });
 
     assert!(state.borrow().inline_edit().is_none());
-    assert!(
-        intents.contains(&GitIntent::EditRefused {
-            path: "src/main.rs".to_owned(),
-            reason: EditRefusal::TooManyLines,
-        }),
-        "got {intents:?}"
-    );
 }

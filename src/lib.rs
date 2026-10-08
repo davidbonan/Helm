@@ -7,6 +7,7 @@ pub mod cli;
 pub mod command_palette;
 pub mod emoji;
 pub mod feedback;
+pub mod files;
 pub mod frame_log;
 pub mod git;
 pub mod ipc;

@@ -6,6 +6,7 @@ use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPa
 use crate::agent_watch::AgentBadge;
 use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
 use crate::ai::AiRunner;
+use crate::files::tab::{SidebarTab, TabEdit, TabState};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -34,9 +35,8 @@ use crate::ui::conflict_view::{
 };
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
-use crate::ui::git_panel::{
-    abort_op_modal, discard_hunk_modal, EditRefusal, GitIntent, GitPanelState,
-};
+use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
+use crate::ui::git_panel::{abort_op_modal, discard_hunk_modal, GitIntent, GitPanelState};
 use crate::ui::graph_toolbar::{
     force_push_modal, graph_toolbar, reset_hard_modal, sync_error_message, sync_success_message,
     BusyAction, PullDefault, ToolbarAction, ToolbarState,
@@ -55,6 +55,7 @@ use crate::ui::repo_sidebar::{
     delete_worktree_modal, CreateSelection, DeleteModalAction, DeletePrompt, ProjectHeader,
     ProjectVisibility, RepoRow, SidebarAction, SidebarItem,
 };
+use crate::ui::review_notes::NoteBatch;
 use crate::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 use crate::ui::terminal_view::{
     cell_metrics, phone_sized_banner, terminal_tree, terminal_view, terminal_view_readonly,
@@ -148,7 +149,9 @@ fn group_probe_due(focus_regained: bool, membership_changed: bool, age_secs: f64
 
 mod keys;
 use keys::route_wall_keys;
-use keys::{action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command};
+use keys::{
+    action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command, tab_edit,
+};
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
     route_zoom_keys,
@@ -157,8 +160,8 @@ pub use keys::{
 mod git_session;
 pub use git_session::command_failure_message;
 use git_session::{
-    repainter, AgentEntry, CommitDraft, DiffSource, DiffState, GitSession, PaneKey, RepoCaches,
-    RepoKey,
+    repainter, AgentEntry, CommitDraft, DiffSource, DiffState, FileViewer, GitSession, PaneKey,
+    RepoCaches, RepoKey,
 };
 
 mod command_palette;
@@ -561,6 +564,7 @@ pub struct HelmApp {
     git: Option<GitSession>,
     git_panel_state: GitPanelState,
     diff: Option<DiffState>,
+    viewer: Option<FileViewer>,
     /// Interactive-rebase page (git.md §9), replacing the graph while open:
     /// created on the menu click (loading), filled by the worker's `RebaseTodo`
     /// reply, dropped on Start/Cancel and on repo switch (stale plan).
@@ -821,6 +825,7 @@ impl HelmApp {
                 ..GitPanelState::default()
             },
             diff: None,
+            viewer: None,
             rebase_page: None,
             conflict_editor: None,
             workspace_opener,
@@ -958,7 +963,7 @@ impl HelmApp {
                     // write goes out on the leaving repo's worker, before the session that
                     // owns it is parked (git.md §4).
                     if let Some(git) = self.git.as_ref() {
-                        git.flush_open_edit(&self.diff);
+                        git.flush_open_edit(&self.diff, &self.viewer);
                     }
                     // Park the left-behind repo's state (graph for an instant redraw,
                     // commit draft + AI runner so a draft never shows under another repo
@@ -994,6 +999,7 @@ impl HelmApp {
                     session.worker.send(GitCommand::Status);
                     self.git = Some(session);
                     self.diff = None;
+                    self.viewer = None;
                     self.branch_editor = BranchEditor::default();
                     // The plan targets the left repo's refs: always stale here.
                     self.rebase_page = None;
@@ -1004,10 +1010,11 @@ impl HelmApp {
             None => {
                 if let Some(git) = self.git.as_ref() {
                     close_chip_menu(ctx);
-                    git.flush_open_edit(&self.diff);
+                    git.flush_open_edit(&self.diff, &self.viewer);
                 }
                 self.park_active_session();
                 self.diff = None;
+                self.viewer = None;
                 self.branch_editor = BranchEditor::default();
                 self.rebase_page = None;
                 self.conflict_editor = None;
@@ -1018,10 +1025,14 @@ impl HelmApp {
         if let Some(git) = &mut self.git {
             let now = ctx.input(|i| i.time);
             git.poll(now, self.diff.as_ref(), graph_mode);
+            if let Some(viewer) = &self.viewer {
+                git.poll_viewer(now, viewer);
+            }
             git.drain_sync(graph_mode, &mut self.toasts, now);
             git.drain_ai(&mut self.git_panel_state, &mut self.toasts, now);
             git.drain(
                 &mut self.diff,
+                &mut self.viewer,
                 &mut self.branch_editor,
                 &mut self.git_panel_state,
                 &mut self.rebase_page,
@@ -1769,6 +1780,58 @@ impl HelmApp {
         }
     }
 
+    /// The active worktree's right sidebar tab, shown in Terminal mode only (files.md §2).
+    fn shown_sidebar_tab(&self) -> Option<SidebarTab> {
+        if self.central_mode != CentralMode::Terminal {
+            return None;
+        }
+        let repo = self.workspace.active_repo()?;
+        Some(self.prefs.sidebar_tab(&repo.path))
+    }
+
+    /// The active worktree's sidebar state while its Files tab is on screen.
+    fn shown_files_state(&self) -> Option<TabState> {
+        let shown = self.sidebars.git && self.shown_sidebar_tab() == Some(SidebarTab::Files);
+        let repo = self.workspace.active_repo().filter(|_| shown)?;
+        Some(self.prefs.tab_state(&repo.path))
+    }
+
+    /// The Files tab's tree (files.md §3, §6, §7): lists the folders on show,
+    /// forgets the paths gone from disk, hands the rows to the sidebar.
+    pub(super) fn sync_file_tree(&mut self, now: f64) {
+        let (Some(state), Some(git)) = (self.shown_files_state(), self.git.as_mut()) else {
+            self.git_panel_state.file_tree.rows = None;
+            return;
+        };
+        let tree = &mut self.git_panel_state.file_tree;
+        git.poll_folders(now, &state.unfolded);
+        let pruned = git.listings.prune(&state);
+        tree.rows = git.listings.rows(&pruned.unfolded, &git.tints);
+        tree.selected = pruned.selected.clone();
+        if pruned != state {
+            self.edit_active_tab_state(|tab| *tab = pruned);
+        }
+    }
+
+    fn edit_active_tab_state(&mut self, edit: impl FnOnce(&mut TabState)) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            prefs.edit_tab_state(&worktree, edit);
+            prefs
+        });
+    }
+
+    /// `Cmd+Shift+E` (keybindings.md §1): Git ⇄ Files, revealing the sidebar.
+    fn toggle_sidebar_tab(&mut self) {
+        let Some(tab) = self.shown_sidebar_tab() else {
+            return;
+        };
+        self.edit_active_tab_state(|state| state.tab = tab.other());
+        self.sidebars.git = true;
+    }
+
     fn active_repo_key(&self) -> Option<RepoKey> {
         let index = self.workspace.active()?;
         self.caches.keys.get(index).cloned()
@@ -1783,7 +1846,7 @@ impl HelmApp {
             .unwrap_or(self.prefs.run_panel_collapsed)
     }
 
-    /// Applies a review action raised by the diff view (M-RC): the editing
+    /// Applies a review action raised by the diff view or the file viewer (M-RC): the editing
     /// intents mutate the active repo's in-memory comment store; `SendToAgent`
     /// spawns the agent tab.
     fn apply_review_intent(&mut self, intent: crate::review::ReviewIntent, ctx: &egui::Context) {
@@ -1862,9 +1925,10 @@ impl HelmApp {
         self.review.remove(&key);
         self.central_mode = CentralMode::Terminal;
         if let Some(git) = self.git.as_ref() {
-            git.flush_open_edit(&self.diff);
+            git.flush_open_edit(&self.diff, &self.viewer);
         }
         self.diff = None;
+        self.viewer = None;
     }
 
     /// `None` + an error toast when no agent of the table can take the review.
@@ -4427,7 +4491,7 @@ impl eframe::App for HelmApp {
         // stays visible even outside the Graph view; a toast's action button is
         // carried out here (update.md §6, git.md §4).
         if let Some(action) = toast_overlay(&ctx, &palette, &mut self.toasts) {
-            self.run_toast_action(action, &ctx);
+            self.run_toast_action(action);
         }
         if let Some(log) = self.frame_log.as_mut() {
             log.end_frame(match self.central_mode {

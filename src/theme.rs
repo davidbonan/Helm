@@ -5,6 +5,7 @@ use egui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::files::file_type::FileType;
 use crate::terminal::palette::TermPalette;
 
 pub const RADIUS_PILL: u8 = 8;
@@ -533,6 +534,114 @@ impl Palette {
             self.text_primary
         }
     }
+
+    /// Ink of a file type's icon (files.md §3.1): its brand hue, in this mode's variant.
+    pub fn file_type_color(&self, kind: FileType) -> Color32 {
+        let hues = if self.dark {
+            FileTypeHues::DARK
+        } else {
+            FileTypeHues::LIGHT
+        };
+        match kind {
+            FileType::Java
+            | FileType::Npm
+            | FileType::Pdf
+            | FileType::Ruby
+            | FileType::Scala
+            | FileType::Yaml => hues.red,
+            FileType::Cargo | FileType::Rust | FileType::TypeScriptDeclaration => hues.tan,
+            FileType::Git
+            | FileType::Html
+            | FileType::Notebook
+            | FileType::Svelte
+            | FileType::Svg
+            | FileType::Swift
+            | FileType::Toml
+            | FileType::Video
+            | FileType::Xml
+            | FileType::Zig => hues.orange,
+            FileType::Archive
+            | FileType::Env
+            | FileType::JavaScript
+            | FileType::Json
+            | FileType::License
+            | FileType::Python => hues.yellow,
+            FileType::CSharp | FileType::Csv | FileType::Shell | FileType::Text | FileType::Vue => {
+                hues.green
+            }
+            FileType::Audio | FileType::Go | FileType::Jsx => hues.cyan,
+            FileType::C
+            | FileType::Cpp
+            | FileType::Dart
+            | FileType::Docker
+            | FileType::Lua
+            | FileType::Nix
+            | FileType::Tsx
+            | FileType::TypeScript => hues.blue,
+            FileType::Css
+            | FileType::Elixir
+            | FileType::Haskell
+            | FileType::Header
+            | FileType::Image
+            | FileType::Kotlin
+            | FileType::Php
+            | FileType::Terraform
+            | FileType::Wasm => hues.purple,
+            FileType::GraphQl | FileType::Sass => hues.pink,
+            FileType::Config
+            | FileType::EditorConfig
+            | FileType::Font
+            | FileType::Lock
+            | FileType::Log
+            | FileType::Makefile
+            | FileType::Markdown
+            | FileType::Readme
+            | FileType::Sql => hues.gray,
+        }
+    }
+}
+
+/// The `file.*` tokens (design-system §1): one per brand hue the file types share,
+/// per mode — not per preset, every canvas of a mode keeps them readable.
+struct FileTypeHues {
+    red: Color32,
+    tan: Color32,
+    orange: Color32,
+    yellow: Color32,
+    green: Color32,
+    cyan: Color32,
+    blue: Color32,
+    purple: Color32,
+    pink: Color32,
+    gray: Color32,
+}
+
+impl FileTypeHues {
+    const LIGHT: Self = Self {
+        red: Color32::from_rgb(196, 48, 43),
+        tan: Color32::from_rgb(142, 91, 54),
+        orange: Color32::from_rgb(184, 82, 29),
+        yellow: Color32::from_rgb(134, 114, 10),
+        green: Color32::from_rgb(61, 122, 34),
+        cyan: Color32::from_rgb(10, 127, 156),
+        blue: Color32::from_rgb(45, 104, 180),
+        purple: Color32::from_rgb(122, 76, 178),
+        pink: Color32::from_rgb(181, 50, 95),
+        gray: Color32::from_rgb(93, 102, 112),
+    };
+
+    const DARK: Self = Self {
+        red: Color32::from_rgb(232, 97, 90),
+        tan: Color32::from_rgb(222, 165, 132),
+        orange: Color32::from_rgb(238, 134, 80),
+        yellow: Color32::from_rgb(215, 198, 74),
+        green: Color32::from_rgb(137, 208, 86),
+        cyan: Color32::from_rgb(60, 192, 224),
+        blue: Color32::from_rgb(106, 163, 232),
+        purple: Color32::from_rgb(178, 139, 219),
+        pink: Color32::from_rgb(240, 108, 152),
+        gray: Color32::from_rgb(163, 173, 184),
+    };
 }
 
 /// How far a dark-mode title slides from primary toward secondary ink.
@@ -1107,6 +1216,44 @@ mod tests {
                 "{}: invisible accent",
                 p.name
             );
+        }
+    }
+
+    #[test]
+    fn file_type_hues_reach_icon_contrast_on_every_canvas_of_their_mode() {
+        let linear = |channel: u8| {
+            let c = f64::from(channel) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let luminance = |color: Color32| {
+            let [r, g, b, _] = color.to_srgba_unmultiplied();
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let contrast = |a: Color32, b: Color32| {
+            let (la, lb) = (luminance(a), luminance(b));
+            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+        };
+        for preset in &PRESETS {
+            let h = if preset.dark {
+                FileTypeHues::DARK
+            } else {
+                FileTypeHues::LIGHT
+            };
+            let hues = [
+                h.red, h.tan, h.orange, h.yellow, h.green, h.cyan, h.blue, h.purple, h.pink, h.gray,
+            ];
+            for hue in hues {
+                let ratio = contrast(hue, preset.palette.bg_canvas);
+                assert!(
+                    ratio >= 3.0,
+                    "{}: {hue:?} at {ratio:.2}:1 on its canvas",
+                    preset.name
+                );
+            }
         }
     }
 

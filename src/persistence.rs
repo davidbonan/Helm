@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents::{Agent, CommitMessageSettings, ReviewSettings};
 use crate::command_palette::CommandUsage;
+use crate::files::tab::{SidebarTab, TabState};
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
 use crate::pull_requests::model::InboxHidden;
@@ -159,6 +160,10 @@ pub struct Prefs {
     /// Agent the review notes and the PR review surface hand work to
     /// (pull-requests.md §11). Regular table.
     pub review: ReviewSettings,
+    /// Right sidebar per worktree path (files.md §7); a worktree absent here shows
+    /// the Git tab, every folder folded. A table of tables, like `command_usage`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tab_states: BTreeMap<PathBuf, TabState>,
     /// Agents helm can start (preferences.md §4). Absent ⇒ the defaults;
     /// present, even empty ⇒ verbatim.
     pub agents: Vec<Agent>,
@@ -197,6 +202,7 @@ impl Default for Prefs {
             command_usage: CommandUsage::default(),
             commit_message: CommitMessageSettings::default(),
             review: ReviewSettings::default(),
+            tab_states: BTreeMap::new(),
             agents: Agent::defaults(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -390,6 +396,27 @@ impl Prefs {
         });
     }
 
+    pub fn sidebar_tab(&self, worktree: &Path) -> SidebarTab {
+        self.tab_states
+            .get(worktree)
+            .map(|state| state.tab)
+            .unwrap_or_default()
+    }
+
+    pub fn tab_state(&self, worktree: &Path) -> TabState {
+        self.tab_states.get(worktree).cloned().unwrap_or_default()
+    }
+
+    /// Edits the right sidebar state of `worktree`, dropping it once back to the
+    /// default so the TOML only holds worktrees that left it.
+    pub fn edit_tab_state(&mut self, worktree: &Path, edit: impl FnOnce(&mut TabState)) {
+        let mut state = self.tab_states.remove(worktree).unwrap_or_default();
+        edit(&mut state);
+        if state != TabState::default() {
+            self.tab_states.insert(worktree.to_path_buf(), state);
+        }
+    }
+
     /// Drops settings whose project is no longer in `roots` — orphaned by a
     /// Remove-from-sidebar or a startup purge (worktrees.md §6).
     pub fn retain_project_settings(&mut self, roots: &[PathBuf]) {
@@ -536,6 +563,8 @@ pub fn support_file(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::command_palette::Command;
 
@@ -626,6 +655,14 @@ mod tests {
                 agent: "Opus".to_owned(),
                 ..ReviewSettings::default()
             },
+            tab_states: BTreeMap::from([(
+                PathBuf::from("/Users/dev/alpha.worktrees/feat"),
+                TabState {
+                    tab: SidebarTab::Files,
+                    unfolded: BTreeSet::from(["src".to_owned(), "src/ui".to_owned()]),
+                    selected: Some("src/ui/mod.rs".to_owned()),
+                },
+            )]),
             agents: vec![Agent {
                 headless_command: "cc -p \"$HELM_PROMPT\"".to_owned(),
                 ..Agent::from_legacy("Opus", "claude --model opus")
@@ -822,6 +859,38 @@ agent = "Mine"
             prefs.project_settings(&root).is_none(),
             "an entry with no command and no ports is dropped"
         );
+    }
+
+    #[test]
+    fn a_worktree_absent_or_partly_written_reads_as_the_defaults() {
+        let prefs = Prefs::from_toml("[tab_states.\"/a.wt/feat\"]\ntab = \"files\"\n").unwrap();
+
+        assert_eq!(
+            prefs.sidebar_tab(Path::new("/a.wt/feat")),
+            SidebarTab::Files
+        );
+        assert_eq!(
+            prefs.tab_states[Path::new("/a.wt/feat")].unfolded,
+            BTreeSet::new()
+        );
+        assert_eq!(prefs.sidebar_tab(Path::new("/a")), SidebarTab::Git);
+    }
+
+    #[test]
+    fn a_tab_state_back_to_the_default_leaves_the_toml() {
+        let wt = Path::new("/a.wt/feat");
+        let mut prefs = Prefs::default();
+        prefs.edit_tab_state(wt, |state| {
+            state.tab = SidebarTab::Files;
+            state.unfolded.insert("src".to_owned());
+        });
+        prefs.edit_tab_state(wt, |state| state.tab = SidebarTab::Git);
+        assert!(prefs.to_toml().unwrap().contains("tab_states"));
+
+        prefs.edit_tab_state(wt, |state| state.unfolded.clear());
+
+        assert!(prefs.tab_states.is_empty());
+        assert!(!prefs.to_toml().unwrap().contains("tab_states"));
     }
 
     #[test]

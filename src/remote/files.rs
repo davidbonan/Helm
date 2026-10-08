@@ -1,82 +1,17 @@
-//! The files of an agent's worktree, as the phone browses and opens them
-//! (specs/remote.md §7.3): read only, never outside the worktree, never its `.git`.
+//! The files of an agent's worktree, as the phone opens them (specs/remote.md
+//! §7.3); resolving and listing them is [`crate::files`]'s.
 
-use std::fs::{DirEntry, File};
+use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
-
-use serde::Serialize;
-
-/// Entries a single listing carries: the newest ones.
-pub const MAX_LISTED: usize = 500;
+use std::path::Path;
 
 /// Read from a file of unknown extension to tell text from binary.
 const SNIFFED_BYTES: u64 = 8 * 1024;
 
-const GIT_DIR: &str = ".git";
 const TEXT: &str = "text/plain; charset=utf-8";
 const BINARY: &str = "application/octet-stream";
 const HTML: &str = "text/html; charset=utf-8";
 const SVG: &str = "image/svg+xml";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FileRow {
-    pub name: String,
-    pub dir: bool,
-    pub size: u64,
-    pub modified_ms: u64,
-}
-
-impl FileRow {
-    /// `None` for what the phone never sees: `.git`, a symlink, a name that is not UTF-8.
-    fn of(entry: &DirEntry) -> Option<Self> {
-        let name = entry.file_name().into_string().ok()?;
-        let metadata = entry.metadata().ok()?;
-        if metadata.is_symlink() || name == GIT_DIR {
-            return None;
-        }
-        let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-        Some(Self {
-            name,
-            dir: metadata.is_dir(),
-            size: metadata.len(),
-            modified_ms: modified.as_millis() as u64,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Listing {
-    pub entries: Vec<FileRow>,
-    /// Every entry of the directory, listed or not.
-    pub total: usize,
-}
-
-/// `relative` inside the worktree `root`, symlinks followed: `None` when it leaves
-/// the worktree, enters `.git` or does not exist.
-pub fn resolve(root: &Path, relative: &str) -> Option<PathBuf> {
-    let root = root.canonicalize().ok()?;
-    let path = root.join(relative).canonicalize().ok()?;
-    let inside = path.strip_prefix(&root).ok()?;
-    let in_git = inside.components().any(|part| part.as_os_str() == GIT_DIR);
-    (!in_git).then_some(path)
-}
-
-/// The directory's entries, newest first.
-pub fn list(dir: &Path) -> io::Result<Listing> {
-    let mut entries: Vec<FileRow> = std::fs::read_dir(dir)?
-        .filter_map(|entry| FileRow::of(&entry.ok()?))
-        .collect();
-    entries.sort_by(|a, b| {
-        b.modified_ms
-            .cmp(&a.modified_ms)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    let total = entries.len();
-    entries.truncate(MAX_LISTED);
-    Ok(Listing { entries, total })
-}
 
 /// A regular file ready to be sent, read from its start.
 pub struct OpenedFile {

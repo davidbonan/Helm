@@ -1,18 +1,27 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
+use crate::files::file_type::file_type;
 use crate::git::diff::{DiffFingerprint, DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::git::edit::EditRequest;
 use crate::git::intraline::{Columns, IntralineChanges};
-use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
+use crate::review::{FileComments, ForgeThreads, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
-use crate::ui::git_panel::{intent_pill, EditRefusal, GitIntent};
-use crate::ui::syntax_highlight::{
-    display_text, HighlightedDiffCache, HighlightedSpan, IncrementalHighlighter,
+use crate::ui::git_panel::{intent_pill, GitIntent};
+use crate::ui::inline_editor::{
+    divergence_notice, inline_editor, save_requested, EditSession, EditTarget, EditorColumns,
+    EditorLook, InlineEdit,
 };
-use crate::ui::with_alpha;
+use crate::ui::review_notes::{
+    note_at, note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
+};
+use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
+use crate::ui::text_selection::{
+    clicked_selection, copy_requested, dragged_selection, paint_text_selection,
+    text_click_position, TextPosition, TextRow, TextSelection,
+};
+use crate::ui::{with_alpha, FileIcon};
 
 /// Per-hunk line selection, kept across frames. The key is the hunk index in
 /// `FileDiff::hunks`; the value maps each chosen line index in `Hunk::lines` to
@@ -40,20 +49,12 @@ pub struct DiffViewState {
     /// Decoded preview of an image file, kept across frames and re-decoded only when
     /// the underlying blob changes (`ImageBlob::fingerprint`). git.md §4.
     image: Option<ImagePreview>,
-    /// Line whose review note editor is open (M-RC), keyed by its pool and its
-    /// `(old, new)` line numbers; `comment_buffer` holds the in-progress text.
-    /// The pool distinguishes the PR surface's two gutter buttons (forge vs agent)
-    /// so each opens its own editor on the same line. Cleared on validate, `Esc`,
-    /// or when the open file changes.
-    active_comment: Option<(ReviewPool, Option<u32>, Option<u32>)>,
-    comment_buffer: String,
-    /// Comment being edited from the review recap popover (M-RC), keyed by
-    /// `(file, line_ref)`; `popover_buffer` holds its in-progress text.
-    popover_edit: Option<(String, Option<u32>)>,
-    popover_buffer: String,
-    /// One-shot: focus the note editor on its next frame (set when an editor
-    /// opens so the caret lands in the field without an extra click).
-    note_focus: bool,
+    /// The review note editors (M-RC): under a line, or in the recap popover.
+    /// Cleared on validate, `Esc`, or when the open file changes.
+    notes: NoteSession,
+    /// One-shot: focus the reply or conversation composer on its next frame (set when
+    /// one opens so the caret lands in the field without an extra click).
+    composer_focus: bool,
     /// One-shot new-side line to scroll into view on the next render (set when an
     /// inline comment is opened from the center, pull-requests.md §5). Consumed by
     /// the row whose `new_lineno` matches, so it survives the async diff load.
@@ -77,58 +78,9 @@ pub struct DiffViewState {
     /// accordion (pull-requests.md §11). Resolved threads collapse to a summary row by
     /// default; expanding one adds its root id here.
     expanded_resolved: HashSet<u64>,
-    /// The open inline editor (git.md §4), one at a time. `None` ⇒ the diff renders
-    /// its rows as usual.
-    inline_edit: Option<InlineEdit>,
-    /// A write the worker refused because the file had moved under the editor
-    /// (`EditError::Diverged`): the request is kept so **Overwrite** can re-send it.
-    /// The typed buffer is never dropped on our own initiative (git.md §4).
-    diverged: Option<EditRequest>,
-}
-
-/// The inline editor's live state: the hunk whose rows it replaced, the working-tree
-/// range it writes back, the lines it was seeded from — the write's precondition — and
-/// the buffer being typed (git.md §4). The range and the original lines are captured
-/// when the caret appears and never re-derived from a reloaded diff: that is what makes
-/// the write refuse rather than land on renumbered lines (§7).
-#[derive(Debug, Clone, PartialEq)]
-pub struct InlineEdit {
-    /// File the anchor was read from, captured with it: the diff on screen can move on
-    /// to another file (a switch keeps the view until the new content lands), and the
-    /// buffer must reach the file it came from — never the one now open.
-    pub path: String,
-    pub hunk: usize,
-    pub range: Range<usize>,
-    pub original: Vec<String>,
-    pub buffer: String,
-    /// Buffer as of the last write handed to the worker: what the anchor above is
-    /// expected to hold on disk. Nothing to write while it equals `buffer`.
-    flushed: String,
-    /// Caret to place when the editor takes focus, in buffer coordinates.
-    caret: Option<TextPosition>,
-    /// One-shot: claim keyboard focus on the next frame, so the click that opened the
-    /// editor is the only gesture needed.
-    focus: bool,
-}
-
-impl InlineEdit {
-    /// `true` once the buffer differs from the lines it was seeded with.
-    pub fn is_dirty(&self) -> bool {
-        self.buffer != self.original.join("\n")
-    }
-
-    /// The write this buffer asks for, against the anchor it was opened on.
-    /// `stage_after` names the section the edit was made from (git.md §4).
-    fn request(&self, stage_after: bool, force: bool) -> EditRequest {
-        EditRequest {
-            path: self.path.clone(),
-            range: self.range.clone(),
-            original: self.original.clone(),
-            replacement: self.buffer.clone(),
-            stage_after,
-            force,
-        }
-    }
+    /// The inline editor (git.md §4), anchored on a hunk index. None open ⇒ the diff
+    /// renders its rows as usual.
+    editing: EditSession<usize>,
 }
 
 /// Character width of the widest displayed line, with what it was measured on:
@@ -158,11 +110,8 @@ impl DiffViewState {
         self.width_cache = None;
         self.stale = false;
         self.image = None;
-        self.active_comment = None;
-        self.comment_buffer.clear();
-        self.popover_edit = None;
-        self.popover_buffer.clear();
-        self.note_focus = false;
+        self.notes = NoteSession::default();
+        self.composer_focus = false;
         self.reveal_line = None;
         self.active_reply = None;
         self.reply_buffer.clear();
@@ -170,23 +119,19 @@ impl DiffViewState {
         self.conversation_buffer.clear();
         self.conversation_add_buffer.clear();
         self.expanded_resolved.clear();
-        self.inline_edit = None;
-        self.diverged = None;
+        self.editing = EditSession::default();
     }
 
     /// Whether some editor of this file is open — the diff owns `Esc` while one is,
     /// so a column of bands knows not to consume it itself (pull-requests.md §11).
     pub fn has_open_editor(&self) -> bool {
-        self.inline_edit.is_some()
-            || self.active_comment.is_some()
-            || self.popover_edit.is_some()
-            || self.active_reply.is_some()
+        self.editing.edit().is_some() || self.notes.is_open() || self.active_reply.is_some()
     }
 
     /// The open inline editor, if any (git.md §4) — the app reads it to write the
     /// buffer back to the working tree.
-    pub fn inline_edit(&self) -> Option<&InlineEdit> {
-        self.inline_edit.as_ref()
+    pub fn inline_edit(&self) -> Option<&InlineEdit<usize>> {
+        self.editing.edit()
     }
 
     /// Whether a review note editor is open (inline on a line, or in the recap
@@ -194,30 +139,25 @@ impl DiffViewState {
     /// would otherwise land in the buffer — `Cmd+Enter` above all, which sends the
     /// review batch here (keybindings.md §4).
     pub fn note_editing(&self) -> bool {
-        self.active_comment.is_some() || self.popover_edit.is_some()
+        self.notes.is_open()
     }
 
-    /// The write the open editor still owes: its buffer, when it differs from what has
-    /// already reached the worker. Read when the diff that holds it is being torn down
-    /// without another frame to blur on — a repo switch is not a discard
-    /// (keybindings.md §4).
-    pub fn pending_write(&self, staged: bool) -> Option<EditRequest> {
-        let edit = self.inline_edit.as_ref()?;
-        (edit.buffer != edit.flushed).then(|| edit.request(staged, false))
+    /// The write the open editor still owes (git.md §4), read when the diff that holds
+    /// it is torn down without another frame to blur on.
+    pub fn pending_write(&self) -> Option<EditRequest> {
+        self.editing.pending_write()
     }
 
     /// The write a divergence notice is currently offering to retry, if any.
     pub fn edit_divergence(&self) -> Option<&EditRequest> {
-        self.diverged.as_ref()
+        self.editing.divergence()
     }
 
     /// Types `text` into the open editor, as the field would: the app-side tests need a
     /// buffer that differs from what is on disk.
     #[cfg(test)]
     pub fn type_for_test(&mut self, text: &str) {
-        if let Some(edit) = self.inline_edit.as_mut() {
-            edit.buffer = text.to_owned();
-        }
+        self.editing.type_for_test(text);
     }
 
     /// Opens an editor on `hunk` anchored on `lines` at `range`, as a click would: the
@@ -230,64 +170,27 @@ impl DiffViewState {
         range: Range<usize>,
         lines: &[&str],
     ) {
-        let original: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
-        let buffer = original.join("\n");
-        self.inline_edit = Some(InlineEdit {
+        let target = EditTarget {
             path: path.to_owned(),
-            hunk,
             range,
-            original,
-            flushed: buffer.clone(),
-            buffer,
-            caret: None,
-            focus: false,
-        });
-    }
-
-    /// Every way out that **keeps** the change — `Cmd+S`, a click elsewhere, a surface
-    /// that stops being writable — goes through here, so the write on the way out has a
-    /// single home (git.md §4); `Esc` is the one exit that rolls back instead
-    /// (`cancel_inline_edit`). `staged` names the section the edit was made from;
-    /// nothing is emitted when the buffer is already on disk.
-    fn leave_inline_edit(&mut self, staged: bool, intents: &mut Vec<GitIntent>) {
-        let Some(edit) = self.inline_edit.take() else {
-            return;
+            original: lines.iter().map(|l| (*l).to_owned()).collect(),
+            stage_after: false,
+            whole_file: false,
         };
-        if edit.buffer != edit.flushed {
-            intents.push(GitIntent::FlushEdit(edit.request(staged, false)));
-        }
+        let caret = TextPosition { row: 0, col: 0 };
+        self.editing
+            .open(InlineEdit::new(hunk, target, caret), &mut Vec::new());
     }
 
-    /// `Esc` (git.md §4): the editing session is rolled back — the buffer is dropped and
-    /// nothing reaches the working tree. Nothing landed while the editor was open (the
-    /// buffer only travels on a deliberate exit), so dropping it *is* the rollback; a
-    /// divergence notice offering to re-send that buffer goes with it.
-    fn cancel_inline_edit(&mut self) {
-        if self.inline_edit.take().is_some() {
-            self.diverged = None;
-        }
-    }
-
-    /// The write landed: the anchor now names the lines just written, so the next write
-    /// compares against what is really on disk (the range grows or shrinks with the
-    /// buffer). Ignored when the editor has moved on — the reply is stale.
+    /// The write landed: the editor's anchor now names the lines just written (git.md §4).
     pub fn edit_written(&mut self, request: &EditRequest) {
-        let Some(edit) = self.inline_edit.as_mut() else {
-            return;
-        };
-        if edit.path != request.path || edit.range != request.range {
-            return;
-        }
-        let lines: Vec<String> = request.replacement.split('\n').map(str::to_owned).collect();
-        edit.range = request.range.start..request.range.start + lines.len();
-        edit.original = lines;
+        self.editing.written(request);
     }
 
-    /// The worker refused the write: the file moved under the editor (git.md §4). The
-    /// buffer stays as typed and the notice hands the arbitration to the user —
+    /// The worker refused the write: the file moved under the editor (git.md §4) —
     /// **Reload** takes the disk's version, **Overwrite** re-sends this request.
     pub fn edit_diverged(&mut self, request: EditRequest) {
-        self.diverged = Some(request);
+        self.editing.diverged(request);
     }
 
     /// Whether the resolved thread rooted at `id` is expanded in the center accordion
@@ -320,7 +223,7 @@ impl DiffViewState {
     pub fn open_reply(&mut self, comment_id: u64) {
         self.active_reply = Some(comment_id);
         self.reply_buffer.clear();
-        self.note_focus = true;
+        self.composer_focus = true;
     }
 
     /// Closes the reply editor and discards its draft.
@@ -337,7 +240,7 @@ impl DiffViewState {
     /// The reply buffer paired with its one-shot focus flag — the center card's
     /// editor needs both lent at once (`reply_editor`'s `buffer` + `focus`).
     pub fn reply_fields(&mut self) -> (&mut String, &mut bool) {
-        (&mut self.reply_buffer, &mut self.note_focus)
+        (&mut self.reply_buffer, &mut self.composer_focus)
     }
 
     /// Which conversation composer is open (the standalone add field or a reply under
@@ -356,7 +259,7 @@ impl DiffViewState {
     pub fn open_conversation_reply(&mut self, index: usize) {
         self.conversation_edit = Some(ConversationEdit::Reply(index));
         self.conversation_buffer.clear();
-        self.note_focus = true;
+        self.composer_focus = true;
     }
 
     /// Closes the conversation composer and discards its draft.
@@ -372,7 +275,7 @@ impl DiffViewState {
 
     /// The conversation draft paired with its one-shot focus flag, for the editor.
     pub fn conversation_fields(&mut self) -> (&mut String, &mut bool) {
-        (&mut self.conversation_buffer, &mut self.note_focus)
+        (&mut self.conversation_buffer, &mut self.composer_focus)
     }
 
     /// Reconciles the selection with a freshly reloaded diff: drops the (hunk,
@@ -412,21 +315,23 @@ impl DiffViewState {
     /// re-anchored — the same guard the selection above and the armed hunk confirmation
     /// (`git_session::on_diff`) apply (git.md §8).
     fn reconcile_inline_edit(&mut self, diff: &FileDiff) {
-        let Some(edit) = &self.inline_edit else {
+        let Some(edit) = self.editing.edit() else {
             return;
         };
-        let anchored = diff.path == edit.path
-            && diff.source_lines.get(edit.range.clone()) == Some(edit.original.as_slice())
-            && diff.hunks.get(edit.hunk).is_some_and(|hunk| {
+        let target = &edit.target;
+        let anchored = diff.path == target.path
+            && diff.source_lines.get(target.range.clone()) == Some(target.original.as_slice())
+            && diff.hunks.get(edit.anchor).is_some_and(|hunk| {
                 // The hunk still sits inside the window the editor took: another hunk at
                 // that index covers other lines, extended context only widens the window.
                 hunk.new_start.checked_sub(1).is_some_and(|start| {
                     let start = start as usize;
-                    start >= edit.range.start && start + hunk.new_lines as usize <= edit.range.end
+                    start >= target.range.start
+                        && start + hunk.new_lines as usize <= target.range.end
                 })
             });
         if !anchored {
-            self.inline_edit = None;
+            self.editing.drop_editor();
             self.stale = true;
         }
     }
@@ -581,16 +486,16 @@ impl DiffViewState {
 /// Time the syntax cache may fill per frame. ~300 lines at syntect's throughput:
 /// a viewport's worth on the frame the file opens, and short enough to leave the
 /// 16 ms frame intact.
-const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+pub(crate) const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 /// Time the intra-line pairing may fill per frame, alongside the syntax budget
 /// above: ~1 000 pairs, several viewports' worth on the frame the file opens.
 const INTRALINE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
-const LINE_SIZE: f32 = 12.0;
-const LINE_PAD_X: f32 = 8.0;
+pub(crate) const LINE_SIZE: f32 = 12.0;
+pub(crate) const LINE_PAD_X: f32 = 8.0;
 /// Breathing room kept after the longest line so it isn't flush against the
 /// right edge once scrolled fully right.
-const CONTENT_TRAILING_PAD: f32 = 24.0;
-const LINE_HEIGHT: f32 = 17.0;
+pub(crate) const CONTENT_TRAILING_PAD: f32 = 24.0;
+pub(crate) const LINE_HEIGHT: f32 = 17.0;
 const LINE_ACTION_SIZE: f32 = 14.0;
 const LINE_ACTION_LEFT: f32 = 4.0;
 /// Gap between the stage and review-note icons sharing the gutter.
@@ -598,10 +503,13 @@ const LINE_ACTION_GAP: f32 = 4.0;
 /// Column reserved for the per-line stage/unstage button and, beside it, the
 /// review-note (✦) button — left of the numbers.
 const LINE_ACTION_W: f32 = 40.0;
+/// One gutter button's share of that column, for a surface with no stage button: the
+/// file viewer's note button (files.md §4.2).
+pub(crate) const GUTTER_SLOT_W: f32 = LINE_ACTION_LEFT + LINE_ACTION_SIZE + LINE_ACTION_GAP;
 /// Size of the gutter line numbers (more subdued than the content).
-const NUM_SIZE: f32 = 11.0;
+pub(crate) const NUM_SIZE: f32 = 11.0;
 /// Inner padding of each number column.
-const NUM_PAD_X: f32 = 6.0;
+pub(crate) const NUM_PAD_X: f32 = 6.0;
 /// Column of the +/− sign between the gutter and the content.
 const SIGN_W: f32 = 16.0;
 /// Context lines added above **and** below per Extend click (git.md §4).
@@ -617,8 +525,6 @@ const HUNK_RULE_GAP: f32 = 7.0;
 const BAND_PAD_X: i8 = 12;
 const BAND_HEADER_PAD_Y: i8 = 6;
 const BAND_BODY_PAD_Y: i8 = 8;
-const TEXT_DRAG_THRESHOLD: f32 = 2.0;
-const TEXT_SELECTION_ALPHA: u8 = 70;
 /// Tint of the changed columns inside a rewritten line, over the row's own (alpha
 /// 30): enough of a step for the eye to land on the change first.
 const WORD_CHANGE_ALPHA: u8 = 85;
@@ -626,8 +532,6 @@ const WORD_CHANGE_ALPHA: u8 = 85;
 /// (git.md §4): the buffer is re-highlighted as it is typed, and a whole-file-sized
 /// hunk belongs in the external editor.
 const MAX_EDIT_LINES: usize = 2_000;
-/// Width of the accent bar marking the hunk being edited (design-system §4).
-const EDIT_BAR_W: f32 = 3.0;
 /// Lines of the commented hunk previewed atop an overlay thread (pull-requests.md §5).
 const OVERLAY_SNIPPET_LINES: usize = 3;
 /// Indent a reply nests under its thread root, wide enough to seat the rail drawn down
@@ -672,6 +576,15 @@ impl RowLayout {
     fn content_left(self, left: f32) -> f32 {
         left + LINE_ACTION_W + 2.0 * self.num_w + SIGN_W + LINE_PAD_X
     }
+
+    /// The inline editor numbers its rows in the new column, keeps a muted sign.
+    fn editor_columns(self) -> EditorColumns {
+        EditorColumns {
+            number_right: self.new_right(0.0),
+            sign_left: Some(self.sign_left(0.0)),
+            content_left: self.content_left(0.0),
+        }
+    }
 }
 
 /// X offset of a line's content from the left edge of its row — exposed so UI
@@ -685,109 +598,6 @@ pub fn content_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
 /// the content column, which carries the caret.
 pub fn numbers_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
     (LINE_ACTION_W + RowLayout::for_diff(diff, char_w).content_left(0.0)) / 2.0
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct TextPosition {
-    row: usize,
-    col: usize,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum TextSelectionMode {
-    Char,
-    Word,
-    Line,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct TextSelection {
-    anchor: TextPosition,
-    head: TextPosition,
-    mode: TextSelectionMode,
-}
-
-impl TextSelection {
-    fn ordered(self) -> (TextPosition, TextPosition) {
-        if self.head < self.anchor {
-            (self.head, self.anchor)
-        } else {
-            (self.anchor, self.head)
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.mode == TextSelectionMode::Char && self.anchor == self.head
-    }
-
-    fn range_for_row(self, row: usize, text: &str) -> Option<(usize, usize)> {
-        if self.is_empty() {
-            return None;
-        }
-        let text_len = text.chars().count();
-        if text_len == 0 {
-            return None;
-        }
-        let (start, end) = self.ordered();
-        if row < start.row || row > end.row {
-            return None;
-        }
-        let (mut from, mut to) = match self.mode {
-            TextSelectionMode::Line => (0, text_len),
-            TextSelectionMode::Word if row == start.row && row == end.row => {
-                word_bounds(text, start.col)
-            }
-            TextSelectionMode::Word if row == start.row => {
-                (word_bounds(text, start.col).0, text_len)
-            }
-            TextSelectionMode::Word if row == end.row => (0, word_bounds(text, end.col).1),
-            TextSelectionMode::Word => (0, text_len),
-            TextSelectionMode::Char => {
-                let from = if row == start.row {
-                    start.col.min(text_len)
-                } else {
-                    0
-                };
-                let to = if row == end.row {
-                    end.col.saturating_add(1).min(text_len)
-                } else {
-                    text_len
-                };
-                (from, to)
-            }
-        };
-        from = from.min(text_len);
-        to = to.min(text_len);
-        (from < to).then_some((from, to))
-    }
-
-    fn clamped_to(self, lines: &[&str]) -> Option<Self> {
-        if lines.is_empty() || self.anchor.row >= lines.len() || self.head.row >= lines.len() {
-            return None;
-        }
-        Some(Self {
-            anchor: clamp_text_position(self.anchor, lines),
-            head: clamp_text_position(self.head, lines),
-            mode: self.mode,
-        })
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-struct TextRow {
-    row: usize,
-    rect: egui::Rect,
-    content_left: f32,
-    char_w: f32,
-    text_len: usize,
-}
-
-fn clamp_text_position(position: TextPosition, lines: &[&str]) -> TextPosition {
-    let text_len = lines[position.row].chars().count();
-    TextPosition {
-        row: position.row,
-        col: position.col.min(text_len.saturating_sub(1)),
-    }
 }
 
 /// A hunk's extended context: **new-side** line number ranges (1-based,
@@ -904,63 +714,7 @@ fn selected_text(
     amounts: &HashMap<usize, u32>,
     selection: TextSelection,
 ) -> Option<String> {
-    if selection.is_empty() {
-        return None;
-    }
-    let lines = display_rows(diff, amounts);
-    let selection = selection.clamped_to(&lines)?;
-    let (start, end) = selection.ordered();
-    let mut out = String::new();
-    for (row, text) in lines.iter().enumerate().take(end.row + 1).skip(start.row) {
-        if row != start.row {
-            out.push('\n');
-        }
-        let Some((from, to)) = selection.range_for_row(row, text) else {
-            continue;
-        };
-        out.push_str(slice_chars(text, from, to));
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-fn word_bounds(text: &str, col: usize) -> (usize, usize) {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return (0, 0);
-    }
-    let col = col.min(chars.len() - 1);
-    if !is_word_char(chars[col]) {
-        return (col, col + 1);
-    }
-    let mut start = col;
-    while start > 0 && is_word_char(chars[start - 1]) {
-        start -= 1;
-    }
-    let mut end = col + 1;
-    while end < chars.len() && is_word_char(chars[end]) {
-        end += 1;
-    }
-    (start, end)
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '~')
-}
-
-fn slice_chars(text: &str, from: usize, to: usize) -> &str {
-    let start = char_byte_index(text, from);
-    let end = char_byte_index(text, to);
-    &text[start..end]
-}
-
-fn char_byte_index(text: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
-    text.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len())
+    selection.text_of(&display_rows(diff, amounts))
 }
 
 /// In-diff review context (M-RC): the active repo's stored comments, the agent
@@ -1154,7 +908,7 @@ fn diff_render(
     // the diff (read-only) while the previous file's rows are still on screen — and
     // that switch is precisely a flush point.
     if !editable {
-        state.leave_inline_edit(edit_staged, intents);
+        state.editing.leave(intents);
     }
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
@@ -1181,31 +935,18 @@ fn diff_render(
     // owns what `Esc` does once no editor is open.
     let mut out = DiffOutcome::default();
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if state.inline_edit.is_some() {
-            state.cancel_inline_edit();
-        } else if state.active_comment.is_some() || state.popover_edit.is_some() {
-            state.active_comment = None;
-            state.comment_buffer.clear();
-            state.popover_edit = None;
-            state.popover_buffer.clear();
+        if state.editing.edit().is_some() {
+            state.editing.cancel();
+        } else if state.notes.is_open() {
+            state.notes.cancel();
         } else if !chrome.band() {
             out.close = true;
         }
     }
     // `Cmd+S` is the keyboard's click-elsewhere (keybindings.md §3): it writes the buffer
     // and leaves, where `Esc` above leaves without it.
-    if state.inline_edit.is_some() && save_requested(ui) {
-        state.leave_inline_edit(edit_staged, intents);
-    }
-    // `Cmd+E` where no caret can open (git.md §4): the click stays silent, but the
-    // keyboard ask deserves an answer — the app names the reason and offers the
-    // external editor. One answer per key press: a column of bands would raise the
-    // same refusal once per file on screen.
-    if !editable && !chrome.band() && editor_requested(ui) {
-        intents.push(GitIntent::EditRefused {
-            path: diff.path.clone(),
-            reason: EditRefusal::File,
-        });
+    if state.editing.edit().is_some() && save_requested(ui) {
+        state.editing.leave(intents);
     }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(diff) {
@@ -1218,10 +959,7 @@ fn diff_render(
     // running edge to edge. A rounded outlined card around a wall of code reads as a
     // heavy object; a bar is just a seam.
     let frame = match chrome {
-        DiffChrome::Card => egui::Frame::new()
-            .fill(palette.bg_canvas)
-            .inner_margin(egui::Margin::same(12))
-            .corner_radius(egui::CornerRadius::same(RADIUS_CARD)),
+        DiffChrome::Card => overlay_card(palette),
         DiffChrome::Band { .. } => egui::Frame::NONE,
     };
     let header_frame = match chrome {
@@ -1239,26 +977,10 @@ fn diff_render(
         let header = header_frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                let (icon_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
-                    egui::Sense::hover(),
-                );
                 // The card gives its icon a tile; a band's strip is already a fill, so
                 // a rounded tile on it is one shape too many.
-                if !chrome.band() {
-                    ui.painter().rect_filled(
-                        icon_rect,
-                        egui::CornerRadius::same(6),
-                        palette.bg_surface,
-                    );
-                }
-                crate::ui::paint_icon(
-                    ui.painter(),
-                    icon_rect.center(),
-                    FILE_ICON_SIZE,
-                    lucide_icons::Icon::FileText,
-                    palette.text_secondary,
-                );
+                let tile = (!chrome.band()).then_some(palette.bg_surface);
+                header_file_icon(ui, header_icon_of(palette, &diff.path), tile);
                 ui.label(
                     egui::RichText::new(&diff.path)
                         .size(TITLE_SIZE)
@@ -1293,21 +1015,17 @@ fn diff_render(
                             }
                         }
                     }
-                    let n = count(review_comments);
-                    if review_available && n > 0 {
-                        let chip = review_chip(ui, palette, n);
-                        egui::Popup::from_toggle_button_response(&chip)
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| {
-                                review_popover(
-                                    ui,
-                                    palette,
-                                    review_agent,
-                                    review_comments,
-                                    state,
-                                    &mut review_out,
-                                );
-                            });
+                    if review_available {
+                        let mut notes = NoteCtx {
+                            palette,
+                            session: &mut state.notes,
+                            out: &mut review_out,
+                        };
+                        let batch = NoteBatch {
+                            comments: review_comments,
+                            agent: review_agent,
+                        };
+                        review_recap(ui, &mut notes, &batch);
                     }
                 });
             });
@@ -1350,11 +1068,16 @@ fn diff_render(
                 ui.add_space(8.0);
             }
 
-            divergence_notice(ui, palette, state, intents);
+            if let Some(request) = divergence_notice(ui, palette, &mut state.editing, intents) {
+                intents.push(GitIntent::OpenDiff {
+                    path: request.path,
+                    staged: request.stage_after,
+                });
+            }
 
             if diff.binary {
                 match &diff.image {
-                    Some(blob) => image_preview(ui, palette, blob, &diff.path, state),
+                    Some(blob) => image_preview(ui, palette, blob, &mut state.image),
                     None => {
                         ui.label(
                             egui::RichText::new("Binary file — no line diff")
@@ -1440,19 +1163,25 @@ fn diff_render(
                         // holds the working tree's own lines, so the deletions — which have
                         // no counterpart there — step aside with them (git.md §4).
                         if let Some(edit) = state
-                            .inline_edit
-                            .as_mut()
-                            .filter(|edit| edit.hunk == hunk_idx)
+                            .editing
+                            .edit_mut()
+                            .filter(|edit| edit.anchor == hunk_idx)
                         {
-                            if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
-                                state.leave_inline_edit(edit_staged, intents);
+                            let look = EditorLook {
+                                palette,
+                                columns: layout.editor_columns(),
+                                width: row_w,
+                            };
+                            if inline_editor(ui, edit, &look) {
+                                state.editing.leave(intents);
                             }
                             ui.spacing_mut().item_spacing.y = previous_spacing_y;
                             ui.add_space(12.0);
                             continue;
                         }
                         let ext = extensions[hunk_idx].clone();
-                        let caret = caret_offer(editable, diff, hunk, &extensions[hunk_idx]);
+                        let opens_editor =
+                            editable && edit_range(diff, hunk, &extensions[hunk_idx]).is_some();
                         for new_no in ext.above {
                             let action = extension_line(
                                 ui,
@@ -1462,7 +1191,7 @@ fn diff_render(
                                     new_no,
                                     staged,
                                     read_only,
-                                    caret,
+                                    opens_editor,
                                     text_row,
                                     char_w,
                                     layout,
@@ -1515,7 +1244,7 @@ fn diff_render(
                                     review: review_available,
                                     forge: review_forge,
                                     selected: state.selected(hunk_idx, line_idx),
-                                    caret,
+                                    opens_editor,
                                     highlighted: state.syntax_line(hunk_idx, line_idx),
                                     changed: state.intraline_line(hunk_idx, line_idx),
                                     text_range: state.text_range_for_row(text_row, text),
@@ -1533,7 +1262,8 @@ fn diff_render(
                                         ReviewPool::Forge => review_forge_store,
                                         ReviewPool::Agent => review_comments,
                                     };
-                                    open_inline_editor(state, pool, store, &diff.path, old, new);
+                                    let saved = note_at(store, &diff.path, old, new);
+                                    state.notes.open(NoteAnchor { pool, old, new }, saved);
                                 }
                                 Some(DiffLineAction::OpenEditor { col }) => open_hunk_editor(
                                     state,
@@ -1560,34 +1290,34 @@ fn diff_render(
                                 &mut review_out,
                                 0.0,
                             );
-                            if review_forge {
-                                comment_block(
-                                    ui,
-                                    palette,
-                                    &diff.path,
-                                    line.old_lineno,
-                                    line.new_lineno,
-                                    text,
-                                    ReviewPool::Forge,
-                                    review_forge_store,
-                                    state,
-                                    &mut review_out,
-                                    0.0,
-                                );
-                            }
-                            comment_block(
-                                ui,
+                            let mut notes = NoteCtx {
                                 palette,
-                                &diff.path,
-                                line.old_lineno,
-                                line.new_lineno,
-                                text,
-                                ReviewPool::Agent,
-                                review_comments,
-                                state,
-                                &mut review_out,
-                                0.0,
-                            );
+                                session: &mut state.notes,
+                                out: &mut review_out,
+                            };
+                            let (old, new) = (line.old_lineno, line.new_lineno);
+                            let agent_line = NoteLine {
+                                path: &diff.path,
+                                anchor: NoteAnchor {
+                                    pool: ReviewPool::Agent,
+                                    old,
+                                    new,
+                                },
+                                code: text,
+                                saved: note_at(review_comments, &diff.path, old, new),
+                            };
+                            if review_forge {
+                                let forge_line = NoteLine {
+                                    anchor: NoteAnchor {
+                                        pool: ReviewPool::Forge,
+                                        ..agent_line.anchor
+                                    },
+                                    saved: note_at(review_forge_store, &diff.path, old, new),
+                                    ..agent_line
+                                };
+                                note_block(ui, &forge_line, &mut notes);
+                            }
+                            note_block(ui, &agent_line, &mut notes);
                         }
                         for new_no in ext.below {
                             let action = extension_line(
@@ -1598,7 +1328,7 @@ fn diff_render(
                                     new_no,
                                     staged,
                                     read_only,
-                                    caret,
+                                    opens_editor,
                                     text_row,
                                     char_w,
                                     layout,
@@ -1704,230 +1434,15 @@ fn collapse_chevron(ui: &mut egui::Ui, palette: &Palette, collapsed: bool) -> bo
     response.on_hover_text(label).clicked()
 }
 
-/// Stored note anchored at the `(old, new)` row of `path`, if any. Matches the full
-/// pair — not `line_ref()` — so a deleted row (old N) and an added row (new N) sharing
-/// a number don't collide and render the same note twice.
-fn note_at(
-    comments: &FileComments,
-    path: &str,
-    old: Option<u32>,
-    new: Option<u32>,
-) -> Option<String> {
-    comments
-        .get(path)?
-        .iter()
-        .find(|c| c.old_lineno == old && c.new_lineno == new)
-        .map(|c| c.note.clone())
-}
-
-/// Opens the inline note editor on a diff line, prefilled with its stored note,
-/// and focuses the field. Closes any popover edit so a single editor is live.
-fn open_inline_editor(
-    state: &mut DiffViewState,
-    pool: ReviewPool,
-    comments: &FileComments,
-    path: &str,
-    old: Option<u32>,
-    new: Option<u32>,
-) {
-    state.comment_buffer = note_at(comments, path, old, new).unwrap_or_default();
-    state.active_comment = Some((pool, old, new));
-    state.popover_edit = None;
-    state.note_focus = true;
-}
-
-/// Outcome of a note editor frame.
-#[derive(Clone, Copy)]
-enum NoteEdit {
-    Idle,
-    Delete,
-    Save,
-    /// Validate the note *and* hand the whole agent batch to the agent (⌘↵ or the
-    /// Sparkles button) — agent pool only.
-    SaveAndSend,
-}
-
-/// Visual identity of a review pool — the color, icon, header label and editor
-/// hint that tell a forge review comment (`accent`) apart from an agent note
-/// (`accent_ai`) wherever the two share the diff gutter (pull-requests.md §11).
-struct PoolStyle {
-    color: egui::Color32,
-    icon: lucide_icons::Icon,
-    hint: &'static str,
-}
-
-fn pool_style(palette: &Palette, pool: ReviewPool) -> PoolStyle {
-    match pool {
-        ReviewPool::Forge => PoolStyle {
-            color: palette.accent,
-            icon: lucide_icons::Icon::MessageSquarePlus,
-            hint: "Leave a review comment…",
-        },
-        ReviewPool::Agent => PoolStyle {
-            color: palette.accent_ai,
-            icon: lucide_icons::Icon::Sparkles,
-            hint: "Describe what the agent should inspect…",
-        },
-    }
-}
-
-/// Shared note field, built as **one framed object** — a padded input over a hairline
-/// and an action bar — the same shape as the PR reply editor and the conversation
-/// composer, so a review note reads like every other authoring surface of the app.
-/// Enter validates, `Shift+Enter` inserts a newline, a click outside validates too.
-/// `focus` is a one-shot that lands the caret in the field the frame the editor opens;
-/// `style` colors the focus ring and the caret to the pool's identity. `can_send` adds
-/// the *Send review* action and its `⌘↩`, which validate then flush the batch: agent
-/// pool only, so a forge review is never posted on a keystroke.
-fn note_editor(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    style: &PoolStyle,
-    buffer: &mut String,
-    focus: &mut bool,
-    width: f32,
-    can_send: bool,
-) -> NoteEdit {
-    // Consume the bare Enter before the field sees it so it validates instead of
-    // inserting a newline; Shift+Enter falls through to the field as a newline.
-    let (submit_key, send_key) = ui.input_mut(|i| {
-        let (mut submit, mut send) = (false, false);
-        i.events.retain(|e| {
-            let egui::Event::Key {
-                key: egui::Key::Enter,
-                pressed: true,
-                modifiers,
-                ..
-            } = e
-            else {
-                return true;
-            };
-            if modifiers.shift {
-                return true;
-            }
-            if can_send && modifiers.command {
-                send = true;
-            } else {
-                submit = true;
-            }
-            false
-        });
-        (submit, send)
-    });
-    let mut edit = if send_key {
-        NoteEdit::SaveAndSend
-    } else if submit_key {
-        NoteEdit::Save
-    } else {
-        NoteEdit::Idle
-    };
-    // The focus ring is read *before* the field is added, so the frame around it can
-    // carry the ring — egui's own widget stroke sits inside the frame and is invisible
-    // once the field is frameless.
-    let field_id = ui.id().with("note_editor_field");
-    let ring = if ui.memory(|m| m.has_focus(field_id)) {
-        egui::Stroke::new(1.5_f32, style.color)
-    } else {
-        egui::Stroke::new(1.0_f32, palette.border_input)
-    };
-    let response = egui::Frame::new()
-        .fill(palette.bg_surface)
-        .stroke(ring)
-        .corner_radius(egui::CornerRadius::same(EDITOR_RADIUS))
-        .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5_f32, style.color);
-                let response = ui.add(
-                    egui::TextEdit::multiline(buffer)
-                        .id(field_id)
-                        // `TextEdit::margin` is ignored once a custom frame is given, so
-                        // the padding rides on the frame itself (as in `reply_editor`).
-                        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
-                            EDITOR_PAD_X as i8,
-                            EDITOR_PAD_Y as i8,
-                        )))
-                        .desired_rows(2)
-                        .desired_width(ui.available_width())
-                        .font(egui::FontId::proportional(EDITOR_TEXT_SIZE))
-                        .hint_text(style.hint),
-                );
-                // A click outside the field (it loses focus) validates, like Enter or
-                // *Save note* — but the bar below is evaluated after, so clicking one of
-                // its actions, which blurs the field too, still raises that action.
-                if matches!(edit, NoteEdit::Idle) && response.lost_focus() {
-                    edit = NoteEdit::Save;
-                }
-                editor_hairline(ui, palette);
-                // Pin the bar to its own height: a bare layout would inherit the parent's
-                // remaining height and drop the buttons out of reach in a tall scroll area.
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), EDITOR_BAR_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_space(8.0);
-                        // The destructive action sits alone on the far side of the bar:
-                        // it must not share an edge with the two confirmations.
-                        if bar_button(ui, palette, "Delete note", None, false, true) {
-                            edit = NoteEdit::Delete;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(8.0);
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if can_send
-                                && bar_button(
-                                    ui,
-                                    palette,
-                                    "Send review",
-                                    Some(SHORTCUT_SEND),
-                                    true,
-                                    true,
-                                )
-                            {
-                                edit = NoteEdit::SaveAndSend;
-                            }
-                            // Primary only where it is the sole confirmation — with a
-                            // Send beside it, two filled buttons would compete.
-                            if bar_button(
-                                ui,
-                                palette,
-                                "Save note",
-                                Some(SHORTCUT_SAVE),
-                                !can_send,
-                                true,
-                            ) {
-                                edit = NoteEdit::Save;
-                            }
-                        });
-                    },
-                );
-                response
-            })
-            .inner
-        })
-        .inner;
-    if *focus {
-        response.request_focus();
-        *focus = false;
-    }
-    edit
-}
-
-/// The two note-editor shortcuts, in the badge convention the rest of the app displays
-/// (`keybindings::Shortcut::display` — `↩` for Enter, modifiers in `⌃⌥⇧⌘` order).
-const SHORTCUT_SAVE: &str = "↩";
-const SHORTCUT_SEND: &str = "⌘↩";
-
 /// Small square icon button (hover-tinted) used for the note editor and popover
 /// controls; `label` is its accessibility name.
-fn icon_button(
+pub(crate) fn icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     icon: lucide_icons::Icon,
     color: egui::Color32,
     label: &str,
-) -> bool {
+) -> egui::Response {
     let (rect, response, hovered) =
         crate::ui::clickable(ui, egui::vec2(LINE_HEIGHT, LINE_HEIGHT), true);
     if hovered {
@@ -1940,7 +1455,7 @@ fn icon_button(
     let tint = if hovered { color } else { palette.text_muted };
     crate::ui::paint_icon(ui.painter(), rect.center(), LINE_SIZE, icon, tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    response.clicked()
+    response
 }
 
 /// What the reply editor raised this frame (pull-requests.md §11).
@@ -1954,10 +1469,10 @@ pub(crate) enum ReplyEdit {
 /// field over a hairline and an action bar — the same shape as the conversation composer.
 /// The radius is deliberately below the cards it nests in (10 there, 6 here): a nested
 /// surface wearing its parent's radius is what makes an interface read as "unstyled".
-const EDITOR_RADIUS: u8 = 6;
-const EDITOR_PAD_X: f32 = 12.0;
-const EDITOR_PAD_Y: f32 = 10.0;
-const EDITOR_TEXT_SIZE: f32 = 13.5;
+pub(crate) const EDITOR_RADIUS: u8 = 6;
+pub(crate) const EDITOR_PAD_X: f32 = 12.0;
+pub(crate) const EDITOR_PAD_Y: f32 = 10.0;
+pub(crate) const EDITOR_TEXT_SIZE: f32 = 13.5;
 const EDITOR_HINT_SIZE: f32 = 12.0;
 pub(crate) const EDITOR_BAR_HEIGHT: f32 = 40.0;
 const EDITOR_BUTTON_SIZE: f32 = 12.0;
@@ -2103,7 +1618,7 @@ pub(crate) fn reply_editor(
 
 /// A full-strength 1px rule between an editor's field and its action bar. The list's
 /// `row_separator` is alpha'd down for dense rows and disappears inside a framed input.
-fn editor_hairline(ui: &mut egui::Ui, palette: &Palette) {
+pub(crate) fn editor_hairline(ui: &mut egui::Ui, palette: &Palette) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
     ui.painter().hline(
@@ -2118,7 +1633,7 @@ fn editor_hairline(ui: &mut egui::Ui, palette: &Palette) {
 /// `shortcut` rides inside the button, one notch quieter than the caption, so the keyboard
 /// path is read off the action itself rather than learned elsewhere.
 /// Sized to the app's dense-desktop hit area rather than to its glyph.
-fn bar_button(
+pub(crate) fn bar_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     label: &str,
@@ -2168,86 +1683,6 @@ fn bar_button(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.clone())
     });
     response.clicked()
-}
-
-/// Either the open inline editor (when this line is active) or the saved note as
-/// a clickable card (clicking it re-opens the editor), rendered left-aligned just
-/// below its diff line.
-#[allow(clippy::too_many_arguments)]
-fn comment_block(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    path: &str,
-    old: Option<u32>,
-    new: Option<u32>,
-    code: &str,
-    pool: ReviewPool,
-    comments: &FileComments,
-    state: &mut DiffViewState,
-    review_out: &mut Vec<ReviewIntent>,
-    indent: f32,
-) {
-    let line = new.or(old);
-    let style = pool_style(palette, pool);
-    if state.active_comment == Some((pool, old, new)) {
-        ui.add_space(3.0);
-        let mut edit = NoteEdit::Idle;
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            ui.vertical(|ui| {
-                let width = card_width(ui);
-                edit = note_editor(
-                    ui,
-                    palette,
-                    &style,
-                    &mut state.comment_buffer,
-                    &mut state.note_focus,
-                    width,
-                    pool == ReviewPool::Agent,
-                );
-            });
-        });
-        ui.add_space(3.0);
-        match edit {
-            NoteEdit::Save | NoteEdit::SaveAndSend => {
-                save_note(
-                    review_out,
-                    pool,
-                    path,
-                    old,
-                    new,
-                    code,
-                    state.comment_buffer.trim(),
-                );
-                if matches!(edit, NoteEdit::SaveAndSend) {
-                    review_out.push(ReviewIntent::SendToAgent);
-                }
-                state.active_comment = None;
-                state.comment_buffer.clear();
-            }
-            NoteEdit::Delete => {
-                review_out.push(ReviewIntent::DeleteComment {
-                    pool,
-                    file: path.to_owned(),
-                    line,
-                });
-                state.active_comment = None;
-                state.comment_buffer.clear();
-            }
-            NoteEdit::Idle => {}
-        }
-    } else if let Some(note) = note_at(comments, path, old, new) {
-        ui.add_space(3.0);
-        let mut clicked = false;
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            clicked = note_card(ui, palette, &style, &note, line);
-        });
-        ui.add_space(3.0);
-        if clicked {
-            open_inline_editor(state, pool, comments, path, old, new);
-        }
-    }
 }
 
 /// Renders the read-only PR thread anchored at `line` of `path` (if any) below the
@@ -2637,7 +2072,7 @@ const THREAD_FOLD_ROW_H: f32 = 34.0;
 /// the **longest line** so egui exposes a horizontal scrollbar for lines past the
 /// preview — a card sized on that available width would run its right-edge controls off
 /// the viewport, unreachable. Clamp to what is actually visible from here.
-fn card_width(ui: &egui::Ui) -> f32 {
+pub(crate) fn card_width(ui: &egui::Ui) -> f32 {
     let visible = ui.clip_rect().right() - ui.max_rect().left() - CARD_TRAILING_PAD;
     ui.available_width().min(visible).max(MIN_CARD_WIDTH)
 }
@@ -2726,273 +2161,6 @@ fn thread_member(
     });
 }
 
-/// Saved note rendered as a compact identity-tinted card — the pool's icon beside
-/// the note body, with an accent left edge — the whole surface clickable to
-/// re-open its editor. Returns `true` on click.
-fn note_card(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    style: &PoolStyle,
-    note: &str,
-    line: Option<u32>,
-) -> bool {
-    let inner = egui::Frame::new()
-        .fill(with_alpha(style.color, 20))
-        .inner_margin(egui::Margin::symmetric(9, 6))
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL))
-        .stroke(egui::Stroke::new(1.0_f32, with_alpha(style.color, 70)))
-        .show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                let (r, _) =
-                    ui.allocate_exact_size(egui::vec2(LINE_SIZE, LINE_SIZE), egui::Sense::hover());
-                crate::ui::paint_icon(
-                    ui.painter(),
-                    r.center(),
-                    LINE_SIZE - 1.0,
-                    style.icon,
-                    style.color,
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(note)
-                        .size(LINE_SIZE)
-                        .color(palette.text_secondary),
-                );
-            });
-        });
-    let rect = inner.response.rect;
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
-        egui::CornerRadius::same(RADIUS_PILL),
-        style.color,
-    );
-    let response = ui
-        .interact(
-            rect,
-            ui.id().with(("note_card", line, rect.min.y.to_bits())),
-            egui::Sense::click(),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Edit review note")
-    });
-    response.clicked()
-}
-
-/// Pushes a save (or a delete when the note is blank) for the line `(old, new)`.
-fn save_note(
-    out: &mut Vec<ReviewIntent>,
-    pool: ReviewPool,
-    path: &str,
-    old: Option<u32>,
-    new: Option<u32>,
-    code: &str,
-    note: &str,
-) {
-    if note.is_empty() {
-        out.push(ReviewIntent::DeleteComment {
-            pool,
-            file: path.to_owned(),
-            line: new.or(old),
-        });
-        return;
-    }
-    out.push(ReviewIntent::SaveComment {
-        pool,
-        file: path.to_owned(),
-        comment: LineComment {
-            old_lineno: old,
-            new_lineno: new,
-            code: code.to_owned(),
-            note: note.to_owned(),
-        },
-    });
-}
-
-/// Header chip — a Sparkles glyph and the comment count — that toggles the review
-/// recap popover. Returns its response so the popover can anchor to it.
-fn review_chip(ui: &mut egui::Ui, palette: &Palette, n: usize) -> egui::Response {
-    let label = n.to_string();
-    let font = egui::FontId::proportional(PILL_SIZE);
-    let galley =
-        ui.painter()
-            .layout_no_wrap(label.clone(), font.clone(), egui::Color32::PLACEHOLDER);
-    let icon_w = LINE_SIZE;
-    let size = egui::vec2(icon_w + 4.0 + galley.size().x + 16.0, PILL_SIZE + 10.0);
-    let (rect, response, hovered) = crate::ui::clickable(ui, size, true);
-    let (fill, content) = if hovered {
-        (with_alpha(palette.accent_ai, 36), palette.accent_ai)
-    } else {
-        (palette.bg_surface, palette.text_secondary)
-    };
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_PILL),
-        fill,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    crate::ui::paint_icon(
-        ui.painter(),
-        egui::pos2(rect.left() + 8.0 + icon_w / 2.0, rect.center().y),
-        icon_w,
-        lucide_icons::Icon::Sparkles,
-        content,
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 8.0 + icon_w + 4.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        content,
-    );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Review notes"));
-    response
-}
-
-/// Review recap popover: every stored note grouped by file, each editable in
-/// place (click) and deletable (✕), with a Send-to-agent footer.
-fn review_popover(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    agent: &str,
-    comments: &FileComments,
-    state: &mut DiffViewState,
-    out: &mut Vec<ReviewIntent>,
-) {
-    ui.set_max_width(360.0);
-    ui.spacing_mut().item_spacing.y = 6.0;
-    let style = pool_style(palette, ReviewPool::Agent);
-    egui::ScrollArea::vertical()
-        .max_height(360.0)
-        .show(ui, |ui| {
-            for (file, file_comments) in comments {
-                ui.label(
-                    egui::RichText::new(file)
-                        .size(PILL_SIZE)
-                        .color(palette.text_muted),
-                );
-                for c in file_comments {
-                    let line = c.line_ref();
-                    let editing = state
-                        .popover_edit
-                        .as_ref()
-                        .is_some_and(|(f, l)| f == file && *l == line);
-                    if editing {
-                        let edit = note_editor(
-                            ui,
-                            palette,
-                            &style,
-                            &mut state.popover_buffer,
-                            &mut state.note_focus,
-                            ui.available_width(),
-                            true,
-                        );
-                        match edit {
-                            NoteEdit::Save | NoteEdit::SaveAndSend => {
-                                save_note(
-                                    out,
-                                    ReviewPool::Agent,
-                                    file,
-                                    c.old_lineno,
-                                    c.new_lineno,
-                                    &c.code,
-                                    state.popover_buffer.trim(),
-                                );
-                                if matches!(edit, NoteEdit::SaveAndSend) {
-                                    out.push(ReviewIntent::SendToAgent);
-                                }
-                                state.popover_edit = None;
-                                state.popover_buffer.clear();
-                            }
-                            NoteEdit::Delete => {
-                                out.push(ReviewIntent::DeleteComment {
-                                    pool: ReviewPool::Agent,
-                                    file: file.clone(),
-                                    line,
-                                });
-                                state.popover_edit = None;
-                                state.popover_buffer.clear();
-                            }
-                            NoteEdit::Idle => {}
-                        }
-                    } else {
-                        let loc = match line {
-                            Some(n) => format!("L{n}"),
-                            None => "·".to_owned(),
-                        };
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(loc)
-                                    .monospace()
-                                    .size(PILL_SIZE)
-                                    .color(palette.text_muted),
-                            );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(truncate_code(&c.code))
-                                        .monospace()
-                                        .size(PILL_SIZE)
-                                        .color(palette.text_muted),
-                                )
-                                .truncate(),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            if icon_button(
-                                ui,
-                                palette,
-                                lucide_icons::Icon::Trash2,
-                                palette.git_deleted,
-                                "Delete review note",
-                            ) {
-                                out.push(ReviewIntent::DeleteComment {
-                                    pool: ReviewPool::Agent,
-                                    file: file.clone(),
-                                    line,
-                                });
-                            }
-                            let note = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&c.note)
-                                        .size(LINE_SIZE)
-                                        .color(palette.text_secondary),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if note.clicked() {
-                                state.popover_edit = Some((file.clone(), line));
-                                state.popover_buffer = c.note.clone();
-                                state.active_comment = None;
-                                state.note_focus = true;
-                            }
-                        });
-                    }
-                }
-            }
-        });
-    ui.add_space(4.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if send_pill(ui, palette, agent) {
-            out.push(ReviewIntent::SendToAgent);
-        }
-    });
-}
-
-/// Recap footer action: a Sparkles glyph and a "Send to {agent}" label in a pill
-/// (the AI-call icon used by the commit message), hover-tinted to the accent.
-fn send_pill(ui: &mut egui::Ui, palette: &Palette, agent: &str) -> bool {
-    pill_button(
-        ui,
-        palette,
-        palette.accent_ai,
-        lucide_icons::Icon::Sparkles,
-        &format!("Send to {agent}"),
-        RADIUS_PILL,
-    )
-}
-
 /// Metrics of the thread pills (Reply / Resolve / Ask): the **outlined** button the
 /// app already uses for its secondary actions — the review header's *Finish review* and
 /// *Checkout* wear the same shape — at the size the design canvas draws them.
@@ -3006,7 +2174,7 @@ const PILL_PAD_X: f32 = 10.0;
 /// The rest state carries no fill on purpose: these pills sit on cards *and* on raised
 /// blocks, and a `bg.surface` fill disappeared against the latter. `radius` picks
 /// stadium (`RADIUS_PILL`) vs button corners. Returns `true` on click.
-fn pill_button(
+pub(crate) fn pill_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     hover_accent: egui::Color32,
@@ -3061,19 +2229,6 @@ fn pill_button(
     response.clicked()
 }
 
-/// Single-line, trimmed-and-capped code snippet used as the anchor shown beside a
-/// note in the recap popover.
-fn truncate_code(code: &str) -> String {
-    const MAX: usize = 40;
-    let trimmed = code.trim();
-    if trimmed.chars().count() > MAX {
-        let head: String = trimmed.chars().take(MAX).collect();
-        format!("{head}…")
-    } else {
-        trimmed.to_owned()
-    }
-}
-
 /// Identity of the diff the width measure was taken on. Only the per-hunk geometry
 /// is hashed: hashing every line costs *more* than the measure it would spare, and
 /// a same-shape reload already invalidates through `reconcile`.
@@ -3118,10 +2273,6 @@ fn apply_line_action(
             state.text_selection = Some(selection);
         }
         Some(DiffLineAction::ClearTextSelection) => state.text_selection = None,
-        Some(DiffLineAction::RefuseEditor(reason)) => intents.push(GitIntent::EditRefused {
-            path: diff.path.clone(),
-            reason,
-        }),
         // Handled by the caller (needs the stored comments to prefill the editor,
         // resp. the hunk the row belongs to).
         Some(DiffLineAction::OpenComment { .. }) | Some(DiffLineAction::OpenEditor { .. }) => {}
@@ -3137,7 +2288,7 @@ struct ExtensionRow<'a> {
     new_no: u32,
     staged: bool,
     read_only: bool,
-    caret: CaretOffer,
+    opens_editor: bool,
     text_row: usize,
     char_w: f32,
     layout: RowLayout,
@@ -3167,7 +2318,7 @@ fn extension_line(
         review: false,
         forge: false,
         selected: false,
-        caret: ext.caret,
+        opens_editor: ext.opens_editor,
         highlighted: None,
         changed: &[],
         text_range: state.text_range_for_row(ext.text_row, text),
@@ -3179,17 +2330,54 @@ fn extension_line(
     diff_line(ui, &row, 0, 0, &line_ctx, text_rows)
 }
 
-fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
-    let response = ui.add(
-        egui::Button::new(
-            egui::RichText::new("Close")
-                .size(PILL_SIZE)
-                .color(palette.text_secondary),
-        )
-        .fill(palette.bg_surface)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL)),
+/// Frame of an overlay over the center zone: the diff's card, the file viewer's.
+pub(crate) fn overlay_card(palette: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(palette.bg_canvas)
+        .inner_margin(egui::Margin::same(12))
+        .corner_radius(egui::CornerRadius::same(RADIUS_CARD))
+}
+
+/// The icon opening an overlay header, set on a `tile` when one is given.
+pub(crate) fn header_file_icon(ui: &mut egui::Ui, icon: FileIcon, tile: Option<egui::Color32>) {
+    let (icon_rect, _) = ui.allocate_exact_size(
+        egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
+        egui::Sense::hover(),
     );
-    response.on_hover_text("Close (Esc)").clicked()
+    if let Some(fill) = tile {
+        ui.painter()
+            .rect_filled(icon_rect, egui::CornerRadius::same(6), fill);
+    }
+    let icon_box =
+        egui::Rect::from_center_size(icon_rect.center(), egui::Vec2::splat(FILE_ICON_SIZE));
+    icon.paint(ui.painter(), icon_box);
+}
+
+/// The file at `path` in an overlay header: its type's glyph (files.md §3.1), else
+/// a plain text file.
+pub(crate) fn header_icon_of(palette: &Palette, path: &str) -> FileIcon {
+    match file_type(path) {
+        Some(kind) => FileIcon::NerdFont {
+            glyph: kind.glyph(),
+            color: palette.file_type_color(kind),
+        },
+        None => FileIcon::Lucide {
+            icon: lucide_icons::Icon::FileText,
+            color: palette.text_secondary,
+        },
+    }
+}
+
+pub(crate) fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
+    icon_button(
+        ui,
+        palette,
+        lucide_icons::Icon::X,
+        palette.text_primary,
+        "Close",
+    )
+    .on_hover_text("Close (Esc)")
+    .clicked()
 }
 
 const ZOOM_STEP: f32 = 1.25;
@@ -3198,7 +2386,7 @@ const MAX_ZOOM: f32 = 32.0;
 
 /// Decoded image kept across frames for the diff view's preview. `texture` is `None`
 /// when decoding failed — cached so the failure is not retried every frame.
-struct ImagePreview {
+pub(crate) struct ImagePreview {
     key: u64,
     texture: Option<egui::TextureHandle>,
     size: egui::Vec2,
@@ -3221,13 +2409,13 @@ impl std::fmt::Debug for ImagePreview {
     }
 }
 
-fn decode_image(ctx: &egui::Context, blob: &ImageBlob, path: &str) -> ImagePreview {
+fn decode_image(ctx: &egui::Context, blob: &ImageBlob) -> ImagePreview {
     let texture = image::load_from_memory(&blob.bytes).ok().map(|img| {
         let rgba = img.to_rgba8();
         let size = [rgba.width() as usize, rgba.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
         ctx.load_texture(
-            format!("diff-image-{path}"),
+            format!("image-preview-{:x}", blob.fingerprint),
             color,
             egui::TextureOptions::LINEAR,
         )
@@ -3246,19 +2434,19 @@ fn decode_image(ctx: &egui::Context, blob: &ImageBlob, path: &str) -> ImagePrevi
 }
 
 /// Image preview replacing the binary placeholder (git.md §4): a zoomable, pannable
-/// view of the new-side blob. The toolbar sets discrete zoom levels; a trackpad pinch
-/// or ⌘+scroll zooms; two-finger scroll pans the surrounding scroll area.
-fn image_preview(
+/// view of the new-side blob, decoded once into `decoded`. The toolbar sets discrete
+/// zoom levels; a trackpad pinch or ⌘+scroll zooms; two-finger scroll pans the
+/// surrounding scroll area.
+pub(crate) fn image_preview(
     ui: &mut egui::Ui,
     palette: &Palette,
     blob: &ImageBlob,
-    path: &str,
-    state: &mut DiffViewState,
+    decoded: &mut Option<ImagePreview>,
 ) {
-    if state.image.as_ref().map(|p| p.key) != Some(blob.fingerprint) {
-        state.image = Some(decode_image(ui.ctx(), blob, path));
+    if decoded.as_ref().map(|p| p.key) != Some(blob.fingerprint) {
+        *decoded = Some(decode_image(ui.ctx(), blob));
     }
-    let Some(preview) = state.image.as_mut() else {
+    let Some(preview) = decoded.as_mut() else {
         return;
     };
     let Some(texture) = preview.texture.clone() else {
@@ -3340,13 +2528,8 @@ fn fit_zoom(size: egui::Vec2, avail: egui::Vec2) -> f32 {
 /// The working-tree lines an inline editor on this hunk would replace: its **new side**
 /// (the new side of an Unstaged diff *is* the working tree, git.md §4) widened by the
 /// extended context displayed with it — those rows are editable too. 0-based and
-/// half-open. The error is the reason to show: a refusal here is silent otherwise, and
-/// the rows would keep offering a caret that never comes.
-fn edit_range(
-    diff: &FileDiff,
-    hunk: &Hunk,
-    ext: &ContextExtension,
-) -> Result<Range<usize>, EditRefusal> {
+/// half-open. `None` where no buffer can back it: the rows then offer no caret.
+fn edit_range(diff: &FileDiff, hunk: &Hunk, ext: &ContextExtension) -> Option<Range<usize>> {
     let first = if ext.above.is_empty() {
         hunk.new_start
     } else {
@@ -3359,33 +2542,14 @@ fn edit_range(
     };
     // A hunk that only deletes lines has no new side at all: `new_lines == 0`, and its
     // `new_start` is the line it was deleted after.
-    let (Some(start), Some(end)) = (first.checked_sub(1), last.checked_sub(1)) else {
-        return Err(EditRefusal::DeletedLines);
-    };
-    let (start, end) = (start as usize, end as usize);
-    if end <= start {
-        return Err(EditRefusal::DeletedLines);
+    let start = first.checked_sub(1)? as usize;
+    let end = last.checked_sub(1)? as usize;
+    if end <= start || end - start > MAX_EDIT_LINES {
+        return None;
     }
-    if end - start > MAX_EDIT_LINES {
-        return Err(EditRefusal::TooManyLines);
-    }
-    if diff.source_lines.get(start..end).is_none() {
-        // The new side was not loaded, or is shorter than the hunk claims: nothing the
-        // view can name — the file itself is what refuses.
-        return Err(EditRefusal::File);
-    }
-    Ok(start..end)
-}
-
-/// What the rows of this hunk answer a caret ask with (git.md §4).
-fn caret_offer(editable: bool, diff: &FileDiff, hunk: &Hunk, ext: &ContextExtension) -> CaretOffer {
-    if !editable {
-        return CaretOffer::None;
-    }
-    match edit_range(diff, hunk, ext) {
-        Ok(_) => CaretOffer::Open,
-        Err(reason) => CaretOffer::Refuse(reason),
-    }
+    // The new side was not loaded, or is shorter than the hunk claims.
+    diff.source_lines.get(start..end)?;
+    Some(start..end)
 }
 
 /// Opens the inline editor on `hunk_idx`, caret on the row carrying the new-side line
@@ -3408,13 +2572,12 @@ fn open_hunk_editor(
     let Some(hunk) = diff.hunks.get(hunk_idx) else {
         return;
     };
-    let Ok(range) = edit_range(diff, hunk, ext) else {
+    let Some(range) = edit_range(diff, hunk, ext) else {
         return;
     };
     let Some(original) = diff.source_lines.get(range.clone()).map(<[String]>::to_vec) else {
         return;
     };
-    state.leave_inline_edit(staged, intents);
     let row = at
         .and_then(|n| (n as usize).checked_sub(1))
         .and_then(|n| n.checked_sub(range.start))
@@ -3422,254 +2585,17 @@ fn open_hunk_editor(
         .min(original.len() - 1);
     state.text_selection = None;
     state.selection.clear();
-    let buffer = original.join("\n");
-    state.inline_edit = Some(InlineEdit {
+    let target = EditTarget {
         path: diff.path.clone(),
-        hunk: hunk_idx,
-        flushed: buffer.clone(),
-        buffer,
         range,
         original,
-        caret: Some(TextPosition { row, col }),
-        focus: true,
-    });
-}
-
-/// The refused-write notice (git.md §4): the file moved under the editor, so the write
-/// did not happen and the typed buffer is still on screen. The arbitration is the
-/// user's — **Reload** takes the version on disk (the buffer goes with the editor),
-/// **Overwrite** re-sends the very same request, precondition dropped.
-fn divergence_notice(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    state: &mut DiffViewState,
-    intents: &mut Vec<GitIntent>,
-) {
-    let Some(request) = state.diverged.clone() else {
-        return;
+        stage_after: staged,
+        whole_file: false,
     };
-    let mut answered = false;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("File changed on disk — the save was refused")
-                .size(LINE_SIZE)
-                .color(palette.git_modified),
-        );
-        if notice_button(ui, palette, "Reload") {
-            state.inline_edit = None;
-            intents.push(GitIntent::OpenDiff {
-                path: request.path.clone(),
-                staged: request.stage_after,
-            });
-            answered = true;
-        }
-        if notice_button(ui, palette, "Overwrite") {
-            intents.push(GitIntent::FlushEdit(EditRequest {
-                force: true,
-                ..request.clone()
-            }));
-            answered = true;
-        }
-    });
-    if answered {
-        state.diverged = None;
-    }
-    ui.add_space(8.0);
-}
-
-fn notice_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> bool {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(label)
-                .size(PILL_SIZE)
-                .color(palette.text_secondary),
-        )
-        .fill(palette.bg_surface)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL)),
-    )
-    .clicked()
-}
-
-/// The open inline editor, in place of the hunk's rows (git.md §4, design-system §4):
-/// same mono font, same line height, same content x offset, same syntax colours — the
-/// only perceptible change is the caret. No frame, no toolbar, no button: an accent
-/// bar marks the hunk, the gutter is renumbered off the laid-out galley, and one muted
-/// hint closes the block. Returns `true` when the editor has been left: egui surrenders
-/// the buffer's focus as soon as the pointer presses anything else, and that *is* the
-/// exit gesture (git.md §4) — there is nothing to press.
-fn inline_editor(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    path: &str,
-    edit: &mut InlineEdit,
-    layout: RowLayout,
-    row_w: f32,
-) -> bool {
-    let id = ui.id().with("inline_edit");
-    let rows = edit.buffer.split('\n').count();
-    let (block, _) = ui.allocate_exact_size(
-        egui::vec2(row_w, rows as f32 * LINE_HEIGHT),
-        egui::Sense::hover(),
-    );
-    let syntax = palette.syntax;
-    let fallback = palette.text_secondary;
-    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
-        editor_galley(ui, path, syntax, egui::TextBuffer::as_str(buf))
-    };
-    let text_rect = egui::Rect::from_min_max(
-        egui::pos2(layout.content_left(block.left()), block.top()),
-        block.max,
-    );
-    let output = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
-            egui::TextEdit::multiline(&mut edit.buffer)
-                .id(id)
-                // No frame at all (design-system §4): the diff's own background shows
-                // through, so the rows keep the colours they had before the caret.
-                .frame(egui::Frame::NONE)
-                .desired_width(f32::INFINITY)
-                .desired_rows(rows)
-                .text_color(fallback)
-                .layouter(&mut layouter)
-                .show(ui)
-        })
-        .inner;
-
-    if let Some(caret) = edit.caret.take() {
-        let index = caret_char_index(&edit.buffer, caret);
-        let mut opened = output.state.clone();
-        opened
-            .cursor
-            .set_char_range(Some(egui::text_selection::CCursorRange::one(
-                egui::text::CCursor::new(index),
-            )));
-        // The widget id is the same for every hunk, so egui's undo history outlives the
-        // editor: without this reset, one `Cmd+Z` in a freshly opened editor restores the
-        // *previous* hunk's buffer — which the save would then write to this range.
-        opened.clear_undoer();
-        opened.store(ui.ctx(), id);
-    }
-    let left = if std::mem::take(&mut edit.focus) {
-        ui.memory_mut(|memory| memory.request_focus(id));
-        false
-    } else {
-        !ui.memory(|memory| memory.has_focus(id))
-    };
-
-    // Off the laid-out galley, not the block: the field takes this frame's keystrokes
-    // *after* the block was allocated from the buffer as it read before them, so the row
-    // a newline just added would otherwise be left outside the bar for a frame.
-    let painted = block.height().max(output.galley.size().y);
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(block.min, egui::vec2(EDIT_BAR_W, painted)),
-        egui::CornerRadius::ZERO,
-        palette.accent,
-    );
-    paint_editor_gutter(ui, palette, &output, block.left(), layout, edit.range.start);
-    ui.label(
-        egui::RichText::new("Saved when you leave the editor · Esc discards")
-            .size(NUM_SIZE)
-            .color(palette.text_muted),
-    );
-    left
-}
-
-/// Line numbers of the editor's rows, read off the laid-out galley so they follow the
-/// text the user is typing (a row added in the buffer numbers itself), plus the dimmed
-/// sign column: the signs belong to the diff the editor replaced, so they are shown
-/// muted — informational, no longer a `+`/`−` you can act on.
-fn paint_editor_gutter(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    output: &egui::text_edit::TextEditOutput,
-    left: f32,
-    layout: RowLayout,
-    first_line: usize,
-) {
-    let rows = &output.galley.rows;
-    let clip = ui.clip_rect();
-    let num_font = egui::FontId::monospace(NUM_SIZE);
-    let sign_color = with_alpha(palette.text_muted, 90);
-    let painter = ui.painter();
-    // A wrapped row would number twice; the editor never wraps (no wrap width).
-    for (line, row) in (first_line..).zip(rows.iter()) {
-        let center_y = output.galley_pos.y + (row.min_y() + row.max_y()) / 2.0;
-        if center_y < clip.top() || center_y > clip.bottom() {
-            continue;
-        }
-        painter.text(
-            egui::pos2(layout.new_right(left), center_y),
-            egui::Align2::RIGHT_CENTER,
-            (line + 1).to_string(),
-            num_font.clone(),
-            palette.text_muted,
-        );
-        painter.text(
-            egui::pos2(layout.sign_left(left), center_y),
-            egui::Align2::LEFT_CENTER,
-            "~",
-            egui::FontId::monospace(LINE_SIZE),
-            sign_color,
-        );
-    }
-}
-
-/// Char offset of a buffer position, for the caret the opening click asks for.
-fn caret_char_index(buffer: &str, at: TextPosition) -> usize {
-    let mut index = 0;
-    for (row, text) in buffer.split('\n').enumerate() {
-        let len = text.chars().count();
-        if row == at.row {
-            return index + at.col.min(len);
-        }
-        index += len + 1;
-    }
-    index.saturating_sub(1)
-}
-
-// Incremental highlighter of the inline editor's buffer: syntect is not incremental and
-// the layouter runs every frame, so the spans are kept across frames and only the lines
-// a keystroke touched are re-parsed (same reasoning — and same `!Send` parse state — as
-// the conflict editor's Output).
-thread_local! {
-    static EDITOR_HL: RefCell<IncrementalHighlighter> =
-        RefCell::new(IncrementalHighlighter::default());
-}
-
-/// The editor's galley at the diff rows' exact metrics: mono `LINE_SIZE` glyphs
-/// centred in `LINE_HEIGHT` rows, no wrapping — a buffer row and a diff row occupy the
-/// same band, so entering the editor shifts nothing.
-fn editor_galley(
-    ui: &egui::Ui,
-    path: &str,
-    syntax_theme: &'static str,
-    text: &str,
-) -> std::sync::Arc<egui::Galley> {
-    let font = egui::FontId::monospace(LINE_SIZE);
-    let mut job = egui::text::LayoutJob::default();
-    EDITOR_HL.with_borrow_mut(|hl| {
-        let format = |color| egui::text::TextFormat {
-            font_id: font.clone(),
-            color,
-            line_height: Some(LINE_HEIGHT),
-            valign: egui::Align::Center,
-            ..Default::default()
-        };
-        match hl.highlight(path, syntax_theme, text) {
-            Some(lines) => {
-                for (i, spans) in lines.iter().enumerate() {
-                    if i > 0 {
-                        job.append("\n", 0.0, format(egui::Color32::PLACEHOLDER));
-                    }
-                    for span in spans {
-                        job.append(&span.text, 0.0, format(span.color));
-                    }
-                }
-            }
-            None => job.append(text, 0.0, format(egui::Color32::PLACEHOLDER)),
-        }
-    });
-    ui.painter().layout_job(job)
+    let caret = TextPosition { row, col };
+    state
+        .editing
+        .open(InlineEdit::new(hunk_idx, target, caret), intents);
 }
 
 /// Hunk header band: `@@ … @@` on a surface background, controls on the right —
@@ -3779,8 +2705,8 @@ struct DiffLineCtx<'a> {
     /// for a forge review comment, alongside the agent Sparkles (slot 1).
     forge: bool,
     selected: bool,
-    /// What this row's content column answers a caret ask with (git.md §4).
-    caret: CaretOffer,
+    /// A click in this row's content column opens the inline editor (git.md §4).
+    opens_editor: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     /// Columns this line differs from its counterpart on (git.md §4); empty when it
     /// has none, or when the two lines are too far apart to pair.
@@ -3824,21 +2750,6 @@ enum DiffLineAction {
     OpenEditor {
         col: usize,
     },
-    /// `Cmd+E` on a row whose hunk cannot back a buffer (git.md §4): the ask gets an
-    /// answer with the reason, rather than nothing at all.
-    RefuseEditor(EditRefusal),
-}
-
-/// What the content column of a row does with a caret ask (git.md §4). A row whose
-/// hunk has no new side, or too many lines, still selects text like any other — it
-/// simply says so when asked for a caret.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CaretOffer {
-    Open,
-    Refuse(EditRefusal),
-    /// Not an editable diff: the refusal belongs to the diff as a whole, which answers
-    /// `Cmd+E` before the rows are drawn.
-    None,
 }
 
 /// Where a pointer x lands on a row: the **number strip** (both number columns and the
@@ -3860,18 +2771,6 @@ fn row_zone(x: f32, left: f32, content_left: f32, char_w: f32) -> Option<RowZone
     } else {
         None
     }
-}
-
-/// `Cmd+E` (keybindings.md §3): opens the editor on the hovered line, for a hand that
-/// never left the keyboard.
-fn editor_requested(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
-}
-
-/// `Cmd+S` while the editor is open (keybindings.md §3): the keyboard's way of stepping
-/// out of the buffer.
-fn save_requested(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
 }
 
 fn diff_line(
@@ -3960,22 +2859,10 @@ fn diff_line(
             lucide_icons::Icon::Sparkles,
             "Comment line",
         );
-    let action = if response.triple_clicked() {
-        click_position.map(|at| {
-            DiffLineAction::SelectText(TextSelection {
-                anchor: at,
-                head: at,
-                mode: TextSelectionMode::Line,
-            })
-        })
-    } else if response.double_clicked() {
-        click_position.map(|at| {
-            DiffLineAction::SelectText(TextSelection {
-                anchor: at,
-                head: at,
-                mode: TextSelectionMode::Word,
-            })
-        })
+    let action = if response.triple_clicked() || response.double_clicked() {
+        click_position
+            .and_then(|at| clicked_selection(&response, at))
+            .map(DiffLineAction::SelectText)
     } else if forge_clicked {
         Some(DiffLineAction::OpenComment {
             pool: ReviewPool::Forge,
@@ -4012,18 +2899,12 @@ fn diff_line(
                 hunk: hunk_idx,
                 line: line_idx,
             }),
-            Some(RowZone::Content { col }) if ctx.caret == CaretOffer::Open => {
+            Some(RowZone::Content { col }) if ctx.opens_editor => {
                 Some(DiffLineAction::OpenEditor {
                     col: col.min(text_len),
                 })
             }
             _ => Some(DiffLineAction::ClearTextSelection),
-        }
-    } else if ctx.caret != CaretOffer::None && response.hovered() && editor_requested(ui) {
-        match ctx.caret {
-            CaretOffer::Open => Some(DiffLineAction::OpenEditor { col: 0 }),
-            CaretOffer::Refuse(reason) => Some(DiffLineAction::RefuseEditor(reason)),
-            CaretOffer::None => None,
         }
     } else {
         None
@@ -4087,7 +2968,7 @@ fn diff_line(
     action
 }
 
-fn paint_line_content(
+pub(crate) fn paint_line_content(
     ui: &mut egui::Ui,
     content_left: f32,
     rect: egui::Rect,
@@ -4143,131 +3024,15 @@ fn paint_changed_columns(
     }
 }
 
-fn paint_text_selection(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    row: egui::Rect,
-    content_left: f32,
-    char_w: f32,
-    from: usize,
-    to: usize,
-) {
-    let left = content_left + from as f32 * char_w;
-    let right = content_left + to as f32 * char_w;
-    let rect =
-        egui::Rect::from_min_max(egui::pos2(left, row.top()), egui::pos2(right, row.bottom()));
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::ZERO,
-        with_alpha(palette.accent, TEXT_SELECTION_ALPHA),
-    );
-}
-
 fn update_text_selection(ui: &egui::Ui, state: &mut DiffViewState, rows: &[TextRow]) {
-    let selection = ui.input(|input| {
-        if !input.pointer.primary_down() {
-            return None;
-        }
-        let press = input.pointer.press_origin()?;
-        let current = input.pointer.interact_pos()?;
-        if press.distance(current) < TEXT_DRAG_THRESHOLD {
-            return None;
-        }
-        let anchor = text_position_at(press, rows, true)?;
-        let head = text_position_at(current, rows, false)?;
-        Some(TextSelection {
-            anchor,
-            head,
-            mode: TextSelectionMode::Char,
-        })
-    });
-    if let Some(selection) = selection {
-        if state.text_selection != Some(selection) {
-            state.selection.clear();
-            state.text_selection = Some(selection);
-            ui.ctx().request_repaint();
-        }
+    let Some(selection) = dragged_selection(ui, rows) else {
+        return;
+    };
+    if state.text_selection != Some(selection) {
+        state.selection.clear();
+        state.text_selection = Some(selection);
+        ui.ctx().request_repaint();
     }
-}
-
-fn text_position_at(
-    pos: egui::Pos2,
-    rows: &[TextRow],
-    require_text_hit: bool,
-) -> Option<TextPosition> {
-    let row = row_at_position(pos, rows, require_text_hit)?;
-    if require_text_hit && pos.x < row.content_left {
-        return None;
-    }
-    Some(TextPosition {
-        row: row.row,
-        col: text_col_at(pos.x, row),
-    })
-}
-
-fn row_at_position(pos: egui::Pos2, rows: &[TextRow], require_inside: bool) -> Option<TextRow> {
-    if let Some(row) = rows.iter().find(|row| row.rect.contains(pos)) {
-        return Some(*row);
-    }
-    if require_inside {
-        return None;
-    }
-    rows.iter()
-        .min_by(|a, b| y_distance(pos.y, a.rect).total_cmp(&y_distance(pos.y, b.rect)))
-        .copied()
-}
-
-fn y_distance(y: f32, rect: egui::Rect) -> f32 {
-    if y < rect.top() {
-        rect.top() - y
-    } else if y > rect.bottom() {
-        y - rect.bottom()
-    } else {
-        0.0
-    }
-}
-
-fn text_col_at(x: f32, row: TextRow) -> usize {
-    if row.text_len == 0 {
-        return 0;
-    }
-    let col = ((x - row.content_left) / row.char_w).floor().max(0.0) as usize;
-    col.min(row.text_len - 1)
-}
-
-fn text_click_position(
-    response: &egui::Response,
-    content_left: f32,
-    char_w: f32,
-    row: usize,
-    text_len: usize,
-) -> Option<TextPosition> {
-    if text_len == 0 {
-        return None;
-    }
-    let pos = response.interact_pointer_pos()?;
-    let content_right = content_left + text_len as f32 * char_w;
-    if pos.x < content_left || pos.x > content_right {
-        return None;
-    }
-    Some(TextPosition {
-        row,
-        col: text_col_at(
-            pos.x,
-            TextRow {
-                row,
-                rect: response.rect,
-                content_left,
-                char_w,
-                text_len,
-            },
-        ),
-    })
-}
-
-fn copy_requested(ui: &egui::Ui) -> bool {
-    ui.ctx()
-        .input(|input| input.events.iter().any(|e| matches!(e, egui::Event::Copy)))
 }
 
 fn line_action_button(
@@ -4342,7 +3107,7 @@ fn gutter_button_rect(row: egui::Rect, slot: usize) -> egui::Rect {
 
 /// A hover-only gutter icon button at `slot`; the icon is muted at rest and
 /// tinted (with a hover fill) when pointed at. Returns `true` on click.
-fn gutter_icon_button(
+pub(crate) fn gutter_icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: egui::Rect,
@@ -4382,115 +3147,6 @@ fn gutter_icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_note_editor_hints_follow_the_app_badge_convention() {
-        // The captions are literals (the two keys are hard-wired here, not rebindable
-        // `Action`s), so they must be pinned to the convention the badges elsewhere
-        // render — a change to `key_display` must not leave this editor behind.
-        let send = crate::keybindings::Shortcut::cmd(egui::Key::Enter).display();
-        assert_eq!(SHORTCUT_SEND, send);
-        assert_eq!(SHORTCUT_SAVE, send.trim_start_matches('⌘'));
-    }
-
-    /// State holding an open editor on lines 1..3 of `f`, buffer as seeded.
-    fn state_editing() -> DiffViewState {
-        let original = vec!["one".to_owned(), "two".to_owned()];
-        let buffer = original.join("\n");
-        DiffViewState {
-            inline_edit: Some(InlineEdit {
-                path: "f".to_owned(),
-                hunk: 0,
-                range: 1..3,
-                original,
-                flushed: buffer.clone(),
-                buffer,
-                caret: None,
-                focus: false,
-            }),
-            ..DiffViewState::default()
-        }
-    }
-
-    #[test]
-    fn leaving_writes_the_buffer_once() {
-        let mut state = state_editing();
-        state.inline_edit.as_mut().unwrap().buffer = "one\nTWO".to_owned();
-        let mut intents = Vec::new();
-
-        state.leave_inline_edit(false, &mut intents);
-
-        let GitIntent::FlushEdit(request) = intents.pop().expect("the exit writes") else {
-            panic!("got {intents:?}");
-        };
-        assert!(intents.is_empty(), "got {intents:?}");
-        assert_eq!(request.range, 1..3);
-        assert_eq!(request.replacement, "one\nTWO");
-        assert!(!request.force);
-    }
-
-    #[test]
-    fn esc_rolls_the_buffer_back_instead_of_writing_it() {
-        let mut state = state_editing();
-        state.inline_edit.as_mut().unwrap().buffer = "one\nTWO".to_owned();
-        state.diverged = Some(EditRequest {
-            path: "f".to_owned(),
-            range: 1..3,
-            original: vec!["one".to_owned(), "two".to_owned()],
-            replacement: "one\nTWO".to_owned(),
-            stage_after: false,
-            force: false,
-        });
-
-        state.cancel_inline_edit();
-
-        assert!(state.inline_edit.is_none(), "the editor is gone");
-        assert!(
-            state.diverged.is_none(),
-            "the notice offered to re-send the very buffer just dropped"
-        );
-    }
-
-    #[test]
-    fn the_landed_write_re_anchors_the_editor_on_what_it_wrote() {
-        let mut state = state_editing();
-        let edit = state.inline_edit.as_mut().unwrap();
-        edit.buffer = "one\nTWO\nextra".to_owned();
-        let request = edit.request(false, false);
-
-        state.edit_written(&request);
-
-        let edit = state.inline_edit.as_ref().unwrap();
-        assert_eq!(
-            edit.range,
-            1..4,
-            "a line added by the buffer widens the range it owns"
-        );
-        assert_eq!(edit.original, vec!["one", "TWO", "extra"]);
-        assert!(
-            !edit.is_dirty(),
-            "the anchor now agrees with the buffer on disk"
-        );
-    }
-
-    #[test]
-    fn a_reply_for_another_anchor_leaves_the_editor_alone() {
-        let mut state = state_editing();
-        let stale = EditRequest {
-            path: "f".to_owned(),
-            range: 7..9,
-            original: vec!["x".to_owned()],
-            replacement: "y".to_owned(),
-            stage_after: false,
-            force: false,
-        };
-
-        state.edit_written(&stale);
-
-        let edit = state.inline_edit.as_ref().unwrap();
-        assert_eq!(edit.range, 1..3);
-        assert_eq!(edit.original, vec!["one", "two"]);
-    }
 
     #[test]
     fn toggling_a_line_adds_then_removes_it_from_the_selection() {
@@ -4784,26 +3440,5 @@ mod tests {
         assert!(state.reconcile(&reloaded));
         assert!(state.is_stale());
         assert!(state.selected_lines(0).is_empty());
-    }
-
-    #[test]
-    fn note_on_a_deleted_row_does_not_show_on_an_added_row_with_the_same_number() {
-        let mut store = FileComments::new();
-        crate::review::add_comment(
-            &mut store,
-            "f",
-            LineComment {
-                old_lineno: Some(5),
-                new_lineno: None,
-                code: "removed".into(),
-                note: "for claude".into(),
-            },
-        );
-
-        assert_eq!(
-            note_at(&store, "f", Some(5), None).as_deref(),
-            Some("for claude")
-        );
-        assert_eq!(note_at(&store, "f", None, Some(5)), None);
     }
 }

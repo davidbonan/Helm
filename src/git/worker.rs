@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::files::content::{self, ReadOutcome, Stamp};
+use crate::files::tree::{self, ListedFolder};
 use crate::git::branch::{self, Branch};
 use crate::git::commit_detail::{self, CommitDetail};
 use crate::git::conflict::{self, ConflictFile};
@@ -168,6 +170,16 @@ pub enum GitCommand {
     /// Branches the worktree can check out + its stashes (command palette,
     /// keybindings.md §1): read, answered by `GitResult::Refs`.
     Refs,
+    /// Reads worktree folders for the Files tab's tree (files.md §3, §6), relative
+    /// paths, `""` for the root: read, answered by `GitResult::Folders`.
+    ListFolders(Vec<String>),
+    /// Reads a worktree file for the read-only viewer (files.md §4), unless `known` —
+    /// the stamp of the content on screen — still holds: read, answered by
+    /// `GitResult::File`.
+    ReadFile {
+        path: String,
+        known: Option<Stamp>,
+    },
 }
 
 impl GitCommand {
@@ -185,6 +197,8 @@ impl GitCommand {
                 | GitCommand::CommitFileDiff { .. }
                 | GitCommand::ReadConflicts
                 | GitCommand::Refs
+                | GitCommand::ListFolders(_)
+                | GitCommand::ReadFile { .. }
         )
     }
 
@@ -205,12 +219,15 @@ impl GitCommand {
         )
     }
 
-    /// `true` for the two refresh reads (poll cadence, reload behind a
-    /// mutation, manual Refresh): they only update views already on screen, so
-    /// a click's working-tree diff may overtake them (`next_index`) — they
-    /// change nothing it reads.
+    /// `true` for the refresh reads (poll cadence, reload behind a mutation,
+    /// manual Refresh, the tree's folders): they only update views already on
+    /// screen, so a click's working-tree diff may overtake them (`next_index`) —
+    /// they change nothing it reads.
     pub fn refresh_read(&self) -> bool {
-        matches!(self, GitCommand::Status | GitCommand::Graph { .. })
+        matches!(
+            self,
+            GitCommand::Status | GitCommand::Graph { .. } | GitCommand::ListFolders(_)
+        )
     }
 
     /// Reply variant this command resolves to — the slot its generation stamps
@@ -225,6 +242,8 @@ impl GitCommand {
             GitCommand::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
             GitCommand::ReadConflicts => ResultKind::Conflicts,
             GitCommand::Refs => ResultKind::Refs,
+            GitCommand::ListFolders(_) => ResultKind::Folders,
+            GitCommand::ReadFile { .. } => ResultKind::File,
             _ => ResultKind::Status,
         }
     }
@@ -244,9 +263,11 @@ pub enum ResultKind {
     Conflicts,
     Edit,
     Refs,
+    Folders,
+    File,
 }
 
-const RESULT_KINDS: usize = 9;
+const RESULT_KINDS: usize = 11;
 
 #[derive(Debug)]
 pub enum GitResult {
@@ -292,6 +313,8 @@ pub enum GitResult {
         result: Result<Landing, EditError>,
     },
     Refs(Result<RepoRefs, git2::Error>),
+    Folders(Result<Vec<ListedFolder>, git2::Error>),
+    File(Result<ReadOutcome, git2::Error>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -319,6 +342,8 @@ impl GitResult {
             GitResult::Conflicts { .. } => ResultKind::Conflicts,
             GitResult::Edit { .. } => ResultKind::Edit,
             GitResult::Refs(_) => ResultKind::Refs,
+            GitResult::Folders(_) => ResultKind::Folders,
+            GitResult::File(_) => ResultKind::File,
         }
     }
 
@@ -338,6 +363,8 @@ impl GitResult {
             GitResult::CommitFileDiff { result, .. } => result.is_ok(),
             GitResult::Conflicts { result } => result.is_ok(),
             GitResult::Refs(result) => result.is_ok(),
+            GitResult::Folders(result) => result.is_ok(),
+            GitResult::File(result) => result.is_ok(),
             // Never state: a save's outcome reports on the command that ran it, and
             // must reach the editor even with a newer flush already in flight.
             GitResult::Edit { .. } => false,
@@ -604,23 +631,29 @@ fn run(
 
 /// Position of the next command to serve: the first commit-addressed read if
 /// any (`jumps_queue` — it answers a click and must not wait for the poll
-/// backlog), else a working-tree `Diff` that only refresh reads separate from
-/// the front (see below), else the queue's front. Commands of the **same kind**
-/// never overtake each other: per-kind FIFO holds, the staleness gate (M17-13)
-/// and the per-kind `in_flight` settlement stay exact.
+/// backlog), else a working-tree `Diff` or a `ReadFile` that only refresh reads
+/// separate from the front (see below), else the queue's front. Commands of the
+/// **same kind** never overtake each other: per-kind FIFO holds, the staleness
+/// gate (M17-13) and the per-kind `in_flight` settlement stay exact.
 ///
 /// The `Diff` case answers a click too, but its result depends on the index and
 /// the worktree: it may only overtake `refresh_read` commands (status/graph),
-/// never a queued mutation. Without it a file opened from the sidebar waits for
-/// the poll backlog it landed behind — a status snapshot plus a graph reload,
-/// 150–450 ms on a large repo.
+/// never a queued mutation — nor may the viewer's `ReadFile`, which reads the
+/// worktree. Without it a file opened from the sidebar waits for the poll
+/// backlog it landed behind — a status snapshot plus a graph reload, 150–450 ms
+/// on a large repo.
 fn next_index(queue: &VecDeque<(u64, GitCommand)>) -> usize {
     if let Some(index) = queue.iter().position(|(_, command)| command.jumps_queue()) {
         return index;
     }
     queue
         .iter()
-        .position(|(_, command)| matches!(command, GitCommand::Diff { .. }))
+        .position(|(_, command)| {
+            matches!(
+                command,
+                GitCommand::Diff { .. } | GitCommand::ReadFile { .. }
+            )
+        })
         .filter(|index| {
             queue
                 .iter()
@@ -667,6 +700,15 @@ fn dispatch(
             result: repo.and_then(conflict::read_conflicts),
         },
         GitCommand::Refs => GitResult::Refs(repo.and_then(load_refs)),
+        GitCommand::ListFolders(folders) => {
+            GitResult::Folders(repo.map(|repo| tree::list_folders(repo, folders)))
+        }
+        GitCommand::ReadFile { path, known } => GitResult::File(repo.and_then(|repo| {
+            let root = repo
+                .workdir()
+                .ok_or_else(|| git2::Error::from_str("no working tree"))?;
+            Ok(content::read(root, path, *known))
+        })),
         // The only mutation answered by its own variant: the editor needs the typed
         // outcome, not a snapshot (`GitResult::Edit`). It still takes the mutation
         // lock — hence a git failure mapped into `EditError`, whose `Io` prints the
@@ -778,6 +820,8 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
         | GitCommand::Refs
+        | GitCommand::ListFolders(_)
+        | GitCommand::ReadFile { .. }
         | GitCommand::EditFile(_) => {
             unreachable!("commands with their own reply variant never reach apply")
         }

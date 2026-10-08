@@ -149,11 +149,7 @@ pub(crate) fn file_row(
         ui.painter().rect_filled(rect, 0.0, fill);
     }
     if row.selected {
-        let accent_rect = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + SELECTED_ROW_ACCENT_W, rect.bottom()),
-        );
-        ui.painter().rect_filled(accent_rect, 0.0, palette.accent);
+        paint_selection_bar(ui.painter(), palette, rect);
     }
     let center_y = rect.center().y;
     let content_left = rect.left() + ROW_PAD_X + row.indent;
@@ -385,6 +381,15 @@ pub(crate) fn row_separator(ui: &mut egui::Ui, palette: &Palette) {
     );
 }
 
+/// The accent bar on the left edge of a selected row.
+pub(crate) fn paint_selection_bar(painter: &egui::Painter, palette: &Palette, row: egui::Rect) {
+    let bar = egui::Rect::from_min_max(
+        row.left_top(),
+        egui::pos2(row.left() + SELECTED_ROW_ACCENT_W, row.bottom()),
+    );
+    painter.rect_filled(bar, 0.0, palette.accent);
+}
+
 pub(crate) fn file_row_fill(
     palette: &Palette,
     hovered: bool,
@@ -518,6 +523,17 @@ pub(crate) fn status_icon(kind: ChangeKind) -> lucide_icons::Icon {
         ChangeKind::Deleted => lucide_icons::Icon::Minus,
         ChangeKind::Renamed => lucide_icons::Icon::ArrowRight,
         ChangeKind::Conflicted => lucide_icons::Icon::AlertTriangle,
+    }
+}
+
+pub(crate) fn status_label(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Untracked => "Untracked",
+        ChangeKind::Added => "Added",
+        ChangeKind::Modified => "Modified",
+        ChangeKind::Deleted => "Deleted",
+        ChangeKind::Renamed => "Renamed",
+        ChangeKind::Conflicted => "Conflicted",
     }
 }
 

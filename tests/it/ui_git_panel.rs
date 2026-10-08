@@ -4,6 +4,7 @@ use std::rc::Rc;
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
+use helm::files::tab::SidebarTab;
 use helm::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use helm::keybindings::Keymap;
 use helm::theme::Palette;
@@ -2018,4 +2019,66 @@ fn a_folded_section_offers_no_resize_separator() {
         },
         |h| assert!(h.query_by_label("Resize sections").is_none()),
     );
+}
+
+fn on_tab(tab: SidebarTab) -> GitPanelState {
+    GitPanelState {
+        sidebar_tab: Some(tab),
+        ..Default::default()
+    }
+}
+
+fn toggled(harness: &Harness<'_, ()>, label: &str) -> String {
+    format!(
+        "{:?}",
+        harness.get_by_label(label).accesskit_node().toggled()
+    )
+}
+
+#[test]
+fn the_tab_strip_marks_the_active_tab_and_a_click_selects_the_other() {
+    let intents = drive_with_state(sample_status(), on_tab(SidebarTab::Git), |h| {
+        assert_eq!(toggled(h, "Git"), "Some(True)");
+        assert_eq!(toggled(h, "Files"), "Some(False)");
+        h.get_by_label("Files").click();
+    });
+
+    assert_eq!(intents, vec![GitIntent::SelectTab(SidebarTab::Files)]);
+}
+
+#[test]
+fn the_files_tab_drops_the_git_body_and_commit_card() {
+    let intents = drive_with_state(sample_status(), on_tab(SidebarTab::Files), |h| {
+        for gone in [
+            "main",
+            "Refresh",
+            "Discard all",
+            "1 file changed",
+            "Commit message",
+            "Commit",
+        ] {
+            assert!(h.query_by_label(gone).is_none(), "{gone} shows on Files");
+        }
+        h.get_by_label("Collapse all").click();
+    });
+
+    assert_eq!(intents, vec![GitIntent::CollapseAllFolders]);
+}
+
+#[test]
+fn the_tab_strip_leaves_the_branch_to_the_workspace_sidebar() {
+    drive_with_state(sample_status(), on_tab(SidebarTab::Git), |h| {
+        h.get_by_label("Refresh");
+        assert!(h.query_by_label("main").is_none());
+    });
+}
+
+#[test]
+fn without_a_tab_the_header_keeps_its_git_title() {
+    drive_with_state(sample_status(), GitPanelState::default(), |h| {
+        h.get_by_label("Git");
+        h.get_by_label("main");
+        h.get_by_label("Refresh");
+        assert!(h.query_by_label("Files").is_none());
+    });
 }

@@ -49,6 +49,16 @@ impl RepoStatus {
                 (add + f.additions, del + f.deletions)
             })
     }
+
+    /// The change `path` carries: the working tree's first — it is what the file on
+    /// disk shows — else the staged one. `None` for a clean file.
+    pub fn change_of(&self, path: &str) -> Option<ChangeKind> {
+        self.unstaged
+            .iter()
+            .chain(&self.staged)
+            .find(|entry| entry.path == path)
+            .map(|entry| entry.kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -431,6 +441,21 @@ mod tests {
             additions,
             deletions,
         }
+    }
+
+    #[test]
+    fn a_file_changed_in_both_sections_shows_its_working_tree_change() {
+        let status = RepoStatus {
+            staged: vec![
+                entry("new.rs", ChangeKind::Added, 1, 0),
+                entry("lib.rs", ChangeKind::Renamed, 1, 0),
+            ],
+            unstaged: vec![entry("new.rs", ChangeKind::Modified, 1, 0)],
+        };
+
+        assert_eq!(status.change_of("new.rs"), Some(ChangeKind::Modified));
+        assert_eq!(status.change_of("lib.rs"), Some(ChangeKind::Renamed));
+        assert_eq!(status.change_of("clean.rs"), None);
     }
 
     fn commit_blob(

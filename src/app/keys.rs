@@ -40,8 +40,26 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
         // granular staging intents it needs nothing from the open overlay — the diff
         // may already have moved on to another file when the buffer lands.
         GitIntent::FlushEdit(request) => Some(GitCommand::EditFile(request)),
-        // A refused caret is a toast, not a git call.
-        GitIntent::EditRefused { .. } => None,
+        // The right sidebar's tab and tree state (files.md §7): prefs, applied app-side.
+        GitIntent::SelectTab(_)
+        | GitIntent::CollapseAllFolders
+        | GitIntent::SelectEntry(_)
+        | GitIntent::FoldFolder(_)
+        | GitIntent::UnfoldFolder(_) => None,
+        // The read-only viewer (files.md §4) is opened app-side, its read sent from there.
+        GitIntent::OpenFile(_) => None,
+    }
+}
+
+/// The edit an intent makes to the worktree's right sidebar state (files.md §7).
+pub(crate) fn tab_edit(intent: &GitIntent) -> Option<TabEdit> {
+    match intent {
+        GitIntent::SelectTab(tab) => Some(TabEdit::Show(*tab)),
+        GitIntent::CollapseAllFolders => Some(TabEdit::CollapseAll),
+        GitIntent::SelectEntry(path) => Some(TabEdit::Select(path.clone())),
+        GitIntent::FoldFolder(folder) => Some(TabEdit::Fold(folder.clone())),
+        GitIntent::UnfoldFolder(folder) => Some(TabEdit::Unfold(folder.clone())),
+        _ => None,
     }
 }
 

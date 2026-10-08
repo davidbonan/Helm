@@ -1518,6 +1518,7 @@ fn a_superseded_graph_reply_is_discarded() {
         );
         session.drain(
             &mut diff,
+            &mut None,
             &mut editor,
             &mut panel,
             &mut None,
@@ -1568,6 +1569,7 @@ fn a_checkout_that_auto_stashed_says_where_the_changes_went() {
             "the checkout never reported back"
         );
         session.drain(
+            &mut None,
             &mut None,
             &mut editor,
             &mut panel,
@@ -1636,6 +1638,7 @@ fn a_superseded_status_reply_still_runs_its_command_side_effects() {
             "the checkouts never reported back"
         );
         session.drain(
+            &mut None,
             &mut None,
             &mut editor,
             &mut panel,
@@ -1773,6 +1776,7 @@ fn a_reload_that_changes_the_diff_disarms_the_discard_hunk_confirmation() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 session.drain(
                     diff,
+                    &mut None,
                     &mut BranchEditor::default(),
                     &mut GitPanelState::default(),
                     &mut None,
@@ -1849,6 +1853,7 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
         original: vec!["two".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: true,
+        whole_file: false,
         force: false,
     }));
 
@@ -1860,6 +1865,7 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
         session.drain(
+            &mut None,
             &mut None,
             &mut BranchEditor::default(),
             &mut GitPanelState::default(),
@@ -1990,6 +1996,7 @@ fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
         original: vec!["gone".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: false,
+        whole_file: false,
         force: false,
     }));
 
@@ -2002,6 +2009,7 @@ fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
         std::thread::sleep(std::time::Duration::from_millis(10));
         session.drain(
             &mut diff,
+            &mut None,
             &mut BranchEditor::default(),
             &mut GitPanelState::default(),
             &mut None,
@@ -2963,6 +2971,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         pr_inbox_hidden: Default::default(),
         keybindings: std::collections::BTreeMap::new(),
         command_usage: Default::default(),
+        tab_states: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };
 
@@ -4373,4 +4382,646 @@ fn the_command_last_run_from_the_palette_leads_it_next_time() {
         panic!("the palette stays open on its screen");
     };
     assert_eq!(palette.screen(), Screen::RunningServers);
+}
+
+/// The full page with the git sidebar open and the keys routed as `update` does;
+/// every repo's pane is stubbed so no shell spawns.
+fn sidebar_page(names: &[&str]) -> egui_kittest::Harness<'static, HelmApp> {
+    let mut app = app_with(names);
+    for repo in 0..names.len() {
+        let key = key_of(&app.workspace, repo, 0);
+        app.caches.panes.insert(key, tagged_panes("stub"));
+    }
+    app.sidebars.git = true;
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.handle_keys(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        )
+}
+
+fn files_tab_toggled(harness: &egui_kittest::Harness<'_, HelmApp>) -> String {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    format!(
+        "{:?}",
+        harness.get_by_label("Files").accesskit_node().toggled()
+    )
+}
+
+const CMD_SHIFT: egui::Modifiers = egui::Modifiers {
+    command: true,
+    mac_cmd: true,
+    shift: true,
+    ..egui::Modifiers::NONE
+};
+
+#[test]
+fn each_worktree_brings_back_its_own_sidebar_tab() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = sidebar_page(&["a", "b"]);
+    harness.run();
+
+    harness.get_by_label("Files").click();
+    harness.run();
+    assert_eq!(files_tab_toggled(&harness), "Some(True)");
+    harness.state_mut().workspace.set_active(1);
+    harness.run();
+    assert_eq!(
+        files_tab_toggled(&harness),
+        "Some(False)",
+        "b starts on Git"
+    );
+    harness.state_mut().workspace.set_active(0);
+    harness.run();
+
+    assert_eq!(files_tab_toggled(&harness), "Some(True)");
+    assert_eq!(
+        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
+        SidebarTab::Files
+    );
+}
+
+#[test]
+fn cmd_shift_e_toggles_the_tab_reveals_the_sidebar_and_keeps_the_diff() {
+    let mut harness = sidebar_page(&["a"]);
+    harness.state_mut().sidebars.git = false;
+    let source = DiffSource::WorkingTree { staged: false };
+    DiffState::open(
+        &mut harness.state_mut().diff,
+        source,
+        "README.md".to_owned(),
+    );
+    harness.run();
+
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run();
+
+    let app = harness.state();
+    assert!(
+        app.sidebars.git,
+        "the hidden sidebar opens on the Files tab"
+    );
+    assert_eq!(app.shown_sidebar_tab(), Some(SidebarTab::Files));
+    assert!(app.diff.is_some(), "switching tab never closes the diff");
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run();
+    assert_eq!(harness.state().shown_sidebar_tab(), Some(SidebarTab::Git));
+}
+
+#[test]
+fn graph_mode_has_no_tabs_and_ignores_cmd_shift_e() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = sidebar_page(&["a"]);
+    harness.state_mut().central_mode = CentralMode::Graph;
+    harness.run_steps(2);
+
+    harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
+    harness.run_steps(2);
+
+    assert!(harness.query_by_label("Files").is_none());
+    assert_eq!(
+        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
+        SidebarTab::Git
+    );
+}
+
+#[test]
+fn cmd_shift_e_without_a_repo_leaves_the_sidebar_hidden() {
+    let mut app = HelmApp::default();
+
+    app.toggle_sidebar_tab();
+
+    assert!(!app.sidebars.git);
+}
+
+/// `src/main.rs` and `src/old/x.rs` in a fresh repo.
+fn files_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src/old")).unwrap();
+    std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(tmp.path().join("src/old/x.rs"), "").unwrap();
+    tmp
+}
+
+/// The repo at `dir` open on its Files tab with that tree state, sidebar shown.
+fn app_on_files(dir: &Path, unfolded: &[&str], selected: &str) -> HelmApp {
+    let mut workspace = Workspace::new();
+    workspace.add(Repo::new(dir.to_path_buf()));
+    let mut app = HelmApp::with_workspace(workspace);
+    app.sidebars.git = true;
+    app.prefs.edit_tab_state(dir, |state| {
+        state.tab = SidebarTab::Files;
+        state.unfolded = unfolded.iter().map(|folder| (*folder).to_owned()).collect();
+        state.selected = Some(selected.to_owned());
+    });
+    app
+}
+
+/// Runs the git session and the tree at `now` until no listing is in the worker.
+fn settle_tree(app: &mut HelmApp, ctx: &egui::Context, now: f64) {
+    for _ in 0..1_000 {
+        app.sync_git_session(ctx);
+        app.sync_file_tree(now);
+        let idle = app.git.as_ref().is_some_and(|git| {
+            !git.worker
+                .has_pending(crate::git::worker::ResultKind::Folders)
+        });
+        if idle && app.git_panel_state.file_tree.rows.is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the tree never settled");
+}
+
+fn tree_paths(app: &HelmApp) -> Vec<String> {
+    let rows = app
+        .git_panel_state
+        .file_tree
+        .rows
+        .as_deref()
+        .unwrap_or_default();
+    rows.iter()
+        .filter_map(|row| row.entry())
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+#[test]
+fn the_tree_relists_on_the_poll_and_forgets_the_paths_gone_from_disk() {
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &["src", "src/old"], "src/old/x.rs");
+    let ctx = egui::Context::default();
+    settle_tree(&mut app, &ctx, 0.0);
+    assert_eq!(
+        tree_paths(&app),
+        ["src", "src/old", "src/old/x.rs", "src/main.rs"]
+    );
+
+    std::fs::remove_dir_all(tmp.path().join("src/old")).unwrap();
+    std::fs::write(tmp.path().join("src/new.rs"), "").unwrap();
+    settle_tree(&mut app, &ctx, 0.5);
+    assert!(
+        tree_paths(&app).contains(&"src/old/x.rs".to_owned()),
+        "no re-list before the poll interval"
+    );
+    settle_tree(&mut app, &ctx, 5.0);
+
+    assert_eq!(tree_paths(&app), ["src", "src/main.rs", "src/new.rs"]);
+    let state = app.prefs.tab_state(tmp.path());
+    assert_eq!(
+        state.unfolded,
+        std::collections::BTreeSet::from(["src".to_owned()])
+    );
+    assert_eq!(state.selected.as_deref(), Some("src"));
+}
+
+#[test]
+fn the_tree_is_listed_only_while_the_files_tab_shows() {
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &[], "src");
+    app.prefs
+        .edit_tab_state(tmp.path(), |state| state.tab = SidebarTab::Git);
+    let ctx = egui::Context::default();
+
+    app.sync_git_session(&ctx);
+    app.sync_file_tree(5.0);
+
+    let git = app.git.as_ref().unwrap();
+    assert!(!git
+        .worker
+        .has_pending(crate::git::worker::ResultKind::Folders));
+    assert!(app.git_panel_state.file_tree.rows.is_none());
+}
+
+#[test]
+fn a_worktree_reopens_its_tree_as_left_and_a_click_folds_it_in_the_prefs() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &["src"], "src/main.rs");
+    let key = key_of(&app.workspace, 0, 0);
+    app.caches.panes.insert(key, tagged_panes("stub"));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.poll_workers(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        );
+    for _ in 0..400 {
+        harness.step();
+        if harness.query_by_label("src/main.rs").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let restored = harness
+        .get_by_label("src/main.rs")
+        .accesskit_node()
+        .toggled();
+    assert_eq!(format!("{restored:?}"), "Some(True)");
+    harness.get_by_label("src").click();
+    harness.step();
+    harness.step();
+
+    let state = harness.state().prefs.tab_state(tmp.path());
+    assert!(state.unfolded.is_empty());
+    assert_eq!(state.selected.as_deref(), Some("src"));
+    assert!(harness.query_by_label("src/main.rs").is_none());
+}
+
+/// `app` rendered with its workers polled and its keys handled each frame.
+fn files_page(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.poll_workers(&ctx);
+                app.handle_keys(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        )
+}
+
+fn step_until(
+    harness: &mut egui_kittest::Harness<'_, HelmApp>,
+    reached: impl Fn(&egui_kittest::Harness<'_, HelmApp>) -> bool,
+) {
+    for _ in 0..400 {
+        harness.step();
+        if reached(harness) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("never reached");
+}
+
+fn shows(label: &'static str) -> impl Fn(&egui_kittest::Harness<'_, HelmApp>) -> bool {
+    use egui_kittest::kittest::Queryable;
+    move |harness| harness.query_by_label(label).is_some()
+}
+
+/// `files_repo` with `src/main.rs` reading `fn main() {}`, open on its Files tab
+/// with `src` unfolded and the tree's `src/main.rs` row on screen.
+fn viewer_page(tmp: &tempfile::TempDir) -> egui_kittest::Harness<'static, HelmApp> {
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let mut app = app_on_files(tmp.path(), &["src"], "src");
+    let key = key_of(&app.workspace, 0, 0);
+    app.caches.panes.insert(key, tagged_panes("stub"));
+    let mut harness = files_page(app);
+    step_until(&mut harness, shows("src/main.rs"));
+    harness
+}
+
+fn open_from_tree(harness: &mut egui_kittest::Harness<'_, HelmApp>) {
+    use egui_kittest::kittest::Queryable;
+    harness.get_by_label("src/main.rs").click();
+    step_until(harness, shows("1 fn main() {}"));
+}
+
+#[test]
+fn a_tree_file_opens_in_the_viewer_and_esc_returns_to_the_terminal() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    harness.state_mut().diff = Some(DiffState {
+        source: DiffSource::WorkingTree { staged: false },
+        path: "src/old/x.rs".to_owned(),
+        loaded: None,
+        inherited: false,
+        view: DiffViewState::default(),
+    });
+
+    open_from_tree(&mut harness);
+
+    assert!(
+        harness.state().diff.is_none(),
+        "the viewer replaced the diff"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.step();
+    assert!(harness.state().viewer.is_none());
+    assert!(!shows("1 fn main() {}")(&harness));
+}
+
+#[test]
+fn the_viewer_follows_its_file_on_disk_until_it_is_gone() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() { run(); }\n").unwrap();
+    step_until(&mut harness, shows("1 fn main() { run(); }"));
+    std::fs::remove_file(tmp.path().join("src/main.rs")).unwrap();
+    step_until(&mut harness, shows("File no longer exists"));
+}
+
+#[test]
+fn opening_a_diff_closes_the_viewer() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    let dir = tmp.path().to_path_buf();
+    let app = harness.state_mut();
+    app.prefs
+        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
+        path: "src/main.rs".to_owned(),
+        staged: false,
+    });
+    app.git_panel_state.file_nav_active = true;
+    step_until(&mut harness, shows("src/old/x.rs"));
+
+    harness.key_press(egui::Key::ArrowDown);
+    step_until(&mut harness, |harness| harness.state().diff.is_some());
+
+    assert!(harness.state().viewer.is_none());
+}
+
+/// A viewer on `path`, its whole-file editor open on `lines` with `typed` in it.
+fn viewer_editing(path: &str, lines: &[&str], typed: &str) -> FileViewer {
+    let mut view = FileViewerState::default();
+    view.open_editor_for_test(path, lines);
+    view.type_for_test(typed);
+    FileViewer {
+        path: path.to_owned(),
+        loaded: None,
+        view,
+    }
+}
+
+fn session_on(dir: &Path) -> GitSession {
+    GitSession::spawn(
+        RepoKey::of(dir),
+        dir,
+        &egui::Context::default(),
+        AiRunner::new(dir, || {}),
+        MutationLock::new(),
+    )
+}
+
+/// Drains `session` into `viewer` until the worker answered every edit.
+fn drain_edits(session: &mut GitSession, viewer: &mut Option<FileViewer>, toasts: &mut Toasts) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.worker.has_pending(ResultKind::Edit) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit reply never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.drain(
+            &mut None,
+            viewer,
+            &mut BranchEditor::default(),
+            &mut GitPanelState::default(),
+            &mut None,
+            &mut None,
+            &mut None,
+            toasts,
+            0.0,
+        );
+    }
+}
+
+#[test]
+fn the_viewer_s_live_re_read_waits_for_its_editor_to_close() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let mut session = session_on(tmp.path());
+    let mut viewer = viewer_editing("a.txt", &["one"], "ONE");
+
+    session.poll_viewer(10.0, &viewer);
+    assert!(
+        !session.worker.has_pending(ResultKind::File),
+        "nothing may reflow under the caret while the editor is open"
+    );
+
+    viewer.view.hand_off_editor();
+    session.poll_viewer(20.0, &viewer);
+    assert!(
+        session.worker.has_pending(ResultKind::File),
+        "the re-read resumes"
+    );
+}
+
+#[test]
+fn tearing_the_viewer_down_writes_its_open_buffer() {
+    // Opening another file, a diff, switching repo and sending a review all flush
+    // through here before the viewer goes (files.md §4.1).
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut session = session_on(tmp.path());
+    let mut viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+
+    session.flush_open_edit(&None, &viewer);
+    FileViewer::open(&mut viewer, "b.txt".to_owned());
+    drain_edits(&mut session, &mut viewer, &mut Toasts::default());
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\nTWO\n");
+    let open = viewer.as_ref().unwrap();
+    assert!(
+        !open.view.is_editing(),
+        "the flushed editor does not follow the viewer to another file"
+    );
+    assert!(open.view.pending_write().is_none(), "nothing is owed twice");
+}
+
+#[test]
+fn a_repo_switch_writes_the_viewer_s_open_buffer() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let file = a.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(Repo::new(a.path().to_path_buf()));
+    workspace.add(Repo::new(b.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(workspace);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+    app.viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "one\nTWO\n",
+        "the buffer must reach the repo it was typed in"
+    );
+    assert!(app.viewer.is_none(), "the switch closes the viewer");
+}
+
+#[test]
+fn a_refused_viewer_write_raises_its_notice_instead_of_a_toast() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut session = session_on(tmp.path());
+    let mut viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+    let write = viewer.as_ref().unwrap().view.pending_write().unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    let mut toasts = Toasts::default();
+
+    session.worker.send(GitCommand::EditFile(write));
+    drain_edits(&mut session, &mut viewer, &mut toasts);
+
+    let view = &viewer.as_ref().unwrap().view;
+    assert_eq!(
+        view.edit_divergence()
+            .map(|request| request.replacement.as_str()),
+        Some("one\nTWO"),
+        "the notice carries the very buffer that was refused"
+    );
+    assert!(toasts.items().is_empty(), "got {:?}", toasts.items());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\n");
+}
+
+#[test]
+fn a_viewer_edit_lands_on_disk_and_the_viewer_shows_it() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    let row = harness.get_by_label("1 fn main() {}").rect();
+    let char_w = harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(12.0), ' ')
+            .max(1.0)
+    });
+    let at = egui::pos2(
+        row.left() + crate::ui::diff_view::GUTTER_SLOT_W + 3.0 * char_w + 20.0 + 0.5 * char_w,
+        row.center().y,
+    );
+    let away = harness.get_by_label("13 B").rect().center();
+    for pos in [at, away] {
+        harness.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+            harness.step();
+        }
+        if pos == at {
+            harness.step();
+            harness.event(egui::Event::Text("pub ".to_owned()));
+            harness.step();
+        }
+    }
+
+    step_until(&mut harness, |_| {
+        std::fs::read_to_string(tmp.path().join("src/main.rs")).unwrap() == "pub fn main() {}\n"
+    });
+    step_until(&mut harness, shows("1 pub fn main() {}"));
+    assert!(
+        harness.state().toasts.items().is_empty(),
+        "got {:?}",
+        harness.state().toasts.items()
+    );
+}
+
+/// Types `note` into the note editor once it holds the input, and saves it with a bare
+/// Enter.
+fn write_note(harness: &mut egui_kittest::Harness<'_, HelmApp>, note: &str) {
+    step_until(harness, |harness| {
+        harness.state().git_panel_state.inline_editing
+    });
+    harness.step();
+    harness.event(egui::Event::Text(note.to_owned()));
+    harness.step();
+    harness.key_press(egui::Key::Enter);
+    harness.step();
+}
+
+#[test]
+fn a_viewer_note_editor_disarms_the_commit_shortcut() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    assert!(!harness.state().git_panel_state.inline_editing);
+
+    harness.get_by_label("Comment line").click();
+    step_until(&mut harness, |harness| {
+        harness.state().git_panel_state.inline_editing
+    });
+}
+
+#[test]
+fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    std::fs::write(tmp.path().join("src/old/x.rs"), "keep();\nfix();\n").unwrap();
+    let mut harness = viewer_page(&tmp);
+    let app = harness.state_mut();
+    app.agents = vec![Agent {
+        prompt_command: "/bin/echo \"$HELM_PROMPT\"".to_owned(),
+        ..Agent::new("Echo", "/bin/echo")
+    }];
+    app.review_agent = ReviewSettings {
+        agent: "Echo".to_owned(),
+        ..ReviewSettings::default()
+    };
+    open_from_tree(&mut harness);
+    harness.get_by_label("Comment line").click();
+    write_note(&mut harness, "viewer note");
+
+    let dir = tmp.path().to_path_buf();
+    let app = harness.state_mut();
+    app.prefs
+        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
+        path: "src/main.rs".to_owned(),
+        staged: false,
+    });
+    app.git_panel_state.file_nav_active = true;
+    step_until(&mut harness, shows("src/old/x.rs"));
+    harness.key_press(egui::Key::ArrowDown);
+    step_until(&mut harness, shows(" 2 +fix();"));
+    harness
+        .get_all_by_label("Comment line")
+        .last()
+        .unwrap()
+        .click();
+    write_note(&mut harness, "diff note");
+
+    let key = harness.state().active_repo_key().unwrap();
+    let batch = crate::review::render_comments(&harness.state().review[&key]);
+    for part in [
+        "## src/main.rs",
+        "- L1 `fn main() {}`\n  viewer note",
+        "## src/old/x.rs",
+        "- L2 `fix();`\n  diff note",
+    ] {
+        assert!(batch.contains(part), "{part:?} missing from {batch}");
+    }
+
+    harness.get_by_label("Review notes").click();
+    harness.step();
+    harness.get_by_label("Send to Echo").click();
+    harness.step();
+
+    let app = harness.state();
+    assert!(!app.review.contains_key(&key), "sent, the batch is cleared");
+    assert_eq!(app.central_mode, CentralMode::Terminal);
+    assert!(app.diff.is_none() && app.viewer.is_none());
 }

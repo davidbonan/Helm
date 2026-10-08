@@ -6,6 +6,72 @@
 
 ---
 
+## ☑ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
+
+Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.
+Counter: **5/5**.
+
+- ☑ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
+  type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
+  *Tests*: unit (lookup order, case, unknown) + UI e2e + headless dark/light.
+- ☑ **FP2 — Close icon.** Shared `X` icon button replaces the *Close* pill in the
+  diff and viewer headers (tooltip *Close (Esc)*). *Tests*: UI e2e.
+- ☑ **FP3 — Viewer editing.** Click opens the whole-file inline editor;
+  write on leave via `EditFile`, divergence notice, `Esc` cascade, poll suspended,
+  flush on open/switch/send, not-editable checks, measured line cap. *Tests*:
+  unit + business e2e (write, diverged) + UI e2e.
+- ☑ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
+  shared per-worktree batch with the diff; send clears. *Tests*: UI e2e + app.
+- ☑ **FP5 — Verification.** `headless-verify` dark + light on the final code: type
+  icons, `X` close (viewer + diff), edit + save / `Esc` drop / `Cmd+E` toast, viewer +
+  diff notes → recap chip 2 in both headers → Send clears and opens the agent tab.
+  Not done: editor cap 3,000 lines; first frame stalls ~70 ms on large files when the
+  editor opens; notes on diff context lines show no card in the viewer and vice versa;
+  notes not re-anchored after edits; at 760 px window height the Git list collapses
+  to 0 rows.
+
+---
+
+## ☑ Milestone — M-Files · Files tab in the right sidebar
+
+Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
+[`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
+worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
+Counter: **5/5**.
+
+- ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
+  `remote::files` (phone keeps newest first), tree order (folders first, natural,
+  case-insensitive), `.git` / non-UTF-8 skipped, symlink flagged not followed,
+  2,000 cap, ignore check, status → tint + folder dot priority. *Tests*: 7 unit +
+  3 business e2e (`files_e2e`). Non-UTF-8 skip untested (APFS refuses such names).
+- ☑ **F2 — Tabs + persistence.** Git · Files strip in the card header,
+  Files header (branch chip + Collapse all), commit card hidden on Files, no tabs
+  in Graph mode, `Cmd+Shift+E` (rebindable `toggle-files-tab`); per-worktree
+  `Prefs.tab_states` (tab, unfolded, selection). *Tests*: 2 unit (prefs) + 4 UI e2e
+  (`ui_git_panel`) + 4 app (kittest page, keys); headless dark + light.
+- ☑ **F3 — Tree.** Lazy listing on the git worker, rows (indent, chevron, icon,
+  muted ignored, git tint + folder dot), keyboard (`↑↓←→ Enter`, disarm on
+  terminal focus), re-list on the poll while visible, selection falls back to the
+  parent; `GitIntent::OpenFile` routed to no viewer yet (F4). *Tests*: 13 unit +
+  3 business e2e (`files_e2e`) + 7 UI e2e (`ui_file_tree`) + 3 app; headless
+  dark + light.
+- ☑ **F4 — Viewer.** Overlay over the center zone (diff chrome, `Esc`), text with
+  line numbers + syntect, image preview, binary / too-large placeholders, live
+  reload on mtime/size change, scroll kept per file; read on the git worker
+  (`ReadFile`), diff and viewer replace each other. SVG not previewed (shown as
+  text). *Tests*: 6 unit + 2 business e2e (`files_e2e`) + 5 UI e2e
+  (`ui_file_viewer`) + 3 app; headless dark + light.
+- ☑ **F5 — Verification.** One `headless-verify` run, dark + light, on a real fixture
+  (nested, ignored, modified, untracked, symlink, rs, png, binary, > 2 MB, long line):
+  Git badge → Files tab → tree tints + dots → viewer (text, `↓`, png, binary,
+  too-large) → live edit / delete → `Esc`, Collapse all, Graph (no tabs) and back.
+  Gate green. Evidence: `verify-artifacts/20261008_094022_95183/`.
+  Not done: SVG not previewed (no SVG renderer dependency); scroll-per-file kept
+  but untested; viewer long lines clip and scroll horizontally with the gutter
+  (same as the diff).
+
+---
+
 ## ☑ Milestone — M-InboxHide · Hide a PR from the Inbox
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §5. Per the user: take a PR
