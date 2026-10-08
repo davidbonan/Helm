@@ -79,7 +79,6 @@ put a terminal on the wall or take it off.
 | `Double-click` / `Triple-click` in the diff view | Selects the word / the whole line in the diff content — on a **read-only** surface, and on the rows of an editable diff that cannot take a caret. Where a caret can open, the first click of the pair already swapped the rows for the buffer, and the selection is then the editor's own |
 | `Click` in the diff **content** (editable diff) | Places the **caret** on that line and opens the **inline editor** ([`git.md`](git.md) §4); read-only surface ⇒ no-op |
 | `Click` on a line's **number strip** (numbers + sign) | Toggles that line's pick for partial stage/unstage |
-| `Cmd+E` (diff view) | Opens the inline editor on the **hovered** line; where no caret can open (non-editable file, or a hunk with nothing on the new side / above the line cap), toasts the reason with an **Open in editor** action |
 | `Cmd+S` (inline editor open) | Writes the buffer and **leaves** the editor — the keyboard's version of clicking elsewhere (there is no save control) |
 | `Cmd+Z` (inline editor open) | Undo inside the buffer; each editor has its own history, never the previous hunk's |
 | `Esc` (inline editor open) | Leaves the editor **rolling the change back**: the buffer is dropped and nothing is written (nothing landed while it was open — there is no idle write, [`git.md`](git.md) §4). A second `Esc` closes the diff |
@@ -88,7 +87,7 @@ put a terminal on the wall or take it off.
 | `↑` / `↓` (**Graph** mode) | Moves the **commit selection** row by row (**WIP** row included), scrolling the targeted row in the viewport — **no wrap** (paginated history). Inactive if a widget has keyboard focus or if the arrows already navigate elsewhere (rows below) |
 | `Cmd+F` (**Graph** mode) | Opens the **search box** (top-right of the graph): filters the loaded commits and cycles the matches. `Enter` / chevrons → next match (`Shift+Enter` → previous), each scrolled into view; `Esc` / ✕ closes ([`git.md`](git.md) §9) |
 | `↑` / `↓` (**commit** diff open) | Opens the diff of the previous / next file **of the commit** (sidebar list), with start/end wrap — same traversal as the status files |
-| `Click` / `Cmd+E` in the **file viewer** text | Opens the whole-file editor at that line ([`files.md`](files.md) §4.1); `Cmd+S` / `Esc` / `Cmd+Z` as in the inline editor |
+| `Click` in the **file viewer** text | Opens the whole-file editor at that line ([`files.md`](files.md) §4.1); `Cmd+S` / `Esc` / `Cmd+Z` as in the inline editor |
 | `Esc` | Closes the diff view, returns to the repo's terminal |
 | `Esc` (diff opened from the **graph**) | Closes the commit diff, returns to the **graph** (post-MVP, [`git.md`](git.md) §9) |
 | `Enter` (note editor open) | *Save note* — validates the note into the review batch, which **queues**: nothing leaves. `Shift+Enter` inserts a newline instead |
@@ -190,8 +189,8 @@ fixed. The §1–§3 tables are the defaults.
   `Cmd+Backspace`, `Cmd+←/→`, `Alt+…`, `Tab`, `Shift+Enter`, `Option+Enter`,
   `Ctrl+*` signals — their semantics belong to the terminal, not to helm.
 - The **diff / graph navigation** keys (§3): `↑/↓`, `Cmd+F`, `Esc`.
-- The **inline editor** keys (§3): `Cmd+E`, `Cmd+S`, `Cmd+Z` — fixed, they only
-  exist while a diff (resp. the editor) is open.
+- The **inline editor** keys (§3): `Cmd+S`, `Cmd+Z` — fixed, they only exist
+  while the editor is open.
 
 ### Binding rules
 

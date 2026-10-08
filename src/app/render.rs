@@ -380,28 +380,16 @@ impl HelmApp {
         }
         // Toasts above everything, in all modes (git.md §10).
         if let Some(action) = toast_overlay(ctx, &palette, &mut self.toasts) {
-            self.run_toast_action(action, ctx);
+            self.run_toast_action(action);
         }
     }
 
-    /// Carries out a toast's action button: the updater's Install (update.md §6), or
-    /// the external editor for a file the inline editor refused (git.md §4).
-    pub(super) fn run_toast_action(&mut self, action: ToastAction, ctx: &egui::Context) {
+    /// Carries out a toast's action button: the updater's Install (update.md §6).
+    pub(super) fn run_toast_action(&mut self, action: ToastAction) {
         match action {
             ToastAction::InstallUpdate => {
                 if let Some(runner) = self.update_runner.as_mut() {
                     runner.request_install();
-                }
-            }
-            ToastAction::OpenInEditor(path) => {
-                let link = LinkAction::File {
-                    path,
-                    line: None,
-                    column: None,
-                };
-                if let Err(err) = crate::terminal::links::execute(&link, self.editor.template()) {
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.error(err.message(), now);
                 }
             }
         }
@@ -2401,40 +2389,6 @@ impl HelmApp {
                     // Shared flat/tree mode (M40): applied + persisted after the
                     // loop, once the `&self.git` borrow is released.
                     GitIntent::SetFileView(view) => set_file_view = Some(view),
-                    // `Cmd+E` where no caret can open (git.md §4). The view names the
-                    // refusals it can see; for the file's own the worker judged it
-                    // (encoding, symlink, permissions) and the surface may simply be
-                    // read-only, so the one reason left to name here is the Staged side
-                    // of a file that also has unstaged changes — its index blob's line
-                    // numbers are not the working tree's.
-                    GitIntent::EditRefused { path, reason } => {
-                        let staged_side = matches!(
-                            self.diff.as_ref().map(|d| d.source),
-                            Some(DiffSource::WorkingTree { staged: true })
-                        );
-                        let also_unstaged = git.status.unstaged.iter().any(|f| f.path == path);
-                        let message = match reason {
-                            EditRefusal::DeletedLines => {
-                                "These lines are gone from the file — nothing to edit here"
-                            }
-                            EditRefusal::TooManyLines => "This hunk is too large to edit inline",
-                            EditRefusal::File if staged_side && also_unstaged => {
-                                "This file also has unstaged changes — edit it from Unstaged"
-                            }
-                            EditRefusal::ReadOnly => "This file is read-only",
-                            EditRefusal::FileTooLong => "This file is too long to edit inline",
-                            EditRefusal::File => "This file can't be edited inline",
-                        };
-                        let now = ctx.input(|i| i.time);
-                        match self.workspace.active_repo().map(|r| r.path.join(&path)) {
-                            Some(full) => self.toasts.info_with_action(
-                                message,
-                                ToastAction::OpenInEditor(full),
-                                now,
-                            ),
-                            None => self.toasts.error(message, now),
-                        }
-                    }
                     other => {
                         if let Some(command) = overlay_or_command(other, self.diff.as_ref()) {
                             if matches!(

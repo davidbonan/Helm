@@ -306,14 +306,13 @@ placeholder launches verbatim.
     no longer holds, the write happens **unstaged** and a toast says so. A file
     present in **both** sections is not editable from the Staged side (its new
     side is the index blob, whose numbering may be shifted): the click does
-    nothing, `Cmd+E` toasts the reason.
+    nothing.
   - **Not editable**, checked **before** the caret appears: non-UTF-8 content, a
     NUL byte, a symlink, a non-regular file, a binary or oversize diff (§8), a
     read-only surface (commit / PR review / frozen diff), a hunk above ~2,000
     lines, a hunk with **nothing on the new side** (it only deletes lines, so there
     is no working-tree text to put a caret on), or a file the process cannot write.
-    The click does nothing; `Cmd+E` raises a toast **naming the reason** and carrying
-    the **Open in editor** action (external editor, §3).
+    The click does nothing.
 
 **Mechanism (libgit2)**: we compute the file's diff, build a **filtered
 diff** containing only the selected hunks/lines, then apply it to

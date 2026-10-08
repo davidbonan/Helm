@@ -8,10 +8,10 @@ use crate::git::edit::EditRequest;
 use crate::git::intraline::{Columns, IntralineChanges};
 use crate::review::{FileComments, ForgeThreads, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
-use crate::ui::git_panel::{intent_pill, EditRefusal, GitIntent};
+use crate::ui::git_panel::{intent_pill, GitIntent};
 use crate::ui::inline_editor::{
-    divergence_notice, editor_requested, inline_editor, save_requested, EditSession, EditTarget,
-    EditorColumns, EditorLook, InlineEdit,
+    divergence_notice, inline_editor, save_requested, EditSession, EditTarget, EditorColumns,
+    EditorLook, InlineEdit,
 };
 use crate::ui::review_notes::{
     note_at, note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
@@ -948,16 +948,6 @@ fn diff_render(
     if state.editing.edit().is_some() && save_requested(ui) {
         state.editing.leave(intents);
     }
-    // `Cmd+E` where no caret can open (git.md §4): the click stays silent, but the
-    // keyboard ask deserves an answer — the app names the reason and offers the
-    // external editor. One answer per key press: a column of bands would raise the
-    // same refusal once per file on screen.
-    if !editable && !chrome.band() && editor_requested(ui) {
-        intents.push(GitIntent::EditRefused {
-            path: diff.path.clone(),
-            reason: EditRefusal::File,
-        });
-    }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(diff) {
             ui.ctx().copy_text(text);
@@ -1190,7 +1180,8 @@ fn diff_render(
                             continue;
                         }
                         let ext = extensions[hunk_idx].clone();
-                        let caret = caret_offer(editable, diff, hunk, &extensions[hunk_idx]);
+                        let opens_editor =
+                            editable && edit_range(diff, hunk, &extensions[hunk_idx]).is_some();
                         for new_no in ext.above {
                             let action = extension_line(
                                 ui,
@@ -1200,7 +1191,7 @@ fn diff_render(
                                     new_no,
                                     staged,
                                     read_only,
-                                    caret,
+                                    opens_editor,
                                     text_row,
                                     char_w,
                                     layout,
@@ -1253,7 +1244,7 @@ fn diff_render(
                                     review: review_available,
                                     forge: review_forge,
                                     selected: state.selected(hunk_idx, line_idx),
-                                    caret,
+                                    opens_editor,
                                     highlighted: state.syntax_line(hunk_idx, line_idx),
                                     changed: state.intraline_line(hunk_idx, line_idx),
                                     text_range: state.text_range_for_row(text_row, text),
@@ -1337,7 +1328,7 @@ fn diff_render(
                                     new_no,
                                     staged,
                                     read_only,
-                                    caret,
+                                    opens_editor,
                                     text_row,
                                     char_w,
                                     layout,
@@ -2282,10 +2273,6 @@ fn apply_line_action(
             state.text_selection = Some(selection);
         }
         Some(DiffLineAction::ClearTextSelection) => state.text_selection = None,
-        Some(DiffLineAction::RefuseEditor(reason)) => intents.push(GitIntent::EditRefused {
-            path: diff.path.clone(),
-            reason,
-        }),
         // Handled by the caller (needs the stored comments to prefill the editor,
         // resp. the hunk the row belongs to).
         Some(DiffLineAction::OpenComment { .. }) | Some(DiffLineAction::OpenEditor { .. }) => {}
@@ -2301,7 +2288,7 @@ struct ExtensionRow<'a> {
     new_no: u32,
     staged: bool,
     read_only: bool,
-    caret: CaretOffer,
+    opens_editor: bool,
     text_row: usize,
     char_w: f32,
     layout: RowLayout,
@@ -2331,7 +2318,7 @@ fn extension_line(
         review: false,
         forge: false,
         selected: false,
-        caret: ext.caret,
+        opens_editor: ext.opens_editor,
         highlighted: None,
         changed: &[],
         text_range: state.text_range_for_row(ext.text_row, text),
@@ -2541,13 +2528,8 @@ fn fit_zoom(size: egui::Vec2, avail: egui::Vec2) -> f32 {
 /// The working-tree lines an inline editor on this hunk would replace: its **new side**
 /// (the new side of an Unstaged diff *is* the working tree, git.md §4) widened by the
 /// extended context displayed with it — those rows are editable too. 0-based and
-/// half-open. The error is the reason to show: a refusal here is silent otherwise, and
-/// the rows would keep offering a caret that never comes.
-fn edit_range(
-    diff: &FileDiff,
-    hunk: &Hunk,
-    ext: &ContextExtension,
-) -> Result<Range<usize>, EditRefusal> {
+/// half-open. `None` where no buffer can back it: the rows then offer no caret.
+fn edit_range(diff: &FileDiff, hunk: &Hunk, ext: &ContextExtension) -> Option<Range<usize>> {
     let first = if ext.above.is_empty() {
         hunk.new_start
     } else {
@@ -2560,33 +2542,14 @@ fn edit_range(
     };
     // A hunk that only deletes lines has no new side at all: `new_lines == 0`, and its
     // `new_start` is the line it was deleted after.
-    let (Some(start), Some(end)) = (first.checked_sub(1), last.checked_sub(1)) else {
-        return Err(EditRefusal::DeletedLines);
-    };
-    let (start, end) = (start as usize, end as usize);
-    if end <= start {
-        return Err(EditRefusal::DeletedLines);
+    let start = first.checked_sub(1)? as usize;
+    let end = last.checked_sub(1)? as usize;
+    if end <= start || end - start > MAX_EDIT_LINES {
+        return None;
     }
-    if end - start > MAX_EDIT_LINES {
-        return Err(EditRefusal::TooManyLines);
-    }
-    if diff.source_lines.get(start..end).is_none() {
-        // The new side was not loaded, or is shorter than the hunk claims: nothing the
-        // view can name — the file itself is what refuses.
-        return Err(EditRefusal::File);
-    }
-    Ok(start..end)
-}
-
-/// What the rows of this hunk answer a caret ask with (git.md §4).
-fn caret_offer(editable: bool, diff: &FileDiff, hunk: &Hunk, ext: &ContextExtension) -> CaretOffer {
-    if !editable {
-        return CaretOffer::None;
-    }
-    match edit_range(diff, hunk, ext) {
-        Ok(_) => CaretOffer::Open,
-        Err(reason) => CaretOffer::Refuse(reason),
-    }
+    // The new side was not loaded, or is shorter than the hunk claims.
+    diff.source_lines.get(start..end)?;
+    Some(start..end)
 }
 
 /// Opens the inline editor on `hunk_idx`, caret on the row carrying the new-side line
@@ -2609,7 +2572,7 @@ fn open_hunk_editor(
     let Some(hunk) = diff.hunks.get(hunk_idx) else {
         return;
     };
-    let Ok(range) = edit_range(diff, hunk, ext) else {
+    let Some(range) = edit_range(diff, hunk, ext) else {
         return;
     };
     let Some(original) = diff.source_lines.get(range.clone()).map(<[String]>::to_vec) else {
@@ -2742,8 +2705,8 @@ struct DiffLineCtx<'a> {
     /// for a forge review comment, alongside the agent Sparkles (slot 1).
     forge: bool,
     selected: bool,
-    /// What this row's content column answers a caret ask with (git.md §4).
-    caret: CaretOffer,
+    /// A click in this row's content column opens the inline editor (git.md §4).
+    opens_editor: bool,
     highlighted: Option<&'a [HighlightedSpan]>,
     /// Columns this line differs from its counterpart on (git.md §4); empty when it
     /// has none, or when the two lines are too far apart to pair.
@@ -2787,21 +2750,6 @@ enum DiffLineAction {
     OpenEditor {
         col: usize,
     },
-    /// `Cmd+E` on a row whose hunk cannot back a buffer (git.md §4): the ask gets an
-    /// answer with the reason, rather than nothing at all.
-    RefuseEditor(EditRefusal),
-}
-
-/// What the content column of a row does with a caret ask (git.md §4). A row whose
-/// hunk has no new side, or too many lines, still selects text like any other — it
-/// simply says so when asked for a caret.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CaretOffer {
-    Open,
-    Refuse(EditRefusal),
-    /// Not an editable diff: the refusal belongs to the diff as a whole, which answers
-    /// `Cmd+E` before the rows are drawn.
-    None,
 }
 
 /// Where a pointer x lands on a row: the **number strip** (both number columns and the
@@ -2951,18 +2899,12 @@ fn diff_line(
                 hunk: hunk_idx,
                 line: line_idx,
             }),
-            Some(RowZone::Content { col }) if ctx.caret == CaretOffer::Open => {
+            Some(RowZone::Content { col }) if ctx.opens_editor => {
                 Some(DiffLineAction::OpenEditor {
                     col: col.min(text_len),
                 })
             }
             _ => Some(DiffLineAction::ClearTextSelection),
-        }
-    } else if ctx.caret != CaretOffer::None && response.hovered() && editor_requested(ui) {
-        match ctx.caret {
-            CaretOffer::Open => Some(DiffLineAction::OpenEditor { col: 0 }),
-            CaretOffer::Refuse(reason) => Some(DiffLineAction::RefuseEditor(reason)),
-            CaretOffer::None => None,
         }
     } else {
         None

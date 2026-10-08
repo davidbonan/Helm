@@ -16,9 +16,9 @@ Counter: **5/5**.
   *Tests*: unit (lookup order, case, unknown) + UI e2e + headless dark/light.
 - ☑ **FP2 — Close icon.** Shared `X` icon button replaces the *Close* pill in the
   diff and viewer headers (tooltip *Close (Esc)*). *Tests*: UI e2e.
-- ☑ **FP3 — Viewer editing.** Click / `Cmd+E` opens the whole-file inline editor;
+- ☑ **FP3 — Viewer editing.** Click opens the whole-file inline editor;
   write on leave via `EditFile`, divergence notice, `Esc` cascade, poll suspended,
-  flush on open/switch/send, not-editable reasons, measured line cap. *Tests*:
+  flush on open/switch/send, not-editable checks, measured line cap. *Tests*:
   unit + business e2e (write, diverged) + UI e2e.
 - ☑ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
   shared per-worktree batch with the diff; send clears. *Tests*: UI e2e + app.
@@ -27,8 +27,8 @@ Counter: **5/5**.
   diff notes → recap chip 2 in both headers → Send clears and opens the agent tab.
   Not done: editor cap 3,000 lines; first frame stalls ~70 ms on large files when the
   editor opens; notes on diff context lines show no card in the viewer and vice versa;
-  notes not re-anchored after edits; `Cmd+E` refusal on a binary file is the generic
-  *can't be edited inline*; at 760 px window height the Git list collapses to 0 rows.
+  notes not re-anchored after edits; at 760 px window height the Git list collapses
+  to 0 rows.
 
 ---
 

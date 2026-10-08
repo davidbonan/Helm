@@ -78,12 +78,6 @@ pub enum GitIntent {
     /// again with `force` when the user answers **Overwrite** to a divergence
     /// notice. Self-contained — the intent outlives the editor that produced it.
     FlushEdit(EditRequest),
-    /// `Cmd+E` where no caret can open (git.md §4): the app names the reason in a toast
-    /// carrying **Open in editor**, the external fallback.
-    EditRefused {
-        path: String,
-        reason: EditRefusal,
-    },
     /// Git · Files tab click (files.md §2): the app keeps the tab per worktree.
     SelectTab(SidebarTab),
     /// Files header's Collapse all (files.md §2): folds the whole tree of the worktree.
@@ -94,24 +88,6 @@ pub enum GitIntent {
     UnfoldFolder(String),
     /// Opens the tree's file in the read-only viewer (files.md §4).
     OpenFile(String),
-}
-
-/// Why a caret was refused (git.md §4). The diff view names what it can see; the file's
-/// own refusals were judged on the worker, so those it can only point at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditRefusal {
-    /// The file, or the surface it is shown on: binary, oversize, read-only, non-UTF-8,
-    /// a symlink… — the app names the one reason it can still read off the status.
-    File,
-    /// The hunk has nothing on the new side: it only deletes lines, so there is no
-    /// working-tree text under the caret.
-    DeletedLines,
-    /// The hunk is above the inline editor's line cap.
-    TooManyLines,
-    /// The file carries no write bit.
-    ReadOnly,
-    /// The file is above the whole-file editor's line cap (files.md §4.1).
-    FileTooLong,
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).

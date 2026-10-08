@@ -15,10 +15,10 @@ use crate::ui::diff_view::{
     HIGHLIGHT_BUDGET, LINE_HEIGHT, LINE_PAD_X, LINE_SIZE, NUM_PAD_X, NUM_SIZE,
 };
 use crate::ui::file_list::{paint_status_icon, status_color, status_icon, status_label};
-use crate::ui::git_panel::{EditRefusal, GitIntent};
+use crate::ui::git_panel::GitIntent;
 use crate::ui::inline_editor::{
-    divergence_notice, editor_requested, editor_spans, inline_editor, save_requested, EditSession,
-    EditTarget, EditorColumns, EditorLook, InlineEdit,
+    divergence_notice, editor_spans, inline_editor, save_requested, EditSession, EditTarget,
+    EditorColumns, EditorLook, InlineEdit,
 };
 use crate::ui::review_notes::{
     note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
@@ -217,8 +217,8 @@ impl FileViewerState {
         self.editing.leave(intents);
     }
 
-    /// The rows and the notes under them; returns the caret a click or `Cmd+E` asks the
-    /// editor to open at. The notes' saves and sends land in `review`.
+    /// The rows and the notes under them; returns the caret a click asks the editor to
+    /// open at. The notes' saves and sends land in `review`.
     fn show_text(
         &mut self,
         ui: &mut egui::Ui,
@@ -244,7 +244,7 @@ impl FileViewerState {
                     .as_ref()
                     .and_then(|(_, cache)| cache.as_ref()),
                 selection: self.selection,
-                editable: edit_refusal(Some(lines), file.snapshot.writable).is_none(),
+                editable: is_editable(lines, file.snapshot.writable),
             },
             lines,
             path: &file.snapshot.path,
@@ -393,8 +393,7 @@ pub struct ViewedFile<'a> {
     pub batch: NoteBatch<'a>,
 }
 
-/// What the viewer asks the app for: the editor's writes and refusals, the notes' saves
-/// and sends.
+/// What the viewer asks the app for: the editor's writes, the notes' saves and sends.
 #[derive(Debug, Default)]
 pub struct ViewerIntents {
     pub git: Vec<GitIntent>,
@@ -416,14 +415,6 @@ pub fn file_viewer(
     }
     if state.is_editing() && save_requested(ui) {
         state.leave_editor(file.palette.syntax, &mut out.git);
-    }
-    if let Some(reason) = edit_refusal(state.lines(file.snapshot), file.snapshot.writable) {
-        if editor_requested(ui) {
-            out.git.push(GitIntent::EditRefused {
-                path: file.snapshot.path.clone(),
-                reason,
-            });
-        }
     }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(file.snapshot) {
@@ -618,7 +609,7 @@ struct Rows<'a> {
 }
 
 impl Rows<'_> {
-    /// Paints line `index`; returns what its click or `Cmd+E` asks for.
+    /// Paints line `index`; returns what its click asks for.
     fn line(
         &self,
         ui: &mut egui::Ui,
@@ -686,11 +677,9 @@ impl Rows<'_> {
                 .and_then(|at| clicked_selection(&response, at))
                 .map(RowAction::Select);
         }
-        if response.clicked() {
-            return Some(self.click_action(&response, index, text_len));
-        }
-        let keyed = self.editable && response.hovered() && editor_requested(ui);
-        keyed.then_some(RowAction::Edit(TextPosition { row: index, col: 0 }))
+        response
+            .clicked()
+            .then(|| self.click_action(&response, index, text_len))
     }
 
     /// A plain click in the text opens the editor there (files.md §4.1); anywhere else
@@ -863,14 +852,9 @@ fn shown_lines<'a>(
     }
 }
 
-/// Why the editor cannot open on the lines shown, if it cannot (files.md §4.1).
-fn edit_refusal(lines: Option<&[String]>, writable: bool) -> Option<EditRefusal> {
-    match lines {
-        None | Some([]) => Some(EditRefusal::File),
-        Some(_) if !writable => Some(EditRefusal::ReadOnly),
-        Some(lines) if lines.len() > MAX_EDIT_LINES => Some(EditRefusal::FileTooLong),
-        Some(_) => None,
-    }
+/// Whether the editor can open on the lines shown (files.md §4.1).
+fn is_editable(lines: &[String], writable: bool) -> bool {
+    writable && !lines.is_empty() && lines.len() <= MAX_EDIT_LINES
 }
 
 /// The buffer's lines as the write lays them on disk: an emptied buffer is no line.

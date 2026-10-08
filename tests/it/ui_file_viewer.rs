@@ -9,7 +9,7 @@ use helm::git::status::ChangeKind;
 use helm::review::{FileComments, LineComment, ReviewIntent, ReviewPool};
 use helm::theme::Palette;
 use helm::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
-use helm::ui::git_panel::{EditRefusal, GitIntent};
+use helm::ui::git_panel::GitIntent;
 use helm::ui::review_notes::NoteBatch;
 
 /// The viewer over `snapshot` with the worktree's notes, what it emitted, and whether
@@ -274,19 +274,6 @@ fn writes(harness: &Harness<'_, Viewer>) -> Vec<EditRequest> {
         .collect()
 }
 
-fn refusals(harness: &Harness<'_, Viewer>) -> Vec<EditRefusal> {
-    harness
-        .state()
-        .out
-        .git
-        .iter()
-        .filter_map(|intent| match intent {
-            GitIntent::EditRefused { reason, .. } => Some(*reason),
-            _ => None,
-        })
-        .collect()
-}
-
 fn buffer(harness: &Harness<'_, Viewer>) -> Option<String> {
     harness
         .state()
@@ -406,57 +393,26 @@ fn esc_drops_the_buffer_then_a_second_esc_closes_the_viewer() {
 }
 
 #[test]
-fn cmd_e_opens_the_editor_on_the_hovered_line() {
-    let mut harness = main_rs();
-    let pos = text_cell(&mut harness, "2     run();", 7);
-    harness.event(egui::Event::PointerMoved(pos));
-    harness.run();
-
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
-    harness.run();
-    type_text(&mut harness, "X");
-
-    assert_eq!(
-        buffer(&harness).as_deref(),
-        Some("fn main() {\nX    run();\n}"),
-        "the caret opens at the start of the hovered line"
-    );
-}
-
-#[test]
-fn a_file_that_cannot_be_edited_takes_no_caret_and_cmd_e_names_why() {
+fn a_file_that_cannot_be_edited_takes_no_caret() {
     let read_only = FileSnapshot {
         writable: false,
         ..snapshot("src/main.rs", 26, text(&LINES))
     };
     let long: Vec<String> = (0..3_001).map(|i| format!("line {i}")).collect();
     let cases = [
-        (read_only, Some("1 fn main() {"), EditRefusal::ReadOnly),
-        (
-            snapshot("blob.bin", 3, Content::Binary),
-            None,
-            EditRefusal::File,
-        ),
-        (snapshot("empty.txt", 0, text(&[])), None, EditRefusal::File),
+        (read_only, "1 fn main() {"),
         (
             snapshot("long.txt", 30_000, Content::Text(long)),
-            Some("1 line 0"),
-            EditRefusal::FileTooLong,
+            "1 line 0",
         ),
     ];
-    for (snapshot, first_row, reason) in cases {
+    for (snapshot, first_row) in cases {
         let path = snapshot.path.clone();
         let mut harness = harness_on(snapshot, None);
-        if let Some(label) = first_row {
-            let pos = text_cell(&mut harness, label, 3);
-            click_at(&mut harness, pos);
-        }
-
-        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
-        harness.run();
+        let pos = text_cell(&mut harness, first_row, 3);
+        click_at(&mut harness, pos);
 
         assert!(!harness.state().view.is_editing(), "{path}: no caret");
-        assert_eq!(refusals(&harness), vec![reason], "{path}");
     }
 }
 

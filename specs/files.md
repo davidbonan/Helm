@@ -97,7 +97,7 @@ Same semantics as the WIP diff's inline editor ([`git.md`](git.md) §4), on the
 **whole file** instead of a hunk:
 
 - A **click** (press + release, no drag) in the text opens the editor with the
-  caret where clicked; `Cmd+E` opens it on the hovered line. A drag still selects.
+  caret where clicked. A drag still selects.
 - The editor is the diff's inline editor widget (syntax colored, own gutter, own
   undo history) spanning the file; the view keeps its scroll.
 - **Leaving writes**: click outside the text or `Cmd+S` writes the buffer if it
@@ -107,11 +107,10 @@ Same semantics as the WIP diff's inline editor ([`git.md`](git.md) §4), on the
 - Opening another file, a diff, switching repo or sending a review **writes** an
   open buffer first (as the diff does).
 - While the editor is open the live re-read (§4) is suspended; it resumes on exit.
-- **Not editable** (click does nothing, `Cmd+E` toasts the reason with *Open in
-  editor*): any placeholder state (binary, too large, image, missing, unreadable,
-  symlink), a file the process cannot write, or a file above the **editable line
-  cap**: **3,000 lines** (measured: a keystroke frame takes ~6 ms there, ~17 ms at
-  the initial 10,000-line target).
+- **Not editable** (click does nothing): any placeholder state (binary, too
+  large, image, missing, unreadable, symlink), a file the process cannot write, or
+  a file above the **editable line cap**: **3,000 lines** (measured: a keystroke
+  frame takes ~6 ms there, ~17 ms at the initial 10,000-line target).
 
 ### 4.2 Agent notes
 

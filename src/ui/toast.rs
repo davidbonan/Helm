@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::theme::{Palette, RADIUS_PILL};
 use crate::ui::{paint_icon, with_alpha};
 
@@ -38,16 +36,12 @@ pub enum ToastKind {
 pub enum ToastAction {
     /// Installs the downloaded update and relaunches (update.md §6).
     InstallUpdate,
-    /// Opens the file in the configured external editor (git.md §4): the inline
-    /// editor refused it, so the toast hands it to the real one.
-    OpenInEditor(PathBuf),
 }
 
 impl ToastAction {
     fn label(&self) -> &'static str {
         match self {
             ToastAction::InstallUpdate => "Install",
-            ToastAction::OpenInEditor(_) => "Open in editor",
         }
     }
 }

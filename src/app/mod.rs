@@ -36,9 +36,7 @@ use crate::ui::conflict_view::{
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
 use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
-use crate::ui::git_panel::{
-    abort_op_modal, discard_hunk_modal, EditRefusal, GitIntent, GitPanelState,
-};
+use crate::ui::git_panel::{abort_op_modal, discard_hunk_modal, GitIntent, GitPanelState};
 use crate::ui::graph_toolbar::{
     force_push_modal, graph_toolbar, reset_hard_modal, sync_error_message, sync_success_message,
     BusyAction, PullDefault, ToolbarAction, ToolbarState,
@@ -4483,7 +4481,7 @@ impl eframe::App for HelmApp {
         // stays visible even outside the Graph view; a toast's action button is
         // carried out here (update.md §6, git.md §4).
         if let Some(action) = toast_overlay(&ctx, &palette, &mut self.toasts) {
-            self.run_toast_action(action, &ctx);
+            self.run_toast_action(action);
         }
         if let Some(log) = self.frame_log.as_mut() {
             log.end_frame(match self.central_mode {

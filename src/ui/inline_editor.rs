@@ -472,12 +472,6 @@ fn notice_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> bool {
     .clicked()
 }
 
-/// `Cmd+E` (keybindings.md §3): opens the editor on the hovered line, for a hand that
-/// never left the keyboard.
-pub fn editor_requested(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
-}
-
 /// `Cmd+S` while the editor is open (keybindings.md §3): the keyboard's way of stepping
 /// out of the buffer.
 pub fn save_requested(ui: &egui::Ui) -> bool {
