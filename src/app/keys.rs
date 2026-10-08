@@ -48,7 +48,7 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
         | GitIntent::SelectEntry(_)
         | GitIntent::FoldFolder(_)
         | GitIntent::UnfoldFolder(_) => None,
-        // The read-only viewer (files.md §4) reads the file app-side, never a git call.
+        // The read-only viewer (files.md §4) is opened app-side, its read sent from there.
         GitIntent::OpenFile(_) => None,
     }
 }

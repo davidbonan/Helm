@@ -102,7 +102,16 @@ pub struct ImageBlob {
 /// upload and decode would stall the frame; the file stays on the binary placeholder.
 pub(crate) const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
-fn is_image_path(path: &str) -> bool {
+impl ImageBlob {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        let mut hasher = DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        Self { bytes, fingerprint }
+    }
+}
+
+pub(crate) fn is_image_path(path: &str) -> bool {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -119,10 +128,7 @@ fn image_blob(path: &str, bytes: Vec<u8>) -> Option<ImageBlob> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES || !is_image_path(path) {
         return None;
     }
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    let fingerprint = hasher.finish();
-    Some(ImageBlob { bytes, fingerprint })
+    Some(ImageBlob::new(bytes))
 }
 
 /// New-side bytes of a path in a tree (commit / stash side), for the image preview.

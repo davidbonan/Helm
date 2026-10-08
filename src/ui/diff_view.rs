@@ -12,6 +12,10 @@ use crate::ui::git_panel::{intent_pill, EditRefusal, GitIntent};
 use crate::ui::syntax_highlight::{
     display_text, HighlightedDiffCache, HighlightedSpan, IncrementalHighlighter,
 };
+use crate::ui::text_selection::{
+    clicked_selection, copy_requested, dragged_selection, paint_text_selection,
+    text_click_position, TextPosition, TextRow, TextSelection,
+};
 use crate::ui::with_alpha;
 
 /// Per-hunk line selection, kept across frames. The key is the hunk index in
@@ -581,16 +585,16 @@ impl DiffViewState {
 /// Time the syntax cache may fill per frame. ~300 lines at syntect's throughput:
 /// a viewport's worth on the frame the file opens, and short enough to leave the
 /// 16 ms frame intact.
-const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+pub(crate) const HIGHLIGHT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 /// Time the intra-line pairing may fill per frame, alongside the syntax budget
 /// above: ~1 000 pairs, several viewports' worth on the frame the file opens.
 const INTRALINE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
-const LINE_SIZE: f32 = 12.0;
-const LINE_PAD_X: f32 = 8.0;
+pub(crate) const LINE_SIZE: f32 = 12.0;
+pub(crate) const LINE_PAD_X: f32 = 8.0;
 /// Breathing room kept after the longest line so it isn't flush against the
 /// right edge once scrolled fully right.
-const CONTENT_TRAILING_PAD: f32 = 24.0;
-const LINE_HEIGHT: f32 = 17.0;
+pub(crate) const CONTENT_TRAILING_PAD: f32 = 24.0;
+pub(crate) const LINE_HEIGHT: f32 = 17.0;
 const LINE_ACTION_SIZE: f32 = 14.0;
 const LINE_ACTION_LEFT: f32 = 4.0;
 /// Gap between the stage and review-note icons sharing the gutter.
@@ -599,9 +603,9 @@ const LINE_ACTION_GAP: f32 = 4.0;
 /// review-note (✦) button — left of the numbers.
 const LINE_ACTION_W: f32 = 40.0;
 /// Size of the gutter line numbers (more subdued than the content).
-const NUM_SIZE: f32 = 11.0;
+pub(crate) const NUM_SIZE: f32 = 11.0;
 /// Inner padding of each number column.
-const NUM_PAD_X: f32 = 6.0;
+pub(crate) const NUM_PAD_X: f32 = 6.0;
 /// Column of the +/− sign between the gutter and the content.
 const SIGN_W: f32 = 16.0;
 /// Context lines added above **and** below per Extend click (git.md §4).
@@ -617,8 +621,6 @@ const HUNK_RULE_GAP: f32 = 7.0;
 const BAND_PAD_X: i8 = 12;
 const BAND_HEADER_PAD_Y: i8 = 6;
 const BAND_BODY_PAD_Y: i8 = 8;
-const TEXT_DRAG_THRESHOLD: f32 = 2.0;
-const TEXT_SELECTION_ALPHA: u8 = 70;
 /// Tint of the changed columns inside a rewritten line, over the row's own (alpha
 /// 30): enough of a step for the eye to land on the change first.
 const WORD_CHANGE_ALPHA: u8 = 85;
@@ -685,109 +687,6 @@ pub fn content_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
 /// the content column, which carries the caret.
 pub fn numbers_x_offset(diff: &FileDiff, char_w: f32) -> f32 {
     (LINE_ACTION_W + RowLayout::for_diff(diff, char_w).content_left(0.0)) / 2.0
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct TextPosition {
-    row: usize,
-    col: usize,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum TextSelectionMode {
-    Char,
-    Word,
-    Line,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct TextSelection {
-    anchor: TextPosition,
-    head: TextPosition,
-    mode: TextSelectionMode,
-}
-
-impl TextSelection {
-    fn ordered(self) -> (TextPosition, TextPosition) {
-        if self.head < self.anchor {
-            (self.head, self.anchor)
-        } else {
-            (self.anchor, self.head)
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.mode == TextSelectionMode::Char && self.anchor == self.head
-    }
-
-    fn range_for_row(self, row: usize, text: &str) -> Option<(usize, usize)> {
-        if self.is_empty() {
-            return None;
-        }
-        let text_len = text.chars().count();
-        if text_len == 0 {
-            return None;
-        }
-        let (start, end) = self.ordered();
-        if row < start.row || row > end.row {
-            return None;
-        }
-        let (mut from, mut to) = match self.mode {
-            TextSelectionMode::Line => (0, text_len),
-            TextSelectionMode::Word if row == start.row && row == end.row => {
-                word_bounds(text, start.col)
-            }
-            TextSelectionMode::Word if row == start.row => {
-                (word_bounds(text, start.col).0, text_len)
-            }
-            TextSelectionMode::Word if row == end.row => (0, word_bounds(text, end.col).1),
-            TextSelectionMode::Word => (0, text_len),
-            TextSelectionMode::Char => {
-                let from = if row == start.row {
-                    start.col.min(text_len)
-                } else {
-                    0
-                };
-                let to = if row == end.row {
-                    end.col.saturating_add(1).min(text_len)
-                } else {
-                    text_len
-                };
-                (from, to)
-            }
-        };
-        from = from.min(text_len);
-        to = to.min(text_len);
-        (from < to).then_some((from, to))
-    }
-
-    fn clamped_to(self, lines: &[&str]) -> Option<Self> {
-        if lines.is_empty() || self.anchor.row >= lines.len() || self.head.row >= lines.len() {
-            return None;
-        }
-        Some(Self {
-            anchor: clamp_text_position(self.anchor, lines),
-            head: clamp_text_position(self.head, lines),
-            mode: self.mode,
-        })
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-struct TextRow {
-    row: usize,
-    rect: egui::Rect,
-    content_left: f32,
-    char_w: f32,
-    text_len: usize,
-}
-
-fn clamp_text_position(position: TextPosition, lines: &[&str]) -> TextPosition {
-    let text_len = lines[position.row].chars().count();
-    TextPosition {
-        row: position.row,
-        col: position.col.min(text_len.saturating_sub(1)),
-    }
 }
 
 /// A hunk's extended context: **new-side** line number ranges (1-based,
@@ -904,63 +803,7 @@ fn selected_text(
     amounts: &HashMap<usize, u32>,
     selection: TextSelection,
 ) -> Option<String> {
-    if selection.is_empty() {
-        return None;
-    }
-    let lines = display_rows(diff, amounts);
-    let selection = selection.clamped_to(&lines)?;
-    let (start, end) = selection.ordered();
-    let mut out = String::new();
-    for (row, text) in lines.iter().enumerate().take(end.row + 1).skip(start.row) {
-        if row != start.row {
-            out.push('\n');
-        }
-        let Some((from, to)) = selection.range_for_row(row, text) else {
-            continue;
-        };
-        out.push_str(slice_chars(text, from, to));
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-fn word_bounds(text: &str, col: usize) -> (usize, usize) {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return (0, 0);
-    }
-    let col = col.min(chars.len() - 1);
-    if !is_word_char(chars[col]) {
-        return (col, col + 1);
-    }
-    let mut start = col;
-    while start > 0 && is_word_char(chars[start - 1]) {
-        start -= 1;
-    }
-    let mut end = col + 1;
-    while end < chars.len() && is_word_char(chars[end]) {
-        end += 1;
-    }
-    (start, end)
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '~')
-}
-
-fn slice_chars(text: &str, from: usize, to: usize) -> &str {
-    let start = char_byte_index(text, from);
-    let end = char_byte_index(text, to);
-    &text[start..end]
-}
-
-fn char_byte_index(text: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
-    text.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len())
+    selection.text_of(&display_rows(diff, amounts))
 }
 
 /// In-diff review context (M-RC): the active repo's stored comments, the agent
@@ -1218,10 +1061,7 @@ fn diff_render(
     // running edge to edge. A rounded outlined card around a wall of code reads as a
     // heavy object; a bar is just a seam.
     let frame = match chrome {
-        DiffChrome::Card => egui::Frame::new()
-            .fill(palette.bg_canvas)
-            .inner_margin(egui::Margin::same(12))
-            .corner_radius(egui::CornerRadius::same(RADIUS_CARD)),
+        DiffChrome::Card => overlay_card(palette),
         DiffChrome::Band { .. } => egui::Frame::NONE,
     };
     let header_frame = match chrome {
@@ -1239,26 +1079,10 @@ fn diff_render(
         let header = header_frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                let (icon_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
-                    egui::Sense::hover(),
-                );
                 // The card gives its icon a tile; a band's strip is already a fill, so
                 // a rounded tile on it is one shape too many.
-                if !chrome.band() {
-                    ui.painter().rect_filled(
-                        icon_rect,
-                        egui::CornerRadius::same(6),
-                        palette.bg_surface,
-                    );
-                }
-                crate::ui::paint_icon(
-                    ui.painter(),
-                    icon_rect.center(),
-                    FILE_ICON_SIZE,
-                    lucide_icons::Icon::FileText,
-                    palette.text_secondary,
-                );
+                let tile = (!chrome.band()).then_some(palette.bg_surface);
+                header_file_icon(ui, palette, tile);
                 ui.label(
                     egui::RichText::new(&diff.path)
                         .size(TITLE_SIZE)
@@ -1354,7 +1178,7 @@ fn diff_render(
 
             if diff.binary {
                 match &diff.image {
-                    Some(blob) => image_preview(ui, palette, blob, &diff.path, state),
+                    Some(blob) => image_preview(ui, palette, blob, &mut state.image),
                     None => {
                         ui.label(
                             egui::RichText::new("Binary file — no line diff")
@@ -3179,7 +3003,34 @@ fn extension_line(
     diff_line(ui, &row, 0, 0, &line_ctx, text_rows)
 }
 
-fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
+/// Frame of an overlay over the center zone: the diff's card, the file viewer's.
+pub(crate) fn overlay_card(palette: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(palette.bg_canvas)
+        .inner_margin(egui::Margin::same(12))
+        .corner_radius(egui::CornerRadius::same(RADIUS_CARD))
+}
+
+/// The file glyph opening an overlay header, set on a `tile` when one is given.
+pub(crate) fn header_file_icon(ui: &mut egui::Ui, palette: &Palette, tile: Option<egui::Color32>) {
+    let (icon_rect, _) = ui.allocate_exact_size(
+        egui::vec2(FILE_ICON_BOX, FILE_ICON_BOX),
+        egui::Sense::hover(),
+    );
+    if let Some(fill) = tile {
+        ui.painter()
+            .rect_filled(icon_rect, egui::CornerRadius::same(6), fill);
+    }
+    crate::ui::paint_icon(
+        ui.painter(),
+        icon_rect.center(),
+        FILE_ICON_SIZE,
+        lucide_icons::Icon::FileText,
+        palette.text_secondary,
+    );
+}
+
+pub(crate) fn close_button(ui: &mut egui::Ui, palette: &Palette) -> bool {
     let response = ui.add(
         egui::Button::new(
             egui::RichText::new("Close")
@@ -3198,7 +3049,7 @@ const MAX_ZOOM: f32 = 32.0;
 
 /// Decoded image kept across frames for the diff view's preview. `texture` is `None`
 /// when decoding failed — cached so the failure is not retried every frame.
-struct ImagePreview {
+pub(crate) struct ImagePreview {
     key: u64,
     texture: Option<egui::TextureHandle>,
     size: egui::Vec2,
@@ -3221,13 +3072,13 @@ impl std::fmt::Debug for ImagePreview {
     }
 }
 
-fn decode_image(ctx: &egui::Context, blob: &ImageBlob, path: &str) -> ImagePreview {
+fn decode_image(ctx: &egui::Context, blob: &ImageBlob) -> ImagePreview {
     let texture = image::load_from_memory(&blob.bytes).ok().map(|img| {
         let rgba = img.to_rgba8();
         let size = [rgba.width() as usize, rgba.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
         ctx.load_texture(
-            format!("diff-image-{path}"),
+            format!("image-preview-{:x}", blob.fingerprint),
             color,
             egui::TextureOptions::LINEAR,
         )
@@ -3246,19 +3097,19 @@ fn decode_image(ctx: &egui::Context, blob: &ImageBlob, path: &str) -> ImagePrevi
 }
 
 /// Image preview replacing the binary placeholder (git.md §4): a zoomable, pannable
-/// view of the new-side blob. The toolbar sets discrete zoom levels; a trackpad pinch
-/// or ⌘+scroll zooms; two-finger scroll pans the surrounding scroll area.
-fn image_preview(
+/// view of the new-side blob, decoded once into `decoded`. The toolbar sets discrete
+/// zoom levels; a trackpad pinch or ⌘+scroll zooms; two-finger scroll pans the
+/// surrounding scroll area.
+pub(crate) fn image_preview(
     ui: &mut egui::Ui,
     palette: &Palette,
     blob: &ImageBlob,
-    path: &str,
-    state: &mut DiffViewState,
+    decoded: &mut Option<ImagePreview>,
 ) {
-    if state.image.as_ref().map(|p| p.key) != Some(blob.fingerprint) {
-        state.image = Some(decode_image(ui.ctx(), blob, path));
+    if decoded.as_ref().map(|p| p.key) != Some(blob.fingerprint) {
+        *decoded = Some(decode_image(ui.ctx(), blob));
     }
-    let Some(preview) = state.image.as_mut() else {
+    let Some(preview) = decoded.as_mut() else {
         return;
     };
     let Some(texture) = preview.texture.clone() else {
@@ -3960,22 +3811,10 @@ fn diff_line(
             lucide_icons::Icon::Sparkles,
             "Comment line",
         );
-    let action = if response.triple_clicked() {
-        click_position.map(|at| {
-            DiffLineAction::SelectText(TextSelection {
-                anchor: at,
-                head: at,
-                mode: TextSelectionMode::Line,
-            })
-        })
-    } else if response.double_clicked() {
-        click_position.map(|at| {
-            DiffLineAction::SelectText(TextSelection {
-                anchor: at,
-                head: at,
-                mode: TextSelectionMode::Word,
-            })
-        })
+    let action = if response.triple_clicked() || response.double_clicked() {
+        click_position
+            .and_then(|at| clicked_selection(&response, at))
+            .map(DiffLineAction::SelectText)
     } else if forge_clicked {
         Some(DiffLineAction::OpenComment {
             pool: ReviewPool::Forge,
@@ -4087,7 +3926,7 @@ fn diff_line(
     action
 }
 
-fn paint_line_content(
+pub(crate) fn paint_line_content(
     ui: &mut egui::Ui,
     content_left: f32,
     rect: egui::Rect,
@@ -4143,131 +3982,15 @@ fn paint_changed_columns(
     }
 }
 
-fn paint_text_selection(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    row: egui::Rect,
-    content_left: f32,
-    char_w: f32,
-    from: usize,
-    to: usize,
-) {
-    let left = content_left + from as f32 * char_w;
-    let right = content_left + to as f32 * char_w;
-    let rect =
-        egui::Rect::from_min_max(egui::pos2(left, row.top()), egui::pos2(right, row.bottom()));
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::ZERO,
-        with_alpha(palette.accent, TEXT_SELECTION_ALPHA),
-    );
-}
-
 fn update_text_selection(ui: &egui::Ui, state: &mut DiffViewState, rows: &[TextRow]) {
-    let selection = ui.input(|input| {
-        if !input.pointer.primary_down() {
-            return None;
-        }
-        let press = input.pointer.press_origin()?;
-        let current = input.pointer.interact_pos()?;
-        if press.distance(current) < TEXT_DRAG_THRESHOLD {
-            return None;
-        }
-        let anchor = text_position_at(press, rows, true)?;
-        let head = text_position_at(current, rows, false)?;
-        Some(TextSelection {
-            anchor,
-            head,
-            mode: TextSelectionMode::Char,
-        })
-    });
-    if let Some(selection) = selection {
-        if state.text_selection != Some(selection) {
-            state.selection.clear();
-            state.text_selection = Some(selection);
-            ui.ctx().request_repaint();
-        }
+    let Some(selection) = dragged_selection(ui, rows) else {
+        return;
+    };
+    if state.text_selection != Some(selection) {
+        state.selection.clear();
+        state.text_selection = Some(selection);
+        ui.ctx().request_repaint();
     }
-}
-
-fn text_position_at(
-    pos: egui::Pos2,
-    rows: &[TextRow],
-    require_text_hit: bool,
-) -> Option<TextPosition> {
-    let row = row_at_position(pos, rows, require_text_hit)?;
-    if require_text_hit && pos.x < row.content_left {
-        return None;
-    }
-    Some(TextPosition {
-        row: row.row,
-        col: text_col_at(pos.x, row),
-    })
-}
-
-fn row_at_position(pos: egui::Pos2, rows: &[TextRow], require_inside: bool) -> Option<TextRow> {
-    if let Some(row) = rows.iter().find(|row| row.rect.contains(pos)) {
-        return Some(*row);
-    }
-    if require_inside {
-        return None;
-    }
-    rows.iter()
-        .min_by(|a, b| y_distance(pos.y, a.rect).total_cmp(&y_distance(pos.y, b.rect)))
-        .copied()
-}
-
-fn y_distance(y: f32, rect: egui::Rect) -> f32 {
-    if y < rect.top() {
-        rect.top() - y
-    } else if y > rect.bottom() {
-        y - rect.bottom()
-    } else {
-        0.0
-    }
-}
-
-fn text_col_at(x: f32, row: TextRow) -> usize {
-    if row.text_len == 0 {
-        return 0;
-    }
-    let col = ((x - row.content_left) / row.char_w).floor().max(0.0) as usize;
-    col.min(row.text_len - 1)
-}
-
-fn text_click_position(
-    response: &egui::Response,
-    content_left: f32,
-    char_w: f32,
-    row: usize,
-    text_len: usize,
-) -> Option<TextPosition> {
-    if text_len == 0 {
-        return None;
-    }
-    let pos = response.interact_pointer_pos()?;
-    let content_right = content_left + text_len as f32 * char_w;
-    if pos.x < content_left || pos.x > content_right {
-        return None;
-    }
-    Some(TextPosition {
-        row,
-        col: text_col_at(
-            pos.x,
-            TextRow {
-                row,
-                rect: response.rect,
-                content_left,
-                char_w,
-                text_len,
-            },
-        ),
-    })
-}
-
-fn copy_requested(ui: &egui::Ui) -> bool {
-    ui.ctx()
-        .input(|input| input.events.iter().any(|e| matches!(e, egui::Event::Copy)))
 }
 
 fn line_action_button(

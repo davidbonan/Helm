@@ -35,6 +35,7 @@ use crate::ui::conflict_view::{
 };
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
+use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile};
 use crate::ui::git_panel::{
     abort_op_modal, discard_hunk_modal, EditRefusal, GitIntent, GitPanelState,
 };
@@ -160,8 +161,8 @@ pub use keys::{
 mod git_session;
 pub use git_session::command_failure_message;
 use git_session::{
-    repainter, AgentEntry, CommitDraft, DiffSource, DiffState, GitSession, PaneKey, RepoCaches,
-    RepoKey,
+    repainter, AgentEntry, CommitDraft, DiffSource, DiffState, FileViewer, GitSession, PaneKey,
+    RepoCaches, RepoKey,
 };
 
 mod command_palette;
@@ -564,6 +565,7 @@ pub struct HelmApp {
     git: Option<GitSession>,
     git_panel_state: GitPanelState,
     diff: Option<DiffState>,
+    viewer: Option<FileViewer>,
     /// Interactive-rebase page (git.md §9), replacing the graph while open:
     /// created on the menu click (loading), filled by the worker's `RebaseTodo`
     /// reply, dropped on Start/Cancel and on repo switch (stale plan).
@@ -824,6 +826,7 @@ impl HelmApp {
                 ..GitPanelState::default()
             },
             diff: None,
+            viewer: None,
             rebase_page: None,
             conflict_editor: None,
             workspace_opener,
@@ -997,6 +1000,7 @@ impl HelmApp {
                     session.worker.send(GitCommand::Status);
                     self.git = Some(session);
                     self.diff = None;
+                    self.viewer = None;
                     self.branch_editor = BranchEditor::default();
                     // The plan targets the left repo's refs: always stale here.
                     self.rebase_page = None;
@@ -1011,6 +1015,7 @@ impl HelmApp {
                 }
                 self.park_active_session();
                 self.diff = None;
+                self.viewer = None;
                 self.branch_editor = BranchEditor::default();
                 self.rebase_page = None;
                 self.conflict_editor = None;
@@ -1021,10 +1026,14 @@ impl HelmApp {
         if let Some(git) = &mut self.git {
             let now = ctx.input(|i| i.time);
             git.poll(now, self.diff.as_ref(), graph_mode);
+            if let Some(viewer) = &self.viewer {
+                git.poll_viewer(now, viewer);
+            }
             git.drain_sync(graph_mode, &mut self.toasts, now);
             git.drain_ai(&mut self.git_panel_state, &mut self.toasts, now);
             git.drain(
                 &mut self.diff,
+                &mut self.viewer,
                 &mut self.branch_editor,
                 &mut self.git_panel_state,
                 &mut self.rebase_page,
@@ -1920,6 +1929,7 @@ impl HelmApp {
             git.flush_open_edit(&self.diff);
         }
         self.diff = None;
+        self.viewer = None;
     }
 
     /// `None` + an error toast when no agent of the table can take the review.

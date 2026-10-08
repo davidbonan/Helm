@@ -96,19 +96,11 @@ impl HighlightedDiffCache {
                 continue;
             };
             let text = display_text(&line.content);
-            let Ok(ops) = current.state.parse.parse_line(text, syntaxes()) else {
+            let Some(spans) = current.state.highlight_next(text, &highlighter) else {
                 *pending = None;
                 return false;
             };
-            lines[current.hunk].push(
-                HighlightIterator::new(&mut current.state.highlight, &ops, text, &highlighter)
-                    .filter(|(_, t)| !t.is_empty())
-                    .map(|(style, t)| HighlightedSpan {
-                        text: t.to_owned(),
-                        color: syntect_color(style.foreground),
-                    })
-                    .collect(),
-            );
+            lines[current.hunk].push(spans);
             // Checked per line: a line costs microseconds and `Instant::now()`
             // nanoseconds, and batching the check overran the budget by 10× on
             // an unoptimised build, where a line is ~20 times slower.
@@ -140,6 +132,64 @@ impl HighlightedDiffCache {
             .get(hunk)
             .and_then(|lines| lines.get(line))
             .map(Vec::as_slice)
+    }
+}
+
+/// Per-line spans of a whole file in the read-only viewer (files.md §4), filled on
+/// the diff's per-frame budget: a line not reached yet renders plain.
+#[derive(Debug, Clone)]
+pub struct HighlightedFileCache {
+    syntax_theme: &'static str,
+    lines: Vec<Vec<HighlightedSpan>>,
+    /// syntect's state after the last filled line; `None` once the file is complete.
+    pending: Option<LineState>,
+}
+
+impl HighlightedFileCache {
+    /// Empty cache, everything left to `extend`. `None` when the path has no known
+    /// syntax.
+    pub fn new(path: &str, syntax_theme: &'static str) -> Option<Self> {
+        let syntax = syntaxes()
+            .find_syntax_for_file(Path::new(path))
+            .ok()
+            .flatten()?;
+        let highlighter = Highlighter::new(theme(syntax_theme));
+        Some(Self {
+            syntax_theme,
+            lines: Vec::new(),
+            pending: Some(LineState::new(syntax, &highlighter)),
+        })
+    }
+
+    /// Fills lines for at most `budget`, resuming where the previous call stopped.
+    /// `true` while lines remain. `lines` must be the file the cache was opened on.
+    pub fn extend(&mut self, lines: &[String], budget: std::time::Duration) -> bool {
+        let Self {
+            syntax_theme,
+            lines: filled,
+            pending,
+        } = self;
+        let Some(state) = pending.as_mut() else {
+            return false;
+        };
+        let highlighter = Highlighter::new(theme(syntax_theme));
+        let start = std::time::Instant::now();
+        while let Some(line) = lines.get(filled.len()) {
+            let Some(spans) = state.highlight_next(line, &highlighter) else {
+                *pending = None;
+                return false;
+            };
+            filled.push(spans);
+            if start.elapsed() >= budget {
+                return true;
+            }
+        }
+        *pending = None;
+        false
+    }
+
+    pub fn line(&self, index: usize) -> Option<&[HighlightedSpan]> {
+        self.lines.get(index).map(Vec::as_slice)
     }
 }
 
@@ -251,6 +301,25 @@ impl LineState {
             highlight: HighlightState::new(highlighter, ScopeStack::new()),
         }
     }
+
+    /// Spans of the line that follows this state, which moves past it; `None` when
+    /// syntect cannot parse it.
+    fn highlight_next(
+        &mut self,
+        line: &str,
+        highlighter: &Highlighter,
+    ) -> Option<Vec<HighlightedSpan>> {
+        let ops = self.parse.parse_line(line, syntaxes()).ok()?;
+        Some(
+            HighlightIterator::new(&mut self.highlight, &ops, line, highlighter)
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(style, text)| HighlightedSpan {
+                    text: text.to_owned(),
+                    color: syntect_color(style.foreground),
+                })
+                .collect(),
+        )
+    }
 }
 
 /// Incremental syntax highlighter for the editable Output (conflicts.md §5). syntect is
@@ -339,17 +408,10 @@ impl IncrementalHighlighter {
                 }
             }
             let line = new[j];
-            let Ok(ops) = state.parse.parse_line(line, syntaxes()) else {
+            let Some(line_spans) = state.highlight_next(line, &highlighter) else {
                 self.reset(path, syntax_theme);
                 return None;
             };
-            let line_spans = HighlightIterator::new(&mut state.highlight, &ops, line, &highlighter)
-                .filter(|(_, t)| !t.is_empty())
-                .map(|(style, t)| HighlightedSpan {
-                    text: t.to_owned(),
-                    color: syntect_color(style.foreground),
-                })
-                .collect();
             new_texts.push(line.to_owned());
             new_states.push(state.clone());
             new_spans.push(line_spans);
@@ -516,6 +578,19 @@ mod tests {
             cache.lines, full.lines,
             "resuming between batches colours exactly like one pass"
         );
+    }
+
+    #[test]
+    fn a_file_filled_line_by_line_colours_like_one_pass_over_the_buffer() {
+        let lines: Vec<String> = (0..50)
+            .map(|i| format!("let s = \"/* {i}\"; // */"))
+            .collect();
+        let one_pass = highlight_buffer("src/lib.rs", "InspiredGitHub", &lines.join("\n")).unwrap();
+
+        let mut cache = HighlightedFileCache::new("src/lib.rs", "InspiredGitHub").unwrap();
+        while cache.extend(&lines, std::time::Duration::ZERO) {}
+
+        assert_eq!(cache.lines, one_pass);
     }
 
     #[test]

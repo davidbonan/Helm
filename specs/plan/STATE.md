@@ -11,7 +11,7 @@
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
 [`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
 worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
-Counter: **3/5**.
+Counter: **4/5**.
 
 - ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
   `remote::files` (phone keeps newest first), tree order (folders first, natural,
@@ -29,9 +29,12 @@ Counter: **3/5**.
   parent; `GitIntent::OpenFile` routed to no viewer yet (F4). *Tests*: 13 unit +
   3 business e2e (`files_e2e`) + 7 UI e2e (`ui_file_tree`) + 3 app; headless
   dark + light.
-- ☐ **F4 — Viewer.** Overlay over the center zone (diff chrome, `Esc`), text with
+- ☑ **F4 — Viewer.** Overlay over the center zone (diff chrome, `Esc`), text with
   line numbers + syntect, image preview, binary / too-large placeholders, live
-  reload on mtime/size change, scroll kept per file. *Tests*: unit + UI e2e.
+  reload on mtime/size change, scroll kept per file; read on the git worker
+  (`ReadFile`), diff and viewer replace each other. SVG not previewed (shown as
+  text). *Tests*: 6 unit + 2 business e2e (`files_e2e`) + 5 UI e2e
+  (`ui_file_viewer`) + 3 app; headless dark + light.
 - ☐ **F5 — Verification.** `headless-verify`: tabs, tree, viewer (text, image,
   binary), dark + light. Demonstrable milestone scenario (DoD).
 

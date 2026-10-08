@@ -8,6 +8,7 @@ pub mod emoji;
 pub mod feedback_modal;
 pub mod file_list;
 pub mod file_tree;
+pub mod file_viewer;
 pub mod git_panel;
 pub mod graph_toolbar;
 pub mod graph_view;
@@ -22,6 +23,7 @@ pub mod spinner;
 pub mod syntax_highlight;
 pub mod tab_bar;
 pub mod terminal_view;
+pub mod text_selection;
 pub mod toast;
 
 use std::path::Path;

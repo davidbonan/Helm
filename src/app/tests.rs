@@ -1518,6 +1518,7 @@ fn a_superseded_graph_reply_is_discarded() {
         );
         session.drain(
             &mut diff,
+            &mut None,
             &mut editor,
             &mut panel,
             &mut None,
@@ -1568,6 +1569,7 @@ fn a_checkout_that_auto_stashed_says_where_the_changes_went() {
             "the checkout never reported back"
         );
         session.drain(
+            &mut None,
             &mut None,
             &mut editor,
             &mut panel,
@@ -1636,6 +1638,7 @@ fn a_superseded_status_reply_still_runs_its_command_side_effects() {
             "the checkouts never reported back"
         );
         session.drain(
+            &mut None,
             &mut None,
             &mut editor,
             &mut panel,
@@ -1773,6 +1776,7 @@ fn a_reload_that_changes_the_diff_disarms_the_discard_hunk_confirmation() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 session.drain(
                     diff,
+                    &mut None,
                     &mut BranchEditor::default(),
                     &mut GitPanelState::default(),
                     &mut None,
@@ -1860,6 +1864,7 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
         session.drain(
+            &mut None,
             &mut None,
             &mut BranchEditor::default(),
             &mut GitPanelState::default(),
@@ -2002,6 +2007,7 @@ fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
         std::thread::sleep(std::time::Duration::from_millis(10));
         session.drain(
             &mut diff,
+            &mut None,
             &mut BranchEditor::default(),
             &mut GitPanelState::default(),
             &mut None,
@@ -4629,4 +4635,114 @@ fn a_worktree_reopens_its_tree_as_left_and_a_click_folds_it_in_the_prefs() {
     assert!(state.unfolded.is_empty());
     assert_eq!(state.selected.as_deref(), Some("src"));
     assert!(harness.query_by_label("src/main.rs").is_none());
+}
+
+/// `app` rendered with its workers polled and its keys handled each frame.
+fn files_page(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.poll_workers(&ctx);
+                app.handle_keys(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        )
+}
+
+fn step_until(
+    harness: &mut egui_kittest::Harness<'_, HelmApp>,
+    reached: impl Fn(&egui_kittest::Harness<'_, HelmApp>) -> bool,
+) {
+    for _ in 0..400 {
+        harness.step();
+        if reached(harness) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("never reached");
+}
+
+fn shows(label: &'static str) -> impl Fn(&egui_kittest::Harness<'_, HelmApp>) -> bool {
+    use egui_kittest::kittest::Queryable;
+    move |harness| harness.query_by_label(label).is_some()
+}
+
+/// `files_repo` with `src/main.rs` reading `fn main() {}`, open on its Files tab
+/// with `src` unfolded and the tree's `src/main.rs` row on screen.
+fn viewer_page(tmp: &tempfile::TempDir) -> egui_kittest::Harness<'static, HelmApp> {
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let mut app = app_on_files(tmp.path(), &["src"], "src");
+    let key = key_of(&app.workspace, 0, 0);
+    app.caches.panes.insert(key, tagged_panes("stub"));
+    let mut harness = files_page(app);
+    step_until(&mut harness, shows("src/main.rs"));
+    harness
+}
+
+fn open_from_tree(harness: &mut egui_kittest::Harness<'_, HelmApp>) {
+    use egui_kittest::kittest::Queryable;
+    harness.get_by_label("src/main.rs").click();
+    step_until(harness, shows("1 fn main() {}"));
+}
+
+#[test]
+fn a_tree_file_opens_in_the_viewer_and_esc_returns_to_the_terminal() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    harness.state_mut().diff = Some(DiffState {
+        source: DiffSource::WorkingTree { staged: false },
+        path: "src/old/x.rs".to_owned(),
+        loaded: None,
+        inherited: false,
+        view: DiffViewState::default(),
+    });
+
+    open_from_tree(&mut harness);
+
+    assert!(
+        harness.state().diff.is_none(),
+        "the viewer replaced the diff"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.step();
+    assert!(harness.state().viewer.is_none());
+    assert!(!shows("1 fn main() {}")(&harness));
+}
+
+#[test]
+fn the_viewer_follows_its_file_on_disk_until_it_is_gone() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() { run(); }\n").unwrap();
+    step_until(&mut harness, shows("1 fn main() { run(); }"));
+    std::fs::remove_file(tmp.path().join("src/main.rs")).unwrap();
+    step_until(&mut harness, shows("File no longer exists"));
+}
+
+#[test]
+fn opening_a_diff_closes_the_viewer() {
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    let dir = tmp.path().to_path_buf();
+    let app = harness.state_mut();
+    app.prefs
+        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
+        path: "src/main.rs".to_owned(),
+        staged: false,
+    });
+    app.git_panel_state.file_nav_active = true;
+    step_until(&mut harness, shows("src/old/x.rs"));
+
+    harness.key_press(egui::Key::ArrowDown);
+    step_until(&mut harness, |harness| harness.state().diff.is_some());
+
+    assert!(harness.state().viewer.is_none());
 }

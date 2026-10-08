@@ -894,6 +894,13 @@ impl HelmApp {
         });
         let git_state = &mut self.git_panel_state;
         let diff = &mut self.diff;
+        let viewed_change = self
+            .viewer
+            .as_ref()
+            .and_then(|open| open.loaded.as_ref())
+            .zip(self.git.as_ref())
+            .and_then(|(snapshot, git)| git.status.change_of(&snapshot.path));
+        let viewer = &mut self.viewer;
         // Any git command running greys the page's Start button out — same
         // rule as the toolbar (computed from the same `busy` state).
         let sync_busy = toolbar_state.as_ref().is_some_and(|s| s.busy.is_some());
@@ -1026,6 +1033,7 @@ impl HelmApp {
         let mut open_link: Option<LinkAction> = None;
         let mut file_menu = crate::ui::file_list::FileMenuOutput::default();
         let mut close_diff = false;
+        let mut close_viewer = false;
         let mut open_commit_file_request = None;
         let mut pull_default_to_persist = None;
         let mut create_worktree_request = None;
@@ -1437,6 +1445,19 @@ impl HelmApp {
                                     intents: &mut review_intents,
                                 }),
                             );
+                        } else if let Some(FileViewer {
+                            loaded: Some(snapshot),
+                            view,
+                            ..
+                        }) = viewer.as_mut()
+                        {
+                            ui.add_space(f32::from(TITLEBAR_HEIGHT));
+                            let file = ViewedFile {
+                                palette: &palette,
+                                snapshot,
+                                change: viewed_change,
+                            };
+                            close_viewer = file_viewer(ui, &file, view);
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -2034,6 +2055,7 @@ impl HelmApp {
                             path: path.clone(),
                         });
                         DiffState::open(diff, DiffSource::Commit(oid), path);
+                        *viewer = None;
                         ctx.request_repaint();
                     }
                 }
@@ -2273,6 +2295,9 @@ impl HelmApp {
         if close_diff {
             self.diff = None;
         }
+        if close_viewer {
+            self.viewer = None;
+        }
         intents.append(&mut diff_intents);
         for intent in review_intents {
             self.apply_review_intent(intent, ctx);
@@ -2347,6 +2372,19 @@ impl HelmApp {
                             staged,
                         });
                         DiffState::open(&mut self.diff, DiffSource::WorkingTree { staged }, path);
+                        self.viewer = None;
+                        sent = true;
+                    }
+                    // The viewer takes the diff's place (files.md §4), its buffer
+                    // written on the way out like for another file.
+                    GitIntent::OpenFile(path) => {
+                        git.flush_open_edit(&self.diff);
+                        self.diff = None;
+                        git.worker.send(GitCommand::ReadFile {
+                            path: path.clone(),
+                            known: None,
+                        });
+                        FileViewer::open(&mut self.viewer, path);
                         sent = true;
                     }
                     // Shared flat/tree mode (M40): applied + persisted after the

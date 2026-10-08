@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use helm::files::content::{self, Content, FileSnapshot, ReadOutcome, Stamp};
 use helm::files::tint::{StatusTints, Tint};
 use helm::files::tree::{self, EntryKind, FolderListing, TreeEntry};
 use helm::files::{self, FileRow};
@@ -142,4 +143,68 @@ fn a_relisting_on_the_worker_picks_up_a_new_file() {
     fs::write(tmp.path().join("b.txt"), "").unwrap();
 
     assert_eq!(listed_names(&worker), ["a.txt", "b.txt"]);
+}
+
+fn read_on(worker: &GitWorker, path: &str, known: Option<Stamp>) -> ReadOutcome {
+    worker.send(GitCommand::ReadFile {
+        path: path.to_owned(),
+        known,
+    });
+    match worker.recv() {
+        Some((_, GitResult::File(Ok(outcome)))) => outcome,
+        other => panic!("expected the file read, got {other:?}"),
+    }
+}
+
+fn snapshot(outcome: ReadOutcome) -> FileSnapshot {
+    match outcome {
+        ReadOutcome::Read(snapshot) => snapshot,
+        ReadOutcome::Unchanged => panic!("expected a read"),
+    }
+}
+
+#[test]
+fn the_worker_rereads_a_file_only_once_it_changed_and_reports_it_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    git2::Repository::init(tmp.path()).unwrap();
+    fs::create_dir(tmp.path().join("src")).unwrap();
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let worker = GitWorker::spawn(tmp.path(), || {});
+
+    let first = snapshot(read_on(&worker, "src/main.rs", None));
+    assert_eq!(
+        first.content,
+        Content::Text(vec!["fn main() {}".to_owned()])
+    );
+    assert_eq!(first.size, 13);
+    assert_eq!(
+        read_on(&worker, "src/main.rs", first.stamp),
+        ReadOutcome::Unchanged
+    );
+
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n// two\n").unwrap();
+    let second = snapshot(read_on(&worker, "src/main.rs", first.stamp));
+    assert_eq!(
+        second.content,
+        Content::Text(vec!["fn main() {}".to_owned(), "// two".to_owned()])
+    );
+
+    fs::remove_file(tmp.path().join("src/main.rs")).unwrap();
+    let gone = snapshot(read_on(&worker, "src/main.rs", second.stamp));
+    assert_eq!(gone.content, Content::Missing);
+    assert_eq!(gone.stamp, None);
+}
+
+#[test]
+fn a_symlink_reads_as_its_target_and_a_file_past_two_megabytes_as_too_large() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("big.log"), vec![b'x'; 3 * 1024 * 1024]).unwrap();
+    std::os::unix::fs::symlink("big.log", tmp.path().join("link")).unwrap();
+
+    let link = snapshot(content::read(tmp.path(), "link", None));
+    let big = snapshot(content::read(tmp.path(), "big.log", None));
+
+    assert_eq!(link.content, Content::Symlink("big.log".to_owned()));
+    assert_eq!(big.content, Content::TooLarge);
+    assert_eq!(big.size, 3 * 1024 * 1024);
 }

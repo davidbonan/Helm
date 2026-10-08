@@ -526,6 +526,17 @@ pub(crate) fn status_icon(kind: ChangeKind) -> lucide_icons::Icon {
     }
 }
 
+pub(crate) fn status_label(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Untracked => "Untracked",
+        ChangeKind::Added => "Added",
+        ChangeKind::Modified => "Modified",
+        ChangeKind::Deleted => "Deleted",
+        ChangeKind::Renamed => "Renamed",
+        ChangeKind::Conflicted => "Conflicted",
+    }
+}
+
 pub(crate) fn paint_status_icon(
     painter: &egui::Painter,
     rect: egui::Rect,

@@ -1,10 +1,12 @@
 //! Background git session: drains the worker's replies into the per-repo
 //! caches (status / diff / graph / commit detail / rebase plan) consumed by the
-//! UI, plus the diff-overlay state and cache keys (git.md, architecture.md).
+//! UI, plus the diff-overlay and file-viewer state and cache keys (git.md,
+//! files.md, architecture.md).
 
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::files::content::{FileSnapshot, ReadOutcome, Stamp};
 use crate::files::tint::StatusTints;
 use crate::files::tree::{shown_folders, Listings};
 
@@ -203,6 +205,45 @@ pub(crate) struct DiffState {
     pub(crate) view: DiffViewState,
 }
 
+/// File open in the read-only viewer (files.md §4), over the center zone in the
+/// diff's place: opening either one closes the other. `Esc` or a repo switch
+/// closes it.
+pub(crate) struct FileViewer {
+    pub(crate) path: String,
+    /// The last read of `path` — or, until that lands, of the file open before
+    /// (arrow keys through the tree): kept on screen instead of flashing the
+    /// terminal for the worker's round-trip.
+    pub(crate) loaded: Option<FileSnapshot>,
+    pub(crate) view: FileViewerState,
+}
+
+impl FileViewer {
+    pub(crate) fn open(slot: &mut Option<FileViewer>, path: String) {
+        let (loaded, view) = slot
+            .take()
+            .map(|open| (open.loaded, open.view))
+            .unwrap_or_default();
+        *slot = Some(FileViewer { path, loaded, view });
+    }
+
+    /// Stamp of `path`'s content on screen; `None` until it was read, which makes
+    /// the next read unconditional.
+    fn known_stamp(&self) -> Option<Stamp> {
+        self.loaded
+            .as_ref()
+            .filter(|snapshot| snapshot.path == self.path)
+            .and_then(|snapshot| snapshot.stamp)
+    }
+
+    fn adopt(&mut self, outcome: ReadOutcome) {
+        if let ReadOutcome::Read(snapshot) = outcome {
+            if snapshot.path == self.path {
+                self.loaded = Some(snapshot);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiffSource {
     /// Status-section overlay (M6-3): workdir vs index (`staged == false`) or index
@@ -360,6 +401,7 @@ pub(crate) struct GitSession {
     pub(crate) listings: Listings,
     pub(crate) tints: StatusTints,
     pub(crate) last_folders_poll: f64,
+    pub(crate) last_viewer_poll: f64,
 }
 
 /// Worker → UI wakeup: the callback every background runner gets so a reply
@@ -415,6 +457,7 @@ impl GitSession {
             listings: Listings::default(),
             tints: StatusTints::default(),
             last_folders_poll: now,
+            last_viewer_poll: now,
         }
     }
 
@@ -479,6 +522,21 @@ impl GitSession {
         }
     }
 
+    /// The viewer's file (files.md §4) is re-read on the poll cadence, a tick skipped
+    /// while the previous read runs; the worker reads it only once its mtime or size
+    /// moved.
+    pub(crate) fn poll_viewer(&mut self, now: f64, viewer: &FileViewer) {
+        let due = now - self.last_viewer_poll >= GIT_POLL_INTERVAL.as_secs_f64();
+        if !due || self.worker.has_pending(ResultKind::File) {
+            return;
+        }
+        self.last_viewer_poll = now;
+        self.worker.send(GitCommand::ReadFile {
+            path: viewer.path.clone(),
+            known: viewer.known_stamp(),
+        });
+    }
+
     /// Writes an open inline editor's buffer before the diff that holds it is dropped —
     /// keybindings.md §4: an action that tears the diff down flushes first, and a repo
     /// switch or another file taking its place is not a discard. The buffer belongs to
@@ -538,6 +596,7 @@ impl GitSession {
     pub(crate) fn drain(
         &mut self,
         diff: &mut Option<DiffState>,
+        viewer: &mut Option<FileViewer>,
         editor: &mut BranchEditor,
         panel: &mut GitPanelState,
         rebase_page: &mut Option<RebasePage>,
@@ -585,6 +644,11 @@ impl GitSession {
                 GitResult::Folders(result) => {
                     if let Ok(listed) = result {
                         self.listings.store(listed);
+                    }
+                }
+                GitResult::File(result) => {
+                    if let (Ok(outcome), Some(open)) = (result, viewer.as_mut()) {
+                        open.adopt(outcome);
                     }
                 }
             }
@@ -1118,6 +1182,7 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
         | GitCommand::ReadConflicts
         | GitCommand::Refs
         | GitCommand::ListFolders(_)
+        | GitCommand::ReadFile { .. }
         | GitCommand::EditFile { .. } => "Git command failed",
     };
     format!("{action} — {}", err.message())

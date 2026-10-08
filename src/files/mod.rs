@@ -1,7 +1,8 @@
-//! The files of a worktree, as the phone browses them (specs/remote.md §7.3) and
-//! as the Files tab's tree lists them (specs/files.md §3): read only, never
-//! outside the worktree, never its `.git`.
+//! The files of a worktree, as the phone browses them (specs/remote.md §7.3), as
+//! the Files tab's tree lists them (specs/files.md §3) and its viewer reads them
+//! (§4): read only, never outside the worktree, never its `.git`.
 
+pub mod content;
 pub mod tab;
 pub mod tint;
 pub mod tree;
