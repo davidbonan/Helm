@@ -4,6 +4,10 @@
 //! dedupe by `(forge, repo, number)`. No I/O here: the runner (PR4) owns the
 //! shell-out, the parsers (PR2/PR3) own the JSON.
 
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
 use crate::git::forge::Forge;
 
 /// Which cloud forge produced a PR. The display string lives in `repo_label`;
@@ -392,6 +396,16 @@ struct PrKey {
 }
 
 impl PullRequest {
+    /// What the Inbox is made of (pull-requests.md §5): a review I owe, or my own PR
+    /// still awaiting a verdict.
+    pub fn is_mine_to_act_on(&self) -> bool {
+        match ActionGroup::of(self) {
+            ActionGroup::WaitingOnMyReview => true,
+            ActionGroup::InReview => self.role == PrRole::Mine,
+            ActionGroup::ReadyToMerge | ActionGroup::WaitingOnAuthor => false,
+        }
+    }
+
     fn key(&self) -> PrKey {
         PrKey {
             forge_kind: self.forge_kind,
@@ -697,10 +711,62 @@ impl ActionGroup {
     }
 }
 
+/// PRs the user took out of the Inbox by hand (pull-requests.md §5): they stay under
+/// the role tabs, and only the user brings one back. Persisted in `Prefs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InboxHidden(BTreeSet<String>);
+
+impl InboxHidden {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn contains(&self, pr: &PullRequest) -> bool {
+        self.0.contains(&inbox_hidden_entry(pr))
+    }
+
+    pub fn toggle(&mut self, pr: &PullRequest) {
+        let entry = inbox_hidden_entry(pr);
+        if !self.0.remove(&entry) {
+            self.0.insert(entry);
+        }
+    }
+
+    /// The set minus the PRs that closed. A repo listing no PR at all proves nothing
+    /// (source off, project out of the workspace), so its entries are kept.
+    pub fn without_closed(&self, open: &[PullRequest]) -> InboxHidden {
+        let open_entries: BTreeSet<String> = open.iter().map(inbox_hidden_entry).collect();
+        let listed_repos: BTreeSet<String> = open.iter().map(inbox_hidden_repo).collect();
+        InboxHidden(
+            self.0
+                .iter()
+                .filter(|entry| {
+                    open_entries.contains(*entry)
+                        || !listed_repos.iter().any(|repo| entry.starts_with(repo))
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+fn inbox_hidden_repo(pr: &PullRequest) -> String {
+    let forge = match pr.forge_kind {
+        ForgeKind::GitHub => "github",
+        ForgeKind::Bitbucket => "bitbucket",
+    };
+    format!("{forge}:{}#", pr.repo_label)
+}
+
+fn inbox_hidden_entry(pr: &PullRequest) -> String {
+    format!("{}{}", inbox_hidden_repo(pr), pr.number)
+}
+
 /// The browse list's tab bar (pull-requests.md §5). Every fetched PR is open by
 /// construction (§1), so the tabs are views over the same cache — no extra query.
 /// **Inbox** is the landing tab: only what I have to act on (reviews I owe) and my
-/// own PRs still awaiting a verdict — the rest is noise there.
+/// own PRs still awaiting a verdict, minus the ones I hid — the rest is noise there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListTab {
     #[default]
@@ -727,13 +793,9 @@ impl ListTab {
         }
     }
 
-    pub fn accepts(self, pr: &PullRequest) -> bool {
+    pub fn accepts(self, pr: &PullRequest, inbox_hidden: &InboxHidden) -> bool {
         match self {
-            ListTab::Inbox => match ActionGroup::of(pr) {
-                ActionGroup::WaitingOnMyReview => true,
-                ActionGroup::InReview => pr.role == PrRole::Mine,
-                ActionGroup::ReadyToMerge | ActionGroup::WaitingOnAuthor => false,
-            },
+            ListTab::Inbox => pr.is_mine_to_act_on() && !inbox_hidden.contains(pr),
             ListTab::ToReview => pr.role == PrRole::ToReview,
             ListTab::Mine => pr.role == PrRole::Mine,
             ListTab::Drafts => pr.state == PrState::Draft,
@@ -910,30 +972,64 @@ mod tests {
         let to_review = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
         let mut draft = pr(ForgeKind::GitHub, "acme/web", 3, PrRole::Mine);
         draft.state = PrState::Draft;
+        let shown = InboxHidden::default();
 
-        assert!(ListTab::Mine.accepts(&mine) && !ListTab::Mine.accepts(&to_review));
-        assert!(ListTab::ToReview.accepts(&to_review) && !ListTab::ToReview.accepts(&mine));
-        assert!(ListTab::Drafts.accepts(&draft) && !ListTab::Drafts.accepts(&mine));
+        assert!(ListTab::Mine.accepts(&mine, &shown) && !ListTab::Mine.accepts(&to_review, &shown));
+        assert!(
+            ListTab::ToReview.accepts(&to_review, &shown)
+                && !ListTab::ToReview.accepts(&mine, &shown)
+        );
+        assert!(ListTab::Drafts.accepts(&draft, &shown) && !ListTab::Drafts.accepts(&mine, &shown));
     }
 
     #[test]
     fn inbox_keeps_reviews_i_owe_and_my_prs_awaiting_a_verdict_only() {
         let mine = pr(ForgeKind::GitHub, "acme/web", 1, PrRole::Mine);
         let to_review = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
-        assert!(ListTab::Inbox.accepts(&mine) && ListTab::Inbox.accepts(&to_review));
+        let shown = InboxHidden::default();
+        assert!(
+            ListTab::Inbox.accepts(&mine, &shown) && ListTab::Inbox.accepts(&to_review, &shown)
+        );
 
         let mut approved_by_me = to_review.clone();
         approved_by_me.my_review = Review::Approved;
-        assert!(!ListTab::Inbox.accepts(&approved_by_me));
+        assert!(!ListTab::Inbox.accepts(&approved_by_me, &shown));
 
         let mut ready = mine.clone();
         ready.review = Review::Approved;
         ready.checks = Checks::Passing;
-        assert!(!ListTab::Inbox.accepts(&ready));
+        assert!(!ListTab::Inbox.accepts(&ready, &shown));
 
         let mut draft = mine.clone();
         draft.state = PrState::Draft;
-        assert!(!ListTab::Inbox.accepts(&draft));
+        assert!(!ListTab::Inbox.accepts(&draft, &shown));
+    }
+
+    #[test]
+    fn a_pr_hidden_from_the_inbox_stays_under_its_role_tab() {
+        let to_review = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
+        let mut hidden = InboxHidden::default();
+        hidden.toggle(&to_review);
+        assert!(!ListTab::Inbox.accepts(&to_review, &hidden));
+        assert!(ListTab::ToReview.accepts(&to_review, &hidden));
+
+        hidden.toggle(&to_review);
+        assert!(ListTab::Inbox.accepts(&to_review, &hidden));
+    }
+
+    #[test]
+    fn inbox_hidden_forgets_a_closed_pr_only_where_its_repo_still_lists() {
+        let closed = pr(ForgeKind::GitHub, "acme/web", 2, PrRole::ToReview);
+        let open = pr(ForgeKind::GitHub, "acme/web", 3, PrRole::ToReview);
+        let unlisted = pr(ForgeKind::Bitbucket, "acme/api", 7, PrRole::ToReview);
+        let mut hidden = InboxHidden::default();
+        for p in [&closed, &open, &unlisted] {
+            hidden.toggle(p);
+        }
+
+        let kept = hidden.without_closed(std::slice::from_ref(&open));
+        assert!(!kept.contains(&closed));
+        assert!(kept.contains(&open) && kept.contains(&unlisted));
     }
 
     #[test]

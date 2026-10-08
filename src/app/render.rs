@@ -1073,6 +1073,7 @@ impl HelmApp {
         let mut pr_open_url: Option<String> = None;
         let mut pr_checkout = false;
         let mut pr_set_detail_width = None;
+        let mut pr_toggle_inbox_hidden: Option<crate::pull_requests::model::PullRequest> = None;
         let mut pr_toggle_rail = false;
         let mut pr_back = false;
         let mut pr_close_file = false;
@@ -1368,6 +1369,7 @@ impl HelmApp {
                                 ui,
                                 &palette,
                                 &pr_list,
+                                &self.prefs.pr_inbox_hidden,
                                 pr_selected,
                                 &hints,
                                 review_view.as_mut(),
@@ -1390,6 +1392,11 @@ impl HelmApp {
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                             pr_refresh = pr_refresh || action.refresh;
+                            if let Some(pr) =
+                                action.toggle_inbox_hidden.and_then(|i| pr_list.get(i))
+                            {
+                                pr_toggle_inbox_hidden = Some(pr.clone());
+                            }
                             if pr_merge.is_none() {
                                 pr_merge =
                                     action.merge.and_then(|i| pr_list.get(i).cloned()).or_else(
@@ -2215,6 +2222,7 @@ impl HelmApp {
                                 ui,
                                 &palette,
                                 &pr_list,
+                                &self.prefs.pr_inbox_hidden,
                                 pr_selected,
                                 &hints,
                                 review_view.as_mut(),
@@ -2237,6 +2245,11 @@ impl HelmApp {
                             pr_review_intents = action.review_intents;
                             pr_submit_review = pr_submit_review || action.submit_review;
                             pr_refresh = pr_refresh || action.refresh;
+                            if let Some(pr) =
+                                action.toggle_inbox_hidden.and_then(|i| pr_list.get(i))
+                            {
+                                pr_toggle_inbox_hidden = Some(pr.clone());
+                            }
                             if pr_merge.is_none() {
                                 pr_merge =
                                     action.merge.and_then(|i| pr_list.get(i).cloned()).or_else(
@@ -2589,6 +2602,12 @@ impl HelmApp {
             self.persist(move |prefs| Prefs {
                 pr_detail_width: width,
                 ..prefs
+            });
+        }
+        if let Some(pr) = pr_toggle_inbox_hidden {
+            self.persist(move |mut prefs| {
+                prefs.pr_inbox_hidden.toggle(&pr);
+                prefs
             });
         }
         if pr_toggle_rail {

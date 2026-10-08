@@ -2960,6 +2960,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         bitbucket_email: String::new(),
         pr_detail_width: 460.0,
         pr_rail_collapsed: false,
+        pr_inbox_hidden: Default::default(),
         keybindings: std::collections::BTreeMap::new(),
         command_usage: Default::default(),
         project_settings: Vec::new(),

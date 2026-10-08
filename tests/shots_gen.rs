@@ -2091,7 +2091,7 @@ fn gen_preferences() {
 #[test]
 fn gen_pr_list() {
     use helm::pull_requests::model::{
-        Checks, ForgeKind, PrRole, PrState, PullRequest, Review, Reviewer,
+        Checks, ForgeKind, InboxHidden, PrRole, PrState, PullRequest, Review, Reviewer,
     };
     use helm::ui::file_list::FileViewMode;
     use helm::ui::pull_requests_view::{pull_requests_page, PrSourceHints};
@@ -2246,6 +2246,7 @@ fn gen_pr_list() {
                 ui,
                 &palette,
                 &prs,
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints {
                     // Two minutes back, so the header carries its age note; the label
@@ -2274,7 +2275,8 @@ fn gen_pr_files() {
     use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
     use helm::git::status::ChangeKind;
     use helm::pull_requests::model::{
-        Checks, ForgeKind, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict, Reviewer,
+        Checks, ForgeKind, InboxHidden, PrDetail, PrRole, PrState, PullRequest, Review,
+        ReviewVerdict, Reviewer,
     };
     use helm::review::{FileComments, ForgeThreads};
     use helm::ui::diff_view::DiffViewState;
@@ -2469,6 +2471,7 @@ fn gen_pr_files() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2484,7 +2487,7 @@ fn gen_pr_files() {
 #[test]
 fn gen_pr_detail() {
     use helm::pull_requests::model::{
-        Checks, ForgeKind, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
+        Checks, ForgeKind, InboxHidden, PrComment, PrDetail, PrRole, PrState, PullRequest, Review,
         ReviewVerdict, Reviewer,
     };
     use helm::review::{FileComments, ForgeThreads};
@@ -2608,6 +2611,7 @@ fn gen_pr_detail() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),

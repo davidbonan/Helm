@@ -3165,6 +3165,16 @@ impl HelmApp {
             }
             self.pr_cache.apply(reply);
             self.reconcile_pr_selection();
+            let still_hidden = self
+                .prefs
+                .pr_inbox_hidden
+                .without_closed(&self.pr_cache.pull_requests);
+            if still_hidden != self.prefs.pr_inbox_hidden {
+                self.persist(move |prefs| Prefs {
+                    pr_inbox_hidden: still_hidden,
+                    ..prefs
+                });
+            }
         }
     }
 

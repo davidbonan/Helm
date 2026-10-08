@@ -14,8 +14,8 @@ use helm::git::commit_detail::CommitFile;
 use helm::git::diff::{DiffLine, FileDiff, Hunk, LineOrigin};
 use helm::git::status::ChangeKind;
 use helm::pull_requests::model::{
-    Checks, ForgeKind, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review, ReviewVerdict,
-    Reviewer,
+    Checks, ForgeKind, InboxHidden, PrCommit, PrDetail, PrRole, PrState, PullRequest, Review,
+    ReviewVerdict, Reviewer,
 };
 use helm::review::{FileComments, ForgeThreads, LineComment, ReviewIntent};
 use helm::theme::Palette;
@@ -84,6 +84,7 @@ fn harness(
                 ui,
                 &palette,
                 &prs,
+                &InboxHidden::default(),
                 selected,
                 &PrSourceHints::default(),
                 None,
@@ -159,6 +160,7 @@ fn review_harness(
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -256,6 +258,7 @@ fn review_loading_harness(pr_value: PullRequest) -> (Harness<'static>, Rc<Captur
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -302,6 +305,49 @@ fn rows_group_into_their_actionability_bands() {
     harness.get_by_label("IN REVIEW");
     harness.get_by_label("Fix the login flow");
     harness.get_by_label("Bump the cache TTL");
+}
+
+#[test]
+fn a_row_hidden_by_right_click_leaves_the_inbox_until_shown_again() {
+    let palette = Palette::light();
+    let prs = vec![pr("acme/web", 1, "Fix the login flow", PrRole::ToReview)];
+    let mut inbox_hidden = InboxHidden::default();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .build_ui(move |ui| {
+            let action = pull_requests_page(
+                ui,
+                &palette,
+                &prs,
+                &inbox_hidden,
+                None,
+                &PrSourceHints::default(),
+                None,
+                460.0,
+                false,
+                FileViewMode::Flat,
+            );
+            if let Some(idx) = action.toggle_inbox_hidden {
+                inbox_hidden.toggle(&prs[idx]);
+            }
+        });
+    harness.step();
+
+    harness.get_by_label("Fix the login flow").click_secondary();
+    harness.run();
+    harness.get_by_label("Hide from Inbox").click();
+    harness.run();
+    assert!(harness.query_by_label("Fix the login flow").is_none());
+
+    harness.get_by_label("To review").click();
+    harness.run();
+    harness.get_by_label("Fix the login flow").click_secondary();
+    harness.run();
+    harness.get_by_label("Show in Inbox").click();
+    harness.run();
+    harness.get_by_label("Inbox").click();
+    harness.run();
+    harness.get_by_label("Fix the login flow");
 }
 
 #[test]
@@ -419,6 +465,7 @@ fn list_loading_shows_a_spinner_not_the_empty_state() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints {
                     loading: true,
@@ -794,6 +841,7 @@ fn the_files_tab_stacks_every_diff_in_one_column() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -869,6 +917,7 @@ fn folding_a_band_hides_its_rows_and_keeps_the_column() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -990,6 +1039,7 @@ fn arrows_navigate_between_changed_files() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1082,6 +1132,7 @@ fn clicking_a_commit_row_selects_that_commit() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1179,6 +1230,7 @@ fn tree_view_groups_changed_files_under_directory_rows() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1246,6 +1298,7 @@ fn changed_file_rows_show_quiet_review_and_agent_icons_without_counts() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1324,6 +1377,7 @@ fn unread_only_filters_out_files_opened_in_this_review() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1441,6 +1495,7 @@ fn collapsed_rail_hides_the_changed_files_but_keeps_the_center_area() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1544,6 +1599,7 @@ fn detail_conversation_lists_only_top_level_comments() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1624,6 +1680,7 @@ fn markdown_image_stands_in_until_it_loads() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1702,6 +1759,7 @@ fn body_harness(body: &str) -> Harness<'static> {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -1905,6 +1963,7 @@ fn markdown_table_renders_as_cells_not_a_wall_of_pipes() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2006,6 +2065,7 @@ fn inline_comment_card_shows_context_and_opens_the_file() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2110,6 +2170,7 @@ fn inline_comment_card_windows_comment_diff_when_no_hunk() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2204,6 +2265,7 @@ fn inline_comment_card_reply_emits_reply_to_thread() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2309,6 +2371,7 @@ fn conversation_harness() -> (Harness<'static>, Rc<Captured>) {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2483,6 +2546,7 @@ fn anchored_thread_harness() -> (Harness<'static>, Rc<RefCell<Vec<ReviewIntent>>
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2606,6 +2670,7 @@ fn resolved_inline_thread_collapses_and_reopens_on_click() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2684,6 +2749,7 @@ fn conversation_composer_emits_post_conversation_comment() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2786,6 +2852,7 @@ fn conversation_card_reply_on_flat_comment_emits_top_level_comment() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -2887,6 +2954,7 @@ fn conversation_card_reply_emits_nested_post_conversation_comment() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -3055,6 +3123,7 @@ fn conversation_reply_nests_under_its_parent() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),
@@ -3144,6 +3213,7 @@ fn review_comments_loading_shows_a_loader_under_the_threads() {
                 ui,
                 &palette,
                 &[],
+                &InboxHidden::default(),
                 None,
                 &PrSourceHints::default(),
                 Some(&mut review),

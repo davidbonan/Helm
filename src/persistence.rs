@@ -8,6 +8,7 @@ use crate::agents::{Agent, CommitMessageSettings, ReviewSettings};
 use crate::command_palette::CommandUsage;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
+use crate::pull_requests::model::InboxHidden;
 use crate::terminal::links::Editor;
 use crate::theme::ThemeMode;
 use crate::ui::file_list::FileViewMode;
@@ -140,6 +141,9 @@ pub struct Prefs {
     /// width (pull-requests.md §11). Restored on launch.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pr_rail_collapsed: bool,
+    /// PRs taken out of the cockpit's Inbox by hand (pull-requests.md §5).
+    #[serde(skip_serializing_if = "InboxHidden::is_empty")]
+    pub pr_inbox_hidden: InboxHidden,
     /// Rebindable-action deviations (`action-id = "combo"`, keybindings.md §6):
     /// only deviations from the defaults, `""` = unbound; unknown ids are kept
     /// verbatim. Regular table — after the scalars, before the arrays-of-tables.
@@ -188,6 +192,7 @@ impl Default for Prefs {
             bitbucket_email: String::new(),
             pr_detail_width: DEFAULT_PR_DETAIL_WIDTH,
             pr_rail_collapsed: false,
+            pr_inbox_hidden: InboxHidden::default(),
             keybindings: BTreeMap::new(),
             command_usage: CommandUsage::default(),
             commit_message: CommitMessageSettings::default(),
@@ -605,6 +610,7 @@ mod tests {
             bitbucket_email: "me@corp.com".to_owned(),
             pr_detail_width: 480.0,
             pr_rail_collapsed: true,
+            pr_inbox_hidden: InboxHidden::default(),
             keybindings: BTreeMap::from([("split-right".to_owned(), "cmd+shift+x".to_owned())]),
             command_usage: {
                 let mut usage = CommandUsage::default();
