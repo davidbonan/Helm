@@ -6,10 +6,10 @@
 
 ---
 
-## ◐ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
+## ☑ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
 Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.
-Counter: **4/5**.
+Counter: **5/5**.
 
 - ☑ **FP1 — File-type icons.** `files` domain: name/extension → Nerd Font glyph +
   type; theme tokens per type (dark + light); tree rows, viewer and diff headers.
@@ -22,8 +22,13 @@ Counter: **4/5**.
   unit + business e2e (write, diverged) + UI e2e.
 - ☑ **FP4 — Viewer notes.** Gutter note button, note editor/card, recap chip;
   shared per-worktree batch with the diff; send clears. *Tests*: UI e2e + app.
-- ☐ **FP5 — Verification.** `headless-verify`: icons, close icon, edit + save,
-  note queued then sent with a diff note. Dark + light.
+- ☑ **FP5 — Verification.** `headless-verify` dark + light on the final code: type
+  icons, `X` close (viewer + diff), edit + save / `Esc` drop / `Cmd+E` toast, viewer +
+  diff notes → recap chip 2 in both headers → Send clears and opens the agent tab.
+  Not done: editor cap 3,000 lines; first frame stalls ~70 ms on large files when the
+  editor opens; notes on diff context lines show no card in the viewer and vice versa;
+  notes not re-anchored after edits; `Cmd+E` refusal on a binary file is the generic
+  *can't be edited inline*; at 760 px window height the Git list collapses to 0 rows.
 
 ---
 
