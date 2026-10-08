@@ -6,12 +6,12 @@
 
 ---
 
-## ◐ Milestone — M-Files · Files tab in the right sidebar
+## ☑ Milestone — M-Files · Files tab in the right sidebar
 
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
 [`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
 worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
-Counter: **4/5**.
+Counter: **5/5**.
 
 - ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
   `remote::files` (phone keeps newest first), tree order (folders first, natural,
@@ -35,8 +35,14 @@ Counter: **4/5**.
   (`ReadFile`), diff and viewer replace each other. SVG not previewed (shown as
   text). *Tests*: 6 unit + 2 business e2e (`files_e2e`) + 5 UI e2e
   (`ui_file_viewer`) + 3 app; headless dark + light.
-- ☐ **F5 — Verification.** `headless-verify`: tabs, tree, viewer (text, image,
-  binary), dark + light. Demonstrable milestone scenario (DoD).
+- ☑ **F5 — Verification.** One `headless-verify` run, dark + light, on a real fixture
+  (nested, ignored, modified, untracked, symlink, rs, png, binary, > 2 MB, long line):
+  Git badge → Files tab → tree tints + dots → viewer (text, `↓`, png, binary,
+  too-large) → live edit / delete → `Esc`, Collapse all, Graph (no tabs) and back.
+  Gate green. Evidence: `verify-artifacts/20261008_094022_95183/`.
+  Not done: SVG not previewed (no SVG renderer dependency); scroll-per-file kept
+  but untested; viewer long lines clip and scroll horizontally with the gutter
+  (same as the diff).
 
 ---
 
