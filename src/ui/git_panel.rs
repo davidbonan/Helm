@@ -12,6 +12,7 @@ use crate::ui::file_list::{
     self, file_menu_entries, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput,
     FileViewMode, PATH_SIZE, ROW_HEIGHT,
 };
+use crate::ui::file_tree::FileTreeState;
 use crate::ui::spinner::Spinner;
 use crate::ui::SECTION_TOP_MARGIN;
 
@@ -88,6 +89,12 @@ pub enum GitIntent {
     SelectTab(SidebarTab),
     /// Files header's Collapse all (files.md §2): folds the whole tree of the worktree.
     CollapseAllFolders,
+    /// Tree row selected by a click or a key (files.md §5), kept per worktree.
+    SelectEntry(String),
+    FoldFolder(String),
+    UnfoldFolder(String),
+    /// Opens the tree's file in the read-only viewer (files.md §4).
+    OpenFile(String),
 }
 
 /// Why a caret was refused (git.md §4). The diff view names what it can see; the file's
@@ -184,6 +191,8 @@ pub struct GitPanelState {
     /// Header tab (files.md §2) — per-frame projection of the active worktree's tab
     /// written by the app; `None` in Graph mode: no tab strip, the Git layout.
     pub sidebar_tab: Option<SidebarTab>,
+    /// The Files tab's tree (files.md §3).
+    pub file_tree: FileTreeState,
 }
 
 impl GitPanelState {
@@ -342,6 +351,11 @@ pub fn git_panel(
         card(ui, total_h, |ui| {
             header_band(ui, palette, branch, status, state, intents, view);
             card_divider(ui, palette);
+            intents.extend(crate::ui::file_tree::file_tree(
+                ui,
+                palette,
+                &mut state.file_tree,
+            ));
         });
         return;
     }

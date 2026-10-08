@@ -7,6 +7,7 @@ pub mod diff_view;
 pub mod emoji;
 pub mod feedback_modal;
 pub mod file_list;
+pub mod file_tree;
 pub mod git_panel;
 pub mod graph_toolbar;
 pub mod graph_view;

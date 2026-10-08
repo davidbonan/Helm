@@ -4489,3 +4489,144 @@ fn cmd_shift_e_without_a_repo_leaves_the_sidebar_hidden() {
 
     assert!(!app.sidebars.git);
 }
+
+/// `src/main.rs` and `src/old/x.rs` in a fresh repo.
+fn files_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src/old")).unwrap();
+    std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(tmp.path().join("src/old/x.rs"), "").unwrap();
+    tmp
+}
+
+/// The repo at `dir` open on its Files tab with that tree state, sidebar shown.
+fn app_on_files(dir: &Path, unfolded: &[&str], selected: &str) -> HelmApp {
+    let mut workspace = Workspace::new();
+    workspace.add(Repo::new(dir.to_path_buf()));
+    let mut app = HelmApp::with_workspace(workspace);
+    app.sidebars.git = true;
+    app.prefs.edit_tab_state(dir, |state| {
+        state.tab = SidebarTab::Files;
+        state.unfolded = unfolded.iter().map(|folder| (*folder).to_owned()).collect();
+        state.selected = Some(selected.to_owned());
+    });
+    app
+}
+
+/// Runs the git session and the tree at `now` until no listing is in the worker.
+fn settle_tree(app: &mut HelmApp, ctx: &egui::Context, now: f64) {
+    for _ in 0..1_000 {
+        app.sync_git_session(ctx);
+        app.sync_file_tree(now);
+        let idle = app.git.as_ref().is_some_and(|git| {
+            !git.worker
+                .has_pending(crate::git::worker::ResultKind::Folders)
+        });
+        if idle && app.git_panel_state.file_tree.rows.is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the tree never settled");
+}
+
+fn tree_paths(app: &HelmApp) -> Vec<String> {
+    let rows = app
+        .git_panel_state
+        .file_tree
+        .rows
+        .as_deref()
+        .unwrap_or_default();
+    rows.iter()
+        .filter_map(|row| row.entry())
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+#[test]
+fn the_tree_relists_on_the_poll_and_forgets_the_paths_gone_from_disk() {
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &["src", "src/old"], "src/old/x.rs");
+    let ctx = egui::Context::default();
+    settle_tree(&mut app, &ctx, 0.0);
+    assert_eq!(
+        tree_paths(&app),
+        ["src", "src/old", "src/old/x.rs", "src/main.rs"]
+    );
+
+    std::fs::remove_dir_all(tmp.path().join("src/old")).unwrap();
+    std::fs::write(tmp.path().join("src/new.rs"), "").unwrap();
+    settle_tree(&mut app, &ctx, 0.5);
+    assert!(
+        tree_paths(&app).contains(&"src/old/x.rs".to_owned()),
+        "no re-list before the poll interval"
+    );
+    settle_tree(&mut app, &ctx, 5.0);
+
+    assert_eq!(tree_paths(&app), ["src", "src/main.rs", "src/new.rs"]);
+    let state = app.prefs.tab_state(tmp.path());
+    assert_eq!(
+        state.unfolded,
+        std::collections::BTreeSet::from(["src".to_owned()])
+    );
+    assert_eq!(state.selected.as_deref(), Some("src"));
+}
+
+#[test]
+fn the_tree_is_listed_only_while_the_files_tab_shows() {
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &[], "src");
+    app.prefs
+        .edit_tab_state(tmp.path(), |state| state.tab = SidebarTab::Git);
+    let ctx = egui::Context::default();
+
+    app.sync_git_session(&ctx);
+    app.sync_file_tree(5.0);
+
+    let git = app.git.as_ref().unwrap();
+    assert!(!git
+        .worker
+        .has_pending(crate::git::worker::ResultKind::Folders));
+    assert!(app.git_panel_state.file_tree.rows.is_none());
+}
+
+#[test]
+fn a_worktree_reopens_its_tree_as_left_and_a_click_folds_it_in_the_prefs() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &["src"], "src/main.rs");
+    let key = key_of(&app.workspace, 0, 0);
+    app.caches.panes.insert(key, tagged_panes("stub"));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1200.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.poll_workers(&ctx);
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+            },
+            app,
+        );
+    for _ in 0..400 {
+        harness.step();
+        if harness.query_by_label("src/main.rs").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let restored = harness
+        .get_by_label("src/main.rs")
+        .accesskit_node()
+        .toggled();
+    assert_eq!(format!("{restored:?}"), "Some(True)");
+    harness.get_by_label("src").click();
+    harness.step();
+    harness.step();
+
+    let state = harness.state().prefs.tab_state(tmp.path());
+    assert!(state.unfolded.is_empty());
+    assert_eq!(state.selected.as_deref(), Some("src"));
+    assert!(harness.query_by_label("src/main.rs").is_none());
+}

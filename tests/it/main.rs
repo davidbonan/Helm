@@ -39,6 +39,7 @@ mod ui_commit_detail;
 mod ui_conflict_view;
 mod ui_diff_view;
 mod ui_feedback;
+mod ui_file_tree;
 mod ui_fonts;
 mod ui_git_panel;
 mod ui_git_sidebar;

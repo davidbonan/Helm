@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::files::tree::{self, ListedFolder};
 use crate::git::branch::{self, Branch};
 use crate::git::commit_detail::{self, CommitDetail};
 use crate::git::conflict::{self, ConflictFile};
@@ -168,6 +169,9 @@ pub enum GitCommand {
     /// Branches the worktree can check out + its stashes (command palette,
     /// keybindings.md §1): read, answered by `GitResult::Refs`.
     Refs,
+    /// Reads worktree folders for the Files tab's tree (files.md §3, §6), relative
+    /// paths, `""` for the root: read, answered by `GitResult::Folders`.
+    ListFolders(Vec<String>),
 }
 
 impl GitCommand {
@@ -185,6 +189,7 @@ impl GitCommand {
                 | GitCommand::CommitFileDiff { .. }
                 | GitCommand::ReadConflicts
                 | GitCommand::Refs
+                | GitCommand::ListFolders(_)
         )
     }
 
@@ -205,12 +210,15 @@ impl GitCommand {
         )
     }
 
-    /// `true` for the two refresh reads (poll cadence, reload behind a
-    /// mutation, manual Refresh): they only update views already on screen, so
-    /// a click's working-tree diff may overtake them (`next_index`) — they
-    /// change nothing it reads.
+    /// `true` for the refresh reads (poll cadence, reload behind a mutation,
+    /// manual Refresh, the tree's folders): they only update views already on
+    /// screen, so a click's working-tree diff may overtake them (`next_index`) —
+    /// they change nothing it reads.
     pub fn refresh_read(&self) -> bool {
-        matches!(self, GitCommand::Status | GitCommand::Graph { .. })
+        matches!(
+            self,
+            GitCommand::Status | GitCommand::Graph { .. } | GitCommand::ListFolders(_)
+        )
     }
 
     /// Reply variant this command resolves to — the slot its generation stamps
@@ -225,6 +233,7 @@ impl GitCommand {
             GitCommand::CommitFileDiff { .. } => ResultKind::CommitFileDiff,
             GitCommand::ReadConflicts => ResultKind::Conflicts,
             GitCommand::Refs => ResultKind::Refs,
+            GitCommand::ListFolders(_) => ResultKind::Folders,
             _ => ResultKind::Status,
         }
     }
@@ -244,9 +253,10 @@ pub enum ResultKind {
     Conflicts,
     Edit,
     Refs,
+    Folders,
 }
 
-const RESULT_KINDS: usize = 9;
+const RESULT_KINDS: usize = 10;
 
 #[derive(Debug)]
 pub enum GitResult {
@@ -292,6 +302,7 @@ pub enum GitResult {
         result: Result<Landing, EditError>,
     },
     Refs(Result<RepoRefs, git2::Error>),
+    Folders(Result<Vec<ListedFolder>, git2::Error>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -319,6 +330,7 @@ impl GitResult {
             GitResult::Conflicts { .. } => ResultKind::Conflicts,
             GitResult::Edit { .. } => ResultKind::Edit,
             GitResult::Refs(_) => ResultKind::Refs,
+            GitResult::Folders(_) => ResultKind::Folders,
         }
     }
 
@@ -338,6 +350,7 @@ impl GitResult {
             GitResult::CommitFileDiff { result, .. } => result.is_ok(),
             GitResult::Conflicts { result } => result.is_ok(),
             GitResult::Refs(result) => result.is_ok(),
+            GitResult::Folders(result) => result.is_ok(),
             // Never state: a save's outcome reports on the command that ran it, and
             // must reach the editor even with a newer flush already in flight.
             GitResult::Edit { .. } => false,
@@ -667,6 +680,9 @@ fn dispatch(
             result: repo.and_then(conflict::read_conflicts),
         },
         GitCommand::Refs => GitResult::Refs(repo.and_then(load_refs)),
+        GitCommand::ListFolders(folders) => {
+            GitResult::Folders(repo.map(|repo| tree::list_folders(repo, folders)))
+        }
         // The only mutation answered by its own variant: the editor needs the typed
         // outcome, not a snapshot (`GitResult::Edit`). It still takes the mutation
         // lock — hence a git failure mapped into `EditError`, whose `Io` prints the
@@ -778,6 +794,7 @@ fn mutate(repo: &git2::Repository, command: &GitCommand) -> Result<(), git2::Err
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
         | GitCommand::Refs
+        | GitCommand::ListFolders(_)
         | GitCommand::EditFile(_) => {
             unreachable!("commands with their own reply variant never reach apply")
         }

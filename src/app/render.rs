@@ -569,6 +569,7 @@ impl HelmApp {
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
         self.sync_git_session(ctx);
+        self.sync_file_tree(ctx.input(|i| i.time));
         self.update_agent_watch(ctx);
         self.drain_worktree_sources();
         self.drain_worktree_create(ctx);
@@ -2043,6 +2044,7 @@ impl HelmApp {
                 // row (git.md §3).
                 if any_focused {
                     self.git_panel_state.file_nav_active = false;
+                    self.git_panel_state.file_tree.nav_armed = false;
                 }
                 // Only the working-tree overlay claims the DiffView zone: the commit
                 // diff is read-only and never had the §3 staging shortcuts.
@@ -2276,24 +2278,18 @@ impl HelmApp {
             self.apply_review_intent(intent, ctx);
         }
 
-        let mut selected_tab = None;
-        let mut collapse_all = false;
-        intents.retain(|intent| match intent {
-            GitIntent::SelectTab(tab) => {
-                selected_tab = Some(*tab);
+        let mut tab_edits = Vec::new();
+        intents.retain(|intent| match tab_edit(intent) {
+            Some(edit) => {
+                tab_edits.push(edit);
                 false
             }
-            GitIntent::CollapseAllFolders => {
-                collapse_all = true;
-                false
-            }
-            _ => true,
+            None => true,
         });
-        if let Some(tab) = selected_tab {
-            self.edit_active_tab_state(|state| state.tab = tab);
-        }
-        if collapse_all {
-            self.edit_active_tab_state(|state| state.unfolded.clear());
+        if !tab_edits.is_empty() {
+            self.edit_active_tab_state(|state| {
+                tab_edits.into_iter().for_each(|edit| state.apply(edit))
+            });
         }
 
         let mut generate_requested = false;

@@ -4,6 +4,7 @@
 
 pub mod tab;
 pub mod tint;
+pub mod tree;
 
 use std::cmp::Ordering;
 use std::fs::DirEntry;
@@ -103,6 +104,25 @@ pub fn list_tree(dir: &Path) -> io::Result<Listing> {
 /// rules that cannot be read ignore nothing.
 pub fn is_ignored(repo: &git2::Repository, relative: &Path) -> bool {
     repo.is_path_ignored(relative).unwrap_or(false)
+}
+
+/// `a/b/c.rs` ⇒ `a/b`; a top-level entry ⇒ `""`, the root.
+pub(crate) fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+/// `name` inside `folder`, the root being `""`.
+pub(crate) fn child_path(folder: &str, name: &str) -> String {
+    if folder.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{folder}/{name}")
+    }
+}
+
+/// `a/b/c.rs` ⇒ `a`, `a/b`.
+pub(crate) fn folders_above(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(|(slash, _)| &path[..slash])
 }
 
 fn rows(dir: &Path) -> io::Result<impl Iterator<Item = FileRow>> {

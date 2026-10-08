@@ -2,8 +2,10 @@ use std::fs;
 use std::path::Path;
 
 use helm::files::tint::{StatusTints, Tint};
+use helm::files::tree::{self, EntryKind, FolderListing, TreeEntry};
 use helm::files::{self, FileRow};
 use helm::git::status;
+use helm::git::worker::{GitCommand, GitResult, GitWorker};
 
 fn commit_all(repo: &git2::Repository) {
     let mut index = repo.index().unwrap();
@@ -73,4 +75,71 @@ fn the_polled_status_tints_untracked_and_modified_files_and_their_folders() {
     assert_eq!(tints.folder("src"), Some(Tint::Modified));
     assert_eq!(tints.folder("docs"), Some(Tint::Added));
     assert_eq!(tints.folder("docs/guide"), Some(Tint::Added));
+}
+
+fn entry<'a>(listing: &'a FolderListing, name: &str) -> &'a TreeEntry {
+    listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .unwrap()
+}
+
+#[test]
+fn a_tree_folder_lists_its_entries_flagged_ignored_and_everything_inside_an_ignored_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    fs::write(tmp.path().join(".gitignore"), "target/\n*.log\n").unwrap();
+    fs::create_dir_all(tmp.path().join("target/debug")).unwrap();
+    fs::write(tmp.path().join("target/notes.md"), "").unwrap();
+    fs::write(tmp.path().join("build.log"), "").unwrap();
+    fs::write(tmp.path().join("main.rs"), "").unwrap();
+    std::os::unix::fs::symlink("main.rs", tmp.path().join("link")).unwrap();
+
+    let listed = tree::list_folders(&repo, &[String::new(), "target".to_owned()]);
+
+    let (root, target) = (&listed[0].1, &listed[1].1);
+    assert!(entry(root, "target").ignored);
+    assert!(entry(root, "build.log").ignored);
+    assert!(!entry(root, "main.rs").ignored);
+    assert_eq!(entry(root, "link").kind, EntryKind::Symlink);
+    assert_eq!(entry(root, "target").kind, EntryKind::Folder);
+    assert!(target.entries.iter().all(|entry| entry.ignored));
+    assert_eq!(target.total, 2);
+}
+
+#[test]
+fn a_folder_gone_from_disk_lists_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+
+    let listed = tree::list_folders(&repo, &["gone".to_owned()]);
+
+    assert_eq!(listed, [("gone".to_owned(), FolderListing::default())]);
+}
+
+fn listed_names(worker: &GitWorker) -> Vec<String> {
+    worker.send(GitCommand::ListFolders(vec![String::new()]));
+    match worker.recv() {
+        Some((_, GitResult::Folders(Ok(listed)))) => listed[0]
+            .1
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect(),
+        other => panic!("expected the root listed, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_relisting_on_the_worker_picks_up_a_new_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    git2::Repository::init(tmp.path()).unwrap();
+    fs::write(tmp.path().join("a.txt"), "").unwrap();
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    assert_eq!(listed_names(&worker), ["a.txt"]);
+
+    fs::write(tmp.path().join("b.txt"), "").unwrap();
+
+    assert_eq!(listed_names(&worker), ["a.txt", "b.txt"]);
 }

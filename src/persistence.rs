@@ -398,6 +398,10 @@ impl Prefs {
             .unwrap_or_default()
     }
 
+    pub fn tab_state(&self, worktree: &Path) -> TabState {
+        self.tab_states.get(worktree).cloned().unwrap_or_default()
+    }
+
     /// Edits the right sidebar state of `worktree`, dropping it once back to the
     /// default so the TOML only holds worktrees that left it.
     pub fn edit_tab_state(&mut self, worktree: &Path, edit: impl FnOnce(&mut TabState)) {

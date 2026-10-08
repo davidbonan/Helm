@@ -11,7 +11,7 @@
 Spec: [`specs/files.md`](../files.md), [`specs/git.md`](../git.md) §3,
 [`specs/keybindings.md`](../keybindings.md). Per the user: tree of the whole
 worktree (ignored dimmed), read-only viewer, no file action, tab per worktree.
-Counter: **2/5**.
+Counter: **3/5**.
 
 - ☑ **F1 — Files domain.** `files` module: `resolve` / `list` moved from
   `remote::files` (phone keeps newest first), tree order (folders first, natural,
@@ -23,10 +23,12 @@ Counter: **2/5**.
   in Graph mode, `Cmd+Shift+E` (rebindable `toggle-files-tab`); per-worktree
   `Prefs.tab_states` (tab, unfolded, selection). *Tests*: 2 unit (prefs) + 4 UI e2e
   (`ui_git_panel`) + 4 app (kittest page, keys); headless dark + light.
-- ☐ **F3 — Tree.** Lazy listing on the git worker, rows (indent, chevron, icon,
+- ☑ **F3 — Tree.** Lazy listing on the git worker, rows (indent, chevron, icon,
   muted ignored, git tint + folder dot), keyboard (`↑↓←→ Enter`, disarm on
   terminal focus), re-list on the poll while visible, selection falls back to the
-  parent. *Tests*: business e2e + UI e2e.
+  parent; `GitIntent::OpenFile` routed to no viewer yet (F4). *Tests*: 13 unit +
+  3 business e2e (`files_e2e`) + 7 UI e2e (`ui_file_tree`) + 3 app; headless
+  dark + light.
 - ☐ **F4 — Viewer.** Overlay over the center zone (diff chrome, `Esc`), text with
   line numbers + syntect, image preview, binary / too-large placeholders, live
   reload on mtime/size change, scroll kept per file. *Tests*: unit + UI e2e.

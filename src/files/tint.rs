@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use crate::files::folders_above;
 use crate::git::status::{ChangeKind, RepoStatus};
 
 /// Weakest first: a folder's dot takes the strongest tint below it.
@@ -59,11 +60,6 @@ impl StatusTints {
 fn raise(tints: &mut HashMap<String, Tint>, path: &str, tint: Tint) {
     let slot = tints.entry(path.to_owned()).or_insert(tint);
     *slot = (*slot).max(tint);
-}
-
-/// `a/b/c.rs` ⇒ `a`, `a/b`.
-fn folders_above(path: &str) -> impl Iterator<Item = &str> {
-    path.match_indices('/').map(|(slash, _)| &path[..slash])
 }
 
 #[cfg(test)]

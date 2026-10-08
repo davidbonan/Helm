@@ -2,7 +2,11 @@
 //! caches (status / diff / graph / commit detail / rebase plan) consumed by the
 //! UI, plus the diff-overlay state and cache keys (git.md, architecture.md).
 
+use std::collections::BTreeSet;
+
 use super::*;
+use crate::files::tint::StatusTints;
+use crate::files::tree::{shown_folders, Listings};
 
 /// Stable repo identity (M17-11): path canonicalized once at key creation — cache
 /// keys survive workspace reorders and removals, no positional reindexing.
@@ -351,6 +355,11 @@ pub(crate) struct GitSession {
     /// instead of the vanished pre-amend oid.
     pub(crate) select_head_after_amend: bool,
     pub(crate) last_poll: f64,
+    /// The Files tab's folders read so far (files.md §3), and the polled status as
+    /// its rows tint it.
+    pub(crate) listings: Listings,
+    pub(crate) tints: StatusTints,
+    pub(crate) last_folders_poll: f64,
 }
 
 /// Worker → UI wakeup: the callback every background runner gets so a reply
@@ -403,6 +412,9 @@ impl GitSession {
             graph_fresh: true,
             select_head_after_amend: false,
             last_poll: now,
+            listings: Listings::default(),
+            tints: StatusTints::default(),
+            last_folders_poll: now,
         }
     }
 
@@ -443,6 +455,27 @@ impl GitSession {
                 self.reload_graph();
             }
             self.last_poll = now;
+        }
+    }
+
+    /// Files tab (files.md §3, §6): the shown folders not read yet are listed right
+    /// away, all of them again on the poll cadence — a tick is skipped while the
+    /// previous listing runs.
+    pub(crate) fn poll_folders(&mut self, now: f64, unfolded: &BTreeSet<String>) {
+        let due = now - self.last_folders_poll >= GIT_POLL_INTERVAL.as_secs_f64();
+        if due {
+            self.last_folders_poll = now;
+        }
+        if self.worker.has_pending(ResultKind::Folders) {
+            return;
+        }
+        let folders = if due {
+            shown_folders(unfolded)
+        } else {
+            self.listings.unread(unfolded)
+        };
+        if !folders.is_empty() {
+            self.worker.send(GitCommand::ListFolders(folders));
         }
     }
 
@@ -548,6 +581,12 @@ impl GitSession {
                     self.on_edit(request, result, diff, toasts, now)
                 }
                 GitResult::Refs(result) => self.on_refs(result, toasts, now),
+                // A repo that cannot open already reports through the status poll.
+                GitResult::Folders(result) => {
+                    if let Ok(listed) = result {
+                        self.listings.store(listed);
+                    }
+                }
             }
         }
     }
@@ -587,6 +626,7 @@ impl GitSession {
                 };
                 if !stale {
                     self.status = snapshot.status;
+                    self.tints = StatusTints::of(&self.status);
                     self.branch = snapshot.branch;
                     self.stash_count = snapshot.stash_count;
                     self.has_remote = snapshot.has_remote;
@@ -1077,6 +1117,7 @@ pub fn command_failure_message(source: &GitCommand, err: &git2::Error) -> String
         | GitCommand::CommitFileDiff { .. }
         | GitCommand::ReadConflicts
         | GitCommand::Refs
+        | GitCommand::ListFolders(_)
         | GitCommand::EditFile { .. } => "Git command failed",
     };
     format!("{action} — {}", err.message())

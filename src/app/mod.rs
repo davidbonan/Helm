@@ -6,7 +6,7 @@ use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPa
 use crate::agent_watch::AgentBadge;
 use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
 use crate::ai::AiRunner;
-use crate::files::tab::{SidebarTab, TabState};
+use crate::files::tab::{SidebarTab, TabEdit, TabState};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -149,7 +149,9 @@ fn group_probe_due(focus_regained: bool, membership_changed: bool, age_secs: f64
 
 mod keys;
 use keys::route_wall_keys;
-use keys::{action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command};
+use keys::{
+    action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command, tab_edit,
+};
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
     route_zoom_keys,
@@ -1777,6 +1779,30 @@ impl HelmApp {
         }
         let repo = self.workspace.active_repo()?;
         Some(self.prefs.sidebar_tab(&repo.path))
+    }
+
+    /// The active worktree's sidebar state while its Files tab is on screen.
+    fn shown_files_state(&self) -> Option<TabState> {
+        let shown = self.sidebars.git && self.shown_sidebar_tab() == Some(SidebarTab::Files);
+        let repo = self.workspace.active_repo().filter(|_| shown)?;
+        Some(self.prefs.tab_state(&repo.path))
+    }
+
+    /// The Files tab's tree (files.md §3, §6, §7): lists the folders on show,
+    /// forgets the paths gone from disk, hands the rows to the sidebar.
+    pub(super) fn sync_file_tree(&mut self, now: f64) {
+        let (Some(state), Some(git)) = (self.shown_files_state(), self.git.as_mut()) else {
+            self.git_panel_state.file_tree.rows = None;
+            return;
+        };
+        let tree = &mut self.git_panel_state.file_tree;
+        git.poll_folders(now, &state.unfolded);
+        let pruned = git.listings.prune(&state);
+        tree.rows = git.listings.rows(&pruned.unfolded, &git.tints);
+        tree.selected = pruned.selected.clone();
+        if pruned != state {
+            self.edit_active_tab_state(|tab| *tab = pruned);
+        }
     }
 
     fn edit_active_tab_state(&mut self, edit: impl FnOnce(&mut TabState)) {
