@@ -177,6 +177,7 @@ fn drop_applies_a_queued_inline_save() {
         original: vec!["two".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: false,
+        whole_file: false,
         force: false,
     }));
     drop(worker);

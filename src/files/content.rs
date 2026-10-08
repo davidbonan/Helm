@@ -43,6 +43,8 @@ pub struct FileSnapshot {
     pub size: u64,
     /// `None` while the file is gone.
     pub stamp: Option<Stamp>,
+    /// The file carries a write bit: the viewer may edit it (files.md §4.1).
+    pub writable: bool,
     pub content: Content,
 }
 
@@ -62,6 +64,7 @@ pub fn read(root: &Path, relative: &str, known: Option<Stamp>) -> ReadOutcome {
             path: relative.to_owned(),
             size: 0,
             stamp: None,
+            writable: false,
             content: Content::Missing,
         });
     };
@@ -73,6 +76,7 @@ pub fn read(root: &Path, relative: &str, known: Option<Stamp>) -> ReadOutcome {
         path: relative.to_owned(),
         size: metadata.len(),
         stamp: Some(stamp),
+        writable: !metadata.permissions().readonly(),
         content: content_of(&full, relative, &metadata),
     })
 }

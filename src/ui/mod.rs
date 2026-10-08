@@ -12,6 +12,7 @@ pub mod file_viewer;
 pub mod git_panel;
 pub mod graph_toolbar;
 pub mod graph_view;
+pub mod inline_editor;
 pub mod phone_access_modal;
 pub mod preferences;
 pub mod pull_requests_view;

@@ -598,7 +598,8 @@ impl HelmApp {
         self.git_panel_state.inline_editing = self
             .diff
             .as_ref()
-            .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing());
+            .is_some_and(|d| d.view.inline_edit().is_some() || d.view.note_editing())
+            || self.viewer.as_ref().is_some_and(|v| v.view.is_editing());
     }
 
     pub(super) fn render_page(
@@ -1457,7 +1458,7 @@ impl HelmApp {
                                 snapshot,
                                 change: viewed_change,
                             };
-                            close_viewer = file_viewer(ui, &file, view);
+                            close_viewer = file_viewer(ui, &file, view, &mut diff_intents);
                         } else {
                             let (project, worktree) = match &project_reminder {
                                 Some((project, worktree)) => {
@@ -2366,7 +2367,7 @@ impl HelmApp {
                         // already blurred it — this covers the paths that never do, the
                         // notice's *Reload* excepted (it drops the buffer deliberately,
                         // and has cleared the editor before emitting).
-                        git.flush_open_edit(&self.diff);
+                        git.flush_open_edit(&self.diff, &self.viewer);
                         git.worker.send(GitCommand::Diff {
                             path: path.clone(),
                             staged,
@@ -2378,7 +2379,7 @@ impl HelmApp {
                     // The viewer takes the diff's place (files.md §4), its buffer
                     // written on the way out like for another file.
                     GitIntent::OpenFile(path) => {
-                        git.flush_open_edit(&self.diff);
+                        git.flush_open_edit(&self.diff, &self.viewer);
                         self.diff = None;
                         git.worker.send(GitCommand::ReadFile {
                             path: path.clone(),
@@ -2410,6 +2411,8 @@ impl HelmApp {
                             EditRefusal::File if staged_side && also_unstaged => {
                                 "This file also has unstaged changes — edit it from Unstaged"
                             }
+                            EditRefusal::ReadOnly => "This file is read-only",
+                            EditRefusal::FileTooLong => "This file is too long to edit inline",
                             EditRefusal::File => "This file can't be edited inline",
                         };
                         let now = ctx.input(|i| i.time);

@@ -1,7 +1,9 @@
-//! The read-only file viewer over the center zone (specs/files.md §4): the diff
-//! view's card, highlighter and image preview over a worktree file.
+//! The file viewer over the center zone (specs/files.md §4): the diff view's card,
+//! highlighter and image preview over a worktree file, and its inline editor over the
+//! whole file (§4.1).
 
 use crate::files::content::{Content, FileSnapshot, Stamp};
+use crate::git::edit::EditRequest;
 use crate::git::status::ChangeKind;
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::diff_view::{
@@ -10,17 +12,25 @@ use crate::ui::diff_view::{
     LINE_PAD_X, LINE_SIZE, NUM_PAD_X, NUM_SIZE,
 };
 use crate::ui::file_list::{paint_status_icon, status_color, status_icon, status_label};
+use crate::ui::git_panel::{EditRefusal, GitIntent};
+use crate::ui::inline_editor::{
+    divergence_notice, editor_requested, editor_spans, inline_editor, save_requested, EditSession,
+    EditTarget, EditorColumns, EditorLook, InlineEdit,
+};
 use crate::ui::syntax_highlight::HighlightedFileCache;
 use crate::ui::text_selection::{
     clicked_selection, copy_requested, dragged_selection, paint_text_selection,
-    text_click_position, TextRow, TextSelection,
+    text_click_position, TextPosition, TextRow, TextSelection,
 };
 use crate::ui::with_alpha;
 
 const MIN_NUMBER_DIGITS: usize = 3;
 const CHIP_ALPHA: u8 = 30;
+/// Above this many lines the whole-file editor does not open (files.md §4.1): every
+/// keystroke lays the whole buffer out again, ~6 ms a frame at this cap.
+const MAX_EDIT_LINES: usize = 3_000;
 
-/// What the viewer derived from the file on screen, and its selection.
+/// What the viewer derived from the file on screen, its selection and its editor.
 #[derive(Debug, Default)]
 pub struct FileViewerState {
     /// Path and stamp of the content everything below was derived from.
@@ -30,12 +40,85 @@ pub struct FileViewerState {
     widest_line: usize,
     selection: Option<TextSelection>,
     image: Option<ImagePreview>,
+    editing: EditSession<()>,
+    /// What leaving the editor sent to disk, shown in place of the last read until a
+    /// read of it lands: the edit never flashes back to the text it replaced.
+    written: Option<Written>,
+}
+
+#[derive(Debug)]
+struct Written {
+    path: String,
+    lines: Vec<String>,
 }
 
 impl FileViewerState {
+    /// Whether the whole-file editor is open — it holds the text input, and the file's
+    /// live re-read waits for it to close (files.md §4.1).
+    pub fn is_editing(&self) -> bool {
+        self.editing.edit().is_some()
+    }
+
+    /// The open whole-file editor, if any.
+    pub fn editor(&self) -> Option<&InlineEdit<()>> {
+        self.editing.edit()
+    }
+
+    /// The write the open editor still owes, read when the viewer is torn down without
+    /// another frame to blur on (files.md §4.1).
+    pub fn pending_write(&self) -> Option<EditRequest> {
+        self.editing.pending_write()
+    }
+
+    /// The editor's buffer was written by whoever tears the viewer down: it closes.
+    pub fn hand_off_editor(&mut self) {
+        self.editing.drop_editor();
+    }
+
+    /// The write landed: an editor still open re-anchors on what it wrote.
+    pub fn edit_written(&mut self, request: &EditRequest) {
+        self.editing.written(request);
+    }
+
+    /// The worker refused the write: the file moved under it (git.md §4).
+    pub fn edit_diverged(&mut self, request: EditRequest) {
+        self.editing.diverged(request);
+    }
+
+    /// The write a divergence notice is currently offering to retry, if any.
+    pub fn edit_divergence(&self) -> Option<&EditRequest> {
+        self.editing.divergence()
+    }
+
+    /// The write did not land: the viewer goes back to what the disk holds.
+    pub fn drop_written(&mut self) {
+        if self.written.take().is_some() {
+            self.shown = None;
+        }
+    }
+
+    /// Opens the editor on `lines` of `path`, as a click would: the seam the app-side
+    /// tests use to have one open without driving a render.
+    #[cfg(test)]
+    pub fn open_editor_for_test(&mut self, path: &str, lines: &[&str]) {
+        let lines: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+        let caret = TextPosition { row: 0, col: 0 };
+        self.editing.open(
+            InlineEdit::new((), EditTarget::whole_file(path, &lines), caret),
+            &mut Vec::new(),
+        );
+    }
+
+    /// Types `text` into the open editor, as the field would.
+    #[cfg(test)]
+    pub fn type_for_test(&mut self, text: &str) {
+        self.editing.type_for_test(text);
+    }
+
     /// Re-derives what the content on screen feeds once another read of it lands.
     /// A new read of the same file keeps its selection where the lines still reach;
-    /// another file starts with none.
+    /// another file starts with none. A read of what the editor just wrote keeps
+    /// everything: it is already on screen.
     fn follow(&mut self, snapshot: &FileSnapshot) {
         let current = matches!(
             &self.shown,
@@ -46,30 +129,70 @@ impl FileViewerState {
         }
         let same_file = matches!(&self.shown, Some((path, _)) if *path == snapshot.path);
         let lines = text_lines(snapshot);
+        self.shown = Some((snapshot.path.clone(), snapshot.stamp));
+        let landed = self
+            .written
+            .take()
+            .is_some_and(|written| written.path == snapshot.path && written.lines == lines);
+        if landed {
+            return;
+        }
         self.highlight = None;
-        self.widest_line = lines
-            .iter()
-            .map(|line| line.chars().count())
-            .max()
-            .unwrap_or(0);
+        self.widest_line = widest_line(&lines);
         self.selection = self
             .selection
             .filter(|_| same_file)
             .and_then(|selection| selection.clamped_to(&lines));
-        self.shown = Some((snapshot.path.clone(), snapshot.stamp));
+    }
+
+    fn lines<'a>(&'a self, snapshot: &'a FileSnapshot) -> Option<&'a [String]> {
+        shown_lines(self.written.as_ref(), snapshot)
     }
 
     fn selected_text(&self, snapshot: &FileSnapshot) -> Option<String> {
-        self.selection?.text_of(&text_lines(snapshot))
+        let lines: Vec<&str> = self.lines(snapshot)?.iter().map(String::as_str).collect();
+        self.selection?.text_of(&lines)
     }
 
-    fn show_text(&mut self, ui: &mut egui::Ui, file: &ViewedFile<'_>, lines: &[String]) {
+    fn open_editor(
+        &mut self,
+        target: EditTarget,
+        caret: TextPosition,
+        intents: &mut Vec<GitIntent>,
+    ) {
+        self.selection = None;
+        self.editing
+            .open(InlineEdit::new((), target, caret), intents);
+    }
+
+    /// Leaves the editor keeping its change: the buffer is written, and shown until the
+    /// read of it lands, coloured as the editor coloured it.
+    fn leave_editor(&mut self, syntax_theme: &'static str, intents: &mut Vec<GitIntent>) {
+        if let Some(request) = self.editing.pending_write() {
+            let spans = editor_spans(&request.path, syntax_theme, &request.replacement);
+            let lines = buffer_lines(&request.replacement);
+            self.highlight = Some((
+                syntax_theme,
+                spans.map(|spans| HighlightedFileCache::filled(syntax_theme, spans)),
+            ));
+            self.widest_line = widest_line(&lines);
+            self.written = Some(Written {
+                path: request.path,
+                lines,
+            });
+        }
+        self.editing.leave(intents);
+    }
+
+    /// The rows; returns the caret a click or `Cmd+E` asks the editor to open at.
+    fn show_text(
+        &mut self,
+        ui: &mut egui::Ui,
+        file: &ViewedFile<'_>,
+        lines: &[String],
+    ) -> Option<TextPosition> {
         self.fill_highlight(ui, file, lines);
-        let char_w = ui.ctx().fonts_mut(|fonts| {
-            fonts
-                .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')
-                .max(1.0)
-        });
+        let char_w = mono_char_width(ui);
         let gutter = Gutter::for_lines(lines.len(), char_w);
         let content_width =
             gutter.content_left(0.0) + self.widest_line as f32 * char_w + CONTENT_TRAILING_PAD;
@@ -77,10 +200,11 @@ impl FileViewerState {
             .highlight
             .as_ref()
             .and_then(|(_, cache)| cache.as_ref());
+        let editable = edit_refusal(Some(lines), file.snapshot.writable).is_none();
         let mut text_rows = Vec::new();
         ui.spacing_mut().item_spacing.y = 0.0;
-        let mut edit = egui::ScrollArea::both()
-            .id_salt(("file_viewer", file.snapshot.path.as_str()))
+        let mut action = egui::ScrollArea::both()
+            .id_salt(scroll_salt(file))
             .auto_shrink([false, false])
             .show_rows(ui, LINE_HEIGHT, lines.len(), |ui, range| {
                 let rows = Rows {
@@ -90,24 +214,63 @@ impl FileViewerState {
                     width: content_width.max(ui.available_width()),
                     highlight,
                     selection: self.selection,
+                    editable,
                 };
-                let mut edit = None;
+                let mut action = None;
                 for index in range {
-                    edit = rows.line(ui, index, &lines[index], &mut text_rows).or(edit);
+                    action = rows
+                        .line(ui, index, &lines[index], &mut text_rows)
+                        .or(action);
                 }
-                edit
+                action
             })
             .inner;
         if let Some(selection) = dragged_selection(ui, &text_rows) {
-            edit = Some(SelectionEdit::Select(selection));
+            action = Some(RowAction::Select(selection));
         }
-        match edit {
-            Some(SelectionEdit::Select(selection)) if self.selection != Some(selection) => {
+        match action? {
+            RowAction::Select(selection) if self.selection != Some(selection) => {
                 self.selection = Some(selection);
                 ui.ctx().request_repaint();
             }
-            Some(SelectionEdit::Clear) => self.selection = None,
-            _ => {}
+            RowAction::Edit(caret) => return Some(caret),
+            RowAction::Select(_) => {}
+            RowAction::Clear => self.selection = None,
+        }
+        None
+    }
+
+    /// The editor in place of the rows, in the same scroll area: the view keeps its
+    /// scroll as the editor opens and closes (files.md §4.1).
+    fn show_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        file: &ViewedFile<'_>,
+        intents: &mut Vec<GitIntent>,
+    ) {
+        let char_w = mono_char_width(ui);
+        let widest_line = self.widest_line;
+        let Some(edit) = self.editing.edit_mut() else {
+            return;
+        };
+        let gutter = Gutter::for_lines(edit.target.original.len(), char_w);
+        let content_width =
+            gutter.content_left(0.0) + widest_line as f32 * char_w + CONTENT_TRAILING_PAD;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let left = egui::ScrollArea::both()
+            .id_salt(scroll_salt(file))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let look = EditorLook {
+                    palette: file.palette,
+                    columns: gutter.editor_columns(),
+                    width: content_width.max(ui.available_width()),
+                };
+                inline_editor(ui, edit, &look)
+            })
+            .inner;
+        if left {
+            self.leave_editor(file.palette.syntax, intents);
         }
     }
 
@@ -135,10 +298,33 @@ pub struct ViewedFile<'a> {
     pub change: Option<ChangeKind>,
 }
 
-/// Renders the viewer; `true` when closing is asked (Close button or `Esc`).
-pub fn file_viewer(ui: &mut egui::Ui, file: &ViewedFile<'_>, state: &mut FileViewerState) -> bool {
-    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+/// Renders the viewer; `true` when closing is asked (Close button or `Esc`). The
+/// editor's writes and refusals land in `intents`.
+pub fn file_viewer(
+    ui: &mut egui::Ui,
+    file: &ViewedFile<'_>,
+    state: &mut FileViewerState,
+    intents: &mut Vec<GitIntent>,
+) -> bool {
     state.follow(file.snapshot);
+    // `Esc` cascade (files.md §4.1): the editor first, where it rolls the buffer back,
+    // then the viewer.
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let close_on_escape = escape && !state.is_editing();
+    if escape {
+        state.editing.cancel();
+    }
+    if state.is_editing() && save_requested(ui) {
+        state.leave_editor(file.palette.syntax, intents);
+    }
+    if let Some(reason) = edit_refusal(state.lines(file.snapshot), file.snapshot.writable) {
+        if editor_requested(ui) {
+            intents.push(GitIntent::EditRefused {
+                path: file.snapshot.path.clone(),
+                reason,
+            });
+        }
+    }
     if copy_requested(ui) {
         if let Some(text) = state.selected_text(file.snapshot) {
             ui.ctx().copy_text(text);
@@ -148,11 +334,16 @@ pub fn file_viewer(ui: &mut egui::Ui, file: &ViewedFile<'_>, state: &mut FileVie
         .show(ui, |ui| {
             let closed = header(ui, file);
             ui.add_space(8.0);
-            body(ui, file, state);
+            if let Some(request) = divergence_notice(ui, file.palette, &mut state.editing, intents)
+            {
+                state.drop_written();
+                intents.push(GitIntent::OpenFile(request.path));
+            }
+            body(ui, file, state, intents);
             closed
         })
         .inner;
-    escape || closed
+    close_on_escape || closed
 }
 
 /// Path, size and git change; `true` when Close was clicked.
@@ -215,13 +406,37 @@ fn change_chip(ui: &mut egui::Ui, palette: &Palette, kind: ChangeKind) {
         });
 }
 
-fn body(ui: &mut egui::Ui, file: &ViewedFile<'_>, state: &mut FileViewerState) {
+fn body(
+    ui: &mut egui::Ui,
+    file: &ViewedFile<'_>,
+    state: &mut FileViewerState,
+    intents: &mut Vec<GitIntent>,
+) {
+    if state.is_editing() {
+        state.show_editor(ui, file, intents);
+        return;
+    }
+    // Lent out for the frame: the rows read the lines while the state takes their clicks.
+    let written = state.written.take();
+    match shown_lines(written.as_ref(), file.snapshot) {
+        Some([]) => placeholder(ui, file.palette, "Empty file"),
+        Some(lines) => {
+            if let Some(caret) = state.show_text(ui, file, lines) {
+                let target = EditTarget::whole_file(&file.snapshot.path, lines);
+                state.open_editor(target, caret, intents);
+            }
+        }
+        None => placeholder_body(ui, file, &mut state.image),
+    }
+    state.written = written;
+}
+
+/// Everything the viewer shows for a file it has no lines of.
+fn placeholder_body(ui: &mut egui::Ui, file: &ViewedFile<'_>, image: &mut Option<ImagePreview>) {
     let palette = file.palette;
     let size = size_label(file.snapshot.size);
     match &file.snapshot.content {
-        Content::Text(lines) if lines.is_empty() => placeholder(ui, palette, "Empty file"),
-        Content::Text(lines) => state.show_text(ui, file, lines),
-        Content::Image(blob) => image_preview(ui, palette, blob, &mut state.image),
+        Content::Image(blob) => image_preview(ui, palette, blob, image),
         Content::Symlink(target) => placeholder(ui, palette, &format!("Symlink to {target}")),
         Content::Binary => placeholder(ui, palette, &format!("Binary file · {size}")),
         Content::TooLarge => {
@@ -229,6 +444,7 @@ fn body(ui: &mut egui::Ui, file: &ViewedFile<'_>, state: &mut FileViewerState) {
         }
         Content::Unreadable => placeholder(ui, palette, "File can't be read"),
         Content::Missing => placeholder(ui, palette, "File no longer exists"),
+        Content::Text(_) => {}
     }
 }
 
@@ -240,9 +456,12 @@ fn placeholder(ui: &mut egui::Ui, palette: &Palette, text: &str) {
     );
 }
 
-enum SelectionEdit {
+/// What a click or a key on a row asks for.
+enum RowAction {
     Select(TextSelection),
     Clear,
+    /// Open the editor with its caret there.
+    Edit(TextPosition),
 }
 
 /// The line-number column: as wide as the last number, three digits at least.
@@ -266,6 +485,15 @@ impl Gutter {
     fn content_left(self, left: f32) -> f32 {
         left + self.width + LINE_PAD_X
     }
+
+    /// The editor numbers its rows where the rows did; the viewer has no sign column.
+    fn editor_columns(self) -> EditorColumns {
+        EditorColumns {
+            number_right: self.number_right(0.0),
+            sign_left: None,
+            content_left: self.content_left(0.0),
+        }
+    }
 }
 
 struct Rows<'a> {
@@ -275,17 +503,18 @@ struct Rows<'a> {
     width: f32,
     highlight: Option<&'a HighlightedFileCache>,
     selection: Option<TextSelection>,
+    editable: bool,
 }
 
 impl Rows<'_> {
-    /// Paints line `index`; returns the selection its click asks for.
+    /// Paints line `index`; returns what its click or `Cmd+E` asks for.
     fn line(
         &self,
         ui: &mut egui::Ui,
         index: usize,
         text: &str,
         text_rows: &mut Vec<TextRow>,
-    ) -> Option<SelectionEdit> {
+    ) -> Option<RowAction> {
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(self.width, LINE_HEIGHT),
             egui::Sense::click_and_drag(),
@@ -332,9 +561,30 @@ impl Rows<'_> {
         if response.triple_clicked() || response.double_clicked() {
             return at
                 .and_then(|at| clicked_selection(&response, at))
-                .map(SelectionEdit::Select);
+                .map(RowAction::Select);
         }
-        response.clicked().then_some(SelectionEdit::Clear)
+        if response.clicked() {
+            return Some(self.click_action(&response, index, text_len));
+        }
+        let keyed = self.editable && response.hovered() && editor_requested(ui);
+        keyed.then_some(RowAction::Edit(TextPosition { row: index, col: 0 }))
+    }
+
+    /// A plain click in the text opens the editor there (files.md §4.1); anywhere else
+    /// on the row, or on a file that cannot be edited, it clears the selection.
+    fn click_action(&self, response: &egui::Response, index: usize, text_len: usize) -> RowAction {
+        let content_left = self.gutter.content_left(response.rect.left());
+        let Some(pos) = response
+            .interact_pointer_pos()
+            .filter(|pos| self.editable && pos.x >= content_left)
+        else {
+            return RowAction::Clear;
+        };
+        let col = ((pos.x - content_left) / self.char_w).floor() as usize;
+        RowAction::Edit(TextPosition {
+            row: index,
+            col: col.min(text_len),
+        })
     }
 }
 
@@ -343,6 +593,60 @@ fn text_lines(snapshot: &FileSnapshot) -> Vec<&str> {
         Content::Text(lines) => lines.iter().map(String::as_str).collect(),
         _ => Vec::new(),
     }
+}
+
+/// The lines on screen: those the editor just wrote while the read of them is on its
+/// way, else the last read's; `None` for a file shown as a placeholder.
+fn shown_lines<'a>(
+    written: Option<&'a Written>,
+    snapshot: &'a FileSnapshot,
+) -> Option<&'a [String]> {
+    if let Some(written) = written.filter(|written| written.path == snapshot.path) {
+        return Some(&written.lines);
+    }
+    match &snapshot.content {
+        Content::Text(lines) => Some(lines),
+        _ => None,
+    }
+}
+
+/// Why the editor cannot open on the lines shown, if it cannot (files.md §4.1).
+fn edit_refusal(lines: Option<&[String]>, writable: bool) -> Option<EditRefusal> {
+    match lines {
+        None | Some([]) => Some(EditRefusal::File),
+        Some(_) if !writable => Some(EditRefusal::ReadOnly),
+        Some(lines) if lines.len() > MAX_EDIT_LINES => Some(EditRefusal::FileTooLong),
+        Some(_) => None,
+    }
+}
+
+/// The buffer's lines as the write lays them on disk: an emptied buffer is no line.
+fn buffer_lines(buffer: &str) -> Vec<String> {
+    if buffer.is_empty() {
+        return Vec::new();
+    }
+    buffer.split('\n').map(str::to_owned).collect()
+}
+
+fn widest_line<S: AsRef<str>>(lines: &[S]) -> usize {
+    lines
+        .iter()
+        .map(|line| line.as_ref().chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+fn mono_char_width(ui: &egui::Ui) -> f32 {
+    ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(LINE_SIZE), ' ')
+            .max(1.0)
+    })
+}
+
+/// One scroll position per file, shared by the rows and the editor.
+fn scroll_salt<'a>(file: &'a ViewedFile<'_>) -> (&'static str, &'a str) {
+    ("file_viewer", file.snapshot.path.as_str())
 }
 
 /// `840 B`, `1.4 KB`, `12 MB` — the phone's file sizes.

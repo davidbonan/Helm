@@ -161,6 +161,16 @@ impl HighlightedFileCache {
         })
     }
 
+    /// A cache already complete with `lines`' spans — highlighted elsewhere, on the
+    /// same theme.
+    pub fn filled(syntax_theme: &'static str, lines: Vec<Vec<HighlightedSpan>>) -> Self {
+        Self {
+            syntax_theme,
+            lines,
+            pending: None,
+        }
+    }
+
     /// Fills lines for at most `budget`, resuming where the previous call stopped.
     /// `true` while lines remain. `lines` must be the file the cache was opened on.
     pub fn extend(&mut self, lines: &[String], budget: std::time::Duration) -> bool {

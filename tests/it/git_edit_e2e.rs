@@ -31,6 +31,7 @@ fn request(
         original: owned(original),
         replacement: buffer.to_owned(),
         stage_after: false,
+        whole_file: false,
         force: false,
     }
 }

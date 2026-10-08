@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -10,9 +9,11 @@ use crate::git::intraline::{Columns, IntralineChanges};
 use crate::review::{count, FileComments, ForgeThreads, LineComment, ReviewIntent, ReviewPool};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_PILL, TITLE_SIZE};
 use crate::ui::git_panel::{intent_pill, EditRefusal, GitIntent};
-use crate::ui::syntax_highlight::{
-    display_text, HighlightedDiffCache, HighlightedSpan, IncrementalHighlighter,
+use crate::ui::inline_editor::{
+    divergence_notice, editor_requested, inline_editor, save_requested, EditSession, EditTarget,
+    EditorColumns, EditorLook, InlineEdit,
 };
+use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
 use crate::ui::text_selection::{
     clicked_selection, copy_requested, dragged_selection, paint_text_selection,
     text_click_position, TextPosition, TextRow, TextSelection,
@@ -82,58 +83,9 @@ pub struct DiffViewState {
     /// accordion (pull-requests.md §11). Resolved threads collapse to a summary row by
     /// default; expanding one adds its root id here.
     expanded_resolved: HashSet<u64>,
-    /// The open inline editor (git.md §4), one at a time. `None` ⇒ the diff renders
-    /// its rows as usual.
-    inline_edit: Option<InlineEdit>,
-    /// A write the worker refused because the file had moved under the editor
-    /// (`EditError::Diverged`): the request is kept so **Overwrite** can re-send it.
-    /// The typed buffer is never dropped on our own initiative (git.md §4).
-    diverged: Option<EditRequest>,
-}
-
-/// The inline editor's live state: the hunk whose rows it replaced, the working-tree
-/// range it writes back, the lines it was seeded from — the write's precondition — and
-/// the buffer being typed (git.md §4). The range and the original lines are captured
-/// when the caret appears and never re-derived from a reloaded diff: that is what makes
-/// the write refuse rather than land on renumbered lines (§7).
-#[derive(Debug, Clone, PartialEq)]
-pub struct InlineEdit {
-    /// File the anchor was read from, captured with it: the diff on screen can move on
-    /// to another file (a switch keeps the view until the new content lands), and the
-    /// buffer must reach the file it came from — never the one now open.
-    pub path: String,
-    pub hunk: usize,
-    pub range: Range<usize>,
-    pub original: Vec<String>,
-    pub buffer: String,
-    /// Buffer as of the last write handed to the worker: what the anchor above is
-    /// expected to hold on disk. Nothing to write while it equals `buffer`.
-    flushed: String,
-    /// Caret to place when the editor takes focus, in buffer coordinates.
-    caret: Option<TextPosition>,
-    /// One-shot: claim keyboard focus on the next frame, so the click that opened the
-    /// editor is the only gesture needed.
-    focus: bool,
-}
-
-impl InlineEdit {
-    /// `true` once the buffer differs from the lines it was seeded with.
-    pub fn is_dirty(&self) -> bool {
-        self.buffer != self.original.join("\n")
-    }
-
-    /// The write this buffer asks for, against the anchor it was opened on.
-    /// `stage_after` names the section the edit was made from (git.md §4).
-    fn request(&self, stage_after: bool, force: bool) -> EditRequest {
-        EditRequest {
-            path: self.path.clone(),
-            range: self.range.clone(),
-            original: self.original.clone(),
-            replacement: self.buffer.clone(),
-            stage_after,
-            force,
-        }
-    }
+    /// The inline editor (git.md §4), anchored on a hunk index. None open ⇒ the diff
+    /// renders its rows as usual.
+    editing: EditSession<usize>,
 }
 
 /// Character width of the widest displayed line, with what it was measured on:
@@ -175,14 +127,13 @@ impl DiffViewState {
         self.conversation_buffer.clear();
         self.conversation_add_buffer.clear();
         self.expanded_resolved.clear();
-        self.inline_edit = None;
-        self.diverged = None;
+        self.editing = EditSession::default();
     }
 
     /// Whether some editor of this file is open — the diff owns `Esc` while one is,
     /// so a column of bands knows not to consume it itself (pull-requests.md §11).
     pub fn has_open_editor(&self) -> bool {
-        self.inline_edit.is_some()
+        self.editing.edit().is_some()
             || self.active_comment.is_some()
             || self.popover_edit.is_some()
             || self.active_reply.is_some()
@@ -190,8 +141,8 @@ impl DiffViewState {
 
     /// The open inline editor, if any (git.md §4) — the app reads it to write the
     /// buffer back to the working tree.
-    pub fn inline_edit(&self) -> Option<&InlineEdit> {
-        self.inline_edit.as_ref()
+    pub fn inline_edit(&self) -> Option<&InlineEdit<usize>> {
+        self.editing.edit()
     }
 
     /// Whether a review note editor is open (inline on a line, or in the recap
@@ -202,27 +153,22 @@ impl DiffViewState {
         self.active_comment.is_some() || self.popover_edit.is_some()
     }
 
-    /// The write the open editor still owes: its buffer, when it differs from what has
-    /// already reached the worker. Read when the diff that holds it is being torn down
-    /// without another frame to blur on — a repo switch is not a discard
-    /// (keybindings.md §4).
-    pub fn pending_write(&self, staged: bool) -> Option<EditRequest> {
-        let edit = self.inline_edit.as_ref()?;
-        (edit.buffer != edit.flushed).then(|| edit.request(staged, false))
+    /// The write the open editor still owes (git.md §4), read when the diff that holds
+    /// it is torn down without another frame to blur on.
+    pub fn pending_write(&self) -> Option<EditRequest> {
+        self.editing.pending_write()
     }
 
     /// The write a divergence notice is currently offering to retry, if any.
     pub fn edit_divergence(&self) -> Option<&EditRequest> {
-        self.diverged.as_ref()
+        self.editing.divergence()
     }
 
     /// Types `text` into the open editor, as the field would: the app-side tests need a
     /// buffer that differs from what is on disk.
     #[cfg(test)]
     pub fn type_for_test(&mut self, text: &str) {
-        if let Some(edit) = self.inline_edit.as_mut() {
-            edit.buffer = text.to_owned();
-        }
+        self.editing.type_for_test(text);
     }
 
     /// Opens an editor on `hunk` anchored on `lines` at `range`, as a click would: the
@@ -235,64 +181,27 @@ impl DiffViewState {
         range: Range<usize>,
         lines: &[&str],
     ) {
-        let original: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
-        let buffer = original.join("\n");
-        self.inline_edit = Some(InlineEdit {
+        let target = EditTarget {
             path: path.to_owned(),
-            hunk,
             range,
-            original,
-            flushed: buffer.clone(),
-            buffer,
-            caret: None,
-            focus: false,
-        });
-    }
-
-    /// Every way out that **keeps** the change — `Cmd+S`, a click elsewhere, a surface
-    /// that stops being writable — goes through here, so the write on the way out has a
-    /// single home (git.md §4); `Esc` is the one exit that rolls back instead
-    /// (`cancel_inline_edit`). `staged` names the section the edit was made from;
-    /// nothing is emitted when the buffer is already on disk.
-    fn leave_inline_edit(&mut self, staged: bool, intents: &mut Vec<GitIntent>) {
-        let Some(edit) = self.inline_edit.take() else {
-            return;
+            original: lines.iter().map(|l| (*l).to_owned()).collect(),
+            stage_after: false,
+            whole_file: false,
         };
-        if edit.buffer != edit.flushed {
-            intents.push(GitIntent::FlushEdit(edit.request(staged, false)));
-        }
+        let caret = TextPosition { row: 0, col: 0 };
+        self.editing
+            .open(InlineEdit::new(hunk, target, caret), &mut Vec::new());
     }
 
-    /// `Esc` (git.md §4): the editing session is rolled back — the buffer is dropped and
-    /// nothing reaches the working tree. Nothing landed while the editor was open (the
-    /// buffer only travels on a deliberate exit), so dropping it *is* the rollback; a
-    /// divergence notice offering to re-send that buffer goes with it.
-    fn cancel_inline_edit(&mut self) {
-        if self.inline_edit.take().is_some() {
-            self.diverged = None;
-        }
-    }
-
-    /// The write landed: the anchor now names the lines just written, so the next write
-    /// compares against what is really on disk (the range grows or shrinks with the
-    /// buffer). Ignored when the editor has moved on — the reply is stale.
+    /// The write landed: the editor's anchor now names the lines just written (git.md §4).
     pub fn edit_written(&mut self, request: &EditRequest) {
-        let Some(edit) = self.inline_edit.as_mut() else {
-            return;
-        };
-        if edit.path != request.path || edit.range != request.range {
-            return;
-        }
-        let lines: Vec<String> = request.replacement.split('\n').map(str::to_owned).collect();
-        edit.range = request.range.start..request.range.start + lines.len();
-        edit.original = lines;
+        self.editing.written(request);
     }
 
-    /// The worker refused the write: the file moved under the editor (git.md §4). The
-    /// buffer stays as typed and the notice hands the arbitration to the user —
+    /// The worker refused the write: the file moved under the editor (git.md §4) —
     /// **Reload** takes the disk's version, **Overwrite** re-sends this request.
     pub fn edit_diverged(&mut self, request: EditRequest) {
-        self.diverged = Some(request);
+        self.editing.diverged(request);
     }
 
     /// Whether the resolved thread rooted at `id` is expanded in the center accordion
@@ -417,21 +326,23 @@ impl DiffViewState {
     /// re-anchored — the same guard the selection above and the armed hunk confirmation
     /// (`git_session::on_diff`) apply (git.md §8).
     fn reconcile_inline_edit(&mut self, diff: &FileDiff) {
-        let Some(edit) = &self.inline_edit else {
+        let Some(edit) = self.editing.edit() else {
             return;
         };
-        let anchored = diff.path == edit.path
-            && diff.source_lines.get(edit.range.clone()) == Some(edit.original.as_slice())
-            && diff.hunks.get(edit.hunk).is_some_and(|hunk| {
+        let target = &edit.target;
+        let anchored = diff.path == target.path
+            && diff.source_lines.get(target.range.clone()) == Some(target.original.as_slice())
+            && diff.hunks.get(edit.anchor).is_some_and(|hunk| {
                 // The hunk still sits inside the window the editor took: another hunk at
                 // that index covers other lines, extended context only widens the window.
                 hunk.new_start.checked_sub(1).is_some_and(|start| {
                     let start = start as usize;
-                    start >= edit.range.start && start + hunk.new_lines as usize <= edit.range.end
+                    start >= target.range.start
+                        && start + hunk.new_lines as usize <= target.range.end
                 })
             });
         if !anchored {
-            self.inline_edit = None;
+            self.editing.drop_editor();
             self.stale = true;
         }
     }
@@ -629,8 +540,6 @@ const WORD_CHANGE_ALPHA: u8 = 85;
 /// (git.md §4): the buffer is re-highlighted as it is typed, and a whole-file-sized
 /// hunk belongs in the external editor.
 const MAX_EDIT_LINES: usize = 2_000;
-/// Width of the accent bar marking the hunk being edited (design-system §4).
-const EDIT_BAR_W: f32 = 3.0;
 /// Lines of the commented hunk previewed atop an overlay thread (pull-requests.md §5).
 const OVERLAY_SNIPPET_LINES: usize = 3;
 /// Indent a reply nests under its thread root, wide enough to seat the rail drawn down
@@ -674,6 +583,15 @@ impl RowLayout {
 
     fn content_left(self, left: f32) -> f32 {
         left + LINE_ACTION_W + 2.0 * self.num_w + SIGN_W + LINE_PAD_X
+    }
+
+    /// The inline editor numbers its rows in the new column, keeps a muted sign.
+    fn editor_columns(self) -> EditorColumns {
+        EditorColumns {
+            number_right: self.new_right(0.0),
+            sign_left: Some(self.sign_left(0.0)),
+            content_left: self.content_left(0.0),
+        }
     }
 }
 
@@ -998,7 +916,7 @@ fn diff_render(
     // the diff (read-only) while the previous file's rows are still on screen — and
     // that switch is precisely a flush point.
     if !editable {
-        state.leave_inline_edit(edit_staged, intents);
+        state.editing.leave(intents);
     }
     let empty = FileComments::new();
     let empty_threads = ForgeThreads::new();
@@ -1025,8 +943,8 @@ fn diff_render(
     // owns what `Esc` does once no editor is open.
     let mut out = DiffOutcome::default();
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if state.inline_edit.is_some() {
-            state.cancel_inline_edit();
+        if state.editing.edit().is_some() {
+            state.editing.cancel();
         } else if state.active_comment.is_some() || state.popover_edit.is_some() {
             state.active_comment = None;
             state.comment_buffer.clear();
@@ -1038,8 +956,8 @@ fn diff_render(
     }
     // `Cmd+S` is the keyboard's click-elsewhere (keybindings.md §3): it writes the buffer
     // and leaves, where `Esc` above leaves without it.
-    if state.inline_edit.is_some() && save_requested(ui) {
-        state.leave_inline_edit(edit_staged, intents);
+    if state.editing.edit().is_some() && save_requested(ui) {
+        state.editing.leave(intents);
     }
     // `Cmd+E` where no caret can open (git.md §4): the click stays silent, but the
     // keyboard ask deserves an answer — the app names the reason and offers the
@@ -1175,7 +1093,12 @@ fn diff_render(
                 ui.add_space(8.0);
             }
 
-            divergence_notice(ui, palette, state, intents);
+            if let Some(request) = divergence_notice(ui, palette, &mut state.editing, intents) {
+                intents.push(GitIntent::OpenDiff {
+                    path: request.path,
+                    staged: request.stage_after,
+                });
+            }
 
             if diff.binary {
                 match &diff.image {
@@ -1265,12 +1188,17 @@ fn diff_render(
                         // holds the working tree's own lines, so the deletions — which have
                         // no counterpart there — step aside with them (git.md §4).
                         if let Some(edit) = state
-                            .inline_edit
-                            .as_mut()
-                            .filter(|edit| edit.hunk == hunk_idx)
+                            .editing
+                            .edit_mut()
+                            .filter(|edit| edit.anchor == hunk_idx)
                         {
-                            if inline_editor(ui, palette, &diff.path, edit, layout, row_w) {
-                                state.leave_inline_edit(edit_staged, intents);
+                            let look = EditorLook {
+                                palette,
+                                columns: layout.editor_columns(),
+                                width: row_w,
+                            };
+                            if inline_editor(ui, edit, &look) {
+                                state.editing.leave(intents);
                             }
                             ui.spacing_mut().item_spacing.y = previous_spacing_y;
                             ui.add_space(12.0);
@@ -3278,7 +3206,6 @@ fn open_hunk_editor(
     let Some(original) = diff.source_lines.get(range.clone()).map(<[String]>::to_vec) else {
         return;
     };
-    state.leave_inline_edit(staged, intents);
     let row = at
         .and_then(|n| (n as usize).checked_sub(1))
         .and_then(|n| n.checked_sub(range.start))
@@ -3286,254 +3213,17 @@ fn open_hunk_editor(
         .min(original.len() - 1);
     state.text_selection = None;
     state.selection.clear();
-    let buffer = original.join("\n");
-    state.inline_edit = Some(InlineEdit {
+    let target = EditTarget {
         path: diff.path.clone(),
-        hunk: hunk_idx,
-        flushed: buffer.clone(),
-        buffer,
         range,
         original,
-        caret: Some(TextPosition { row, col }),
-        focus: true,
-    });
-}
-
-/// The refused-write notice (git.md §4): the file moved under the editor, so the write
-/// did not happen and the typed buffer is still on screen. The arbitration is the
-/// user's — **Reload** takes the version on disk (the buffer goes with the editor),
-/// **Overwrite** re-sends the very same request, precondition dropped.
-fn divergence_notice(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    state: &mut DiffViewState,
-    intents: &mut Vec<GitIntent>,
-) {
-    let Some(request) = state.diverged.clone() else {
-        return;
+        stage_after: staged,
+        whole_file: false,
     };
-    let mut answered = false;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("File changed on disk — the save was refused")
-                .size(LINE_SIZE)
-                .color(palette.git_modified),
-        );
-        if notice_button(ui, palette, "Reload") {
-            state.inline_edit = None;
-            intents.push(GitIntent::OpenDiff {
-                path: request.path.clone(),
-                staged: request.stage_after,
-            });
-            answered = true;
-        }
-        if notice_button(ui, palette, "Overwrite") {
-            intents.push(GitIntent::FlushEdit(EditRequest {
-                force: true,
-                ..request.clone()
-            }));
-            answered = true;
-        }
-    });
-    if answered {
-        state.diverged = None;
-    }
-    ui.add_space(8.0);
-}
-
-fn notice_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> bool {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(label)
-                .size(PILL_SIZE)
-                .color(palette.text_secondary),
-        )
-        .fill(palette.bg_surface)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL)),
-    )
-    .clicked()
-}
-
-/// The open inline editor, in place of the hunk's rows (git.md §4, design-system §4):
-/// same mono font, same line height, same content x offset, same syntax colours — the
-/// only perceptible change is the caret. No frame, no toolbar, no button: an accent
-/// bar marks the hunk, the gutter is renumbered off the laid-out galley, and one muted
-/// hint closes the block. Returns `true` when the editor has been left: egui surrenders
-/// the buffer's focus as soon as the pointer presses anything else, and that *is* the
-/// exit gesture (git.md §4) — there is nothing to press.
-fn inline_editor(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    path: &str,
-    edit: &mut InlineEdit,
-    layout: RowLayout,
-    row_w: f32,
-) -> bool {
-    let id = ui.id().with("inline_edit");
-    let rows = edit.buffer.split('\n').count();
-    let (block, _) = ui.allocate_exact_size(
-        egui::vec2(row_w, rows as f32 * LINE_HEIGHT),
-        egui::Sense::hover(),
-    );
-    let syntax = palette.syntax;
-    let fallback = palette.text_secondary;
-    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
-        editor_galley(ui, path, syntax, egui::TextBuffer::as_str(buf))
-    };
-    let text_rect = egui::Rect::from_min_max(
-        egui::pos2(layout.content_left(block.left()), block.top()),
-        block.max,
-    );
-    let output = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
-            egui::TextEdit::multiline(&mut edit.buffer)
-                .id(id)
-                // No frame at all (design-system §4): the diff's own background shows
-                // through, so the rows keep the colours they had before the caret.
-                .frame(egui::Frame::NONE)
-                .desired_width(f32::INFINITY)
-                .desired_rows(rows)
-                .text_color(fallback)
-                .layouter(&mut layouter)
-                .show(ui)
-        })
-        .inner;
-
-    if let Some(caret) = edit.caret.take() {
-        let index = caret_char_index(&edit.buffer, caret);
-        let mut opened = output.state.clone();
-        opened
-            .cursor
-            .set_char_range(Some(egui::text_selection::CCursorRange::one(
-                egui::text::CCursor::new(index),
-            )));
-        // The widget id is the same for every hunk, so egui's undo history outlives the
-        // editor: without this reset, one `Cmd+Z` in a freshly opened editor restores the
-        // *previous* hunk's buffer — which the save would then write to this range.
-        opened.clear_undoer();
-        opened.store(ui.ctx(), id);
-    }
-    let left = if std::mem::take(&mut edit.focus) {
-        ui.memory_mut(|memory| memory.request_focus(id));
-        false
-    } else {
-        !ui.memory(|memory| memory.has_focus(id))
-    };
-
-    // Off the laid-out galley, not the block: the field takes this frame's keystrokes
-    // *after* the block was allocated from the buffer as it read before them, so the row
-    // a newline just added would otherwise be left outside the bar for a frame.
-    let painted = block.height().max(output.galley.size().y);
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(block.min, egui::vec2(EDIT_BAR_W, painted)),
-        egui::CornerRadius::ZERO,
-        palette.accent,
-    );
-    paint_editor_gutter(ui, palette, &output, block.left(), layout, edit.range.start);
-    ui.label(
-        egui::RichText::new("Saved when you leave the editor · Esc discards")
-            .size(NUM_SIZE)
-            .color(palette.text_muted),
-    );
-    left
-}
-
-/// Line numbers of the editor's rows, read off the laid-out galley so they follow the
-/// text the user is typing (a row added in the buffer numbers itself), plus the dimmed
-/// sign column: the signs belong to the diff the editor replaced, so they are shown
-/// muted — informational, no longer a `+`/`−` you can act on.
-fn paint_editor_gutter(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    output: &egui::text_edit::TextEditOutput,
-    left: f32,
-    layout: RowLayout,
-    first_line: usize,
-) {
-    let rows = &output.galley.rows;
-    let clip = ui.clip_rect();
-    let num_font = egui::FontId::monospace(NUM_SIZE);
-    let sign_color = with_alpha(palette.text_muted, 90);
-    let painter = ui.painter();
-    // A wrapped row would number twice; the editor never wraps (no wrap width).
-    for (line, row) in (first_line..).zip(rows.iter()) {
-        let center_y = output.galley_pos.y + (row.min_y() + row.max_y()) / 2.0;
-        if center_y < clip.top() || center_y > clip.bottom() {
-            continue;
-        }
-        painter.text(
-            egui::pos2(layout.new_right(left), center_y),
-            egui::Align2::RIGHT_CENTER,
-            (line + 1).to_string(),
-            num_font.clone(),
-            palette.text_muted,
-        );
-        painter.text(
-            egui::pos2(layout.sign_left(left), center_y),
-            egui::Align2::LEFT_CENTER,
-            "~",
-            egui::FontId::monospace(LINE_SIZE),
-            sign_color,
-        );
-    }
-}
-
-/// Char offset of a buffer position, for the caret the opening click asks for.
-fn caret_char_index(buffer: &str, at: TextPosition) -> usize {
-    let mut index = 0;
-    for (row, text) in buffer.split('\n').enumerate() {
-        let len = text.chars().count();
-        if row == at.row {
-            return index + at.col.min(len);
-        }
-        index += len + 1;
-    }
-    index.saturating_sub(1)
-}
-
-// Incremental highlighter of the inline editor's buffer: syntect is not incremental and
-// the layouter runs every frame, so the spans are kept across frames and only the lines
-// a keystroke touched are re-parsed (same reasoning — and same `!Send` parse state — as
-// the conflict editor's Output).
-thread_local! {
-    static EDITOR_HL: RefCell<IncrementalHighlighter> =
-        RefCell::new(IncrementalHighlighter::default());
-}
-
-/// The editor's galley at the diff rows' exact metrics: mono `LINE_SIZE` glyphs
-/// centred in `LINE_HEIGHT` rows, no wrapping — a buffer row and a diff row occupy the
-/// same band, so entering the editor shifts nothing.
-fn editor_galley(
-    ui: &egui::Ui,
-    path: &str,
-    syntax_theme: &'static str,
-    text: &str,
-) -> std::sync::Arc<egui::Galley> {
-    let font = egui::FontId::monospace(LINE_SIZE);
-    let mut job = egui::text::LayoutJob::default();
-    EDITOR_HL.with_borrow_mut(|hl| {
-        let format = |color| egui::text::TextFormat {
-            font_id: font.clone(),
-            color,
-            line_height: Some(LINE_HEIGHT),
-            valign: egui::Align::Center,
-            ..Default::default()
-        };
-        match hl.highlight(path, syntax_theme, text) {
-            Some(lines) => {
-                for (i, spans) in lines.iter().enumerate() {
-                    if i > 0 {
-                        job.append("\n", 0.0, format(egui::Color32::PLACEHOLDER));
-                    }
-                    for span in spans {
-                        job.append(&span.text, 0.0, format(span.color));
-                    }
-                }
-            }
-            None => job.append(text, 0.0, format(egui::Color32::PLACEHOLDER)),
-        }
-    });
-    ui.painter().layout_job(job)
+    let caret = TextPosition { row, col };
+    state
+        .editing
+        .open(InlineEdit::new(hunk_idx, target, caret), intents);
 }
 
 /// Hunk header band: `@@ … @@` on a surface background, controls on the right —
@@ -3724,18 +3414,6 @@ fn row_zone(x: f32, left: f32, content_left: f32, char_w: f32) -> Option<RowZone
     } else {
         None
     }
-}
-
-/// `Cmd+E` (keybindings.md §3): opens the editor on the hovered line, for a hand that
-/// never left the keyboard.
-fn editor_requested(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
-}
-
-/// `Cmd+S` while the editor is open (keybindings.md §3): the keyboard's way of stepping
-/// out of the buffer.
-fn save_requested(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
 }
 
 fn diff_line(
@@ -4127,105 +3805,6 @@ mod tests {
         let send = crate::keybindings::Shortcut::cmd(egui::Key::Enter).display();
         assert_eq!(SHORTCUT_SEND, send);
         assert_eq!(SHORTCUT_SAVE, send.trim_start_matches('⌘'));
-    }
-
-    /// State holding an open editor on lines 1..3 of `f`, buffer as seeded.
-    fn state_editing() -> DiffViewState {
-        let original = vec!["one".to_owned(), "two".to_owned()];
-        let buffer = original.join("\n");
-        DiffViewState {
-            inline_edit: Some(InlineEdit {
-                path: "f".to_owned(),
-                hunk: 0,
-                range: 1..3,
-                original,
-                flushed: buffer.clone(),
-                buffer,
-                caret: None,
-                focus: false,
-            }),
-            ..DiffViewState::default()
-        }
-    }
-
-    #[test]
-    fn leaving_writes_the_buffer_once() {
-        let mut state = state_editing();
-        state.inline_edit.as_mut().unwrap().buffer = "one\nTWO".to_owned();
-        let mut intents = Vec::new();
-
-        state.leave_inline_edit(false, &mut intents);
-
-        let GitIntent::FlushEdit(request) = intents.pop().expect("the exit writes") else {
-            panic!("got {intents:?}");
-        };
-        assert!(intents.is_empty(), "got {intents:?}");
-        assert_eq!(request.range, 1..3);
-        assert_eq!(request.replacement, "one\nTWO");
-        assert!(!request.force);
-    }
-
-    #[test]
-    fn esc_rolls_the_buffer_back_instead_of_writing_it() {
-        let mut state = state_editing();
-        state.inline_edit.as_mut().unwrap().buffer = "one\nTWO".to_owned();
-        state.diverged = Some(EditRequest {
-            path: "f".to_owned(),
-            range: 1..3,
-            original: vec!["one".to_owned(), "two".to_owned()],
-            replacement: "one\nTWO".to_owned(),
-            stage_after: false,
-            force: false,
-        });
-
-        state.cancel_inline_edit();
-
-        assert!(state.inline_edit.is_none(), "the editor is gone");
-        assert!(
-            state.diverged.is_none(),
-            "the notice offered to re-send the very buffer just dropped"
-        );
-    }
-
-    #[test]
-    fn the_landed_write_re_anchors_the_editor_on_what_it_wrote() {
-        let mut state = state_editing();
-        let edit = state.inline_edit.as_mut().unwrap();
-        edit.buffer = "one\nTWO\nextra".to_owned();
-        let request = edit.request(false, false);
-
-        state.edit_written(&request);
-
-        let edit = state.inline_edit.as_ref().unwrap();
-        assert_eq!(
-            edit.range,
-            1..4,
-            "a line added by the buffer widens the range it owns"
-        );
-        assert_eq!(edit.original, vec!["one", "TWO", "extra"]);
-        assert!(
-            !edit.is_dirty(),
-            "the anchor now agrees with the buffer on disk"
-        );
-    }
-
-    #[test]
-    fn a_reply_for_another_anchor_leaves_the_editor_alone() {
-        let mut state = state_editing();
-        let stale = EditRequest {
-            path: "f".to_owned(),
-            range: 7..9,
-            original: vec!["x".to_owned()],
-            replacement: "y".to_owned(),
-            stage_after: false,
-            force: false,
-        };
-
-        state.edit_written(&stale);
-
-        let edit = state.inline_edit.as_ref().unwrap();
-        assert_eq!(edit.range, 1..3);
-        assert_eq!(edit.original, vec!["one", "two"]);
     }
 
     #[test]

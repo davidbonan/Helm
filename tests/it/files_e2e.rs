@@ -5,8 +5,10 @@ use helm::files::content::{self, Content, FileSnapshot, ReadOutcome, Stamp};
 use helm::files::tint::{StatusTints, Tint};
 use helm::files::tree::{self, EntryKind, FolderListing, TreeEntry};
 use helm::files::{self, FileRow};
+use helm::git::edit::{EditError, EditRequest};
 use helm::git::status;
 use helm::git::worker::{GitCommand, GitResult, GitWorker};
+use helm::ui::inline_editor::EditTarget;
 
 fn commit_all(repo: &git2::Repository) {
     let mut index = repo.index().unwrap();
@@ -207,4 +209,91 @@ fn a_symlink_reads_as_its_target_and_a_file_past_two_megabytes_as_too_large() {
     assert_eq!(link.content, Content::Symlink("big.log".to_owned()));
     assert_eq!(big.content, Content::TooLarge);
     assert_eq!(big.size, 3 * 1024 * 1024);
+}
+
+/// The viewer's whole-file write of `buffer`, against the lines `snapshot` read.
+fn whole_file_write(snapshot: &FileSnapshot, buffer: &str) -> EditRequest {
+    let Content::Text(lines) = &snapshot.content else {
+        panic!("expected text, got {:?}", snapshot.content);
+    };
+    EditTarget::whole_file(&snapshot.path, lines).request(buffer)
+}
+
+fn edit_on(worker: &GitWorker, request: EditRequest) -> Result<(), EditError> {
+    worker.send(GitCommand::EditFile(request));
+    match worker.recv() {
+        Some((_, GitResult::Edit { result, .. })) => result.map(|_| ()),
+        other => panic!("expected the edit reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_viewer_writes_the_whole_file_back_keeping_its_line_endings() {
+    let tmp = tempfile::tempdir().unwrap();
+    git2::Repository::init(tmp.path()).unwrap();
+    fs::write(tmp.path().join("a.txt"), "one\r\ntwo\r\n").unwrap();
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    let read = snapshot(read_on(&worker, "a.txt", None));
+    assert!(read.writable);
+
+    edit_on(&worker, whole_file_write(&read, "one\nTWO\nthree")).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "one\r\nTWO\r\nthree\r\n"
+    );
+    let reread = snapshot(read_on(&worker, "a.txt", read.stamp));
+    assert_eq!(
+        reread.content,
+        Content::Text(vec!["one".into(), "TWO".into(), "three".into()]),
+        "the re-read is the buffer, line for line"
+    );
+}
+
+#[test]
+fn a_whole_file_write_over_a_moved_file_is_refused_until_overwritten() {
+    let tmp = tempfile::tempdir().unwrap();
+    git2::Repository::init(tmp.path()).unwrap();
+    let file = tmp.path().join("a.txt");
+    fs::write(&file, "one\ntwo\n").unwrap();
+    let worker = GitWorker::spawn(tmp.path(), || {});
+    let read = snapshot(read_on(&worker, "a.txt", None));
+    fs::write(&file, "one\ntwo\nadded elsewhere\n").unwrap();
+    let write = whole_file_write(&read, "one\nTWO");
+
+    assert_eq!(edit_on(&worker, write.clone()), Err(EditError::Diverged));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "one\ntwo\nadded elsewhere\n",
+        "a line added past the lines the editor opened on is a divergence too"
+    );
+
+    edit_on(
+        &worker,
+        EditRequest {
+            force: true,
+            ..write
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "one\nTWO\n",
+        "Overwrite makes the file what was typed, the other change included"
+    );
+}
+
+#[test]
+fn a_file_without_a_write_bit_reads_as_not_writable() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("locked.txt");
+    fs::write(&file, "x\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let ReadOutcome::Read(read) = content::read(tmp.path(), "locked.txt", None) else {
+        panic!("expected a read");
+    };
+
+    assert!(!read.writable);
 }

@@ -108,6 +108,10 @@ pub enum EditRefusal {
     DeletedLines,
     /// The hunk is above the inline editor's line cap.
     TooManyLines,
+    /// The file carries no write bit.
+    ReadOnly,
+    /// The file is above the whole-file editor's line cap (files.md §4.1).
+    FileTooLong,
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).

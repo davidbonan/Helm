@@ -964,7 +964,7 @@ impl HelmApp {
                     // write goes out on the leaving repo's worker, before the session that
                     // owns it is parked (git.md §4).
                     if let Some(git) = self.git.as_ref() {
-                        git.flush_open_edit(&self.diff);
+                        git.flush_open_edit(&self.diff, &self.viewer);
                     }
                     // Park the left-behind repo's state (graph for an instant redraw,
                     // commit draft + AI runner so a draft never shows under another repo
@@ -1011,7 +1011,7 @@ impl HelmApp {
             None => {
                 if let Some(git) = self.git.as_ref() {
                     close_chip_menu(ctx);
-                    git.flush_open_edit(&self.diff);
+                    git.flush_open_edit(&self.diff, &self.viewer);
                 }
                 self.park_active_session();
                 self.diff = None;
@@ -1926,7 +1926,7 @@ impl HelmApp {
         self.review.remove(&key);
         self.central_mode = CentralMode::Terminal;
         if let Some(git) = self.git.as_ref() {
-            git.flush_open_edit(&self.diff);
+            git.flush_open_edit(&self.diff, &self.viewer);
         }
         self.diff = None;
         self.viewer = None;

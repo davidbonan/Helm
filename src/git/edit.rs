@@ -79,6 +79,9 @@ pub struct EditRequest {
     pub replacement: String,
     /// The edit came from **Staged**: the write is followed by a file-level stage.
     pub stage_after: bool,
+    /// The range is the whole file (files.md §4.1): a line added past it on disk is a
+    /// divergence too, and an overwrite replaces the file as it now reads.
+    pub whole_file: bool,
     /// Skips the precondition — the **Overwrite** answer to a divergence notice.
     pub force: bool,
 }
@@ -148,7 +151,11 @@ pub fn editable(repo: &git2::Repository, path: &str, bytes: &[u8]) -> Result<(),
 /// out.
 pub fn write_range(repo: &git2::Repository, request: &EditRequest) -> Result<(), EditError> {
     let file = load(repo, &request.path)?;
-    let range = request.range.clone();
+    let range = if request.whole_file {
+        0..file.lines.len()
+    } else {
+        request.range.clone()
+    };
     if range.start > range.end || range.end > file.lines.len() {
         return Err(EditError::Diverged);
     }

@@ -110,8 +110,8 @@ Same semantics as the WIP diff's inline editor ([`git.md`](git.md) §4), on the
 - **Not editable** (click does nothing, `Cmd+E` toasts the reason with *Open in
   editor*): any placeholder state (binary, too large, image, missing, unreadable,
   symlink), a file the process cannot write, or a file above the **editable line
-  cap** (measured at implementation so typing stays fluid; initial target
-  10,000 lines).
+  cap**: **3,000 lines** (measured: a keystroke frame takes ~6 ms there, ~17 ms at
+  the initial 10,000-line target).
 
 ### 4.2 Agent notes
 

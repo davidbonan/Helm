@@ -1853,6 +1853,7 @@ fn an_edit_reply_toasts_where_it_landed_and_re_requests_the_status() {
         original: vec!["two".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: true,
+        whole_file: false,
         force: false,
     }));
 
@@ -1995,6 +1996,7 @@ fn a_refused_write_raises_the_notice_and_keeps_the_buffer() {
         original: vec!["gone".to_owned()],
         replacement: "TWO".to_owned(),
         stage_after: false,
+        whole_file: false,
         force: false,
     }));
 
@@ -4745,4 +4747,193 @@ fn opening_a_diff_closes_the_viewer() {
     step_until(&mut harness, |harness| harness.state().diff.is_some());
 
     assert!(harness.state().viewer.is_none());
+}
+
+/// A viewer on `path`, its whole-file editor open on `lines` with `typed` in it.
+fn viewer_editing(path: &str, lines: &[&str], typed: &str) -> FileViewer {
+    let mut view = FileViewerState::default();
+    view.open_editor_for_test(path, lines);
+    view.type_for_test(typed);
+    FileViewer {
+        path: path.to_owned(),
+        loaded: None,
+        view,
+    }
+}
+
+fn session_on(dir: &Path) -> GitSession {
+    GitSession::spawn(
+        RepoKey::of(dir),
+        dir,
+        &egui::Context::default(),
+        AiRunner::new(dir, || {}),
+        MutationLock::new(),
+    )
+}
+
+/// Drains `session` into `viewer` until the worker answered every edit.
+fn drain_edits(session: &mut GitSession, viewer: &mut Option<FileViewer>, toasts: &mut Toasts) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.worker.has_pending(ResultKind::Edit) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit reply never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.drain(
+            &mut None,
+            viewer,
+            &mut BranchEditor::default(),
+            &mut GitPanelState::default(),
+            &mut None,
+            &mut None,
+            &mut None,
+            toasts,
+            0.0,
+        );
+    }
+}
+
+#[test]
+fn the_viewer_s_live_re_read_waits_for_its_editor_to_close() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let mut session = session_on(tmp.path());
+    let mut viewer = viewer_editing("a.txt", &["one"], "ONE");
+
+    session.poll_viewer(10.0, &viewer);
+    assert!(
+        !session.worker.has_pending(ResultKind::File),
+        "nothing may reflow under the caret while the editor is open"
+    );
+
+    viewer.view.hand_off_editor();
+    session.poll_viewer(20.0, &viewer);
+    assert!(
+        session.worker.has_pending(ResultKind::File),
+        "the re-read resumes"
+    );
+}
+
+#[test]
+fn tearing_the_viewer_down_writes_its_open_buffer() {
+    // Opening another file, a diff, switching repo and sending a review all flush
+    // through here before the viewer goes (files.md §4.1).
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut session = session_on(tmp.path());
+    let mut viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+
+    session.flush_open_edit(&None, &viewer);
+    FileViewer::open(&mut viewer, "b.txt".to_owned());
+    drain_edits(&mut session, &mut viewer, &mut Toasts::default());
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\nTWO\n");
+    let open = viewer.as_ref().unwrap();
+    assert!(
+        !open.view.is_editing(),
+        "the flushed editor does not follow the viewer to another file"
+    );
+    assert!(open.view.pending_write().is_none(), "nothing is owed twice");
+}
+
+#[test]
+fn a_repo_switch_writes_the_viewer_s_open_buffer() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    init_repo_with_commit(a.path());
+    init_repo_with_commit(b.path());
+    let file = a.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(Repo::new(a.path().to_path_buf()));
+    workspace.add(Repo::new(b.path().to_path_buf()));
+    let mut app = HelmApp::with_workspace(workspace);
+    let ctx = egui::Context::default();
+    app.sync_git_session(&ctx);
+    app.viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+
+    app.workspace.set_active(1);
+    app.sync_git_session(&ctx);
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "one\nTWO\n",
+        "the buffer must reach the repo it was typed in"
+    );
+    assert!(app.viewer.is_none(), "the switch closes the viewer");
+}
+
+#[test]
+fn a_refused_viewer_write_raises_its_notice_instead_of_a_toast() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let mut session = session_on(tmp.path());
+    let mut viewer = Some(viewer_editing("a.txt", &["one", "two"], "one\nTWO"));
+    let write = viewer.as_ref().unwrap().view.pending_write().unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    let mut toasts = Toasts::default();
+
+    session.worker.send(GitCommand::EditFile(write));
+    drain_edits(&mut session, &mut viewer, &mut toasts);
+
+    let view = &viewer.as_ref().unwrap().view;
+    assert_eq!(
+        view.edit_divergence()
+            .map(|request| request.replacement.as_str()),
+        Some("one\nTWO"),
+        "the notice carries the very buffer that was refused"
+    );
+    assert!(toasts.items().is_empty(), "got {:?}", toasts.items());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\n");
+}
+
+#[test]
+fn a_viewer_edit_lands_on_disk_and_the_viewer_shows_it() {
+    use egui_kittest::kittest::Queryable;
+    let tmp = files_repo();
+    let mut harness = viewer_page(&tmp);
+    open_from_tree(&mut harness);
+    let row = harness.get_by_label("1 fn main() {}").rect();
+    let char_w = harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .glyph_width(&egui::FontId::monospace(12.0), ' ')
+            .max(1.0)
+    });
+    let at = egui::pos2(
+        row.left() + 3.0 * char_w + 20.0 + 0.5 * char_w,
+        row.center().y,
+    );
+    let away = harness.get_by_label("13 B").rect().center();
+    for pos in [at, away] {
+        harness.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+            harness.step();
+        }
+        if pos == at {
+            harness.step();
+            harness.event(egui::Event::Text("pub ".to_owned()));
+            harness.step();
+        }
+    }
+
+    step_until(&mut harness, |_| {
+        std::fs::read_to_string(tmp.path().join("src/main.rs")).unwrap() == "pub fn main() {}\n"
+    });
+    step_until(&mut harness, shows("1 pub fn main() {}"));
+    assert!(
+        harness.state().toasts.items().is_empty(),
+        "got {:?}",
+        harness.state().toasts.items()
+    );
 }
