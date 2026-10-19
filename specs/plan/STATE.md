@@ -6,6 +6,98 @@
 
 ---
 
+## ◐ Milestone — M-Browser · Browser pane in the split tree
+
+Spec: [`specs/browser.md`](../browser.md), [`specs/keybindings.md`](../keybindings.md) §4.
+Per the user: native engine (WebKit), CEF reachable through the engine port; the
+Browser button on fresh shells is the entry point; favorites global, start page,
+import from Chrome or Safari (favorites, history, cookies). Then the favorites
+page redesign (sidebar, per-project local favorites, site icons, tile menu) and
+the toolbar's More menu (find, zoom, viewport). Counter: **14/18**.
+
+- ☑ **B1 — Engine port + WebKit adapter.** `browser::{WebEngine, WebView}`,
+  `WKWebView` over the content view, persistent default data store, `_blank` in
+  place, Web Inspector, `Cmd` chords routed to egui. *Tests*: 7 unit (URL rules);
+  in-process probe (load, type `hié`, `Cmd+D` reaches egui / `Cmd+A` stays,
+  hide/show focus, back/forward, view removed on drop).
+- ☑ **B2 — Pane + offer.** Browser button on plain shells, gone at first
+  keystroke; click turns the pane into a page on the Run strip URL else `$PORT`;
+  toolbar; view hidden under modals, popups, drags, Preferences, other modes.
+  *Tests*: 5 app + 3 UI e2e.
+- ☑ **B3 — Headless verification.** Dark + light: offer on fresh + split pane,
+  dismissed by typing, page toolbar on `localhost:3000`. Evidence:
+  `verify-artifacts/20261015_153042_26059/`.
+- ☐ **B4 — Manual check in the real window.** Not done (no screen/accessibility
+  permission here): page drawn on the pane, resize/split follow, `_blank` click,
+  palette hides the page, Inspect, Open in Chrome, IME by hand, toasts under the page.
+- ☑ **B5 — Inspector in the pane, redesigned offer + toolbar.** Each page in its
+  own frame view (inspector docks inside it); offer card; address pill, Dev server,
+  hard reload. *Tests*: in-process probe (inspector within the pane's frame, follows
+  resize); headless `verify-artifacts/20261015_161353_74904/`.
+- ☑ **B6 — Favorites, history, import.** `browser::library` (`browser.json`),
+  `browser::import::{chrome, safari}` (SQLite copies, CommonCrypto for Chrome's
+  cookies, `binarycookies`), cookies into the WebKit store; start page, star,
+  suggestions. *Tests*: 6 library + 4 import unit (decrypt vector from `openssl`),
+  5 UI e2e, 2 app; parsers run on this Mac's real Chrome profile and binarycookies;
+  headless `verify-artifacts/20261015_170003_13582/`.
+- ☐ **B7 — Real import by hand.** Not done: Chrome Keychain prompt, Safari with
+  and without Full Disk Access, imported cookies keeping a login.
+- ☑ **B8 — Ghost offer + `⌘↩`.** Offer redrawn as a faded ghost button (faded border,
+  no fill or shadow at rest) with its keycap; `Cmd+Enter` opens the page while the
+  shell has the keyboard, inert once the offer is gone. *Tests*: 2 app; headless
+  `verify-artifacts/20261016_104437_8611/`.
+- ☑ **B9 — Tinted toolbar, iOS pill.** `PageState::tint` (`themeColor`, else
+  `underPageBackgroundColor`); bar fades to it, readable ink, no hairline; host
+  centered, star on hover, Back/Forward only with history; raised white pill,
+  640 pt max, centered; eased progress glow with frames kept while loading.
+  *Tests*: UI e2e (Back hidden); headless dark + light:
+  `verify-artifacts/20261016_110903_1671/`, `20261016_112631_47977/` (wide bar,
+  load sequence). Real pages by hand: not done.
+- ☑ **B10 — Toolbar folds on scroll.** `browser::fold::ToolbarFold` (travel
+  thresholds); `WKUserScript` + `WKScriptMessageHandler` → `PageState::scroll_y`;
+  26 pt bar with the host, unfolds on climb, pointer move, click. *Tests*: 5 unit
+  + 1 UI e2e; WebKit probe (scroll_y 0 → 500 → 1200; github.com tint `#1e2327`);
+  headless `verify-artifacts/20261016_113942_15448/`. Real scrolling by hand: not done.
+- ☑ **B11 — Suggestions card, frozen page.** Suggestions in a card under the pill,
+  toolbar colors; `WebView::{request_snapshot, take_snapshot}` (`takeSnapshot` →
+  CGImage → RGBA), `browser::freeze::PageFreeze` holds the view up until its
+  snapshot is in, drawn under it while suggestions, modals, popups or drags cover
+  it. *Tests*: 4 unit + 1 UI e2e; WebKit probe (800×600 at 2×, red top / blue
+  bottom, in 1 frame); headless light/dark/start page:
+  `verify-artifacts/20261016_120840_92211/`. Real window by hand: not done.
+- ☑ **B12 — Tabs in a pane.** `BrowserPane` holds tabs (own view, state, freeze);
+  tab row under the toolbar from two tabs (equal shares, else shown titled +
+  badges, sideways scroll), `+` in the toolbar; `Cmd+T` / `Cmd+W` on the pane's
+  tabs while it has the keyboard; `FreezeStep::Leave` snapshots a view going off
+  screen. *Tests*: freeze unit updated, 5 UI e2e, 2 app; WebKit probe (snapshot
+  of a hidden view); headless light/dark at 1000 / 620 / 420 / 300 + one tab:
+  `verify-artifacts/20261016_171855_45162/`, `verify-artifacts/20261016_171950_48320/`.
+  Real window by hand: not done.
+- ☑ **B13 — Library sections.** `Favorite::{source, project}`, local favorites
+  per project, rename; `browser::sections` (This project, Starred, Frequently
+  visited, folder tree per source), filter. *Tests*: 5 sections + library unit.
+- ☑ **B14 — Favorites page with sidebar.** Sidebar, section view, narrow picker,
+  import banner. *Tests*: 2 UI e2e (filter, narrow picker); headless light/dark
+  960 / 460: `verify-artifacts/20261019_094539_73426/`.
+- ☑ **B15 — Tiles.** Responsive grid, two-line titles, initial badge, local
+  `:port/path`, right-click menu, rename in place, `Cmd`-click background tab.
+  *Tests*: 1 url unit, 2 UI e2e (Cmd-click, rename).
+- ◐ **B16 — Site icons.** Page reports its icon (`helmIcon` script), `curl` fetch
+  once a launch per site, 64 px PNG in `favicons/`, loaded at launch; Chrome
+  `Favicons` import; icons on tiles and tab badges. *Tests*: 3 favicons + 1 Chrome
+  unit; curl args on github.com (ICO 16+32); headless
+  `verify-artifacts/20261019_100158_11948/`. Not done: icon report on real pages
+  in WebKit, real Chrome import of icons.
+- ☑ **B17 — Toolbar.** Server and star icons, More menu (find, zoom, viewport,
+  inspector, Chrome, Copy URL), `+` ending the tab row. *Tests*: 1 UI e2e (`+` in
+  row); headless `verify-artifacts/20261019_100158_11948/`.
+- ◐ **B18 — Find, zoom, viewport.** Find bar (`findString`), page zoom
+  (`pageZoom`, zoom actions + `Cmd+F` rerouted), viewport width centered.
+  *Tests*: 1 zoom unit, 3 UI e2e (find, Esc, mobile viewport); headless dark find
+  bar + mobile. Not done: find and zoom on a real page in WebKit.
+
+---
+
 ## ☑ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
 Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.

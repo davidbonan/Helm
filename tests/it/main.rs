@@ -33,6 +33,7 @@ mod term_emu_e2e;
 mod term_pane_e2e;
 mod ui_agents_view;
 mod ui_app_keys;
+mod ui_browser_pane;
 mod ui_central_switch;
 mod ui_command_palette;
 mod ui_commit_detail;

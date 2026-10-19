@@ -164,9 +164,11 @@ use git_session::{
     RepoCaches, RepoKey,
 };
 
+mod browser_panes;
 mod command_palette;
 mod phone_access;
 mod render;
+mod site_icons;
 
 pub mod url_scheme;
 
@@ -737,6 +739,13 @@ pub struct HelmApp {
     titlebar_fullscreen: Option<bool>,
     /// Frame-pacing instrumentation (`HELM_FRAME_LOG=1`), `None` otherwise.
     frame_log: Option<crate::frame_log::FrameLog>,
+    /// Opens the browser panes' pages (browser.md §2); `None` headless.
+    web_engine: Option<Box<dyn crate::browser::WebEngine>>,
+    /// Favorites and history of every browser pane (browser.md §7, §8); in
+    /// memory unless loaded at boot.
+    browser_library: crate::browser::library::LibraryStore,
+    browser_import: browser_panes::BrowserImport,
+    site_icons: site_icons::SiteIcons,
 }
 
 impl Default for HelmApp {
@@ -890,6 +899,10 @@ impl HelmApp {
             group_refresh: None,
             titlebar_fullscreen: None,
             frame_log: crate::frame_log::FrameLog::from_env(),
+            web_engine: None,
+            browser_library: crate::browser::library::LibraryStore::default(),
+            browser_import: browser_panes::BrowserImport::default(),
+            site_icons: site_icons::SiteIcons::default(),
         }
     }
 
@@ -4262,10 +4275,12 @@ impl eframe::App for HelmApp {
     /// eframe calls `save` on shutdown (and periodically), `on_exit` last.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.flush_prefs();
+        self.browser_library.save();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.flush_prefs();
+        self.browser_library.save();
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -4426,6 +4441,7 @@ impl eframe::App for HelmApp {
             // "Pull Requests" section's source status updates and `in_flight` clears.
             self.poll_pr_runner();
             self.render_preferences(ui, palette, &ctx);
+            self.sync_browser_views(&ctx);
             if let Some(log) = self.frame_log.as_mut() {
                 log.end_frame("prefs");
             }
@@ -4493,6 +4509,9 @@ impl eframe::App for HelmApp {
         if let Some(action) = toast_overlay(&ctx, &palette, &mut self.toasts) {
             self.run_toast_action(action);
         }
+        self.finish_browser_import(&ctx);
+        self.site_icons.receive(&ctx);
+        self.sync_browser_views(&ctx);
         if let Some(log) = self.frame_log.as_mut() {
             log.end_frame(match self.central_mode {
                 CentralMode::Terminal => "term",
@@ -4771,8 +4790,15 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
                 }
             }
             let mut app = HelmApp::from_prefs(prefs);
+            #[cfg(target_os = "macos")]
+            {
+                app.web_engine = crate::browser::webkit::WebKitEngine::attach(cc)
+                    .map(|engine| Box::new(engine) as Box<dyn crate::browser::WebEngine>);
+            }
             app.prefs_path = crate::persistence::prefs_path();
             app.phone_devices = crate::remote::devices::PairedDevices::load();
+            app.browser_library = crate::browser::library::LibraryStore::load();
+            app.site_icons = site_icons::SiteIcons::load(&cc.egui_ctx);
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

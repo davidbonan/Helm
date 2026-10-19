@@ -52,6 +52,10 @@ reserved by macOS for screenshots).
 | `Alt+←` / `Alt+→` | Cursor to previous / next word (shell line editing) |
 | `Alt+Backspace` | Deletes the previous word |
 | `Cmd+K` | **Clear Terminal** (clears the screen and the scrollback) |
+| `Cmd+Enter` (fresh shell, **Open browser** button shown) | Turns the pane into a browser pane ([`browser.md`](browser.md) §3) — fixed, inert once the button is gone |
+| `Cmd+T` / `Cmd+W` (browser pane with the keyboard) | New tab in the pane / close its shown tab, the pane on its last ([`browser.md`](browser.md) §6) — the **New Tab** and **Close pane** bindings |
+| `Cmd+=` / `Cmd+-` / `Cmd+0` (browser pane with the keyboard) | Zoom the shown page in / out / back to 100 % instead of the terminals' font ([`browser.md`](browser.md) §6) — the **Zoom** bindings |
+| `Cmd+F` (browser pane with the keyboard) | Opens the page's find bar ([`browser.md`](browser.md) §4) — fixed |
 | `Shift+PageUp` / `Shift+PageDown` | Scroll through the scrollback |
 | `Tab` / `Shift+Tab` | Forwarded to the PTY (`\t` / backtab `CSI Z`) — never consumed by the egui focus navigation, like `Esc` and the arrows |
 | `Shift+Enter` | `CSI 13;2u` without negotiation (kitty/Ghostty convention) — newline in agent harnesses (Claude Code, Codex) ([`terminal.md`](terminal.md) §3) |
@@ -110,7 +114,10 @@ of shortcuts depends on this zone.
   `Cmd+T`, `Cmd+,`, `Cmd+B`, `Cmd+G`, `Cmd+Shift+G`, `Cmd+R`):
   active whatever the active zone; `Cmd+1..9` (tabs) and `Cmd+Ctrl+1..9`
   (repos) take precedence over any terminal use of the same combinations.
-- **Terminal** (§2): active **only** when a terminal pane has focus.
+- **Terminal** (§2): active **only** when a terminal pane has focus. A browser pane
+  counts as one ([`browser.md`](browser.md) §6): while its page has the keyboard,
+  every `Cmd` chord goes to helm except `Cmd+C`/`V`/`X`/`A`/`Z`/`Shift+Z` (the
+  page's) and `Cmd+Q`/`H`/`M` (the app menu's).
 - **Commit field**: captures text input and `Cmd+Enter` (commit); the
   terminal shortcuts are inactive there.
 - **Diff view** open: only the §3 shortcuts (`Cmd+C` included) and `Esc` apply.

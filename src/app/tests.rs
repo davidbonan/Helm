@@ -5025,3 +5025,306 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
     assert_eq!(app.central_mode, CentralMode::Terminal);
     assert!(app.diff.is_none() && app.viewer.is_none());
 }
+
+/// Browser panes of the split tree (browser.md §3, §4).
+mod browser_panes {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    fn page_harness(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui_state(
+                |ui, app: &mut HelmApp| {
+                    let ctx = ui.ctx().clone();
+                    app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                },
+                app,
+            );
+        harness.run();
+        harness
+    }
+
+    fn app_in_repo(dir: &Path) -> HelmApp {
+        let mut workspace = Workspace::default();
+        workspace.add(Repo::new(dir.to_path_buf()));
+        HelmApp::with_workspace(workspace)
+    }
+
+    #[test]
+    fn a_fresh_shell_offers_the_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = page_harness(app_in_repo(dir.path()));
+        harness.get_by_label("Open browser");
+    }
+
+    #[test]
+    fn a_pane_launched_for_a_command_offers_no_browser() {
+        let mut app = app_with(&["a"]);
+        let key = key_of(&app.workspace, 0, 0);
+        let pane =
+            Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
+        let mut panes = Panes::new();
+        panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
+        app.caches.panes.insert(key, panes);
+        let harness = page_harness(app);
+        assert!(harness.query_by_label("Open browser").is_none());
+    }
+
+    #[test]
+    fn typing_in_the_shell_dismisses_the_browser_offer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = page_harness(app_in_repo(dir.path()));
+        harness.event(egui::Event::Text("l".to_owned()));
+        harness.run();
+        assert!(harness.query_by_label("Open browser").is_none());
+    }
+
+    fn press_cmd_enter(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        harness.run();
+        harness.run();
+    }
+
+    #[test]
+    fn cmd_enter_on_a_fresh_shell_opens_the_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_in_repo(dir.path());
+        let key = key_of(&app.workspace, 0, 0);
+        let mut harness = page_harness(app);
+        press_cmd_enter(&mut harness);
+        assert!(harness.state().caches.browsers[&key]
+            .pages
+            .contains_key(&PaneId(0)));
+    }
+
+    #[test]
+    fn cmd_enter_keeps_the_shell_once_the_offer_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_in_repo(dir.path());
+        let key = key_of(&app.workspace, 0, 0);
+        let mut harness = page_harness(app);
+        harness.event(egui::Event::Text("l".to_owned()));
+        harness.run();
+        press_cmd_enter(&mut harness);
+        assert!(harness.state().caches.panes[&key].contains_key(&PaneId(0)));
+    }
+
+    #[test]
+    fn clicking_browser_turns_the_pane_into_a_page_on_the_server_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_in_repo(dir.path());
+        app.prefs.set_project_settings(
+            dir.path().to_path_buf(),
+            None,
+            String::new(),
+            "npm run dev -- --port $PORT".to_owned(),
+        );
+        let key = key_of(&app.workspace, 0, 0);
+        let mut harness = page_harness(app);
+        harness.get_by_label("Open browser").click();
+        harness.run();
+        harness.run();
+        let app = harness.state();
+        assert!(
+            !app.caches.panes[&key].contains_key(&PaneId(0)),
+            "shell closed"
+        );
+        assert!(app.caches.browsers[&key].pages.contains_key(&PaneId(0)));
+        harness.get(
+            egui_kittest::kittest::By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .value("http://localhost:3000/"),
+        );
+    }
+
+    #[test]
+    fn the_star_keeps_a_local_page_in_its_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_in_repo(dir.path());
+        app.prefs.set_project_settings(
+            dir.path().to_path_buf(),
+            None,
+            String::new(),
+            "npm run dev -- --port $PORT".to_owned(),
+        );
+        let mut harness = page_harness(app);
+        harness.get_by_label("Open browser").click();
+        harness.run();
+        harness.get_by_label("Add to favorites").click();
+        harness.run();
+        let app = harness.state();
+        let project = app
+            .project_root_for_index(0)
+            .map(|root| root.display().to_string());
+        assert_eq!(
+            app.browser_library.library.favorites,
+            vec![crate::browser::library::Favorite {
+                title: "localhost:3000".to_owned(),
+                url: "http://localhost:3000/".to_owned(),
+                project,
+                ..crate::browser::library::Favorite::default()
+            }]
+        );
+    }
+
+    #[test]
+    fn the_favorites_button_shows_the_start_page_then_the_page_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_in_repo(dir.path());
+        app.prefs.set_project_settings(
+            dir.path().to_path_buf(),
+            None,
+            String::new(),
+            "npm run dev -- --port $PORT".to_owned(),
+        );
+        let mut harness = page_harness(app);
+        harness.get_by_label("Open browser").click();
+        harness.run();
+        assert!(harness.query_by_label("Import from Chrome").is_none());
+        let favorites = || {
+            egui_kittest::kittest::By::new()
+                .label("Favorites")
+                .role(egui::accesskit::Role::Button)
+        };
+        harness.get(favorites()).click();
+        harness.run();
+        harness.get_by_label("Import from Chrome");
+        harness.get(favorites()).click();
+        harness.run();
+        assert!(harness.query_by_label("Import from Chrome").is_none());
+    }
+
+    #[test]
+    fn a_finished_import_lands_in_the_library_and_reports_its_counts() {
+        use crate::browser::import::{ImportReport, ImportSource, ImportStatus, Imported};
+        use crate::browser::library::{Favorite, Visit};
+
+        let mut app = HelmApp::default();
+        let imported = || Imported {
+            favorites: vec![Favorite {
+                title: "Docs".to_owned(),
+                url: "https://docs.rs/".to_owned(),
+                folder: Some("Bookmarks Bar".to_owned()),
+                ..Favorite::default()
+            }],
+            history: vec![Visit {
+                url: "https://docs.rs/".to_owned(),
+                title: "Docs".to_owned(),
+                count: 4,
+                last: 1,
+            }],
+            cookies: Vec::new(),
+            cookies_skipped: Some("Keychain access refused".to_owned()),
+            icons: Vec::new(),
+        };
+        app.browser_import
+            .start_with(ImportSource::Chrome, &egui::Context::default(), move || {
+                Ok(imported())
+            });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(app.browser_import.status, ImportStatus::Running(_)) {
+            assert!(Instant::now() < deadline, "import never finished");
+            app.finish_browser_import(&egui::Context::default());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.browser_library.library.favorites.len(), 1);
+        assert_eq!(app.browser_library.library.history.len(), 1);
+        assert_eq!(
+            app.browser_import.status,
+            ImportStatus::Done(ImportReport {
+                source: ImportSource::Chrome,
+                favorites: 1,
+                history: 1,
+                cookies: 0,
+                cookies_skipped: Some("Keychain access refused".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_w_closes_a_browser_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_in_repo(dir.path());
+        app.workspace
+            .active_layout_mut()
+            .unwrap()
+            .split(Orient::Vertical);
+        let key = key_of(&app.workspace, 0, 0);
+        let mut harness = page_harness(app);
+        harness
+            .get_all_by_label("Open browser")
+            .next()
+            .unwrap()
+            .click();
+        harness.run();
+        let focused = harness.state().workspace.active_layout().unwrap().focus();
+        assert!(harness.state().caches.browsers[&key]
+            .pages
+            .contains_key(&focused));
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        harness.run();
+        assert!(harness.state().caches.browsers[&key].pages.is_empty());
+        assert_eq!(harness.state().pane_count(), 1);
+    }
+
+    /// A browser pane beside a shell, holding the keyboard; frames run like the
+    /// app's: keys, render, views.
+    fn browser_harness(dir: &Path) -> (egui_kittest::Harness<'static, HelmApp>, PaneKey) {
+        let mut app = app_in_repo(dir);
+        app.workspace
+            .active_layout_mut()
+            .unwrap()
+            .split(Orient::Vertical);
+        let key = key_of(&app.workspace, 0, 0);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui_state(
+                |ui, app: &mut HelmApp| {
+                    let ctx = ui.ctx().clone();
+                    app.handle_keys(&ctx);
+                    app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                    app.sync_browser_views(&ctx);
+                },
+                app,
+            );
+        harness.run();
+        harness
+            .get_all_by_label("Open browser")
+            .next()
+            .unwrap()
+            .click();
+        harness.run();
+        (harness, key)
+    }
+
+    fn browser_tabs(harness: &egui_kittest::Harness<'_, HelmApp>, key: &PaneKey) -> usize {
+        let pages = &harness.state().caches.browsers[key].pages;
+        pages.values().map(|browser| browser.tab_count()).sum()
+    }
+
+    #[test]
+    fn cmd_t_in_a_browser_pane_opens_a_tab_there_not_a_helm_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut harness, key) = browser_harness(dir.path());
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+        harness.run();
+        assert_eq!(browser_tabs(&harness, &key), 2);
+        assert_eq!(harness.state().workspace.tab_titles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cmd_w_closes_the_shown_tab_before_the_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut harness, key) = browser_harness(dir.path());
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        harness.run();
+        assert_eq!(browser_tabs(&harness, &key), 1);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        harness.run();
+        assert!(harness.state().caches.browsers[&key].pages.is_empty());
+        assert_eq!(harness.state().pane_count(), 1);
+    }
+}

@@ -1,4 +1,6 @@
 pub mod agents_view;
+pub mod browser_pane;
+pub(crate) mod browser_start_page;
 pub mod command_palette;
 pub mod commit_detail;
 pub mod conflict_view;
