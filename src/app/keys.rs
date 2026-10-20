@@ -222,6 +222,28 @@ pub fn route_zoom_keys(ctx: &egui::Context, keymap: &Keymap, zoom: &mut FontZoom
     });
 }
 
+/// The zoom chords pressed this frame, consumed so the terminals' font keeps
+/// its size.
+pub(crate) fn consume_zoom_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<ZoomCommand> {
+    ctx.input_mut(|input| {
+        let mut commands = Vec::new();
+        input.events.retain(|event| {
+            let command = match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => zoom_command(keymap, *key, *modifiers),
+                _ => None,
+            };
+            commands.extend(command);
+            command.is_none()
+        });
+        commands
+    })
+}
+
 /// `action`'s current binding pressed this frame (one-shot global shortcuts).
 pub(crate) fn action_pressed(ctx: &egui::Context, keymap: &Keymap, action: Action) -> bool {
     ctx.input(|i| {
@@ -232,6 +254,23 @@ pub(crate) fn action_pressed(ctx: &egui::Context, keymap: &Keymap, action: Actio
                     if keymap.matches(action, *key, *modifiers)
             )
         })
+    })
+}
+
+/// `action` pressed this frame, consumed so nothing after acts on it.
+pub(crate) fn consume_action(ctx: &egui::Context, keymap: &Keymap, action: Action) -> bool {
+    ctx.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            let hit = matches!(
+                event,
+                egui::Event::Key { key, pressed: true, modifiers, .. }
+                    if keymap.matches(action, *key, *modifiers)
+            );
+            pressed |= hit;
+            !hit
+        });
+        pressed
     })
 }
 

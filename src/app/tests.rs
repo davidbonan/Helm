@@ -2947,8 +2947,10 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         dark_theme: "tokyo".to_owned(),
         left_sidebar_width: 240.0,
         right_sidebar_width: 360.0,
+        browser_sidebar_width: 520.0,
         show_workspace: false,
         show_git: true,
+        show_browser: true,
         pull_default: PullDefault::Rebase,
         editor: Editor::default(),
         notify_on_agent_completion: true,
@@ -2998,6 +3000,8 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         "persisted closed state is restored"
     );
     assert!(app.sidebars.git, "persisted open state is restored");
+    assert!(app.sidebars.browser);
+    assert_eq!(app.browser_sidebar_width, 520.0);
     assert_eq!(app.pull_default, PullDefault::Rebase);
     assert_eq!(app.commit_message.agent, "Codex");
     assert_eq!(
@@ -5024,4 +5028,218 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
     assert!(!app.review.contains_key(&key), "sent, the batch is cleared");
     assert_eq!(app.central_mode, CentralMode::Terminal);
     assert!(app.diff.is_none() && app.viewer.is_none());
+}
+
+/// The browser sidebar (browser.md §3, §4, §6).
+mod browser_sidebar {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    /// Frames run like the app's: keys, render, views.
+    fn harness(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 700.0))
+            .build_ui_state(
+                |ui, app: &mut HelmApp| {
+                    let ctx = ui.ctx().clone();
+                    app.handle_keys(&ctx);
+                    app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                    app.sync_browser_views(&ctx);
+                },
+                app,
+            );
+        harness.run();
+        harness
+    }
+
+    fn app_in_repo(dir: &Path) -> HelmApp {
+        let mut workspace = Workspace::default();
+        workspace.add(Repo::new(dir.to_path_buf()));
+        HelmApp::with_workspace(workspace)
+    }
+
+    fn with_dev_server(dir: &Path) -> HelmApp {
+        let mut app = app_in_repo(dir);
+        app.prefs.set_project_settings(
+            dir.to_path_buf(),
+            None,
+            String::new(),
+            "npm run dev -- --port $PORT".to_owned(),
+        );
+        app
+    }
+
+    fn open_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
+        harness.get_by_label("Toggle browser sidebar").click();
+        harness.run();
+        harness.run();
+    }
+
+    fn browser_tabs(harness: &egui_kittest::Harness<'_, HelmApp>) -> usize {
+        let key = harness.state().active_repo_key().unwrap();
+        harness.state().caches.browsers[&key].tab_count()
+    }
+
+    #[test]
+    fn the_toggle_opens_the_browser_on_the_worktree_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        assert!(harness.state().sidebars.browser);
+        harness.get(
+            egui_kittest::kittest::By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .value("http://localhost:3000/"),
+        );
+    }
+
+    #[test]
+    fn the_star_keeps_a_local_page_in_its_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        harness.get_by_label("Add to favorites").click();
+        harness.run();
+        let app = harness.state();
+        let project = app
+            .project_root_for_index(0)
+            .map(|root| root.display().to_string());
+        assert_eq!(
+            app.browser_library.library.favorites,
+            vec![crate::browser::library::Favorite {
+                title: "localhost:3000".to_owned(),
+                url: "http://localhost:3000/".to_owned(),
+                project,
+                ..crate::browser::library::Favorite::default()
+            }]
+        );
+    }
+
+    #[test]
+    fn the_favorites_button_shows_the_start_page_then_the_page_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        assert!(harness.query_by_label("Import from Chrome").is_none());
+        let favorites = || {
+            egui_kittest::kittest::By::new()
+                .label("Favorites")
+                .role(egui::accesskit::Role::Button)
+        };
+        harness.get(favorites()).click();
+        harness.run();
+        harness.get_by_label("Import from Chrome");
+        harness.get(favorites()).click();
+        harness.run();
+        assert!(harness.query_by_label("Import from Chrome").is_none());
+    }
+
+    #[test]
+    fn a_finished_import_lands_in_the_library_and_reports_its_counts() {
+        use crate::browser::import::{ImportReport, ImportSource, ImportStatus, Imported};
+        use crate::browser::library::{Favorite, Visit};
+
+        let mut app = HelmApp::default();
+        let imported = || Imported {
+            favorites: vec![Favorite {
+                title: "Docs".to_owned(),
+                url: "https://docs.rs/".to_owned(),
+                folder: Some("Bookmarks Bar".to_owned()),
+                ..Favorite::default()
+            }],
+            history: vec![Visit {
+                url: "https://docs.rs/".to_owned(),
+                title: "Docs".to_owned(),
+                count: 4,
+                last: 1,
+            }],
+            cookies: Vec::new(),
+            cookies_skipped: Some("Keychain access refused".to_owned()),
+            icons: Vec::new(),
+        };
+        app.browser_import
+            .start_with(ImportSource::Chrome, &egui::Context::default(), move || {
+                Ok(imported())
+            });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(app.browser_import.status, ImportStatus::Running(_)) {
+            assert!(Instant::now() < deadline, "import never finished");
+            app.finish_browser_import(&egui::Context::default());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.browser_library.library.favorites.len(), 1);
+        assert_eq!(app.browser_library.library.history.len(), 1);
+        assert_eq!(
+            app.browser_import.status,
+            ImportStatus::Done(ImportReport {
+                source: ImportSource::Chrome,
+                favorites: 1,
+                history: 1,
+                cookies: 0,
+                cookies_skipped: Some("Keychain access refused".to_owned()),
+            })
+        );
+    }
+
+    /// `⌘⇧B` on a worktree without a server: the start page, its URL field
+    /// holding the keyboard.
+    fn browser_with_keyboard(dir: &Path) -> egui_kittest::Harness<'static, HelmApp> {
+        let mut harness = harness(app_in_repo(dir));
+        harness.key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::B,
+        );
+        harness.run();
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn cmd_t_in_the_browser_opens_a_tab_there_not_a_helm_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = browser_with_keyboard(dir.path());
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+        harness.run();
+        assert_eq!(browser_tabs(&harness), 2);
+        assert_eq!(harness.state().workspace.tab_titles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn closing_the_last_tab_drops_its_page_for_the_start_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        let toggle = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        harness.key_press_modifiers(toggle, egui::Key::B);
+        harness.run();
+        harness.get_by_label("Close localhost:3000").click();
+        harness.run();
+        harness.key_press_modifiers(toggle, egui::Key::B);
+        harness.run();
+        harness.get_by_label("Close New tab");
+    }
+
+    #[test]
+    fn cmd_r_in_the_browser_reloads_the_page_not_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = browser_with_keyboard(dir.path());
+        harness.state_mut().sidebars.git = false;
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        harness.run();
+        assert!(!harness.state().sidebars.git);
+    }
+
+    #[test]
+    fn cmd_w_closes_the_shown_tab_then_the_sidebar_never_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = browser_with_keyboard(dir.path());
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        harness.run();
+        assert_eq!(browser_tabs(&harness), 1);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        harness.run();
+        assert!(!harness.state().sidebars.browser);
+        assert_eq!(harness.state().pane_count(), 1);
+    }
 }

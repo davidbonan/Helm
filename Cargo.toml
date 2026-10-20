@@ -101,6 +101,7 @@ image = { version = "0.25", default-features = false, features = [
     "ico",
     "tiff",
 ] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Native titlebar AX-zone extension (app::titlebar): gesture tools (Swish…)
 # only recognize the real NSWindow titlebar band, not the egui-drawn header.
@@ -117,10 +118,16 @@ objc2-foundation = { version = "0.2", features = [
     "NSAppleEventManager",
     "NSArray",
     "NSBundle",
+    "NSDate",
+    "NSDictionary",
     "NSGeometry",
+    "NSHTTPCookie",
     "NSProcessInfo",
     "NSString",
     "NSThread",
+    "NSURL",
+    "NSURLRequest",
+    "NSValue",
 ] }
 # Completion banners posted under helm's own bundle identity (specs/agents.md
 # §5): osascript posts them as Script Editor, an app the user cannot allowlist
@@ -137,7 +144,12 @@ objc2-user-notifications = { version = "0.2", features = [
 # Completion handlers of the UserNotifications API (authorization, presentation).
 block2 = "0.5"
 objc2-app-kit = { version = "0.2", features = [
+    "block2",
     "NSAnimation",
+    "NSColor",
+    "NSColorSpace",
+    "NSEvent",
+    "NSImage",
     "NSLayoutConstraint",
     "NSResponder",
     "NSTitlebarAccessoryViewController",
@@ -146,12 +158,35 @@ objc2-app-kit = { version = "0.2", features = [
     "NSWindow",
 ] }
 raw-window-handle = "0.6"
+# Browser pane (specs/browser.md §2): one native WKWebView per pane.
+objc2-web-kit = { version = "0.2", features = [
+    "block2",
+    "objc2-app-kit",
+    "WKFindConfiguration",
+    "WKFindResult",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKPreferences",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKSnapshotConfiguration",
+    "WKUIDelegate",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+    "WKWindowFeatures",
+] }
 # Color emoji of the terminal grid (terminal.md §4): egui only rasterizes
 # monochrome outlines, the system emoji font is drawn through CoreText.
 # core-graphics / core-foundation: the versions already in the tree.
 core-text = "20"
 core-graphics = "0.23"
 core-foundation = "0.9"
+# The browser page's snapshot (specs/browser.md §4): its CGImage, handed by AppKit.
+foreign-types = "0.5"
 
 [profile.release]
 lto = "thin"

@@ -2,6 +2,7 @@
 //! Preferences page, key routing, worker polling, the 3-zone page, modals
 //! and persistence flush (M17-12). Free `render_pane` draws one split leaf.
 
+use super::browser_sidebar::{render_browser_sidebar, server_url_from, WorktreeBrowser};
 use super::*;
 
 /// Borrow an open PR review (pull-requests.md §11) as the view struct the cockpit
@@ -521,6 +522,9 @@ impl HelmApp {
                 self.sidebars.git = !self.sidebars.git;
             }
         }
+        if action_pressed(ctx, &self.keymap, Action::ToggleBrowserSidebar) {
+            self.sidebars.browser = !self.sidebars.browser;
+        }
         // ⌘⇧G (keybindings §1): keyboard equivalent of the header switch — consumed
         // by `render_page` with `switch_request` to share the enter/exit logic.
         let toggle_graph = action_pressed(ctx, &self.keymap, Action::ToggleGraph);
@@ -548,6 +552,7 @@ impl HelmApp {
         }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);
+        self.route_browser_tab_keys(ctx);
         route_tab_keys(ctx, &self.keymap, &mut self.workspace);
         FrameKeys {
             toggle_graph,
@@ -901,6 +906,7 @@ impl HelmApp {
         let lane_cache = &mut self.caches.lane_cache;
         let left_sidebar_width = self.left_sidebar_width;
         let right_sidebar_width = self.right_sidebar_width;
+        let browser_sidebar_width = self.browser_sidebar_width;
         let keymap = &self.keymap;
         let clear_shortcut = self.keymap.shortcut_for(Action::ClearTerminal);
 
@@ -1197,6 +1203,27 @@ impl HelmApp {
                         }
                     }
                 }
+                // Scans the Run strip only while the browser sidebar shows.
+                let show_browser = &mut self.sidebars.browser;
+                let server_url = show_browser
+                    .then(|| server_url_from(&self.caches.run_panes, &run_key, run_port))
+                    .flatten();
+                let browser = show_browser.then(|| {
+                    self.caches
+                        .browsers
+                        .entry(run_key.clone())
+                        .or_insert_with(|| WorktreeBrowser::opening(server_url.clone()))
+                });
+                let browser_project = run_root.display().to_string();
+                let browser_chrome = crate::ui::browser_panel::BrowserChrome {
+                    palette: &palette,
+                    server: server_url.as_deref(),
+                    project: &browser_project,
+                    library: &self.browser_library.library,
+                    import: &self.browser_import.status,
+                    icons: self.site_icons.textures(),
+                };
+                let mut browser_output = None;
                 let panes_all = &mut self.caches.panes;
                 // Disjoint `caches` field ⇒ borrowed alongside `panes_all` for the two
                 // root_layout closures (the run strip and the central area).
@@ -1231,6 +1258,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
+                    Some(show_browser),
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
                     can_amend_head,
@@ -1256,6 +1284,7 @@ impl HelmApp {
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
+                    browser_sidebar_width,
                     keymap,
                     true,
                     run_collapsed,
@@ -1306,6 +1335,12 @@ impl HelmApp {
                                 None => {}
                             },
                         );
+                    },
+                    |ui| {
+                        if let Some(browser) = browser {
+                            browser_output =
+                                Some(render_browser_sidebar(ui, browser, &browser_chrome));
+                        }
                     },
                     |ui| {
                         // The in-app conflict editor (conflicts.md §3) owns the whole
@@ -2079,6 +2114,11 @@ impl HelmApp {
                 let diff_open = diff.as_ref().is_some_and(|d| {
                     matches!(d.source, DiffSource::WorkingTree { .. }) && d.loaded.is_some()
                 });
+                if let Some(browser) = browser_output {
+                    self.apply_browser_intents(&pane_key.0, browser.intents, ctx);
+                    self.record_browser_visits(browser.visits);
+                    self.fetch_site_icons(browser.icons, ctx);
+                }
                 let zone = focus_zone(diff_open, any_focused);
                 let mut close_tab_requested = false;
                 if let Some(active_layout) = self.workspace.active_layout_mut() {
@@ -2165,6 +2205,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
+                    None,
                     false,
                     None,
                     false,
@@ -2190,10 +2231,12 @@ impl HelmApp {
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
+                    browser_sidebar_width,
                     keymap,
                     false,
                     true,
                     crate::ui::run_panel::HEADER_HEIGHT,
+                    |_ui| {},
                     |_ui| {},
                     |ui| {
                         if agents_active {

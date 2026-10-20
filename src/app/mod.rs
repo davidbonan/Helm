@@ -164,9 +164,11 @@ use git_session::{
     RepoCaches, RepoKey,
 };
 
+mod browser_sidebar;
 mod command_palette;
 mod phone_access;
 mod render;
+mod site_icons;
 
 pub mod url_scheme;
 
@@ -498,12 +500,13 @@ impl Page {
     }
 }
 
-/// The two sidebars are independent (⌘B / ⌘G can both be open) — grouped for
+/// The sidebars are independent (⌘B / ⌘G / ⌘⇧B can all be open) — grouped for
 /// persistence, **never** collapsed into one exclusive enum (M17-10).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SidebarVisibility {
     workspace: bool,
     git: bool,
+    browser: bool,
 }
 
 pub struct HelmApp {
@@ -580,6 +583,7 @@ pub struct HelmApp {
     installed_openers: Vec<WorkspaceOpener>,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
+    browser_sidebar_width: f32,
     tab_rename: Option<TabRename>,
     modal: Option<Modal>,
     /// Repo the open modal was armed on ([`Modal::targets_active_repo`]), stamped
@@ -737,6 +741,13 @@ pub struct HelmApp {
     titlebar_fullscreen: Option<bool>,
     /// Frame-pacing instrumentation (`HELM_FRAME_LOG=1`), `None` otherwise.
     frame_log: Option<crate::frame_log::FrameLog>,
+    /// Opens the browser panes' pages (browser.md §2); `None` headless.
+    web_engine: Option<Box<dyn crate::browser::WebEngine>>,
+    /// Favorites and history of every browser pane (browser.md §7, §8); in
+    /// memory unless loaded at boot.
+    browser_library: crate::browser::library::LibraryStore,
+    browser_import: browser_sidebar::BrowserImport,
+    site_icons: site_icons::SiteIcons,
 }
 
 impl Default for HelmApp {
@@ -814,6 +825,7 @@ impl HelmApp {
             sidebars: SidebarVisibility {
                 workspace: prefs.show_workspace,
                 git: prefs.show_git,
+                browser: prefs.show_browser,
             },
             page: Page::Main,
             preferences_section: PreferencesSection::default(),
@@ -832,6 +844,7 @@ impl HelmApp {
             installed_openers,
             left_sidebar_width: prefs.left_sidebar_width,
             right_sidebar_width: prefs.right_sidebar_width,
+            browser_sidebar_width: prefs.browser_sidebar_width,
             tab_rename: None,
             modal: None,
             modal_repo: None,
@@ -890,6 +903,10 @@ impl HelmApp {
             group_refresh: None,
             titlebar_fullscreen: None,
             frame_log: crate::frame_log::FrameLog::from_env(),
+            web_engine: None,
+            browser_library: crate::browser::library::LibraryStore::default(),
+            browser_import: browser_sidebar::BrowserImport::default(),
+            site_icons: site_icons::SiteIcons::default(),
         }
     }
 
@@ -1284,12 +1301,18 @@ impl HelmApp {
     fn persist_sidebar_widths_if_changed(&mut self, ctx: &egui::Context) {
         let left = crate::ui::left_sidebar_width(ctx).unwrap_or(self.left_sidebar_width);
         let right = crate::ui::right_sidebar_width(ctx).unwrap_or(self.right_sidebar_width);
-        if left != self.left_sidebar_width || right != self.right_sidebar_width {
+        let browser = crate::ui::browser_sidebar_width(ctx).unwrap_or(self.browser_sidebar_width);
+        if left != self.left_sidebar_width
+            || right != self.right_sidebar_width
+            || browser != self.browser_sidebar_width
+        {
             self.left_sidebar_width = left;
             self.right_sidebar_width = right;
+            self.browser_sidebar_width = browser;
             self.persist(|prefs| Prefs {
                 left_sidebar_width: left,
                 right_sidebar_width: right,
+                browser_sidebar_width: browser,
                 ..prefs
             });
         }
@@ -1330,6 +1353,7 @@ impl HelmApp {
             self.persist(move |prefs| Prefs {
                 show_workspace: sidebars.workspace,
                 show_git: sidebars.git,
+                show_browser: sidebars.browser,
                 ..prefs
             });
         }
@@ -4262,10 +4286,12 @@ impl eframe::App for HelmApp {
     /// eframe calls `save` on shutdown (and periodically), `on_exit` last.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.flush_prefs();
+        self.browser_library.save();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.flush_prefs();
+        self.browser_library.save();
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -4426,6 +4452,7 @@ impl eframe::App for HelmApp {
             // "Pull Requests" section's source status updates and `in_flight` clears.
             self.poll_pr_runner();
             self.render_preferences(ui, palette, &ctx);
+            self.sync_browser_views(&ctx);
             if let Some(log) = self.frame_log.as_mut() {
                 log.end_frame("prefs");
             }
@@ -4486,6 +4513,7 @@ impl eframe::App for HelmApp {
             self.toggle_preferences_page();
             ctx.request_repaint();
         }
+        self.focus_browser_if_opened(sidebars_were);
         self.flush_persistence(&ctx, sidebars_were);
         // Toasts (git.md §10): above everything, in all modes — a git action error
         // stays visible even outside the Graph view; a toast's action button is
@@ -4493,6 +4521,9 @@ impl eframe::App for HelmApp {
         if let Some(action) = toast_overlay(&ctx, &palette, &mut self.toasts) {
             self.run_toast_action(action);
         }
+        self.finish_browser_import(&ctx);
+        self.site_icons.receive(&ctx);
+        self.sync_browser_views(&ctx);
         if let Some(log) = self.frame_log.as_mut() {
             log.end_frame(match self.central_mode {
                 CentralMode::Terminal => "term",
@@ -4771,8 +4802,15 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
                 }
             }
             let mut app = HelmApp::from_prefs(prefs);
+            #[cfg(target_os = "macos")]
+            {
+                app.web_engine = crate::browser::webkit::WebKitEngine::attach(cc)
+                    .map(|engine| Box::new(engine) as Box<dyn crate::browser::WebEngine>);
+            }
             app.prefs_path = crate::persistence::prefs_path();
             app.phone_devices = crate::remote::devices::PairedDevices::load();
+            app.browser_library = crate::browser::library::LibraryStore::load();
+            app.site_icons = site_icons::SiteIcons::load(&cc.egui_ctx);
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

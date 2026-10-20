@@ -77,6 +77,8 @@ pub(crate) struct RepoCaches {
     /// shared by every tab of that worktree. Spawned on demand by the Run button,
     /// dropped (killing its tree) on Stop or when the worktree leaves the workspace.
     pub(crate) run_panes: HashMap<RepoKey, TerminalState>,
+    /// Each worktree's browser (browser.md), made the first time its sidebar shows.
+    pub(crate) browsers: HashMap<RepoKey, super::browser_sidebar::WorktreeBrowser>,
     /// Aggregated badge per repo (sidebar), recomputed at tick.
     pub(crate) agent_badges: HashMap<RepoKey, AgentBadge>,
     /// Flat list of agents across every repo (cross-repo dashboard), rebuilt at
@@ -139,6 +141,7 @@ impl RepoCaches {
             .collect();
         self.panes.retain(|key, _| live_tabs.contains(key));
         self.run_panes.retain(|key, _| self.keys.contains(key));
+        self.browsers.retain(|key, _| self.keys.contains(key));
         self.agent_badges.retain(|key, _| self.keys.contains(key));
         self.branch_labels.retain(|key, _| self.keys.contains(key));
         self.dirty.retain(|key, _| self.keys.contains(key));
@@ -163,6 +166,7 @@ impl RepoCaches {
             .map(|((repo, tab), panes)| ((swap(repo), tab), panes))
             .collect();
         carry(&mut self.run_panes, from, to);
+        carry(&mut self.browsers, from, to);
         carry(&mut self.agent_badges, from, to);
         carry(&mut self.branch_labels, from, to);
         carry(&mut self.dirty, from, to);

@@ -18,6 +18,7 @@ use crate::workspace_launcher::WorkspaceOpener;
 const PREFS_FILE: &str = "prefs.toml";
 const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 280.0;
 const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 480.0;
+const DEFAULT_BROWSER_SIDEBAR_WIDTH: f32 = 560.0;
 /// Default width of the PR cockpit's detail panel; the user resizes it by
 /// dragging the list/detail split (specs/pull-requests.md §5).
 const DEFAULT_PR_DETAIL_WIDTH: f32 = 460.0;
@@ -98,8 +99,10 @@ pub struct Prefs {
     pub dark_theme: String,
     pub left_sidebar_width: f32,
     pub right_sidebar_width: f32,
+    pub browser_sidebar_width: f32,
     pub show_workspace: bool,
     pub show_git: bool,
+    pub show_browser: bool,
     pub pull_default: PullDefault,
     /// IDE opening a file from a terminal Cmd+click link (terminal.md §12): its
     /// CLI template is spawned with the file path and line (`Editor::template`).
@@ -182,8 +185,10 @@ impl Default for Prefs {
             dark_theme: "helm".to_owned(),
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
+            browser_sidebar_width: DEFAULT_BROWSER_SIDEBAR_WIDTH,
             show_workspace: true,
             show_git: false,
+            show_browser: false,
             pull_default: PullDefault::default(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
@@ -624,8 +629,10 @@ mod tests {
             dark_theme: "catppuccin".to_owned(),
             left_sidebar_width: 240.0,
             right_sidebar_width: 300.0,
+            browser_sidebar_width: 520.0,
             show_workspace: false,
             show_git: true,
+            show_browser: true,
             pull_default: PullDefault::FfOnly,
             editor: Editor::Zed,
             notify_on_agent_completion: false,

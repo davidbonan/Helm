@@ -27,6 +27,7 @@ is customizable from the Preferences page (§6).
 | `Cmd+,` | Toggle the full-window **Preferences page** ([`preferences.md`](preferences.md)); reopening = closing |
 | `Cmd+B` | Show / hide the **workspace sidebar** (left), with animation. Visible by default |
 | `Cmd+G` | Show / hide the **git sidebar** (right), with animation. Hidden by default; also drivable via the top-right icon |
+| `Cmd+Shift+B` | Show / hide the **browser sidebar** (between the terminals and the git sidebar), its page taking the keyboard; also the top-right globe ([`browser.md`](browser.md) §3). Hidden by default |
 | `Cmd+Shift+E` | Toggle the right sidebar tab **Git ⇄ Files** in Terminal mode ([`files.md`](files.md) §2); reveals the sidebar if hidden. Graph mode or no active repo: no-op |
 | `Cmd+Shift+G` | Toggle the center zone **Terminal ⇄ Git** (equivalent to the header switch, [`git.md`](git.md) §9; entering Graph reveals the git sidebar). Without an active repo: no-op |
 | `Cmd+R` | **Run / Relaunch** the active project's server in the Run strip ([`git.md`](git.md) §3): starts it, or relaunches it if already running. Reveals the git sidebar and expands the strip; with no command resolved, opens the inline editor. Without an active repo: no-op |
@@ -52,6 +53,11 @@ reserved by macOS for screenshots).
 | `Alt+←` / `Alt+→` | Cursor to previous / next word (shell line editing) |
 | `Alt+Backspace` | Deletes the previous word |
 | `Cmd+K` | **Clear Terminal** (clears the screen and the scrollback) |
+| `Cmd+T` / `Cmd+W` (browser with the keyboard) | New browser tab / close its shown tab, the sidebar on its last ([`browser.md`](browser.md) §6) — the **New Tab** and **Close pane** bindings |
+| `Cmd+R` (browser with the keyboard) | Reloads the shown page instead of running / relaunching the server ([`browser.md`](browser.md) §6) — the **Run** binding |
+| `Cmd+Shift+R` (browser with the keyboard) | Reloads the shown page bypassing the cache ([`browser.md`](browser.md) §6) — fixed |
+| `Cmd+=` / `Cmd+-` / `Cmd+0` (browser with the keyboard) | Zoom the shown page in / out / back to 100 % instead of the terminals' font ([`browser.md`](browser.md) §6) — the **Zoom** bindings |
+| `Cmd+F` (browser with the keyboard) | Opens the page's find bar ([`browser.md`](browser.md) §4) — fixed |
 | `Shift+PageUp` / `Shift+PageDown` | Scroll through the scrollback |
 | `Tab` / `Shift+Tab` | Forwarded to the PTY (`\t` / backtab `CSI Z`) — never consumed by the egui focus navigation, like `Esc` and the arrows |
 | `Shift+Enter` | `CSI 13;2u` without negotiation (kitty/Ghostty convention) — newline in agent harnesses (Claude Code, Codex) ([`terminal.md`](terminal.md) §3) |
@@ -107,10 +113,14 @@ terminal pane, left sidebar, right sidebar or commit field. The selection
 of shortcuts depends on this zone.
 
 - **Global** (`Cmd+O`, `Cmd+1..9`, `Cmd+Ctrl+0`, `Cmd+J`, `Cmd+Ctrl+1..9`, `Ctrl+Tab`/`Ctrl+Shift+Tab`,
-  `Cmd+T`, `Cmd+,`, `Cmd+B`, `Cmd+G`, `Cmd+Shift+G`, `Cmd+R`):
+  `Cmd+T`, `Cmd+,`, `Cmd+B`, `Cmd+G`, `Cmd+Shift+B`, `Cmd+Shift+G`, `Cmd+R`):
   active whatever the active zone; `Cmd+1..9` (tabs) and `Cmd+Ctrl+1..9`
   (repos) take precedence over any terminal use of the same combinations.
 - **Terminal** (§2): active **only** when a terminal pane has focus.
+- **Browser** ([`browser.md`](browser.md) §6): its page or a field of its toolbar
+  has the keyboard; no terminal shortcut applies. While its page has it, every
+  `Cmd` chord goes to helm except `Cmd+C`/`V`/`X`/`A`/`Z`/`Shift+Z` (the page's)
+  and `Cmd+Q`/`H`/`M` (the app menu's).
 - **Commit field**: captures text input and `Cmd+Enter` (commit); the
   terminal shortcuts are inactive there.
 - **Diff view** open: only the §3 shortcuts (`Cmd+C` included) and `Esc` apply.
@@ -140,7 +150,7 @@ changing the layout.
 | Workspace sidebar icon (in the left sidebar) | `B` (for `Cmd+B`) |
 | Git sidebar icon (top right) | `G` (for `Cmd+G`) |
 | "Terminal ⇄ Git" switch (center zone header) | `⇧⌘G` (for `Cmd+Shift+G`) |
-| **Run / Relaunch** button (Run strip, git sidebar) | `⌘R` (for `Cmd+R`) — left of the button the shortcut triggers (Run when stopped, Relaunch when running) |
+| **Run / Relaunch** button (Run strip, git sidebar) | `⌘R` (for `Cmd+R`) — left of the button the shortcut triggers (Run when stopped, Relaunch when running); reloads the page instead while the browser has the keyboard |
 | Access to **Preferences** | `,` (for `Cmd+,`) |
 
 Beyond the 9th repo, no badge (no associated shortcut, §1). Only the
@@ -169,6 +179,7 @@ fixed. The §1–§3 tables are the defaults.
 | Global | `toggle-preferences` | `Cmd+,` |
 | Global | `toggle-workspace-sidebar` | `Cmd+B` |
 | Global | `toggle-git-sidebar` | `Cmd+G` |
+| Global | `toggle-browser-sidebar` | `Cmd+Shift+B` |
 | Global | `toggle-graph` | `Cmd+Shift+G` |
 | Global | `toggle-files-tab` | `Cmd+Shift+E` |
 | Global | `next-repo` / `prev-repo` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |

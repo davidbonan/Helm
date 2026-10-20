@@ -3,6 +3,7 @@ pub mod agents;
 pub mod agents_wall;
 pub mod ai;
 pub mod app;
+pub mod browser;
 pub mod cli;
 pub mod command_palette;
 pub mod emoji;

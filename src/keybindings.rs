@@ -28,6 +28,7 @@ pub enum Action {
     TogglePreferences,
     ToggleWorkspaceSidebar,
     ToggleGitSidebar,
+    ToggleBrowserSidebar,
     ToggleGraph,
     ToggleFilesTab,
     NextRepo,
@@ -53,12 +54,13 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::OpenFolder,
         Self::NewTab,
         Self::TogglePreferences,
         Self::ToggleWorkspaceSidebar,
         Self::ToggleGitSidebar,
+        Self::ToggleBrowserSidebar,
         Self::ToggleGraph,
         Self::ToggleFilesTab,
         Self::NextRepo,
@@ -90,6 +92,7 @@ impl Action {
             Self::TogglePreferences => "toggle-preferences",
             Self::ToggleWorkspaceSidebar => "toggle-workspace-sidebar",
             Self::ToggleGitSidebar => "toggle-git-sidebar",
+            Self::ToggleBrowserSidebar => "toggle-browser-sidebar",
             Self::ToggleGraph => "toggle-graph",
             Self::ToggleFilesTab => "toggle-files-tab",
             Self::NextRepo => "next-repo",
@@ -126,6 +129,7 @@ impl Action {
             Self::TogglePreferences => "Toggle Preferences",
             Self::ToggleWorkspaceSidebar => "Toggle workspace sidebar",
             Self::ToggleGitSidebar => "Toggle git sidebar",
+            Self::ToggleBrowserSidebar => "Toggle browser sidebar",
             // "/" rather than the spec's "⇄": the bundled fonts have no glyph
             // for U+21C4 (renders as tofu in the Keyboard section).
             Self::ToggleGraph => "Toggle Terminal / Git",
@@ -160,6 +164,7 @@ impl Action {
             | Self::TogglePreferences
             | Self::ToggleWorkspaceSidebar
             | Self::ToggleGitSidebar
+            | Self::ToggleBrowserSidebar
             | Self::ToggleGraph
             | Self::ToggleFilesTab
             | Self::NextRepo
@@ -194,6 +199,7 @@ impl Action {
             Self::TogglePreferences => Shortcut::cmd(Key::Comma),
             Self::ToggleWorkspaceSidebar => Shortcut::cmd(Key::B),
             Self::ToggleGitSidebar => Shortcut::cmd(Key::G),
+            Self::ToggleBrowserSidebar => Shortcut::cmd_shift(Key::B),
             Self::ToggleGraph => Shortcut::cmd_shift(Key::G),
             Self::ToggleFilesTab => Shortcut::cmd_shift(Key::E),
             Self::NextRepo => Shortcut::ctrl(Key::Tab),
