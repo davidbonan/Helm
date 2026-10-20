@@ -2,8 +2,11 @@
 //! Preferences page, key routing, worker polling, the 3-zone page, modals
 //! and persistence flush (M17-12). Free `render_pane` draws one split leaf.
 
-use super::browser_sidebar::{render_browser_sidebar, server_url_from, WorktreeBrowser};
+use super::browser_sidebar::{
+    render_browser_pip, render_browser_sidebar, server_url_from, WorktreeBrowser,
+};
 use super::*;
+use crate::ui::browser_pip::PipPlacement;
 
 /// Borrow an open PR review (pull-requests.md §11) as the view struct the cockpit
 /// renders. Built in both `root_layout` arms (active repo / none), so it lives
@@ -1205,16 +1208,24 @@ impl HelmApp {
                 }
                 // Scans the Run strip only while the browser sidebar shows.
                 let browser_was_shown = self.prefs.shows_browser(&cwd);
-                let mut show_browser = browser_was_shown;
-                let server_url = show_browser
+                let browser_pip = self.prefs.browser_pip(&cwd);
+                let mut browser_toggle = crate::ui::BrowserToggle {
+                    shown: browser_was_shown,
+                    floating: browser_pip.floating,
+                };
+                let server_url = browser_was_shown
                     .then(|| server_url_from(&self.caches.run_panes, &run_key, run_port))
                     .flatten();
-                let browser = show_browser.then(|| {
+                let browser = browser_was_shown.then(|| {
                     self.caches
                         .browsers
                         .entry(run_key.clone())
                         .or_insert_with(|| WorktreeBrowser::opening(server_url.clone()))
                 });
+                let (sidebar_browser, floating_browser) = match browser {
+                    Some(browser) if browser_pip.floating => (None, Some(browser)),
+                    browser => (browser, None),
+                };
                 let browser_project = run_root.display().to_string();
                 let browser_chrome = crate::ui::browser_panel::BrowserChrome {
                     palette: &palette,
@@ -1259,7 +1270,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
-                    Some(&mut show_browser),
+                    Some(&mut browser_toggle),
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
                     can_amend_head,
@@ -1338,7 +1349,7 @@ impl HelmApp {
                         );
                     },
                     |ui| {
-                        if let Some(browser) = browser {
+                        if let Some(browser) = sidebar_browser {
                             browser_output =
                                 Some(render_browser_sidebar(ui, browser, &browser_chrome));
                         }
@@ -1610,6 +1621,15 @@ impl HelmApp {
                         }
                     },
                 );
+                let mut pip_moved = None;
+                if let Some(browser) = floating_browser.filter(|_| !(agents_active || pr_active)) {
+                    let placement =
+                        PipPlacement::in_window(ui.ctx(), browser_pip.frame, central_area);
+                    let (output, frame) =
+                        render_browser_pip(ui, browser, &browser_chrome, placement);
+                    browser_output = Some(output);
+                    pip_moved = (browser_pip.frame != Some(frame)).then_some(frame);
+                }
                 // ⌘R (keybindings §1) runs the active project, or relaunches it when
                 // already running (run+relaunch share one apply path). Reveal the git
                 // sidebar and expand the strip so the launch is visible; with no command
@@ -2115,8 +2135,11 @@ impl HelmApp {
                 let diff_open = diff.as_ref().is_some_and(|d| {
                     matches!(d.source, DiffSource::WorkingTree { .. }) && d.loaded.is_some()
                 });
-                if show_browser != browser_was_shown {
+                if browser_toggle.shown != browser_was_shown {
                     self.toggle_browser();
+                }
+                if let Some(frame) = pip_moved {
+                    self.move_browser_pip(frame);
                 }
                 if let Some(browser) = browser_output {
                     self.apply_browser_intents(&pane_key.0, browser.intents, ctx);

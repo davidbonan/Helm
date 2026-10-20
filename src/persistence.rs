@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{Agent, CommitMessageSettings, ReviewSettings};
+use crate::browser::pip::{BrowserPip, PipFrame};
 use crate::command_palette::CommandUsage;
 use crate::files::tab::{SidebarTab, TabState};
 use crate::git::sync::PullDefault;
@@ -105,6 +106,9 @@ pub struct Prefs {
     /// Worktrees whose browser sidebar shows (browser.md §3).
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub browser_worktrees: BTreeSet<PathBuf>,
+    /// Worktrees whose browser floats over the window, and where (browser.md §11).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub browser_pips: BTreeMap<PathBuf, BrowserPip>,
     pub pull_default: PullDefault,
     /// IDE opening a file from a terminal Cmd+click link (terminal.md §12): its
     /// CLI template is spawned with the file path and line (`Editor::template`).
@@ -191,6 +195,7 @@ impl Default for Prefs {
             show_workspace: true,
             show_git: false,
             browser_worktrees: BTreeSet::new(),
+            browser_pips: BTreeMap::new(),
             pull_default: PullDefault::default(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
@@ -428,6 +433,31 @@ impl Prefs {
         self.browser_worktrees.remove(worktree);
     }
 
+    pub fn browser_pip(&self, worktree: &Path) -> BrowserPip {
+        self.browser_pips.get(worktree).copied().unwrap_or_default()
+    }
+
+    pub fn float_browser(&mut self, worktree: &Path) {
+        self.browser_pips
+            .entry(worktree.to_path_buf())
+            .or_default()
+            .floating = true;
+    }
+
+    /// Back into the sidebar; the panel's frame is kept for the next float.
+    pub fn dock_browser(&mut self, worktree: &Path) {
+        if let Some(pip) = self.browser_pips.get_mut(worktree) {
+            pip.floating = false;
+        }
+    }
+
+    pub fn set_browser_pip_frame(&mut self, worktree: &Path, frame: PipFrame) {
+        self.browser_pips
+            .entry(worktree.to_path_buf())
+            .or_default()
+            .frame = Some(frame);
+    }
+
     /// Edits the right sidebar state of `worktree`, dropping it once back to the
     /// default so the TOML only holds worktrees that left it.
     pub fn edit_tab_state(&mut self, worktree: &Path, edit: impl FnOnce(&mut TabState)) {
@@ -635,6 +665,29 @@ mod tests {
     }
 
     #[test]
+    fn docking_the_browser_keeps_its_panel_frame_for_the_next_float() {
+        let worktree = Path::new("/Users/dev/alpha");
+        let frame = PipFrame {
+            x: 10.0,
+            y: 80.0,
+            width: 300.0,
+            height: 200.0,
+        };
+        let mut prefs = Prefs::default();
+        prefs.float_browser(worktree);
+        prefs.set_browser_pip_frame(worktree, frame);
+        prefs.dock_browser(worktree);
+        prefs.float_browser(worktree);
+        assert_eq!(
+            prefs.browser_pip(worktree),
+            BrowserPip {
+                floating: true,
+                frame: Some(frame),
+            }
+        );
+    }
+
+    #[test]
     fn toml_round_trip_is_stable() {
         let prefs = Prefs {
             active: Some(PathBuf::from("/Users/dev/alpha.worktrees/feat")),
@@ -647,6 +700,18 @@ mod tests {
             show_workspace: false,
             show_git: true,
             browser_worktrees: BTreeSet::from([PathBuf::from("/Users/dev/alpha.worktrees/feat")]),
+            browser_pips: BTreeMap::from([(
+                PathBuf::from("/Users/dev/alpha.worktrees/feat"),
+                BrowserPip {
+                    floating: true,
+                    frame: Some(PipFrame {
+                        x: 600.0,
+                        y: 380.0,
+                        width: 480.0,
+                        height: 320.0,
+                    }),
+                },
+            )]),
             pull_default: PullDefault::FfOnly,
             editor: Editor::Zed,
             notify_on_agent_completion: false,

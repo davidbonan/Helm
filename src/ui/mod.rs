@@ -1,5 +1,6 @@
 pub mod agents_view;
 pub mod browser_panel;
+pub(crate) mod browser_pip;
 pub(crate) mod browser_start_page;
 pub mod command_palette;
 pub mod commit_detail;
@@ -761,6 +762,13 @@ fn switch_icon_color(palette: &Palette, active: bool, hovered: bool) -> egui::Co
     }
 }
 
+/// The title bar's browser toggle, and whether the browser it shows floats
+/// rather than fills the sidebar (browser.md §3, §11).
+pub struct BrowserToggle {
+    pub shown: bool,
+    pub floating: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn root_layout(
     ui: &mut egui::Ui,
@@ -778,7 +786,7 @@ pub fn root_layout(
     show_workspace: &mut bool,
     show_git: &mut bool,
     // `None` without an active worktree: no browser sidebar nor toggle.
-    show_browser: Option<&mut bool>,
+    show_browser: Option<&mut BrowserToggle>,
     show_commit_detail: bool,
     commit_detail: Option<&CommitDetail>,
     // The selected commit is HEAD ⇒ its message can be amended from the detail panel.
@@ -954,7 +962,10 @@ pub fn root_layout(
                 });
         });
 
-    let browser_shown = show_browser.as_deref().is_some_and(|shown| *shown) && !helm_central;
+    let browser_shown = show_browser
+        .as_deref()
+        .is_some_and(|browser| browser.shown && !browser.floating)
+        && !helm_central;
     let browser_frame = egui::Frame::side_top_panel(ui.style())
         .fill(palette.bg_canvas)
         .inner_margin(egui::Margin {
@@ -1098,7 +1109,7 @@ fn top_right_actions(
     open_phone: &mut bool,
     helm_central: bool,
     show_git: &mut bool,
-    show_browser: Option<&mut bool>,
+    show_browser: Option<&mut BrowserToggle>,
     pr_active: bool,
     pr_rail_collapsed: bool,
     pr_toggle_rail: &mut bool,
@@ -1122,7 +1133,7 @@ fn top_right_actions(
         });
         let browser = show_browser
             .filter(|_| !helm_central)
-            .map(|shown| browser_toggle(ui, palette, shown));
+            .map(|browser| browser_toggle(ui, palette, &mut browser.shown));
         // The git panel is forced hidden while a Helm central mode is open, so its
         // toggle would be inert. The PR cockpit reuses that slot for its own
         // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars

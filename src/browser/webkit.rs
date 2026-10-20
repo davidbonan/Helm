@@ -61,6 +61,15 @@ const SCROLL_REPORTER_JS: &str = "(() => {\
   report();\
 })();";
 
+const POINTER_HANDLER: &str = "helmPointer";
+/// Posts 1 when the pointer comes over the page, 0 when it leaves it.
+const POINTER_REPORTER_JS: &str = "(() => {\
+  let over = false;\
+  const report = (now) => { if (now !== over) { over = now; window.webkit.messageHandlers.helmPointer.postMessage(now ? 1 : 0); } };\
+  document.addEventListener('mouseover', () => report(true), { passive: true });\
+  document.addEventListener('mouseout', (event) => { if (!event.relatedTarget) report(false); }, { passive: true });\
+})();";
+
 pub struct WebKitEngine {
     host: Retained<NSView>,
     monitor: Retained<AnyObject>,
@@ -140,6 +149,8 @@ struct WebKitView {
     _popups: Retained<OpenInPlace>,
     /// What the page's scroll reporter last posted.
     scroll_y: Rc<Cell<f64>>,
+    /// What the page's pointer reporter last posted: 1 while over the page.
+    pointer: Rc<Cell<f64>>,
     /// What the page's icon reporter last posted: the page's site, its icon.
     icon: Rc<RefCell<Option<(String, String)>>>,
     /// Hidden while it had focus: focus comes back with it.
@@ -155,6 +166,7 @@ struct WebKitView {
 impl WebKitView {
     fn new(host: &Retained<NSView>, mtm: MainThreadMarker) -> Self {
         let scroll_y = Rc::new(Cell::new(0.0));
+        let pointer = Rc::new(Cell::new(0.0));
         let icon = Rc::default();
         let view = unsafe {
             let config = WKWebViewConfiguration::new();
@@ -165,7 +177,8 @@ impl WebKitView {
                 setValue: &*NSNumber::numberWithBool(true),
                 forKey: ns_string!("developerExtrasEnabled")
             ];
-            report_scroll(&config, &scroll_y, mtm);
+            report_number(&config, &NumberReport::SCROLL, &scroll_y, mtm);
+            report_number(&config, &NumberReport::POINTER, &pointer, mtm);
             report_icon(&config, &icon, mtm);
             WKWebView::initWithFrame_configuration(mtm.alloc(), NSRect::ZERO, &config)
         };
@@ -191,6 +204,7 @@ impl WebKitView {
             host: host.clone(),
             _popups: popups,
             scroll_y,
+            pointer,
             icon,
             refocus_on_show: false,
             snapshot: Rc::default(),
@@ -294,6 +308,7 @@ impl WebView for WebKitView {
                 can_go_forward: self.view.canGoForward(),
                 tint: page_tint(&self.view),
                 scroll_y: self.scroll_y.get(),
+                pointer_over: self.pointer.get() > 0.0,
                 icon_url,
             }
         }
@@ -429,25 +444,42 @@ fn snapshot_pixels(image: &NSImage) -> Option<PageSnapshot> {
     })
 }
 
-/// Injects the scroll reporter in every page of `config`, its offsets landing in
-/// `scroll_y`.
-unsafe fn report_scroll(
+/// A script posting numbers to its handler.
+struct NumberReport {
+    source: &'static str,
+    handler: &'static str,
+}
+
+impl NumberReport {
+    const SCROLL: Self = Self {
+        source: SCROLL_REPORTER_JS,
+        handler: SCROLL_HANDLER,
+    };
+    const POINTER: Self = Self {
+        source: POINTER_REPORTER_JS,
+        handler: POINTER_HANDLER,
+    };
+}
+
+/// Injects `report` in every page of `config`, what it posts landing in `value`.
+unsafe fn report_number(
     config: &WKWebViewConfiguration,
-    scroll_y: &Rc<Cell<f64>>,
+    report: &NumberReport,
+    value: &Rc<Cell<f64>>,
     mtm: MainThreadMarker,
 ) {
     let controller = config.userContentController();
     let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
         mtm.alloc(),
-        &NSString::from_str(SCROLL_REPORTER_JS),
+        &NSString::from_str(report.source),
         WKUserScriptInjectionTime::AtDocumentEnd,
         true,
     );
     controller.addUserScript(&script);
-    let reporter = ScrollReporter::new(scroll_y.clone(), mtm);
+    let reporter = NumberReporter::new(value.clone(), mtm);
     controller.addScriptMessageHandler_name(
         ProtocolObject::from_ref(&*reporter),
-        &NSString::from_str(SCROLL_HANDLER),
+        &NSString::from_str(report.handler),
     );
 }
 
@@ -598,22 +630,22 @@ impl OpenInPlace {
 }
 
 declare_class!(
-    /// Receives the scroll offsets the page's reporter posts.
-    struct ScrollReporter;
+    /// Receives the numbers a page's reporter posts: scroll offsets, pointer.
+    struct NumberReporter;
 
-    unsafe impl ClassType for ScrollReporter {
+    unsafe impl ClassType for NumberReporter {
         type Super = NSObject;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "HelmBrowserScrollReporter";
+        const NAME: &'static str = "HelmBrowserNumberReporter";
     }
 
-    impl DeclaredClass for ScrollReporter {
+    impl DeclaredClass for NumberReporter {
         type Ivars = Rc<Cell<f64>>;
     }
 
-    unsafe impl NSObjectProtocol for ScrollReporter {}
+    unsafe impl NSObjectProtocol for NumberReporter {}
 
-    unsafe impl WKScriptMessageHandler for ScrollReporter {
+    unsafe impl WKScriptMessageHandler for NumberReporter {
         #[method(userContentController:didReceiveScriptMessage:)]
         fn did_receive(&self, _controller: &WKUserContentController, message: &WKScriptMessage) {
             let body = unsafe { message.body() };
@@ -621,8 +653,8 @@ declare_class!(
             if !is_number {
                 return;
             }
-            let offset = unsafe { Retained::cast::<NSNumber>(body) }.as_f64();
-            self.ivars().set(offset);
+            let number = unsafe { Retained::cast::<NSNumber>(body) }.as_f64();
+            self.ivars().set(number);
         }
     }
 );
@@ -668,9 +700,9 @@ impl IconReporter {
     }
 }
 
-impl ScrollReporter {
-    fn new(scroll_y: Rc<Cell<f64>>, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(scroll_y);
+impl NumberReporter {
+    fn new(value: Rc<Cell<f64>>, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(value);
         unsafe { msg_send_id![super(this), init] }
     }
 }

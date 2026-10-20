@@ -6,6 +6,7 @@ pub mod freeze;
 pub mod import;
 pub mod library;
 pub mod page_view;
+pub mod pip;
 pub mod sections;
 pub mod url;
 #[cfg(target_os = "macos")]
@@ -25,6 +26,8 @@ pub struct PageState {
     pub tint: Option<[u8; 3]>,
     /// The main document's vertical scroll, in CSS pixels.
     pub scroll_y: f64,
+    /// The pointer is over the page: egui sees none of its moves there.
+    pub pointer_over: bool,
     /// The icon the page names (browser.md §10), once it reported it.
     pub icon_url: Option<String>,
 }

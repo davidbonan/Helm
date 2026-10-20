@@ -8,6 +8,7 @@ terminals, to preview the worktree's dev server next to them.
 | In v1 | Out of v1 |
 |-------|-----------|
 | A **browser toggle** in the title bar (and `⌘⇧B`) shows a resizable sidebar between the terminals and the git sidebar | Several browsers side by side, a full-window browser |
+| **Picture in Picture**: the browser detached into a floating panel over the window (§11) | A separate macOS window, floating over other apps |
 | Native engine view (WebKit) over the sidebar, real input, IME, cursor, scroll | Chromium engine (CEF) — the engine port keeps it a drop-in (§2) |
 | Toolbar: back, forward, address pill (reload/stop inside), Dev server, Favorites, More (Find in page, page zoom, viewport width, Web Inspector, Open in Chrome, Copy URL) | Downloads, device emulation beyond the width |
 | Tabs per worktree: a tab row under the toolbar | Reordering tabs, `target="_blank"` in a new tab |
@@ -112,6 +113,7 @@ terminals, to preview the worktree's dev server next to them.
       on both sides taking the sidebar color. Per tab; no user-agent change.
     - **Web Inspector**: the engine's inspector (WebKit Web Inspector), docked
       inside the sidebar. Right-click *Inspect Element* also works.
+    - **Picture in Picture**: the browser onto the floating panel (§11).
     - **Open in Chrome**: the page URL in Google Chrome (its DevTools), else the
       default browser.
     - **Copy URL**: the page URL to the clipboard.
@@ -258,3 +260,38 @@ terminals, to preview the worktree's dev server next to them.
 - Chrome's import brings the icons its `Favicons` database holds for the
   imported favorites, the largest bitmap of each.
 - Shown on the start page's tiles and the tab row's badges.
+
+## 11. Picture in Picture
+
+The worktree's browser detached from the sidebar into a **floating panel** over
+helm's window: the page alone, to keep an eye on it while the terminals take the
+full width.
+
+- **Mode**: a worktree's browser shows either as the sidebar or as the panel.
+  **More › Picture in Picture** (sidebar) detaches it, the sidebar hiding; the
+  panel's **Dock** button puts it back. No shortcut. The globe toggle and `⌘⇧B`
+  show or hide the browser in its current mode.
+- **Per worktree**: each worktree keeps its mode and its panel's frame, across
+  launches. Switching worktree shows the other's browser in its own mode.
+- **Hidden** where the sidebar is (§3): the Agents and PR modes, Preferences, no
+  active worktree.
+- **Panel**: the shown tab's page fills it, no toolbar, no tab row; a 4 pt rim
+  (the toolbar's tint), rounded corners, a wide soft shadow. The start page
+  (§7) shows there too, in its narrow layout.
+  - Frame: 480 × 320 pt by default, in the terminals' bottom-right corner, 16 pt
+    in. Moved and resized freely (edges and corners of the rim), 240 × 160 pt at
+    least, anywhere in the window below the title bar; a shrinking window pushes
+    it back in, then shrinks it.
+  - It covers whatever lies under it (terminals, sidebars); a click in it gives
+    the page the keyboard (§6 unchanged), a click elsewhere takes it back.
+- **Bar**: while the pointer is over the panel or the bar, a 26 pt bar hangs
+  **above** the panel's top edge, outside the page (the native view is drawn
+  over egui, §4): the page's host centered, **reload** (stop while loading),
+  **Dock**. Dragging the bar moves the panel. The panel keeps room above it for
+  the bar.
+- **Covered**: as the sidebar (§4 *Covered*, *Frozen page*): a modal, popup,
+  suggestions or pane drag freezes the page; a pane drag under the panel shows it
+  frozen, not hidden.
+- **Keyboard**: §6 applies while the panel's page has focus, but for `Cmd+F`:
+  the panel has no find bar. `Cmd+T` opens a tab shown in the panel; `Cmd+W` on
+  the last tab hides the browser, the mode kept.

@@ -190,6 +190,10 @@ pub enum BrowserIntent {
     NewTab,
     SelectTab(usize),
     CloseTab(usize),
+    /// Out of the sidebar, onto the floating panel (browser.md §11).
+    Float,
+    /// Off the floating panel, back into the sidebar.
+    Dock,
 }
 
 #[derive(Debug)]
@@ -228,8 +232,8 @@ impl BrowserChrome<'_> {
 
 /// The toolbar's colors: on a page, its tint and the ink that reads best on it;
 /// else the palette's own (browser.md §4).
-struct BarColors {
-    fill: egui::Color32,
+pub(super) struct BarColors {
+    pub(super) fill: egui::Color32,
     ink: egui::Color32,
     secondary: egui::Color32,
     muted: egui::Color32,
@@ -239,7 +243,7 @@ struct BarColors {
     accent: egui::Color32,
     accent_subtle: egui::Color32,
     /// A tinted bar runs into the page; the palette's keeps its hairline.
-    tinted: bool,
+    pub(super) tinted: bool,
 }
 
 /// The address pill stands off the bar like Safari's capsule, by a wide soft
@@ -279,7 +283,7 @@ impl RaisedPill {
 }
 
 impl BarColors {
-    fn new(ui: &egui::Ui, palette: &Palette, tint: Option<[u8; 3]>) -> Self {
+    pub(super) fn new(ui: &egui::Ui, palette: &Palette, tint: Option<[u8; 3]>) -> Self {
         let Some([red, green, blue]) = tint else {
             return Self::untinted(palette);
         };
@@ -505,7 +509,7 @@ fn bar_band(bar: egui::Rect, top: f32, height: f32) -> egui::Rect {
 
 /// Where the page goes in `area` (browser.md §4 *Viewport*): all of it, or the
 /// viewport's width centered.
-fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect {
+pub(super) fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect {
     match viewport.width() {
         Some(width) if width < area.width() => {
             egui::Rect::from_center_size(area.center(), egui::vec2(width, area.height()))
@@ -514,7 +518,11 @@ fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect {
     }
 }
 
-fn paint_backdrop(ui: &egui::Ui, backdrop: Option<&egui::TextureHandle>, area: egui::Rect) {
+pub(super) fn paint_backdrop(
+    ui: &egui::Ui,
+    backdrop: Option<&egui::TextureHandle>,
+    area: egui::Rect,
+) {
     let Some(texture) = backdrop else {
         return;
     };
@@ -526,7 +534,7 @@ fn paint_backdrop(ui: &egui::Ui, backdrop: Option<&egui::TextureHandle>, area: e
         .image(texture.id(), rect, whole, egui::Color32::WHITE);
 }
 
-fn pressed_in(ui: &egui::Ui, rect: egui::Rect) -> bool {
+pub(super) fn pressed_in(ui: &egui::Ui, rect: egui::Rect) -> bool {
     ui.input(|i| {
         i.pointer.primary_pressed() && i.pointer.interact_pos().is_some_and(|at| rect.contains(at))
     })
@@ -696,6 +704,7 @@ fn more_menu(
                 ui.separator();
                 for (label, action) in [
                     ("Web Inspector", BrowserIntent::Inspect),
+                    ("Picture in Picture", BrowserIntent::Float),
                     ("Open in Chrome", BrowserIntent::OpenInChrome),
                 ] {
                     if ui.button(label).clicked() {
@@ -1059,7 +1068,7 @@ fn address_field(
 }
 
 /// The pill's reload, stop while loading; `Shift` bypasses the cache.
-fn reload_button(
+pub(super) fn reload_button(
     ui: &mut egui::Ui,
     colors: &BarColors,
     center: egui::Pos2,
@@ -1070,9 +1079,27 @@ fn reload_button(
     } else {
         (Icon::RotateCw, "Reload (⇧ ignores the cache)")
     };
+    if !pill_button(ui, colors, center, icon, label).clicked() {
+        return None;
+    }
+    Some(match (loading, ui.input(|i| i.modifiers.shift)) {
+        (true, _) => Navigation::Stop,
+        (false, true) => Navigation::ReloadFromOrigin,
+        (false, false) => Navigation::Reload,
+    })
+}
+
+/// A bare icon, inked on hover, `label` its tooltip.
+pub(super) fn pill_button(
+    ui: &mut egui::Ui,
+    colors: &BarColors,
+    center: egui::Pos2,
+    icon: Icon,
+    label: &str,
+) -> egui::Response {
     let rect = egui::Rect::from_center_size(center, egui::vec2(STAR_SIZE, STAR_SIZE));
     let response = ui
-        .interact(rect, ui.id().with("reload"), egui::Sense::click())
+        .interact(rect, ui.id().with(label), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(label);
     let tint = if response.hovered() {
@@ -1082,14 +1109,7 @@ fn reload_button(
     };
     crate::ui::paint_icon(ui.painter(), center, PILL_ICON_SIZE, icon, tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    if !response.clicked() {
-        return None;
-    }
-    Some(match (loading, ui.input(|i| i.modifiers.shift)) {
-        (true, _) => Navigation::Stop,
-        (false, true) => Navigation::ReloadFromOrigin,
-        (false, false) => Navigation::Reload,
-    })
+    response
 }
 
 struct Star {
@@ -1223,7 +1243,7 @@ fn scheme_icon(page_url: &str) -> Icon {
 
 /// The pill at rest: the scheme icon and the page's host, centered between the
 /// star's room on both sides.
-fn paint_host(ui: &egui::Ui, colors: &BarColors, rect: egui::Rect, page_url: &str) {
+pub(super) fn paint_host(ui: &egui::Ui, colors: &BarColors, rect: egui::Rect, page_url: &str) {
     let (host, _) = url::display_parts(page_url);
     let room =
         rect.width() - 2.0 * (PILL_PAD_X + 2.0 * STAR_SIZE) - SCHEME_ICON_SIZE - SCHEME_ICON_GAP;

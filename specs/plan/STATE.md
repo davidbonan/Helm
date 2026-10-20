@@ -117,6 +117,13 @@ tabs. Counter: **18/22**.
   (toolbar `+` gone). *Tests*: 1 app (`×` of the only tab, reopened on the start
   page); lone-tab-no-row test dropped.
   Not done: dark capture (harness theme not applied), real window by hand.
+- ☑ **B23 — Picture in Picture.** More › Picture in Picture floats the browser
+  as a free panel over the window (move, 8 grips, min 240×160), bar above it on
+  hover (host, reload, Dock); hover over the page reported by injected JS; mode
+  and frame per worktree in prefs; `Cmd+F` inert while floating. *Tests*: 5 frame
+  units, 1 prefs, 3 app (float, hover bar + Dock, drag); headless
+  `verify-artifacts/20261020_102636_575/`. Not done: real window (WebKit view
+  placement, JS hover).
 
 ---
 

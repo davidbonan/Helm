@@ -2,22 +2,26 @@
 //! views placed on the panel, and the favorites, history and imports they share.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use crossbeam_channel::Receiver;
 
 use crate::browser::freeze::{Cover, FreezeStep, PageFreeze};
 use crate::browser::import::{ImportError, ImportReport, ImportSource, ImportStatus, Imported};
 use crate::browser::page_view::ZoomChange;
+use crate::browser::pip::PipFrame;
 use crate::browser::{url, Navigation, PageSnapshot, PageState, ViewRect, WebEngine, WebView};
 use crate::ui::browser_panel::{
-    browser_panel, AddressBar, BrowserChrome, BrowserIntent, BrowserPanelView, BrowserTabState,
-    TabStrip, TabSummary,
+    browser_panel, AddressBar, BrowserChrome, BrowserIntent, BrowserPanelOutput, BrowserPanelView,
+    BrowserTabState, TabStrip, TabSummary,
 };
+use crate::ui::browser_pip::{browser_pip, panel_rect, BrowserPipView, PipPlacement};
 
 use super::git_session::RepoKey;
 use super::keys::{consume_action, consume_zoom_commands, ZoomCommand};
 use super::{HelmApp, Page, TerminalState};
 use crate::keybindings::Action;
+use crate::persistence::Prefs;
 
 /// Lines of the Run strip scanned for the server's URL (browser.md §5).
 const SERVER_OUTPUT_LINES: usize = 400;
@@ -413,61 +417,115 @@ pub(crate) fn render_browser_sidebar(
     chrome: &BrowserChrome<'_>,
 ) -> BrowserOutput {
     let panel = ui.available_rect_before_wrap();
-    let pages: Vec<PageState> = browser.tabs.iter().map(BrowserTab::page).collect();
-    let visits = browser
-        .tabs
-        .iter_mut()
-        .zip(&pages)
-        .filter_map(|(tab, page)| tab.new_visit(page))
-        .collect();
-    let icons = browser
-        .tabs
-        .iter_mut()
-        .zip(&pages)
-        .filter_map(|(tab, page)| tab.new_icon(page))
-        .collect();
+    let reports = PageReports::of(browser);
     let strip = TabStrip {
         tabs: browser
             .tabs
             .iter()
-            .zip(pages.iter().cloned())
+            .zip(reports.pages.iter().cloned())
             .map(|(tab, page)| tab.summary(page))
             .collect(),
         active: browser.active,
     };
     let active = browser.active;
     let view = BrowserPanelView {
-        page: &pages[active],
+        page: &reports.pages[active],
         tab: &mut browser.tabs[active].state,
         strip: &strip,
     };
     let output = browser_panel(ui, chrome, view);
-    browser.placed = output.page_rect;
-    browser.overlaid = output.page_overlaid;
-    let native_focus = browser.has_native_focus();
-    hold_keyboard_for_page(ui, panel, native_focus);
-    if output.clicked {
-        browser.takes_keyboard = true;
-    }
-    if output.field_focused {
-        browser.takes_keyboard = false;
-    }
-    if browser.takes_keyboard && !native_focus {
-        if let Some(view) = browser.shown().view.as_mut() {
-            view.focus();
+    reports.with(browser.take_in(ui, panel, output))
+}
+
+/// The worktree's browser floating over the window (browser.md §11); where its
+/// panel now floats.
+pub(crate) fn render_browser_pip(
+    ui: &mut egui::Ui,
+    browser: &mut WorktreeBrowser,
+    chrome: &BrowserChrome<'_>,
+    placement: PipPlacement,
+) -> (BrowserOutput, PipFrame) {
+    let reports = PageReports::of(browser);
+    let active = browser.active;
+    let view = BrowserPipView {
+        page: &reports.pages[active],
+        tab: &mut browser.tabs[active].state,
+        placement,
+    };
+    let output = browser_pip(ui, chrome, view);
+    let intents = browser.take_in(ui, panel_rect(output.frame), output.panel);
+    (reports.with(intents), output.frame)
+}
+
+/// What the tabs' pages tell this frame.
+struct PageReports {
+    pages: Vec<PageState>,
+    visits: Vec<(String, String)>,
+    icons: Vec<(String, String)>,
+}
+
+impl PageReports {
+    fn of(browser: &mut WorktreeBrowser) -> Self {
+        let pages: Vec<PageState> = browser.tabs.iter().map(BrowserTab::page).collect();
+        let visits = browser
+            .tabs
+            .iter_mut()
+            .zip(&pages)
+            .filter_map(|(tab, page)| tab.new_visit(page))
+            .collect();
+        let icons = browser
+            .tabs
+            .iter_mut()
+            .zip(&pages)
+            .filter_map(|(tab, page)| tab.new_icon(page))
+            .collect();
+        Self {
+            pages,
+            visits,
+            icons,
         }
     }
-    browser.has_keyboard = native_focus || output.field_focused;
-    browser.drawn = true;
-    let intents = output
-        .intents
-        .into_iter()
-        .filter_map(|intent| browser.apply(intent))
-        .collect();
-    BrowserOutput {
-        intents,
-        visits,
-        icons,
+
+    fn with(self, intents: Vec<BrowserIntent>) -> BrowserOutput {
+        BrowserOutput {
+            intents,
+            visits: self.visits,
+            icons: self.icons,
+        }
+    }
+}
+
+impl WorktreeBrowser {
+    /// Where the page goes and who holds the keyboard, from what the panel drew;
+    /// its own intents applied, the shared ones returned.
+    fn take_in(
+        &mut self,
+        ui: &egui::Ui,
+        panel: egui::Rect,
+        output: BrowserPanelOutput,
+    ) -> Vec<BrowserIntent> {
+        self.placed = output.page_rect;
+        self.overlaid = output.page_overlaid;
+        let native_focus = self.has_native_focus();
+        hold_keyboard_for_page(ui, panel, native_focus);
+        if output.clicked {
+            self.takes_keyboard = true;
+        }
+        if output.field_focused {
+            self.takes_keyboard = false;
+        }
+        if self.takes_keyboard && !native_focus {
+            if let Some(view) = self.shown().view.as_mut() {
+                view.focus();
+            }
+        }
+        self.has_keyboard = native_focus || output.field_focused;
+        self.drawn = true;
+        output
+            .intents
+            .into_iter()
+            .filter_map(|intent| self.apply(intent))
+            .collect()
     }
 }
 
@@ -537,6 +595,13 @@ impl HelmApp {
             .is_some_and(|repo| self.prefs.shows_browser(&repo.path))
     }
 
+    /// The active worktree's browser floats over the window (browser.md §11).
+    pub(super) fn browser_floats(&self) -> bool {
+        self.workspace
+            .active_repo()
+            .is_some_and(|repo| self.prefs.browser_pip(&repo.path).floating)
+    }
+
     /// `⌘⇧B` or the globe toggle, on the active worktree only; opening gives its
     /// page the keyboard (browser.md §3).
     pub(super) fn toggle_browser(&mut self) {
@@ -563,6 +628,22 @@ impl HelmApp {
             prefs.hide_browser(&worktree);
             prefs
         });
+    }
+
+    /// The active worktree's browser onto the floating panel, or back into the
+    /// sidebar (browser.md §11).
+    fn edit_browser_pip(&mut self, edit: impl FnOnce(&mut Prefs, &Path)) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            edit(&mut prefs, &worktree);
+            prefs
+        });
+    }
+
+    pub(crate) fn move_browser_pip(&mut self, frame: PipFrame) {
+        self.edit_browser_pip(|prefs, worktree| prefs.set_browser_pip_frame(worktree, frame));
     }
 
     /// The shared intents of the worktree's browser this frame.
@@ -592,6 +673,8 @@ impl HelmApp {
                     self.browser_library.save();
                 }
                 BrowserIntent::CloseTab(_) => self.hide_browser(),
+                BrowserIntent::Float => self.edit_browser_pip(Prefs::float_browser),
+                BrowserIntent::Dock => self.edit_browser_pip(Prefs::dock_browser),
                 BrowserIntent::DismissImport => self.browser_import.dismiss(),
                 BrowserIntent::Import(source) => self.browser_import.start(source, ctx),
                 BrowserIntent::OpenDiskAccessSettings => {
@@ -668,12 +751,14 @@ impl HelmApp {
     }
 
     /// While the browser holds the keyboard (browser.md §6), `Cmd+T` and `Cmd+W`
-    /// act on its tabs, zoom on its page and `Cmd+F` opens its find bar, taken
-    /// before helm sees them; `Cmd+W` on its last tab closes the sidebar.
+    /// act on its tabs, zoom on its page and `Cmd+F` opens its find bar (none on
+    /// the floating panel), taken before helm sees them; `Cmd+W` on its last tab
+    /// hides the browser.
     pub(crate) fn route_browser_tab_keys(&mut self, ctx: &egui::Context) {
         if !self.shows_browser() {
             return;
         }
+        let floats = self.browser_floats();
         let Some(key) = self.active_repo_key() else {
             return;
         };
@@ -712,7 +797,7 @@ impl HelmApp {
             };
             page_view.zoom = page_view.zoomed(change);
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+        if !floats && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             browser.shown().state.open_find();
         }
     }

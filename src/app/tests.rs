@@ -2953,6 +2953,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         browser_worktrees: std::collections::BTreeSet::from([PathBuf::from(
             "/tmp/helm-from-prefs-b",
         )]),
+        browser_pips: std::collections::BTreeMap::new(),
         pull_default: PullDefault::Rebase,
         editor: Editor::default(),
         notify_on_agent_completion: true,
@@ -5261,5 +5262,83 @@ mod browser_sidebar {
         harness.run();
         assert!(!harness.state().shows_browser());
         assert_eq!(harness.state().pane_count(), 1);
+    }
+
+    fn float_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
+        harness.get_by_label("More").click();
+        harness.run();
+        harness.get_by_label("Picture in Picture").click();
+        harness.run();
+        harness.run();
+    }
+
+    fn browser_pip(
+        harness: &egui_kittest::Harness<'_, HelmApp>,
+    ) -> crate::browser::pip::BrowserPip {
+        let app = harness.state();
+        app.prefs
+            .browser_pip(&app.workspace.active_repo().unwrap().path)
+    }
+
+    /// The pointer on the panel's left rim, where egui sees it.
+    fn panel_rim(harness: &egui_kittest::Harness<'_, HelmApp>) -> egui::Pos2 {
+        let frame = browser_pip(harness)
+            .frame
+            .expect("the panel's frame is kept");
+        egui::pos2(frame.x + 2.0, frame.y + frame.height / 2.0)
+    }
+
+    #[test]
+    fn picture_in_picture_floats_the_browser_out_of_the_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        float_browser(&mut harness);
+        assert!(browser_pip(&harness).floating);
+        assert!(harness.state().shows_browser());
+        assert!(
+            harness.query_by_label("More").is_none(),
+            "no sidebar toolbar"
+        );
+        assert!(
+            harness.query_by_label("Dock").is_none(),
+            "no bar until hovered"
+        );
+    }
+
+    #[test]
+    fn the_panel_bar_shows_on_hover_and_docks_the_browser_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        float_browser(&mut harness);
+        harness.hover_at(panel_rim(&harness));
+        harness.run();
+        harness.get_by_label("Dock").click();
+        harness.run();
+        harness.run();
+        assert!(!browser_pip(&harness).floating);
+        harness.get_by_label("More");
+    }
+
+    #[test]
+    fn dragging_the_bar_moves_the_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        float_browser(&mut harness);
+        let before = browser_pip(&harness).frame.unwrap();
+        harness.hover_at(panel_rim(&harness));
+        harness.run();
+        let grab = egui::pos2(before.x + 40.0, before.y - 13.0);
+        harness.hover_at(grab);
+        harness.drag_at(grab);
+        harness.run();
+        harness.hover_at(grab + egui::vec2(-100.0, -50.0));
+        harness.run();
+        harness.drop_at(grab + egui::vec2(-100.0, -50.0));
+        harness.run();
+        let after = browser_pip(&harness).frame.unwrap();
+        assert_eq!((after.x, after.y), (before.x - 100.0, before.y - 50.0));
     }
 }
