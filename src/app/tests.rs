@@ -2950,7 +2950,9 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         browser_sidebar_width: 520.0,
         show_workspace: false,
         show_git: true,
-        show_browser: true,
+        browser_worktrees: std::collections::BTreeSet::from([PathBuf::from(
+            "/tmp/helm-from-prefs-b",
+        )]),
         pull_default: PullDefault::Rebase,
         editor: Editor::default(),
         notify_on_agent_completion: true,
@@ -3000,7 +3002,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         "persisted closed state is restored"
     );
     assert!(app.sidebars.git, "persisted open state is restored");
-    assert!(app.sidebars.browser);
+    assert!(app.shows_browser(), "the active worktree's browser shows");
     assert_eq!(app.browser_sidebar_width, 520.0);
     assert_eq!(app.pull_default, PullDefault::Rebase);
     assert_eq!(app.commit_message.agent, "Codex");
@@ -5081,11 +5083,29 @@ mod browser_sidebar {
     }
 
     #[test]
+    fn the_browser_shows_only_on_the_worktree_that_opened_it() {
+        let (opened, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut workspace = Workspace::default();
+        workspace.add(Repo::new(opened.path().to_path_buf()));
+        workspace.add(Repo::new(other.path().to_path_buf()));
+        workspace.set_active(0);
+        let mut harness = harness(HelmApp::with_workspace(workspace));
+        open_browser(&mut harness);
+
+        harness.state_mut().workspace.set_active(1);
+        harness.run();
+        assert!(!harness.state().shows_browser());
+        harness.state_mut().workspace.set_active(0);
+        harness.run();
+        assert!(harness.state().shows_browser());
+    }
+
+    #[test]
     fn the_toggle_opens_the_browser_on_the_worktree_server() {
         let dir = tempfile::tempdir().unwrap();
         let mut harness = harness(with_dev_server(dir.path()));
         open_browser(&mut harness);
-        assert!(harness.state().sidebars.browser);
+        assert!(harness.state().shows_browser());
         harness.get(
             egui_kittest::kittest::By::new()
                 .role(egui::accesskit::Role::TextInput)
@@ -5239,7 +5259,7 @@ mod browser_sidebar {
         assert_eq!(browser_tabs(&harness), 1);
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
         harness.run();
-        assert!(!harness.state().sidebars.browser);
+        assert!(!harness.state().shows_browser());
         assert_eq!(harness.state().pane_count(), 1);
     }
 }

@@ -39,10 +39,12 @@ terminals, to preview the worktree's dev server next to them.
   terminals and it. Hidden, with the git sidebar, in the Agents and PR modes, and
   while no worktree is active.
 - Resizable by its left edge, 320 pt at least, the terminals keeping 240 pt; its
-  width and whether it shows are kept across launches (560 pt by default).
-- Each **worktree has its own browser** (tabs, pages): the first time its sidebar
-  shows, it opens on the worktree's default URL (§5). Switching worktree shows the
-  other's; a worktree leaving the workspace drops its browser.
+  width is kept across launches (560 pt by default).
+- Each **worktree has its own browser** (tabs, pages) and **its own toggle**: the
+  toggle and `⌘⇧B` show or hide the active worktree's sidebar only, kept per
+  worktree across launches. The first time its sidebar shows, it opens on the
+  worktree's default URL (§5). Switching worktree shows the other's, or none if
+  it is hidden there; a worktree leaving the workspace drops its browser.
 - Opening the sidebar gives its page the keyboard (the URL field on the start
   page).
 

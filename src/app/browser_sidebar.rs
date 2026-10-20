@@ -16,7 +16,7 @@ use crate::ui::browser_panel::{
 
 use super::git_session::RepoKey;
 use super::keys::{consume_action, consume_zoom_commands, ZoomCommand};
-use super::{HelmApp, Page, SidebarVisibility, TerminalState};
+use super::{HelmApp, Page, TerminalState};
 use crate::keybindings::Action;
 
 /// Lines of the Run strip scanned for the server's URL (browser.md §5).
@@ -531,14 +531,38 @@ impl HelmApp {
         self.caches.browsers.get_mut(&key)
     }
 
-    /// The sidebar opened this frame (`⌘⇧B` or its toggle): its page takes the
-    /// keyboard (browser.md §3).
-    pub(super) fn focus_browser_if_opened(&mut self, was: SidebarVisibility) {
-        if self.sidebars.browser && !was.browser {
-            if let Some(browser) = self.open_active_browser() {
-                browser.takes_keyboard = true;
-            }
+    pub(super) fn shows_browser(&self) -> bool {
+        self.workspace
+            .active_repo()
+            .is_some_and(|repo| self.prefs.shows_browser(&repo.path))
+    }
+
+    /// `⌘⇧B` or the globe toggle, on the active worktree only; opening gives its
+    /// page the keyboard (browser.md §3).
+    pub(super) fn toggle_browser(&mut self) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            prefs.toggle_browser(&worktree);
+            prefs
+        });
+        if !self.prefs.shows_browser(&worktree) {
+            return;
         }
+        if let Some(browser) = self.open_active_browser() {
+            browser.takes_keyboard = true;
+        }
+    }
+
+    fn hide_browser(&mut self) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            prefs.hide_browser(&worktree);
+            prefs
+        });
     }
 
     /// The shared intents of the worktree's browser this frame.
@@ -567,7 +591,7 @@ impl HelmApp {
                         .edit(|library| library.rename_favorite(&url, &project, &title));
                     self.browser_library.save();
                 }
-                BrowserIntent::CloseTab(_) => self.sidebars.browser = false,
+                BrowserIntent::CloseTab(_) => self.hide_browser(),
                 BrowserIntent::DismissImport => self.browser_import.dismiss(),
                 BrowserIntent::Import(source) => self.browser_import.start(source, ctx),
                 BrowserIntent::OpenDiskAccessSettings => {
@@ -647,7 +671,7 @@ impl HelmApp {
     /// act on its tabs, zoom on its page and `Cmd+F` opens its find bar, taken
     /// before helm sees them; `Cmd+W` on its last tab closes the sidebar.
     pub(crate) fn route_browser_tab_keys(&mut self, ctx: &egui::Context) {
-        if !self.sidebars.browser {
+        if !self.shows_browser() {
             return;
         }
         let Some(key) = self.active_repo_key() else {
@@ -676,7 +700,7 @@ impl HelmApp {
                 .apply(BrowserIntent::CloseTab(browser.active))
                 .is_some()
         {
-            self.sidebars.browser = false;
+            self.hide_browser();
             return;
         }
         let page_view = &mut browser.shown().state.page_view;

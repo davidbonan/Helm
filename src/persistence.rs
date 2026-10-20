@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -102,7 +102,9 @@ pub struct Prefs {
     pub browser_sidebar_width: f32,
     pub show_workspace: bool,
     pub show_git: bool,
-    pub show_browser: bool,
+    /// Worktrees whose browser sidebar shows (browser.md §3).
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub browser_worktrees: BTreeSet<PathBuf>,
     pub pull_default: PullDefault,
     /// IDE opening a file from a terminal Cmd+click link (terminal.md §12): its
     /// CLI template is spawned with the file path and line (`Editor::template`).
@@ -188,7 +190,7 @@ impl Default for Prefs {
             browser_sidebar_width: DEFAULT_BROWSER_SIDEBAR_WIDTH,
             show_workspace: true,
             show_git: false,
-            show_browser: false,
+            browser_worktrees: BTreeSet::new(),
             pull_default: PullDefault::default(),
             editor: Editor::default(),
             notify_on_agent_completion: true,
@@ -412,6 +414,20 @@ impl Prefs {
         self.tab_states.get(worktree).cloned().unwrap_or_default()
     }
 
+    pub fn shows_browser(&self, worktree: &Path) -> bool {
+        self.browser_worktrees.contains(worktree)
+    }
+
+    pub fn toggle_browser(&mut self, worktree: &Path) {
+        if !self.browser_worktrees.remove(worktree) {
+            self.browser_worktrees.insert(worktree.to_path_buf());
+        }
+    }
+
+    pub fn hide_browser(&mut self, worktree: &Path) {
+        self.browser_worktrees.remove(worktree);
+    }
+
     /// Edits the right sidebar state of `worktree`, dropping it once back to the
     /// default so the TOML only holds worktrees that left it.
     pub fn edit_tab_state(&mut self, worktree: &Path, edit: impl FnOnce(&mut TabState)) {
@@ -568,8 +584,6 @@ pub fn support_file(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
     use crate::command_palette::Command;
 
@@ -632,7 +646,7 @@ mod tests {
             browser_sidebar_width: 520.0,
             show_workspace: false,
             show_git: true,
-            show_browser: true,
+            browser_worktrees: BTreeSet::from([PathBuf::from("/Users/dev/alpha.worktrees/feat")]),
             pull_default: PullDefault::FfOnly,
             editor: Editor::Zed,
             notify_on_agent_completion: false,

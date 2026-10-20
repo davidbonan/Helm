@@ -523,7 +523,7 @@ impl HelmApp {
             }
         }
         if action_pressed(ctx, &self.keymap, Action::ToggleBrowserSidebar) {
-            self.sidebars.browser = !self.sidebars.browser;
+            self.toggle_browser();
         }
         // ⌘⇧G (keybindings §1): keyboard equivalent of the header switch — consumed
         // by `render_page` with `switch_request` to share the enter/exit logic.
@@ -1204,7 +1204,8 @@ impl HelmApp {
                     }
                 }
                 // Scans the Run strip only while the browser sidebar shows.
-                let show_browser = &mut self.sidebars.browser;
+                let browser_was_shown = self.prefs.shows_browser(&cwd);
+                let mut show_browser = browser_was_shown;
                 let server_url = show_browser
                     .then(|| server_url_from(&self.caches.run_panes, &run_key, run_port))
                     .flatten();
@@ -1258,7 +1259,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
-                    Some(show_browser),
+                    Some(&mut show_browser),
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
                     can_amend_head,
@@ -2114,6 +2115,9 @@ impl HelmApp {
                 let diff_open = diff.as_ref().is_some_and(|d| {
                     matches!(d.source, DiffSource::WorkingTree { .. }) && d.loaded.is_some()
                 });
+                if show_browser != browser_was_shown {
+                    self.toggle_browser();
+                }
                 if let Some(browser) = browser_output {
                     self.apply_browser_intents(&pane_key.0, browser.intents, ctx);
                     self.record_browser_visits(browser.visits);

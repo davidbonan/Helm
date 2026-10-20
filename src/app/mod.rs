@@ -500,13 +500,13 @@ impl Page {
     }
 }
 
-/// The sidebars are independent (⌘B / ⌘G / ⌘⇧B can all be open) — grouped for
-/// persistence, **never** collapsed into one exclusive enum (M17-10).
+/// The sidebars are independent (⌘B / ⌘G can both be open) — grouped for
+/// persistence, **never** collapsed into one exclusive enum (M17-10). The browser
+/// sidebar shows per worktree: `Prefs::browser_worktrees`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SidebarVisibility {
     workspace: bool,
     git: bool,
-    browser: bool,
 }
 
 pub struct HelmApp {
@@ -825,7 +825,6 @@ impl HelmApp {
             sidebars: SidebarVisibility {
                 workspace: prefs.show_workspace,
                 git: prefs.show_git,
-                browser: prefs.show_browser,
             },
             page: Page::Main,
             preferences_section: PreferencesSection::default(),
@@ -1353,7 +1352,6 @@ impl HelmApp {
             self.persist(move |prefs| Prefs {
                 show_workspace: sidebars.workspace,
                 show_git: sidebars.git,
-                show_browser: sidebars.browser,
                 ..prefs
             });
         }
@@ -4513,7 +4511,6 @@ impl eframe::App for HelmApp {
             self.toggle_preferences_page();
             ctx.request_repaint();
         }
-        self.focus_browser_if_opened(sidebars_were);
         self.flush_persistence(&ctx, sidebars_were);
         // Toasts (git.md §10): above everything, in all modes — a git action error
         // stays visible even outside the Graph view; a toast's action button is
