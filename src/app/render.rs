@@ -2,10 +2,8 @@
 //! Preferences page, key routing, worker polling, the 3-zone page, modals
 //! and persistence flush (M17-12). Free `render_pane` draws one split leaf.
 
-use super::browser_panes::{render_browser_pane, server_url_from};
+use super::browser_sidebar::{render_browser_sidebar, server_url_from, WorktreeBrowser};
 use super::*;
-use crate::ui::browser_pane::BrowserIntent;
-use crate::ui::browser_pane::{browser_offer, offer_shortcut_pressed};
 
 /// Borrow an open PR review (pull-requests.md §11) as the view struct the cockpit
 /// renders. Built in both `root_layout` arms (active repo / none), so it lives
@@ -524,6 +522,9 @@ impl HelmApp {
                 self.sidebars.git = !self.sidebars.git;
             }
         }
+        if action_pressed(ctx, &self.keymap, Action::ToggleBrowserSidebar) {
+            self.sidebars.browser = !self.sidebars.browser;
+        }
         // ⌘⇧G (keybindings §1): keyboard equivalent of the header switch — consumed
         // by `render_page` with `switch_request` to share the enter/exit logic.
         let toggle_graph = action_pressed(ctx, &self.keymap, Action::ToggleGraph);
@@ -905,6 +906,7 @@ impl HelmApp {
         let lane_cache = &mut self.caches.lane_cache;
         let left_sidebar_width = self.left_sidebar_width;
         let right_sidebar_width = self.right_sidebar_width;
+        let browser_sidebar_width = self.browser_sidebar_width;
         let keymap = &self.keymap;
         let clear_shortcut = self.keymap.shortcut_for(Action::ClearTerminal);
 
@@ -1190,15 +1192,8 @@ impl HelmApp {
                             .entry(first)
                             .or_insert_with(|| open_terminal_with_env(ctx, &cwd, &pc.env));
                     }
-                    let browsers = self.caches.browsers.entry(pane_key.clone()).or_default();
                     for id in &pane_ids {
-                        if browsers.pages.contains_key(id) {
-                            continue;
-                        }
-                        if let std::collections::hash_map::Entry::Vacant(slot) = panes.entry(*id) {
-                            slot.insert(open_terminal(ctx, &cwd));
-                            browsers.offers.insert(*id);
-                        }
+                        panes.entry(*id).or_insert_with(|| open_terminal(ctx, &cwd));
                     }
                     if let Some(pc) = post_create {
                         if let Some(TerminalState::Live(pane)) =
@@ -1208,21 +1203,28 @@ impl HelmApp {
                         }
                     }
                 }
-                // Scans the Run strip: only for a tab showing a page or an offer.
-                let server_url = self
-                    .caches
-                    .browsers
-                    .get(&pane_key)
-                    .is_some_and(|tab| !tab.is_empty())
+                // Scans the Run strip only while the browser sidebar shows.
+                let show_browser = &mut self.sidebars.browser;
+                let server_url = show_browser
                     .then(|| server_url_from(&self.caches.run_panes, &run_key, run_port))
                     .flatten();
+                let browser = show_browser.then(|| {
+                    self.caches
+                        .browsers
+                        .entry(run_key.clone())
+                        .or_insert_with(|| WorktreeBrowser::opening(server_url.clone()))
+                });
                 let browser_project = run_root.display().to_string();
+                let browser_chrome = crate::ui::browser_panel::BrowserChrome {
+                    palette: &palette,
+                    server: server_url.as_deref(),
+                    project: &browser_project,
+                    library: &self.browser_library.library,
+                    import: &self.browser_import.status,
+                    icons: self.site_icons.textures(),
+                };
+                let mut browser_output = None;
                 let panes_all = &mut self.caches.panes;
-                let browsers_all = &mut self.caches.browsers;
-                let mut open_browser: Option<PaneId> = None;
-                let mut browser_intents: Vec<(PaneId, BrowserIntent)> = Vec::new();
-                let mut browser_visits: Vec<(String, String)> = Vec::new();
-                let mut browser_icons: Vec<(String, String)> = Vec::new();
                 // Disjoint `caches` field ⇒ borrowed alongside `panes_all` for the two
                 // root_layout closures (the run strip and the central area).
                 let run_panes_all = &mut self.caches.run_panes;
@@ -1256,6 +1258,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
+                    Some(show_browser),
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
                     can_amend_head,
@@ -1281,6 +1284,7 @@ impl HelmApp {
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
+                    browser_sidebar_width,
                     keymap,
                     true,
                     run_collapsed,
@@ -1331,6 +1335,12 @@ impl HelmApp {
                                 None => {}
                             },
                         );
+                    },
+                    |ui| {
+                        if let Some(browser) = browser {
+                            browser_output =
+                                Some(render_browser_sidebar(ui, browser, &browser_chrome));
+                        }
                     },
                     |ui| {
                         // The in-app conflict editor (conflicts.md §3) owns the whole
@@ -1518,40 +1528,12 @@ impl HelmApp {
                                     );
                                     central_area = ui.available_rect_before_wrap();
                                     let panes = panes_all.entry(pane_key.clone()).or_default();
-                                    let browsers =
-                                        browsers_all.entry(pane_key.clone()).or_default();
-                                    let browser_chrome = crate::ui::browser_pane::BrowserChrome {
-                                        palette: &palette,
-                                        server: server_url.as_deref(),
-                                        project: &browser_project,
-                                        library: &self.browser_library.library,
-                                        import: &self.browser_import.status,
-                                        icons: self.site_icons.textures(),
-                                    };
                                     output = Some(terminal_tree(
                                         ui,
                                         layout,
                                         &palette,
                                         |ui, id, focused| {
-                                            if let Some(browser) = browsers.pages.get_mut(&id) {
-                                                let leaf = render_browser_pane(
-                                                    ui,
-                                                    browser,
-                                                    focused,
-                                                    &browser_chrome,
-                                                    &mut any_focused,
-                                                );
-                                                browser_intents.extend(
-                                                    leaf.intents
-                                                        .into_iter()
-                                                        .map(|intent| (id, intent)),
-                                                );
-                                                browser_visits.extend(leaf.visits);
-                                                browser_icons.extend(leaf.icons);
-                                                return leaf.focus;
-                                            }
-                                            let pane_rect = ui.max_rect();
-                                            let outcome = render_pane(
+                                            render_pane(
                                                 ui,
                                                 panes,
                                                 id,
@@ -1562,21 +1544,7 @@ impl HelmApp {
                                                 clear_shortcut,
                                                 &mut any_focused,
                                                 &mut open_link,
-                                            );
-                                            if outcome.typed {
-                                                browsers.offers.remove(&id);
-                                            }
-                                            let accepted = browsers.offers.contains(&id)
-                                                && browser_offer(ui, &browser_chrome, pane_rect)
-                                                    .is_some_and(|offer| {
-                                                        offer.clicked()
-                                                            || outcome.has_keyboard
-                                                                && offer_shortcut_pressed(ui)
-                                                    });
-                                            if accepted {
-                                                open_browser = Some(id);
-                                            }
-                                            outcome.clicked
+                                            )
                                         },
                                     ));
                                 }
@@ -2146,12 +2114,11 @@ impl HelmApp {
                 let diff_open = diff.as_ref().is_some_and(|d| {
                     matches!(d.source, DiffSource::WorkingTree { .. }) && d.loaded.is_some()
                 });
-                if let Some(id) = open_browser {
-                    self.turn_into_browser(&pane_key, id);
+                if let Some(browser) = browser_output {
+                    self.apply_browser_intents(&pane_key.0, browser.intents, ctx);
+                    self.record_browser_visits(browser.visits);
+                    self.fetch_site_icons(browser.icons, ctx);
                 }
-                self.apply_browser_intents(&pane_key, browser_intents, ctx);
-                self.record_browser_visits(browser_visits);
-                self.fetch_site_icons(browser_icons, ctx);
                 let zone = focus_zone(diff_open, any_focused);
                 let mut close_tab_requested = false;
                 if let Some(active_layout) = self.workspace.active_layout_mut() {
@@ -2196,9 +2163,6 @@ impl HelmApp {
                     if let Some(panes) = self.caches.panes.get_mut(&pane_key) {
                         panes.retain(|id, _| live.contains(id));
                     }
-                    if let Some(browsers) = self.caches.browsers.get_mut(&pane_key) {
-                        browsers.retain_panes(&live);
-                    }
                 }
                 if zone.terminal_shortcuts_active() {
                     route_zoom_keys(ctx, &self.keymap, &mut self.font_zoom);
@@ -2241,6 +2205,7 @@ impl HelmApp {
                     &mut intents,
                     show_workspace,
                     show_git,
+                    None,
                     false,
                     None,
                     false,
@@ -2266,10 +2231,12 @@ impl HelmApp {
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
+                    browser_sidebar_width,
                     keymap,
                     false,
                     true,
                     crate::ui::run_panel::HEADER_HEIGHT,
+                    |_ui| {},
                     |_ui| {},
                     |ui| {
                         if agents_active {
@@ -3299,7 +3266,6 @@ fn mirror_agent_terminal(
         any_focused,
         open_link,
     )
-    .clicked
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3314,7 +3280,7 @@ fn render_pane(
     clear_shortcut: Option<Shortcut>,
     any_focused: &mut bool,
     open_link: &mut Option<LinkAction>,
-) -> PaneOutcome {
+) -> bool {
     match panes.get_mut(&id) {
         Some(TerminalState::Live(pane)) => {
             // On screen this frame: let its reader pace the event loop (cleared for
@@ -3347,8 +3313,7 @@ fn render_pane(
                 *open_link = Some(link);
             }
             let focus_id = ui.id().with("terminal_focus");
-            let has_keyboard = ui.ctx().memory(|m| m.has_focus(focus_id));
-            if has_keyboard {
+            if ui.ctx().memory(|m| m.has_focus(focus_id)) {
                 *any_focused = true;
             }
             if exited {
@@ -3386,11 +3351,7 @@ fn render_pane(
                 }
                 let _ = pane.fit_desktop(input.size);
             }
-            PaneOutcome {
-                clicked: input.clicked,
-                typed: !input.bytes.is_empty() || input.paste.is_some(),
-                has_keyboard,
-            }
+            input.clicked
         }
         Some(TerminalState::Failed(err)) => {
             ui.centered_and_justified(|ui| {
@@ -3399,18 +3360,8 @@ fn render_pane(
                         .color(palette.text_muted),
                 );
             });
-            PaneOutcome::default()
+            false
         }
-        None => PaneOutcome::default(),
+        None => false,
     }
-}
-
-/// What a terminal leaf reported this frame.
-#[derive(Default)]
-struct PaneOutcome {
-    clicked: bool,
-    /// The user typed or pasted into it (browser.md §3: the Browser offer goes).
-    typed: bool,
-    /// Its shell holds the keyboard (browser.md §3: the Browser offer's `⌘↩`).
-    has_keyboard: bool,
 }

@@ -1,4 +1,4 @@
-//! The browser pane, headless (specs/browser.md §4, §7, §8).
+//! The browser panel, headless (specs/browser.md §4, §7, §8).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,8 +11,8 @@ use helm::browser::import::{ImportSource, ImportStatus};
 use helm::browser::library::{Favorite, Library, Visit};
 use helm::browser::{Navigation, PageState};
 use helm::theme::Palette;
-use helm::ui::browser_pane::{
-    browser_pane, BrowserChrome, BrowserIntent, BrowserPaneView, BrowserTabState, TabStrip,
+use helm::ui::browser_panel::{
+    browser_panel, BrowserChrome, BrowserIntent, BrowserPanelView, BrowserTabState, TabStrip,
     TabSummary,
 };
 
@@ -80,12 +80,12 @@ fn mount(fixture: Fixture) -> (Harness<'static, ()>, Seen) {
                     .collect(),
                 active: 0,
             };
-            let view = BrowserPaneView {
+            let view = BrowserPanelView {
                 page: &page,
                 tab: &mut tab,
                 strip: &strip,
             };
-            let out = browser_pane(ui, &chrome, view);
+            let out = browser_panel(ui, &chrome, view);
             let mut seen = sink.borrow_mut();
             seen.intents.extend(out.intents);
             seen.page_rect = out.page_rect;
@@ -103,6 +103,7 @@ fn tab_summary(title: &str, url: &str) -> TabSummary {
     TabSummary {
         title: title.to_owned(),
         url: url.to_owned(),
+        loading: false,
     }
 }
 
@@ -312,12 +313,6 @@ fn suggestions_fall_over_the_page_without_taking_its_place() {
     harness.get_by_label("https://docs.rs/");
     let seen = seen.borrow();
     assert!(seen.page_rect.is_some() && seen.overlaid);
-}
-
-#[test]
-fn a_lone_tab_shows_no_tab_row() {
-    let (harness, _) = pane(page_at("https://kiln.studio/pricing"), Library::default());
-    assert!(harness.query_by_label("Admin").is_none());
 }
 
 #[test]

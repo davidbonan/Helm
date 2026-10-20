@@ -1,5 +1,5 @@
 pub mod agents_view;
-pub mod browser_pane;
+pub mod browser_panel;
 pub(crate) mod browser_start_page;
 pub mod command_palette;
 pub mod commit_detail;
@@ -49,6 +49,10 @@ use crate::workspace_launcher::WorkspaceOpener;
 
 const LEFT_SIDEBAR_ID: &str = "repos";
 const RIGHT_SIDEBAR_ID: &str = "git";
+const BROWSER_SIDEBAR_ID: &str = "browser";
+const BROWSER_SIDEBAR_MIN_WIDTH: f32 = 320.0;
+/// Width the terminals keep beside the browser sidebar.
+const BROWSER_SIDEBAR_CENTRAL_RESERVE: f32 = 240.0;
 const RUN_PANEL_ID: &str = "run_terminal_panel";
 /// Folded Run strip: a separate panel id so collapsing leaves the expanded
 /// panel's remembered height untouched (git.md §3).
@@ -773,6 +777,8 @@ pub fn root_layout(
     intents: &mut Vec<GitIntent>,
     show_workspace: &mut bool,
     show_git: &mut bool,
+    // `None` without an active worktree: no browser sidebar nor toggle.
+    show_browser: Option<&mut bool>,
     show_commit_detail: bool,
     commit_detail: Option<&CommitDetail>,
     // The selected commit is HEAD ⇒ its message can be amended from the detail panel.
@@ -802,6 +808,7 @@ pub fn root_layout(
     sidebar: &mut SidebarAction,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
+    browser_sidebar_width: f32,
     keymap: &Keymap,
     // Run terminal strip at the bottom of the git sidebar (git.md §3): mounted only
     // when `show_run`, folded to its header when `run_collapsed`. `run_panel` paints
@@ -810,6 +817,7 @@ pub fn root_layout(
     run_collapsed: bool,
     run_panel_height: f32,
     run_panel: impl FnOnce(&mut egui::Ui),
+    browser_panel: impl FnOnce(&mut egui::Ui),
     central: impl FnOnce(&mut egui::Ui),
 ) {
     // A Helm central mode (the dashboard or the PR cockpit) is cross-repo, so the
@@ -946,6 +954,26 @@ pub fn root_layout(
                 });
         });
 
+    let browser_shown = show_browser.as_deref().is_some_and(|shown| *shown) && !helm_central;
+    let browser_frame = egui::Frame::side_top_panel(ui.style())
+        .fill(palette.bg_canvas)
+        .inner_margin(egui::Margin {
+            top: TITLEBAR_HEIGHT,
+            ..egui::Margin::ZERO
+        });
+    let browser_max =
+        (ui.available_width() - BROWSER_SIDEBAR_CENTRAL_RESERVE).max(BROWSER_SIDEBAR_MIN_WIDTH);
+    egui::Panel::right(BROWSER_SIDEBAR_ID)
+        .resizable(true)
+        .default_size(browser_sidebar_width)
+        .min_size(BROWSER_SIDEBAR_MIN_WIDTH)
+        .max_size(browser_max)
+        .frame(browser_frame)
+        .show_animated_inside(ui, browser_shown, |ui| {
+            ui.set_min_width(ui.available_width());
+            browser_panel(ui);
+        });
+
     egui::CentralPanel::default().show_inside(ui, |ui| {
         central(ui);
     });
@@ -1018,6 +1046,7 @@ pub fn root_layout(
                 open_phone,
                 helm_central,
                 show_git,
+                show_browser,
                 pr_active,
                 pr_rail_collapsed,
                 pr_toggle_rail,
@@ -1035,6 +1064,11 @@ pub fn left_sidebar_width(ctx: &egui::Context) -> Option<f32> {
 /// Current right sidebar width (see [`left_sidebar_width`]).
 pub fn right_sidebar_width(ctx: &egui::Context) -> Option<f32> {
     panel_width(ctx, RIGHT_SIDEBAR_ID)
+}
+
+/// Current browser sidebar width (see [`left_sidebar_width`]).
+pub fn browser_sidebar_width(ctx: &egui::Context) -> Option<f32> {
+    panel_width(ctx, BROWSER_SIDEBAR_ID)
 }
 
 fn panel_width(ctx: &egui::Context, id: &str) -> Option<f32> {
@@ -1064,6 +1098,7 @@ fn top_right_actions(
     open_phone: &mut bool,
     helm_central: bool,
     show_git: &mut bool,
+    show_browser: Option<&mut bool>,
     pr_active: bool,
     pr_rail_collapsed: bool,
     pr_toggle_rail: &mut bool,
@@ -1085,6 +1120,9 @@ fn top_right_actions(
                 open_workspace,
             )
         });
+        let browser = show_browser
+            .filter(|_| !helm_central)
+            .map(|shown| browser_toggle(ui, palette, shown));
         // The git panel is forced hidden while a Helm central mode is open, so its
         // toggle would be inert. The PR cockpit reuses that slot for its own
         // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars
@@ -1122,6 +1160,17 @@ fn top_right_actions(
         // flow): a `new_child` does not advance the cursor, so the row keeps its
         // width and the icons do not shift when Cmd toggles the display.
         if cmd_held {
+            if let (Some(browser), Some(shortcut)) =
+                (&browser, keymap.shortcut_for(Action::ToggleBrowserSidebar))
+            {
+                shortcut_badge(
+                    ui,
+                    palette,
+                    "shortcut_badge_browser",
+                    &shortcut.display(),
+                    browser.rect,
+                );
+            }
             if let (Some(git), Some(shortcut)) =
                 (&git, keymap.shortcut_for(Action::ToggleGitSidebar))
             {
@@ -1493,6 +1542,33 @@ fn git_toggle(ui: &mut egui::Ui, palette: &Palette, show_git: &mut bool) -> egui
         "Toggle git sidebar",
         SidebarToggleSide::Right,
     )
+}
+
+fn browser_toggle(ui: &mut egui::Ui, palette: &Palette, show_browser: &mut bool) -> egui::Response {
+    let (rect, response, hovered) = clickable(ui, TOGGLE_HIT, true);
+    if response.clicked() {
+        *show_browser = !*show_browser;
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toggle browser sidebar")
+    });
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, egui::CornerRadius::same(6), palette.bg_surface_hover);
+    }
+    let color = if *show_browser {
+        palette.accent
+    } else {
+        palette.text_muted
+    };
+    paint_icon(
+        painter,
+        rect.center(),
+        FEEDBACK_GLYPH,
+        lucide_icons::Icon::Globe,
+        color,
+    );
+    response
 }
 
 fn sidebar_toggle(

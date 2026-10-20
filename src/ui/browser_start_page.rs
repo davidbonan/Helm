@@ -1,7 +1,7 @@
-//! Start page of a browser pane (specs/browser.md §7, §9): a sidebar of sections
+//! Start page of the browser (specs/browser.md §7, §9): a sidebar of sections
 //! — This project, Starred, Frequently visited, each import source's folders —
 //! and the shown section's tiles; a section picker instead of the sidebar in a
-//! narrow pane.
+//! narrow panel.
 
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use crate::browser::import::{ImportError, ImportSource, ImportStatus, FOLDER_SEP
 use crate::browser::sections::{Entry, FolderRow, Section};
 use crate::browser::url;
 use crate::theme::Palette;
-use crate::ui::browser_pane::{BrowserChrome, BrowserIntent};
+use crate::ui::browser_panel::{BrowserChrome, BrowserIntent};
 use crate::ui::with_alpha;
 
 const SIDEBAR_WIDTH: f32 = 220.0;
@@ -411,7 +411,7 @@ fn filter_field(ui: &mut egui::Ui, palette: &Palette, filter: &mut String, width
         .show(&mut field_ui);
 }
 
-/// The narrow pane's header: a picker of the sidebar's sections, and the filter.
+/// The narrow panel's header: a picker of the sidebar's sections, and the filter.
 fn section_picker(
     ui: &mut egui::Ui,
     palette: &Palette,

@@ -53,7 +53,7 @@ New components follow this shape; existing deviations converge on it (notably
 | `git` | Repo, status model, hunk/line staging, commit, branch (wraps `git2`) | — |
 | `pull_requests` | Workspace PR model + sources (GitHub via `gh`, Bitbucket Cloud via `curl`), `PrRunner`; pure parsers I/O-free ([`pull-requests.md`](pull-requests.md)) | `git` (forge parse) |
 | `agents` | Agent settings: the agents table (the commands of every AI action), the agent + prompts of the commit message and of the review, presets, prompt templates ([`preferences.md`](preferences.md) §4) | `agent_watch` |
-| `browser` | Browser pane ([`browser.md`](browser.md)): engine port (`WebEngine` / `WebView`), WebKit adapter (`WKWebView` over the window), URL rules, `library` (favorites + history, `browser.json`), `sections` (start page sections), `page_view` (zoom, viewport), `favicons` (site icons, `favicons/`), `import` (Chrome / Safari) | — |
+| `browser` | Browser sidebar ([`browser.md`](browser.md)): engine port (`WebEngine` / `WebView`), WebKit adapter (`WKWebView` over the window), URL rules, `library` (favorites + history, `browser.json`), `sections` (start page sections), `page_view` (zoom, viewport), `favicons` (site icons, `favicons/`), `import` (Chrome / Safari) | — |
 | `persistence` | Load/save preferences & repository list (serde) | `workspace`, `theme`, `agents` |
 
 Anticipated submodules: `terminal::{pty, emu, layout}`, `git::{status, diff, stage, commit}`.
@@ -164,7 +164,7 @@ Decided (overview.md §4). Runtime foundation in `Cargo.toml`: `eframe`/`egui`,
 | `crossbeam-channel` | UI ⇄ worker channels (git, PTY) |
 | `libc` | libproc binding (`proc_pidinfo`): current `cwd` of a pane inherited on split (terminal.md §2) |
 | `tungstenite` + `httparse` | Phone access server: WebSocket framing + HTTP request heads over `std::net` ([`remote.md`](remote.md) §4) |
-| `objc2-web-kit` | Browser pane: `WKWebView` per pane ([`browser.md`](browser.md) §2) |
+| `objc2-web-kit` | Browser sidebar: `WKWebView` per tab ([`browser.md`](browser.md) §2) |
 | `rusqlite` (bundled) | Browser import: Chrome / Safari history and Chrome cookies ([`browser.md`](browser.md) §9) |
 | `percent-encoding` | Phone access server: decoding the worktree paths the phone asks for ([`remote.md`](remote.md) §7.3) |
 

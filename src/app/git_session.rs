@@ -73,13 +73,12 @@ pub(crate) struct RepoCaches {
     /// filesystem (canonicalization happens once per mutation).
     pub(crate) keys: Vec<RepoKey>,
     pub(crate) panes: HashMap<PaneKey, Panes>,
-    /// The browser panes and Browser offers of each tab (browser.md); a pane id
-    /// with a page there has no terminal in `panes`.
-    pub(crate) browsers: HashMap<PaneKey, super::browser_panes::TabBrowsers>,
     /// The per-worktree Run terminal process (git.md §3): one PTY per repo key,
     /// shared by every tab of that worktree. Spawned on demand by the Run button,
     /// dropped (killing its tree) on Stop or when the worktree leaves the workspace.
     pub(crate) run_panes: HashMap<RepoKey, TerminalState>,
+    /// Each worktree's browser (browser.md), made the first time its sidebar shows.
+    pub(crate) browsers: HashMap<RepoKey, super::browser_sidebar::WorktreeBrowser>,
     /// Aggregated badge per repo (sidebar), recomputed at tick.
     pub(crate) agent_badges: HashMap<RepoKey, AgentBadge>,
     /// Flat list of agents across every repo (cross-repo dashboard), rebuilt at
@@ -141,8 +140,8 @@ impl RepoCaches {
             .filter_map(|(i, id)| Some((self.keys.get(i)?.clone(), id)))
             .collect();
         self.panes.retain(|key, _| live_tabs.contains(key));
-        self.browsers.retain(|key, _| live_tabs.contains(key));
         self.run_panes.retain(|key, _| self.keys.contains(key));
+        self.browsers.retain(|key, _| self.keys.contains(key));
         self.agent_badges.retain(|key, _| self.keys.contains(key));
         self.branch_labels.retain(|key, _| self.keys.contains(key));
         self.dirty.retain(|key, _| self.keys.contains(key));
@@ -166,11 +165,8 @@ impl RepoCaches {
             .into_iter()
             .map(|((repo, tab), panes)| ((swap(repo), tab), panes))
             .collect();
-        self.browsers = std::mem::take(&mut self.browsers)
-            .into_iter()
-            .map(|((repo, tab), browsers)| ((swap(repo), tab), browsers))
-            .collect();
         carry(&mut self.run_panes, from, to);
+        carry(&mut self.browsers, from, to);
         carry(&mut self.agent_badges, from, to);
         carry(&mut self.branch_labels, from, to);
         carry(&mut self.dirty, from, to);

@@ -6,14 +6,16 @@
 
 ---
 
-## ◐ Milestone — M-Browser · Browser pane in the split tree
+## ◐ Milestone — M-Browser · Browser sidebar
 
 Spec: [`specs/browser.md`](../browser.md), [`specs/keybindings.md`](../keybindings.md) §4.
 Per the user: native engine (WebKit), CEF reachable through the engine port; the
 Browser button on fresh shells is the entry point; favorites global, start page,
 import from Chrome or Safari (favorites, history, cookies). Then the favorites
 page redesign (sidebar, per-project local favorites, site icons, tile menu) and
-the toolbar's More menu (find, zoom, viewport). Counter: **14/18**.
+the toolbar's More menu (find, zoom, viewport). Then, per the user, the browser
+leaves the split tree for its own sidebar, and its tab row turns to folder
+tabs. Counter: **18/22**.
 
 - ☑ **B1 — Engine port + WebKit adapter.** `browser::{WebEngine, WebView}`,
   `WKWebView` over the content view, persistent default data store, `_blank` in
@@ -95,6 +97,26 @@ the toolbar's More menu (find, zoom, viewport). Counter: **14/18**.
   (`pageZoom`, zoom actions + `Cmd+F` rerouted), viewport width centered.
   *Tests*: 1 zoom unit, 3 UI e2e (find, Esc, mobile viewport); headless dark find
   bar + mobile. Not done: find and zoom on a real page in WebKit.
+- ☑ **B19 — Browser sidebar.** Pane + offer + `⌘↩` removed; resizable right panel
+  between terminals and git sidebar, globe toggle + `⌘⇧B` (rebindable), shown
+  state and width persisted; one browser per worktree; page focus held off the
+  terminals; `Cmd+W` on the last tab hides the sidebar. *Tests*: 6 app (toggle on
+  server URL, star, favorites, import, `Cmd+T`, `Cmd+W`) + prefs restore; headless
+  light `verify-artifacts/20261019_154658_54227/` (open, with git, `⌘⇧B` hides).
+- ☑ **B20 — Folder tabs.** Shown tab in the page's color, flaring into it; row a
+  step toward the ink, hairlines between unshown tabs, hover light inset; spinner
+  while loading; find bar moved above the row. *Tests*: suite green; headless
+  `verify-artifacts/20261019_164314_89883/` (light, dark, start page, tint + find,
+  narrow). Not done: real window (spinner motion, real page colors).
+- ☑ **B21 — `Cmd+R` reloads the page.** While the browser has the keyboard, the
+  Run binding reloads the shown page instead of the server; `Cmd+Shift+R`
+  (fixed) reloads bypassing the cache. *Tests*: 1 app
+  (git sidebar stays shut, fails without the route). Not done: real WebKit reload (no fake engine: `Cmd+Shift+R` untested).
+- ☑ **B22 — Tab row always shown.** Even a lone tab gets the row and its `×`;
+  closing the last tab hides the sidebar and drops its page for a start-page tab
+  (toolbar `+` gone). *Tests*: 1 app (`×` of the only tab, reopened on the start
+  page); lone-tab-no-row test dropped.
+  Not done: dark capture (harness theme not applied), real window by hand.
 
 ---
 

@@ -1,24 +1,22 @@
-//! Browser panes of the split tree (specs/browser.md): their pages, the Browser
-//! offer of fresh terminals, the native views kept on their panes, and the
-//! favorites, history and imports they share.
+//! The browser sidebar (specs/browser.md): each worktree's tabs, their native
+//! views placed on the panel, and the favorites, history and imports they share.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crossbeam_channel::Receiver;
 
 use crate::browser::freeze::{Cover, FreezeStep, PageFreeze};
 use crate::browser::import::{ImportError, ImportReport, ImportSource, ImportStatus, Imported};
 use crate::browser::page_view::ZoomChange;
-use crate::browser::{url, PageSnapshot, PageState, ViewRect, WebEngine, WebView};
-use crate::terminal::layout::PaneId;
-use crate::ui::browser_pane::{
-    browser_pane, AddressBar, BrowserChrome, BrowserIntent, BrowserPaneView, BrowserTabState,
+use crate::browser::{url, Navigation, PageSnapshot, PageState, ViewRect, WebEngine, WebView};
+use crate::ui::browser_panel::{
+    browser_panel, AddressBar, BrowserChrome, BrowserIntent, BrowserPanelView, BrowserTabState,
     TabStrip, TabSummary,
 };
 
-use super::git_session::{PaneKey, RepoKey};
+use super::git_session::RepoKey;
 use super::keys::{consume_action, consume_zoom_commands, ZoomCommand};
-use super::{HelmApp, Page, TerminalState};
+use super::{HelmApp, Page, SidebarVisibility, TerminalState};
 use crate::keybindings::Action;
 
 /// Lines of the Run strip scanned for the server's URL (browser.md §5).
@@ -26,44 +24,25 @@ const SERVER_OUTPUT_LINES: usize = 400;
 const DISK_ACCESS_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
-/// The browser state of one tab.
-#[derive(Default)]
-pub(crate) struct TabBrowsers {
-    pub(crate) pages: HashMap<PaneId, BrowserPane>,
-    /// Fresh shells still showing the Browser button (browser.md §3).
-    pub(crate) offers: HashSet<PaneId>,
-}
-
-impl TabBrowsers {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pages.is_empty() && self.offers.is_empty()
-    }
-
-    pub(crate) fn retain_panes(&mut self, live: &HashSet<PaneId>) {
-        self.pages.retain(|id, _| live.contains(id));
-        self.offers.retain(|id| live.contains(id));
-    }
-}
-
-pub(crate) struct BrowserPane {
+/// One worktree's browser: its tabs, shown in the browser sidebar.
+pub(crate) struct WorktreeBrowser {
     tabs: Vec<BrowserTab>,
-    /// The tab shown, its page on the pane.
+    /// The tab shown, its page on the panel.
     active: usize,
-    /// Another tab came to show: it takes the keyboard when the pane has it.
-    shown_changed: bool,
+    /// The sidebar opened, the toolbar was pressed or another tab came to show:
+    /// the shown page takes the keyboard once its view exists.
+    takes_keyboard: bool,
     /// The page area drawn this frame, in egui points.
     placed: Option<egui::Rect>,
-    /// The pane's own suggestions fell over the page this frame.
+    /// The panel's own suggestions fell over the page this frame.
     overlaid: bool,
-    was_focused: bool,
-    /// The pane held the keyboard when last drawn: its page, its URL field, or the
-    /// tree's focus with no other widget holding it.
+    /// The page or a field of the panel held the keyboard when last drawn.
     has_keyboard: bool,
     /// Drawn this frame.
     drawn: bool,
 }
 
-/// One page of a browser pane.
+/// One page of a worktree's browser.
 struct BrowserTab {
     view: Option<Box<dyn WebView>>,
     /// Loaded once the view exists.
@@ -149,6 +128,7 @@ impl BrowserTab {
         TabSummary {
             title: page.title,
             url: page.url,
+            loading: page.loading,
         }
     }
 
@@ -228,21 +208,20 @@ impl BrowserTab {
 struct ViewSync<'a> {
     cover: Cover,
     placed: Option<egui::Rect>,
-    /// The pane has the tree's focus: a first load takes the keyboard.
+    /// A first load takes the keyboard.
     focused: bool,
     ctx: &'a egui::Context,
 }
 
-impl BrowserPane {
-    /// A pane opening on `url` (browser.md §5).
+impl WorktreeBrowser {
+    /// A browser opening on `url` (browser.md §5), taking the keyboard.
     pub(crate) fn opening(url: Option<String>) -> Self {
         Self {
             tabs: vec![BrowserTab::opening(url)],
             active: 0,
-            shown_changed: false,
+            takes_keyboard: true,
             placed: None,
             overlaid: false,
-            was_focused: false,
             has_keyboard: false,
             drawn: false,
         }
@@ -256,6 +235,7 @@ impl BrowserPane {
         self.shown().load(url);
     }
 
+    #[cfg(test)]
     pub(crate) fn tab_count(&self) -> usize {
         self.tabs.len()
     }
@@ -264,7 +244,7 @@ impl BrowserPane {
     fn open_tab(&mut self) {
         self.active += 1;
         self.tabs.insert(self.active, BrowserTab::opening(None));
-        self.shown_changed = true;
+        self.takes_keyboard = true;
     }
 
     /// A tab on `url` after the shown one, left in the background: its page
@@ -275,22 +255,26 @@ impl BrowserPane {
     }
 
     /// Closes tab `index`; the one after it is shown in its place, else the one
-    /// before. The last tab stays: closing it closes the pane.
+    /// before. The last one gives way to a tab on the start page.
     fn close_tab(&mut self, index: usize) {
-        if self.tabs.len() == 1 || index >= self.tabs.len() {
+        if index >= self.tabs.len() {
+            return;
+        }
+        if self.tabs.len() == 1 {
+            self.tabs[0] = BrowserTab::opening(None);
             return;
         }
         self.tabs.remove(index);
         if index < self.active || self.active == self.tabs.len() {
             self.active -= 1;
         }
-        self.shown_changed = true;
+        self.takes_keyboard = true;
     }
 
     fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active {
             self.active = index;
-            self.shown_changed = true;
+            self.takes_keyboard = true;
         }
     }
 
@@ -301,9 +285,11 @@ impl BrowserPane {
             .is_some_and(|view| view.is_focused())
     }
 
-    /// Applies a pane's own intent; the shared ones (favorites, import, server)
-    /// come back for the app.
+    /// Applies the browser's own intent; the shared ones (favorites, import, server,
+    /// closing the last tab) come back for the app.
     fn apply(&mut self, intent: BrowserIntent) -> Option<BrowserIntent> {
+        let loads = matches!(intent, BrowserIntent::Load(_) | BrowserIntent::Open(_));
+        let last_tab = self.tabs.len() == 1;
         let tab = self.shown();
         match intent {
             BrowserIntent::Load(typed) => {
@@ -339,9 +325,14 @@ impl BrowserPane {
             BrowserIntent::NewTab => self.open_tab(),
             BrowserIntent::OpenInNewTab(url) => self.open_background_tab(url),
             BrowserIntent::SelectTab(index) => self.select_tab(index),
+            BrowserIntent::CloseTab(index) if last_tab => {
+                self.close_tab(index);
+                return Some(intent);
+            }
             BrowserIntent::CloseTab(index) => self.close_tab(index),
             shared => return Some(shared),
         }
+        self.takes_keyboard |= loads;
         None
     }
 
@@ -363,10 +354,13 @@ impl BrowserPane {
             let sync = ViewSync {
                 cover: if shown { cover } else { Cover::Away },
                 placed: placed.filter(|_| shown),
-                focused: self.was_focused,
+                focused: shown && self.takes_keyboard,
                 ctx,
             };
             tab.sync_view(engine, &sync);
+        }
+        if self.tabs[self.active].view.is_some() {
+            self.takes_keyboard = false;
         }
     }
 }
@@ -402,10 +396,8 @@ fn open_in_chrome(url: &str) {
     }
 }
 
-/// What a browser pane's leaf reported this frame.
-pub(crate) struct BrowserLeaf {
-    /// The pane takes focus in the tree (a click in its toolbar or its page).
-    pub(crate) focus: bool,
+/// What the browser sidebar reported this frame.
+pub(crate) struct BrowserOutput {
     /// For the app: favorites, import, Dev server.
     pub(crate) intents: Vec<BrowserIntent>,
     /// Pages to count in the history: URL, title.
@@ -414,14 +406,13 @@ pub(crate) struct BrowserLeaf {
     pub(crate) icons: Vec<(String, String)>,
 }
 
-/// One browser pane of the tree (browser.md §4). `focused` is the tree's focus.
-pub(crate) fn render_browser_pane(
+/// The worktree's browser in its sidebar (browser.md §4).
+pub(crate) fn render_browser_sidebar(
     ui: &mut egui::Ui,
-    browser: &mut BrowserPane,
-    focused: bool,
+    browser: &mut WorktreeBrowser,
     chrome: &BrowserChrome<'_>,
-    any_focused: &mut bool,
-) -> BrowserLeaf {
+) -> BrowserOutput {
+    let panel = ui.available_rect_before_wrap();
     let pages: Vec<PageState> = browser.tabs.iter().map(BrowserTab::page).collect();
     let visits = browser
         .tabs
@@ -445,49 +436,53 @@ pub(crate) fn render_browser_pane(
         active: browser.active,
     };
     let active = browser.active;
-    let view = BrowserPaneView {
+    let view = BrowserPanelView {
         page: &pages[active],
         tab: &mut browser.tabs[active].state,
         strip: &strip,
     };
-    let output = browser_pane(ui, chrome, view);
+    let output = browser_panel(ui, chrome, view);
     browser.placed = output.page_rect;
     browser.overlaid = output.page_overlaid;
     let native_focus = browser.has_native_focus();
-    if native_focus {
-        surrender_egui_focus(ui.ctx());
+    hold_keyboard_for_page(ui, panel, native_focus);
+    if output.clicked {
+        browser.takes_keyboard = true;
     }
-    let shown_changed = std::mem::take(&mut browser.shown_changed);
-    let takes_keyboard = !browser.was_focused || shown_changed;
-    if focused && takes_keyboard && !output.field_focused && !native_focus {
+    if output.field_focused {
+        browser.takes_keyboard = false;
+    }
+    if browser.takes_keyboard && !native_focus {
         if let Some(view) = browser.shown().view.as_mut() {
             view.focus();
         }
     }
-    browser.was_focused = focused;
-    // Like a terminal: the tree's focus counts while no other widget holds the
-    // keyboard (a click in the toolbar hands first responder back to egui).
-    let egui_idle = ui.ctx().memory(|m| m.focused().is_none());
-    browser.has_keyboard = native_focus || output.field_focused || (focused && egui_idle);
+    browser.has_keyboard = native_focus || output.field_focused;
     browser.drawn = true;
-    *any_focused |= browser.has_keyboard;
     let intents = output
         .intents
         .into_iter()
         .filter_map(|intent| browser.apply(intent))
         .collect();
-    BrowserLeaf {
-        focus: output.clicked || (native_focus && !focused),
+    BrowserOutput {
         intents,
         visits,
         icons,
     }
 }
 
-/// The page holds the keyboard: no egui widget keeps a caret behind it.
-fn surrender_egui_focus(ctx: &egui::Context) {
-    if let Some(id) = ctx.memory(|m| m.focused()) {
-        ctx.memory_mut(|m| m.surrender_focus(id));
+/// While the page holds the keyboard, egui's focus rests on the panel: no field
+/// keeps a caret behind the page and the shell does not claim the keyboard.
+fn hold_keyboard_for_page(ui: &egui::Ui, panel: egui::Rect, native_focus: bool) {
+    let holder = ui.interact(
+        panel,
+        ui.id().with("browser_page_keyboard"),
+        egui::Sense::focusable_noninteractive(),
+    );
+    if native_focus {
+        holder.request_focus();
+    } else if holder.has_focus() {
+        holder.surrender_focus();
     }
 }
 
@@ -523,32 +518,40 @@ impl HelmApp {
         server_url_from(&self.caches.run_panes, key, port)
     }
 
-    /// Closes the fresh shell of pane `id` and opens a page in its place
-    /// (browser.md §3).
-    pub(crate) fn turn_into_browser(&mut self, pane_key: &PaneKey, id: PaneId) {
-        let url = self.server_url_of(&pane_key.0);
-        if let Some(panes) = self.caches.panes.get_mut(pane_key) {
-            panes.remove(&id);
+    /// The active worktree's browser, opened on its server page the first time
+    /// (browser.md §3, §5).
+    pub(crate) fn open_active_browser(&mut self) -> Option<&mut WorktreeBrowser> {
+        let key = self.active_repo_key()?;
+        if !self.caches.browsers.contains_key(&key) {
+            let url = self.server_url_of(&key);
+            self.caches
+                .browsers
+                .insert(key.clone(), WorktreeBrowser::opening(url));
         }
-        let tab = self.caches.browsers.entry(pane_key.clone()).or_default();
-        tab.offers.remove(&id);
-        tab.pages.insert(id, BrowserPane::opening(url));
-        if let Some(layout) = self.workspace.active_layout_mut() {
-            layout.set_focus(id);
+        self.caches.browsers.get_mut(&key)
+    }
+
+    /// The sidebar opened this frame (`⌘⇧B` or its toggle): its page takes the
+    /// keyboard (browser.md §3).
+    pub(super) fn focus_browser_if_opened(&mut self, was: SidebarVisibility) {
+        if self.sidebars.browser && !was.browser {
+            if let Some(browser) = self.open_active_browser() {
+                browser.takes_keyboard = true;
+            }
         }
     }
 
-    /// The shared intents of the tab's browser panes this frame.
+    /// The shared intents of the worktree's browser this frame.
     pub(crate) fn apply_browser_intents(
         &mut self,
-        pane_key: &PaneKey,
-        intents: Vec<(PaneId, BrowserIntent)>,
+        key: &RepoKey,
+        intents: Vec<BrowserIntent>,
         ctx: &egui::Context,
     ) {
         let project = self.browser_project();
-        for (id, intent) in intents {
+        for intent in intents {
             match intent {
-                BrowserIntent::LoadServer => self.load_server_page(pane_key, id),
+                BrowserIntent::LoadServer => self.load_server_page(key),
                 BrowserIntent::ToggleFavorite { url, title } => {
                     self.browser_library
                         .edit(|library| library.toggle_favorite(&url, &title, &project));
@@ -564,6 +567,7 @@ impl HelmApp {
                         .edit(|library| library.rename_favorite(&url, &project, &title));
                     self.browser_library.save();
                 }
+                BrowserIntent::CloseTab(_) => self.sidebars.browser = false,
                 BrowserIntent::DismissImport => self.browser_import.dismiss(),
                 BrowserIntent::Import(source) => self.browser_import.start(source, ctx),
                 BrowserIntent::OpenDiskAccessSettings => {
@@ -630,33 +634,29 @@ impl HelmApp {
     }
 
     /// The toolbar's Server button: the default page again.
-    pub(crate) fn load_server_page(&mut self, pane_key: &PaneKey, id: PaneId) {
-        let Some(url) = self.server_url_of(&pane_key.0) else {
+    fn load_server_page(&mut self, key: &RepoKey) {
+        let Some(url) = self.server_url_of(key) else {
             return;
         };
-        if let Some(browser) = self
-            .caches
-            .browsers
-            .get_mut(pane_key)
-            .and_then(|tab| tab.pages.get_mut(&id))
-        {
+        if let Some(browser) = self.caches.browsers.get_mut(key) {
             browser.load(url);
         }
     }
 
-    /// While a browser pane holds the keyboard (browser.md §6), `Cmd+T` and
-    /// `Cmd+W` act on its tabs, zoom on its page and `Cmd+F` opens its find bar,
-    /// taken before helm sees them; `Cmd+W` on its last tab is left to close the
-    /// pane.
+    /// While the browser holds the keyboard (browser.md §6), `Cmd+T` and `Cmd+W`
+    /// act on its tabs, zoom on its page and `Cmd+F` opens its find bar, taken
+    /// before helm sees them; `Cmd+W` on its last tab closes the sidebar.
     pub(crate) fn route_browser_tab_keys(&mut self, ctx: &egui::Context) {
-        let Some((key, id)) = self.focused_pane() else {
+        if !self.sidebars.browser {
+            return;
+        }
+        let Some(key) = self.active_repo_key() else {
             return;
         };
         let Some(browser) = self
             .caches
             .browsers
             .get_mut(&key)
-            .and_then(|tab| tab.pages.get_mut(&id))
             .filter(|browser| browser.has_keyboard)
         else {
             return;
@@ -664,8 +664,20 @@ impl HelmApp {
         if consume_action(ctx, &self.keymap, Action::NewTab) {
             browser.open_tab();
         }
-        if browser.tab_count() > 1 && consume_action(ctx, &self.keymap, Action::ClosePane) {
-            browser.close_tab(browser.active);
+        if consume_action(ctx, &self.keymap, Action::Run) {
+            browser.apply(BrowserIntent::Navigate(Navigation::Reload));
+        }
+        let bypass_cache = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        if ctx.input_mut(|i| i.consume_key(bypass_cache, egui::Key::R)) {
+            browser.apply(BrowserIntent::Navigate(Navigation::ReloadFromOrigin));
+        }
+        if consume_action(ctx, &self.keymap, Action::ClosePane)
+            && browser
+                .apply(BrowserIntent::CloseTab(browser.active))
+                .is_some()
+        {
+            self.sidebars.browser = false;
+            return;
         }
         let page_view = &mut browser.shown().state.page_view;
         for command in consume_zoom_commands(ctx, &self.keymap) {
@@ -681,26 +693,16 @@ impl HelmApp {
         }
     }
 
-    /// The active tab's focused pane.
-    fn focused_pane(&self) -> Option<(PaneKey, PaneId)> {
-        let index = self.workspace.active()?;
-        let tab = self.workspace.active_tab()?;
-        let key = self.caches.pane_key(&self.workspace, index, tab)?;
-        Some((key, self.workspace.active_layout()?.focus()))
-    }
-
     /// Places every page view for this frame, frozen wherever egui draws above
-    /// the panes (browser.md §4). Called once per frame, after every overlay.
+    /// the sidebar (browser.md §4). Called once per frame, after every overlay.
     pub(crate) fn sync_browser_views(&mut self, ctx: &egui::Context) {
         let covered = self.page == Page::Preferences
             || self.modal.is_some()
             || egui::Popup::is_any_open(ctx)
             || egui::DragAndDrop::has_any_payload(ctx);
         let engine = self.web_engine.as_deref();
-        for tab in self.caches.browsers.values_mut() {
-            for browser in tab.pages.values_mut() {
-                browser.sync_views(engine, covered, ctx);
-            }
+        for browser in self.caches.browsers.values_mut() {
+            browser.sync_views(engine, covered, ctx);
         }
     }
 }

@@ -1,7 +1,6 @@
-//! Browser pane of the split tree (specs/browser.md §3, §4, §8): toolbar, tab row,
+//! Browser sidebar content (specs/browser.md §3, §4, §8): toolbar, tab row,
 //! address suggestions, page area (where the native view is placed, over the
-//! page's last snapshot, else the start page) and the Browser offer of a fresh
-//! terminal.
+//! page's last snapshot, else the start page).
 
 use std::collections::HashMap;
 
@@ -13,10 +12,9 @@ use crate::browser::import::{ImportSource, ImportStatus};
 use crate::browser::library::{Library, Suggestion};
 use crate::browser::page_view::{PageView, Viewport, ZoomChange};
 use crate::browser::{url, Navigation, PageState};
-use crate::keybindings::Shortcut;
 use crate::theme::Palette;
 use crate::ui::browser_start_page::{elided, paint_badge, Badge, FavoritesView};
-use crate::ui::terminal_view::GRIP_RESERVE;
+use crate::ui::spinner::Spinner;
 use crate::ui::with_alpha;
 
 const BAR_HEIGHT: f32 = 40.0;
@@ -60,9 +58,11 @@ const SUGGESTIONS_MARGIN: f32 = 8.0;
 const SUGGESTIONS_MIN_WIDTH: f32 = 360.0;
 const SUGGESTIONS_RADIUS: u8 = 12;
 const TAB_ROW_HEIGHT: f32 = 34.0;
-const TAB_HEIGHT: f32 = 26.0;
+const TAB_HEIGHT: f32 = 30.0;
+/// The shown tab's top corners, and the flares that open it into the page.
 const TAB_RADIUS: u8 = 8;
-const TAB_GAP: f32 = 4.0;
+const TAB_LIT_RADIUS: u8 = 7;
+const TAB_GAP: f32 = 8.0;
 const TAB_TITLED_MIN_WIDTH: f32 = 80.0;
 const TAB_MAX_WIDTH: f32 = 200.0;
 const TAB_SHOWN_WIDTH: f32 = 150.0;
@@ -76,15 +76,7 @@ const FIND_ROW_HEIGHT: f32 = 34.0;
 const FIND_FIELD_WIDTH: f32 = 240.0;
 const FIND_HINT: &str = "Find in page";
 
-const OFFER_SIZE: egui::Vec2 = egui::vec2(208.0, 124.0);
-const OFFER_RADIUS: u8 = 12;
-const OFFER_ICON_SIZE: f32 = 20.0;
-const OFFER_TITLE_SIZE: f32 = 13.5;
-const OFFER_DETAIL_SIZE: f32 = 11.5;
-const OFFER_REST_OPACITY: f32 = 0.55;
-const OFFER_SHORTCUT: Shortcut = Shortcut::cmd(egui::Key::Enter);
-
-/// The URL field of one pane.
+/// The URL field of one tab.
 #[derive(Debug, Default)]
 pub struct AddressBar {
     pub text: String,
@@ -133,6 +125,7 @@ pub struct FindBar {
 pub struct TabSummary {
     pub title: String,
     pub url: String,
+    pub loading: bool,
 }
 
 impl TabSummary {
@@ -147,14 +140,14 @@ impl TabSummary {
     }
 }
 
-/// The pane's tabs, in order; the shown one is the address pill's.
+/// The browser's tabs, in order; the shown one is the address pill's.
 pub struct TabStrip {
     pub tabs: Vec<TabSummary>,
     pub active: usize,
 }
 
-/// What one browser pane draws: the shown tab's page and state, and its tabs.
-pub struct BrowserPaneView<'a> {
+/// What the browser panel draws: the shown tab's page and state, and its tabs.
+pub struct BrowserPanelView<'a> {
     pub page: &'a PageState,
     pub tab: &'a mut BrowserTabState,
     pub strip: &'a TabStrip,
@@ -200,7 +193,7 @@ pub enum BrowserIntent {
 }
 
 #[derive(Debug)]
-pub struct BrowserPaneOutput {
+pub struct BrowserPanelOutput {
     pub intents: Vec<BrowserIntent>,
     /// Where the page view goes, in egui points; `None` while the start page
     /// stands in its place.
@@ -213,7 +206,7 @@ pub struct BrowserPaneOutput {
     pub field_focused: bool,
 }
 
-/// What every browser pane of the tab shares this frame.
+/// What the browser panel reads from the app this frame.
 pub struct BrowserChrome<'a> {
     pub palette: &'a Palette,
     /// The worktree's server URL (browser.md §5), if known.
@@ -370,36 +363,27 @@ struct Pill<'a> {
     width: f32,
 }
 
-pub fn browser_pane(
+pub fn browser_panel(
     ui: &mut egui::Ui,
     chrome: &BrowserChrome<'_>,
-    view: BrowserPaneView<'_>,
-) -> BrowserPaneOutput {
-    let BrowserPaneView { page, tab, strip } = view;
+    view: BrowserPanelView<'_>,
+) -> BrowserPanelOutput {
+    let BrowserPanelView { page, tab, strip } = view;
     let palette = chrome.palette;
-    let pane = ui.available_rect_before_wrap();
+    let panel = ui.available_rect_before_wrap();
     let shows_page = !(tab.start_page || page.url.is_empty());
-    let folded = shows_page && toolbar_folded(ui, page, tab, pane);
+    let folded = shows_page && toolbar_folded(ui, page, tab, panel);
     let fold =
         ui.ctx()
             .animate_bool_with_time(ui.id().with("toolbar_fold"), folded, FOLD_ANIMATION);
-    let has_row = strip.tabs.len() > 1;
     let finding = shows_page && tab.find.is_some();
-    let row_height = if has_row { TAB_ROW_HEIGHT } else { 0.0 };
     let find_height = if finding { FIND_ROW_HEIGHT } else { 0.0 };
-    let full_height = BAR_HEIGHT + row_height + find_height;
+    let full_height = BAR_HEIGHT + TAB_ROW_HEIGHT + find_height;
     let bar_height = egui::lerp(full_height..=FOLDED_BAR_HEIGHT, fold);
-    let (bar_rect, page_area) = pane.split_top_bottom_at_y(pane.top() + bar_height);
+    let (bar_rect, page_area) = panel.split_top_bottom_at_y(panel.top() + bar_height);
     let viewport = viewport_rect(page_area, tab.page_view.viewport);
     let colors = BarColors::new(ui, palette, page.tint.filter(|_| shows_page));
     ui.painter().rect_filled(bar_rect, 0.0, colors.fill);
-    if !colors.tinted {
-        ui.painter().hline(
-            bar_rect.x_range(),
-            bar_rect.bottom() - 0.5,
-            egui::Stroke::new(1.0_f32, palette.border_subtle),
-        );
-    }
     let page_fill = if colors.tinted {
         colors.fill
     } else {
@@ -418,8 +402,8 @@ pub fn browser_pane(
             tab.fold.unfold();
             tab.address.focus_requested = true;
         }
-        ui.advance_cursor_after_rect(pane);
-        return BrowserPaneOutput {
+        ui.advance_cursor_after_rect(panel);
+        return BrowserPanelOutput {
             intents: Vec::new(),
             page_rect: Some(viewport),
             page_overlaid: false,
@@ -427,11 +411,10 @@ pub fn browser_pane(
             field_focused: false,
         };
     }
-    // The pane's drag grip owns the top-right corner on hover.
     let mut bar_ui_rect = bar_rect;
     bar_ui_rect.max.y = bar_ui_rect.max.y.min(bar_rect.top() + BAR_HEIGHT);
     bar_ui_rect.min.x += BAR_PAD_X;
-    bar_ui_rect.max.x -= GRIP_RESERVE;
+    bar_ui_rect.max.x -= BAR_PAD_X;
     let mut bar_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(bar_ui_rect)
@@ -442,7 +425,7 @@ pub fn browser_pane(
     history_buttons(&mut bar_ui, &colors, page, &mut intents);
     bar_ui.add_space(GROUP_GAP);
     let actions = page_actions(chrome, page, tab.start_page);
-    let trailing = actions.len() + 1 + usize::from(!has_row);
+    let trailing = actions.len() + 1;
     let actions_width = trailing as f32 * (BUTTON_SIZE + BUTTON_GAP) + 2.0 * GROUP_GAP;
     let slot = (bar_ui.available_width() - actions_width).max(MIN_PILL_WIDTH);
     let pill = Pill {
@@ -454,9 +437,6 @@ pub fn browser_pane(
     let address = address_bar(&mut bar_ui, chrome, page, &mut tab.address, &pill);
     intents.extend(address.intent);
     bar_ui.add_space(centering + GROUP_GAP);
-    if !has_row && new_tab_button(&mut bar_ui, &colors) {
-        intents.push(BrowserIntent::NewTab);
-    }
     bar_ui.add_space(GROUP_GAP);
     for action in actions {
         if toolbar_button(&mut bar_ui, &colors, &action.button).clicked() {
@@ -479,22 +459,23 @@ pub fn browser_pane(
         ));
         None
     };
-    let row_top = bar_rect.top() + BAR_HEIGHT;
-    let row_area = bar_band(bar_rect, row_top, row_height);
-    if has_row && row_area.height() > 0.0 {
-        let row = TabRow {
-            strip,
-            chrome,
-            colors: &colors,
-        };
-        intents.extend(tab_row(ui, &row, row_area));
-    }
-    let find_area = bar_band(bar_rect, row_top + row_height, find_height);
+    let find_top = bar_rect.top() + BAR_HEIGHT;
+    let find_area = bar_band(bar_rect, find_top, find_height);
     let mut find_focused = false;
     if finding && find_area.height() > 0.0 {
         let found = find_bar(ui, &colors, &mut tab.find, find_area);
         find_focused = found.has_focus;
         intents.extend(found.intent);
+    }
+    let row_area = bar_band(bar_rect, find_top + find_height, TAB_ROW_HEIGHT);
+    if row_area.height() > 0.0 {
+        let row = TabRow {
+            strip,
+            chrome,
+            colors: &colors,
+            fills: TabFills::new(&colors, page_fill),
+        };
+        intents.extend(tab_row(ui, &row, row_area));
     }
     let page_overlaid = !address.suggestions.is_empty();
     if page_overlaid {
@@ -506,8 +487,8 @@ pub fn browser_pane(
         };
         intents.extend(suggestion_list(ui, &colors, &list).map(BrowserIntent::Open));
     }
-    ui.advance_cursor_after_rect(pane);
-    BrowserPaneOutput {
+    ui.advance_cursor_after_rect(panel);
+    BrowserPanelOutput {
         intents,
         page_rect,
         page_overlaid,
@@ -558,10 +539,10 @@ fn toolbar_folded(
     ui: &egui::Ui,
     page: &PageState,
     state: &mut BrowserTabState,
-    pane: egui::Rect,
+    panel: egui::Rect,
 ) -> bool {
     let folded = state.fold.follow(&page.url, page.scroll_y);
-    let bar = egui::Rect::from_min_size(pane.min, egui::vec2(pane.width(), FOLDED_BAR_HEIGHT));
+    let bar = egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), FOLDED_BAR_HEIGHT));
     let editing = state.address.focus_requested
         || state.find.is_some()
         || ui.ctx().memory(|m| m.has_focus(address_id(ui)));
@@ -1425,14 +1406,37 @@ struct TabRow<'a> {
     strip: &'a TabStrip,
     chrome: &'a BrowserChrome<'a>,
     colors: &'a BarColors,
+    fills: TabFills,
 }
 
-/// The pane's tabs under the toolbar, in order, the shown one raised, then New
-/// tab; they scroll sideways when they do not fit, the shown one kept in view.
+/// The shown tab takes the page's color; the row behind it, a step toward the ink.
+struct TabFills {
+    shown: egui::Color32,
+    band: egui::Color32,
+    lit: egui::Color32,
+    divider: egui::Color32,
+}
+
+impl TabFills {
+    fn new(colors: &BarColors, page: egui::Color32) -> Self {
+        let band = page.lerp_to_gamma(colors.ink, 0.07);
+        Self {
+            shown: page,
+            band,
+            lit: band.lerp_to_gamma(colors.ink, 0.07),
+            divider: band.lerp_to_gamma(colors.ink, 0.18),
+        }
+    }
+}
+
+/// The browser's tabs at the foot of the bar, in order, the shown one opening
+/// into the page, then New tab; they scroll sideways when they do not fit, the
+/// shown one kept in view.
 fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<BrowserIntent> {
     let strip = row.strip;
+    ui.painter().rect_filled(area, 0.0, row.fills.band);
     let tabs = egui::Rect::from_min_size(
-        area.min + egui::vec2(BAR_PAD_X, 0.0),
+        area.min + egui::vec2(BAR_PAD_X, TAB_ROW_HEIGHT - TAB_HEIGHT),
         egui::vec2(area.width() - 2.0 * BAR_PAD_X, TAB_HEIGHT),
     );
     let new_tab_room = TAB_GAP + BUTTON_SIZE;
@@ -1465,6 +1469,15 @@ fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<Brow
                     ui.allocate_exact_size(egui::vec2(width, TAB_HEIGHT), egui::Sense::hover());
                 if shown && newly_shown {
                     ui.scroll_to_rect(rect, None);
+                }
+                let next_shown = index + 1 == strip.active;
+                if !shown && !next_shown && index + 1 < strip.tabs.len() {
+                    let middle = lit_rect(rect).center().y;
+                    ui.painter().vline(
+                        rect.right() + TAB_GAP / 2.0,
+                        (middle - 8.0)..=(middle + 8.0),
+                        egui::Stroke::new(1.0_f32, row.fills.divider),
+                    );
                 }
                 let tab = Tab {
                     index,
@@ -1500,29 +1513,40 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(label);
     let hovered = ui.rect_contains_pointer(rect);
-    let radius = egui::CornerRadius::same(TAB_RADIUS);
     if tab.shown {
-        colors.pill.paint(ui.painter(), rect, radius);
+        paint_folder_tab(ui, rect, &row.fills);
     } else if hovered {
-        ui.painter().rect_filled(rect, radius, colors.button_hover);
+        ui.painter().rect_filled(
+            lit_rect(rect),
+            egui::CornerRadius::same(TAB_LIT_RADIUS),
+            row.fills.lit,
+        );
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, tab.shown, label)
     });
+    let middle = lit_rect(rect).center().y;
     let badge_x = if titled {
-        rect.left() + 8.0 + TAB_BADGE_SIZE / 2.0
+        rect.left() + 10.0 + TAB_BADGE_SIZE / 2.0
     } else {
         rect.center().x
     };
-    paint_tab_badge(
-        ui.painter(),
-        row.chrome.palette,
-        &tab_badge(
-            row.chrome,
-            egui::pos2(badge_x, rect.center().y),
-            tab.summary,
-        ),
-    );
+    let badge_center = egui::pos2(badge_x, middle);
+    if tab.summary.loading {
+        Spinner::new()
+            .size(TAB_BADGE_SIZE)
+            .color(colors.muted)
+            .paint_at(
+                ui,
+                egui::Rect::from_center_size(badge_center, egui::Vec2::splat(TAB_BADGE_SIZE)),
+            );
+    } else {
+        paint_tab_badge(
+            ui.painter(),
+            row.chrome.palette,
+            &tab_badge(row.chrome, badge_center, tab.summary),
+        );
+    }
     if titled {
         let crossed = hovered || tab.shown;
         let close_room = if crossed { TAB_CLOSE_SIZE } else { 0.0 };
@@ -1534,10 +1558,10 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         };
         let width = (rect.right() - 8.0 - close_room - text_left).max(0.0);
         let title = elided(ui.painter(), label, TAB_TITLE_SIZE, ink, width);
-        paint_from_left(ui.painter(), title, egui::pos2(text_left, rect.center().y));
+        paint_from_left(ui.painter(), title, egui::pos2(text_left, middle));
         let cross = TabCross {
             rect: egui::Rect::from_center_size(
-                egui::pos2(rect.right() - 4.0 - TAB_CLOSE_SIZE / 2.0, rect.center().y),
+                egui::pos2(rect.right() - 6.0 - TAB_CLOSE_SIZE / 2.0, middle),
                 egui::vec2(TAB_CLOSE_SIZE, TAB_CLOSE_SIZE),
             ),
             label: &format!("Close {label}"),
@@ -1556,6 +1580,44 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         return Some(BrowserIntent::CloseTab(tab.index));
     }
     (response.clicked() && !tab.shown).then_some(BrowserIntent::SelectTab(tab.index))
+}
+
+/// An unshown tab's hover light, clear of the shown tab's flares and the page.
+fn lit_rect(tab: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        tab.min + egui::vec2(2.0, 1.0),
+        tab.max - egui::vec2(2.0, 3.0),
+    )
+}
+
+/// The shown tab: the page's color, its top corners rounded, its foot flaring
+/// into the page.
+fn paint_folder_tab(ui: &egui::Ui, rect: egui::Rect, fills: &TabFills) {
+    let radius = f32::from(TAB_RADIUS);
+    let top = egui::CornerRadius {
+        nw: TAB_RADIUS,
+        ne: TAB_RADIUS,
+        sw: 0,
+        se: 0,
+    };
+    ui.painter().rect_filled(rect, top, fills.shown);
+    let reach = ui.clip_rect().expand2(egui::vec2(radius, 0.0));
+    for (outer_x, inner_x) in [
+        (rect.left() - radius, rect.left()),
+        (rect.right() + radius, rect.right()),
+    ] {
+        let flare = egui::Rect::from_two_pos(
+            egui::pos2(outer_x, rect.bottom() - radius),
+            egui::pos2(inner_x, rect.bottom()),
+        );
+        let painter = ui.painter().with_clip_rect(flare.intersect(reach));
+        painter.rect_filled(flare, 0.0, fills.shown);
+        painter.circle_filled(
+            egui::pos2(outer_x, rect.bottom() - radius),
+            radius,
+            fills.band,
+        );
+    }
 }
 
 fn tab_badge<'a>(
@@ -1665,115 +1727,4 @@ fn toolbar_button(
         )
     });
     response.on_hover_text(label)
-}
-
-/// The ghost Browser button centered over a fresh terminal (browser.md §3): what
-/// it opens and its shortcut. `None` when the pane is too small to show it.
-pub fn browser_offer(
-    ui: &mut egui::Ui,
-    chrome: &BrowserChrome<'_>,
-    pane_rect: egui::Rect,
-) -> Option<egui::Response> {
-    if pane_rect.width() < OFFER_SIZE.x || pane_rect.height() < OFFER_SIZE.y {
-        return None;
-    }
-    let palette = chrome.palette;
-    let rect = egui::Rect::from_center_size(pane_rect.center(), OFFER_SIZE);
-    let response = ui
-        .interact(rect, ui.id().with("browser_offer"), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let hovered = response.hovered();
-    let ink = |color: egui::Color32| {
-        if hovered {
-            color
-        } else {
-            color.gamma_multiply(OFFER_REST_OPACITY)
-        }
-    };
-    let painter = ui.painter();
-    let fill = if hovered {
-        with_alpha(palette.bg_surface, 230)
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(OFFER_RADIUS),
-        fill,
-        egui::Stroke::new(1.0_f32, ink(palette.border_input)),
-        egui::StrokeKind::Inside,
-    );
-    let icon_center = egui::pos2(rect.center().x, rect.top() + 18.0 + OFFER_ICON_SIZE / 2.0);
-    let glyph = if hovered {
-        palette.accent
-    } else {
-        ink(palette.text_muted)
-    };
-    crate::ui::paint_icon(painter, icon_center, OFFER_ICON_SIZE, Icon::Globe, glyph);
-    let mut y = icon_center.y + OFFER_ICON_SIZE / 2.0 + 10.0;
-    let title = painter.layout_no_wrap(
-        "Open browser".to_owned(),
-        egui::FontId::proportional(OFFER_TITLE_SIZE),
-        ink(palette.text_secondary),
-    );
-    y += paint_centered(painter, title, rect.center().x, y) + 3.0;
-    let detail = match chrome.server {
-        Some(server) => {
-            let (host, path) = url::display_parts(server);
-            painter.layout_no_wrap(
-                format!("{host}{path}"),
-                egui::FontId::monospace(OFFER_DETAIL_SIZE),
-                ink(palette.text_muted),
-            )
-        }
-        None => painter.layout_no_wrap(
-            "No dev server yet".to_owned(),
-            egui::FontId::proportional(OFFER_DETAIL_SIZE),
-            ink(palette.text_muted),
-        ),
-    };
-    y += paint_centered(painter, detail, rect.center().x, y) + 8.0;
-    let shortcut = painter.layout_no_wrap(
-        OFFER_SHORTCUT.display(),
-        egui::FontId::proportional(OFFER_DETAIL_SIZE),
-        ink(palette.text_muted),
-    );
-    paint_centered(painter, shortcut, rect.center().x, y);
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open browser"));
-    Some(response)
-}
-
-/// `⌘↩` pressed this frame, consumed so nothing else acts on it — read only while
-/// the shell under the Browser button has the keyboard (browser.md §3).
-pub fn offer_shortcut_pressed(ui: &egui::Ui) -> bool {
-    ui.input_mut(|input| {
-        let mut pressed = false;
-        input.events.retain(|event| {
-            let hit = matches!(
-                event,
-                egui::Event::Key { key, pressed: true, modifiers, .. }
-                    if OFFER_SHORTCUT.matches(*key, *modifiers)
-            );
-            pressed |= hit;
-            !hit
-        });
-        pressed
-    })
-}
-
-/// Paints `galley` centered on `center_x` from `top`; its height.
-fn paint_centered(
-    painter: &egui::Painter,
-    galley: std::sync::Arc<egui::Galley>,
-    center_x: f32,
-    top: f32,
-) -> f32 {
-    let size = galley.size();
-    painter.galley(
-        egui::pos2(center_x - size.x / 2.0, top),
-        galley,
-        egui::Color32::PLACEHOLDER,
-    );
-    size.y
 }

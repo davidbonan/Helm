@@ -1,19 +1,19 @@
-# Browser — web page as a pane of the split tree
+# Browser — the browser sidebar
 
-Spec for the **browser pane**: a terminal pane of the split tree turned into a web
-page, to preview the worktree's dev server next to its terminals.
+Spec for the **browser sidebar**: a resizable web page on the right of the
+terminals, to preview the worktree's dev server next to them.
 
 ## 1. Scope
 
 | In v1 | Out of v1 |
 |-------|-----------|
-| A fresh terminal pane offers a **Browser** button; a click turns the pane into a page | Turning a page back into a terminal (close it, split again) |
-| Native engine view (WebKit) over the pane, real input, IME, cursor, scroll | Chromium engine (CEF) — the engine port keeps it a drop-in (§2) |
+| A **browser toggle** in the title bar (and `⌘⇧B`) shows a resizable sidebar between the terminals and the git sidebar | Several browsers side by side, a full-window browser |
+| Native engine view (WebKit) over the sidebar, real input, IME, cursor, scroll | Chromium engine (CEF) — the engine port keeps it a drop-in (§2) |
 | Toolbar: back, forward, address pill (reload/stop inside), Dev server, Favorites, More (Find in page, page zoom, viewport width, Web Inspector, Open in Chrome, Copy URL) | Downloads, device emulation beyond the width |
-| Tabs inside a pane: a tab row under the toolbar | Dragging a tab out into a split, reordering tabs, `target="_blank"` in a new tab |
+| Tabs per worktree: a tab row under the toolbar | Reordering tabs, `target="_blank"` in a new tab |
 | Default URL: the server the Run strip printed, else `localhost:$PORT` | Following the server after the first load, element picker, agent bridge |
-| One persistent profile shared by every pane (cookies, storage survive restarts) | Per-worktree profiles, private mode |
-| Helm's `Cmd` shortcuts keep working while the page has focus | Panes persisted across launches (terminals are not either) |
+| One persistent profile shared by every worktree (cookies, storage survive restarts) | Per-worktree profiles, private mode |
+| Helm's `Cmd` shortcuts keep working while the page has focus | Tabs persisted across launches (terminals are not either) |
 | Favorites on a start page with its own sidebar, a star in the address pill; local pages per project, the rest shared; imported folders kept as a tree; rename, remove | Editing folders, moving favorites, sync |
 | Site icons (favicons) on tiles and tabs, Chrome's own brought by its import | Safari's icon cache |
 | History of visited pages, suggestions while typing an address | Search-engine suggestions |
@@ -22,41 +22,40 @@ page, to preview the worktree's dev server next to its terminals.
 ## 2. Engine
 
 - The page is a **native view** (macOS `WKWebView`) added over the window's content
-  view and moved onto the pane's page area every frame. Rendering, text input, IME,
+  view and moved onto the sidebar's page area every frame. Rendering, text input, IME,
   cursor shapes, scroll physics and context menus are the engine's own.
 - Helm talks to it through a small **port** (`browser::WebEngine` opens a
   `browser::WebView`: place, load, navigate, page state, focus, inspector). WebKit is
-  the one adapter; a CEF adapter implements the same port without touching the pane.
-- Profile: the engine's default persistent data store, shared by every browser
-  pane of every worktree.
-- `target="_blank"` links and `window.open` load **in the same pane**.
-- No engine (headless tests): the pane draws its toolbar and an empty page area.
+  the one adapter; a CEF adapter implements the same port without touching the sidebar.
+- Profile: the engine's default persistent data store, shared by every worktree.
+- `target="_blank"` links and `window.open` load **in the same tab**.
+- No engine (headless tests): the sidebar draws its toolbar and an empty page area.
 
-## 3. Entry point
+## 3. Sidebar
 
-- A terminal pane opened as a plain shell (new tab, new split, first pane of a
-  worktree) shows a ghost **Open browser** button centered over its grid: a globe,
-  the title, the URL it would open (§5, else *No dev server yet*), and its `⌘↩`
-  keycap — no fill or shadow, ink and border faded alike. Hover: full ink and
-  border, accent globe, a surface fill. Panes launched for a command (agents, post-create script)
-  never show it.
-- The button disappears for good at the **first keystroke or paste** into that
-  terminal. Clicking it, or `Cmd+Enter` while its shell has the keyboard, turns the
-  pane into a browser pane: its shell is closed and the page opens on the default
-  URL (§5), the pane keeping its place and focus. `Cmd+Enter` is fixed (not
-  rebindable) and inert once the button is gone or too small to show.
+- A **globe toggle** in the title bar, left of the git sidebar's toggle (accent
+  while shown), and **Toggle browser sidebar** (`⌘⇧B`) show or hide the browser
+  sidebar. Both can stay open with the git sidebar: the browser sits between the
+  terminals and it. Hidden, with the git sidebar, in the Agents and PR modes, and
+  while no worktree is active.
+- Resizable by its left edge, 320 pt at least, the terminals keeping 240 pt; its
+  width and whether it shows are kept across launches (560 pt by default).
+- Each **worktree has its own browser** (tabs, pages): the first time its sidebar
+  shows, it opens on the worktree's default URL (§5). Switching worktree shows the
+  other's; a worktree leaving the workspace drops its browser.
+- Opening the sidebar gives its page the keyboard (the URL field on the start
+  page).
 
-## 4. Pane
+## 4. Panel
 
 - **Toolbar** (one row, 40 pt): back · forward (each only while it leads
   somewhere) · **address pill** (up to 640 pt, centered between the two groups) ·
-  **New tab** (`+`, here only while the pane holds one tab) · **Dev server**
-  (server icon) · **Favorites** (star) · **More** (`⋯`). Under it, the **tab
-  row** while the pane holds two tabs or more, then the **find bar** while open.
+  **Dev server** (server icon) · **Favorites** (star) · **More** (`⋯`). Under
+  it, the **find bar** while open, then the **tab row**, always.
   - **Tint**: over a page, the toolbar takes the page's color — its
     `theme-color`, else the background WebKit derives from the page — and fades
     to it in 0.2 s; no hairline under it. Icons and text take the light or dark
-    theme's primary text, whichever contrasts more. Start page, blank pane, or a
+    theme's primary text, whichever contrasts more. Start page, blank page, or a
     translucent color: the palette's canvas and the `border.subtle` hairline.
   - **Fold**: once the page scrolls down past its top 16 pt (8 pt of travel), the
     toolbar folds to 26 pt in 0.18 s, its tab row with it: only the page's
@@ -77,22 +76,24 @@ page, to preview the worktree's dev server next to its terminals.
     **reload**, end the pill at rest: the star filled when the page is a
     favorite, a click adds or removes it (§7); reload turns to stop while
     loading, `Shift`-click reloads bypassing the cache.
-  - **Tabs**: a pane holds one or more tabs, each its own page (own view,
-    history, scroll, toolbar fold); the address pill is the shown tab's. From
-    two tabs, a **tab row** (34 pt, the toolbar's tint) lists them all, in a
-    fixed order, under the toolbar, ended by **New tab** (`+`). A tab: a badge
-    (the site's icon, §10, else its letter as on the start page, or a globe in
-    a grey one while it has no page) and the elided title; the shown tab raised
-    like the pill.
+  - **Tabs**: a worktree's browser holds one or more tabs, each its own page (own view,
+    history, scroll, toolbar fold); the address pill is the shown tab's. The
+    **tab row** (34 pt, at the foot of the bar) lists them all, even a lone one, in a
+    fixed order, ended by **New tab** (`+`). A tab: a badge (the site's icon,
+    §10, else its letter as on the start page, or a globe in a grey one while it
+    has no page; a spinner while its page loads) and the elided title. The shown
+    tab is a folder tab: the page's color, its top corners rounded, its foot
+    flaring into the page; the row behind it a step toward the ink, a hairline
+    between two unshown tabs.
     - Equal shares of the row (less the `+`), up to 200 pt each, while each keeps 80 pt;
       else the shown tab keeps its title (150 pt) and the others their badge
       (30 pt). Tabs that still do not fit scroll sideways, the shown one kept
       in view.
-    - A click on a tab shows it (its page takes the keyboard when the pane has
-      it); hover lights it. Its `×` (titled tabs: on hover, always on the shown
+    - A click on a tab shows it, its page taking the keyboard; hover lights it. Its `×` (titled tabs: on hover, always on the shown
       one) or a middle click closes it. Closing the shown tab shows the next
-      one, else the previous; the last tab is closed with its pane, and the row
-      leaves with the second-to-last.
+      one, else the previous. Closing the last tab (its `×`, a middle click or
+      `Cmd+W`, §6) hides the sidebar and drops its page: the next opening shows
+      a tab on the start page.
   - **New tab** (`+`): a tab after the shown one, on the start page with the
     URL field focused.
   - **Favorites** (star): shows the start page (§7), pressed meanwhile; a second
@@ -104,11 +105,11 @@ page, to preview the worktree's dev server next to its terminals.
     - **Zoom** `−` · percent · `+`: the page's zoom, per tab, in Safari's steps
       (50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300 %); a click on
       the percent resets it.
-    - **Viewport** Desktop · Tablet · Mobile: the page keeps the pane's width,
+    - **Viewport** Desktop · Tablet · Mobile: the page keeps the sidebar's width,
       or 768 pt, or 390 pt, centered in the page area (full height), the room
       on both sides taking the sidebar color. Per tab; no user-agent change.
     - **Web Inspector**: the engine's inspector (WebKit Web Inspector), docked
-      inside the pane. Right-click *Inspect Element* also works.
+      inside the sidebar. Right-click *Inspect Element* also works.
     - **Open in Chrome**: the page URL in Google Chrome (its DevTools), else the
       default browser.
     - **Copy URL**: the page URL to the clipboard.
@@ -116,21 +117,21 @@ page, to preview the worktree's dev server next to its terminals.
     matches* when the text is not on the page, and `×`. Typing finds the text;
     `Enter` the next match, `Shift+Enter` the previous, both wrapping;
     `Esc` or `×` closes it and gives the page the keyboard. Per tab.
-- **Page area**: below the toolbar. The pane's focus is the page's: a click in the page focuses the
-  pane in the tree, moving focus to the pane (keyboard navigation) focuses the page.
+- **Page area**: below the toolbar. A click in the page or a press in the toolbar
+  gives the page the keyboard; a click in a terminal takes it back. While the
+  page holds it, no terminal does.
 - **Covered**: the native view is drawn above egui, so it is hidden whenever
   something egui draws could fall on it — address suggestions (§8), a modal
   (command palette included), an open popup or context menu, a pane drag,
-  Preferences, another central mode, another tab or worktree, the diff or file
-  viewer taking over the center.
-  - **Frozen page**: where the pane stays drawn (suggestions, modal, popup, drag),
+  Preferences, the Agents and PR modes, another worktree, the sidebar hidden.
+  - **Frozen page**: where the sidebar stays drawn (suggestions, modal, popup, drag),
     the page shows frozen beneath: the view is snapshotted, stays up until the
     snapshot is in (200 ms at most, then hides with none), and the snapshot is
     drawn in its place, at its own size from the page area's top-left corner. No
     snapshot: the page area takes the toolbar's tint. Uncovered, the live view
     comes back at once.
-  - A view leaving the screen (another tab shown, the start page, the pane not
-    drawn) hides at once and takes a last snapshot, drawn while it comes back.
+  - A view leaving the screen (another tab shown, the start page, the sidebar
+    not drawn) hides at once and takes a last snapshot, drawn while it comes back.
 
 ## 5. Default URL
 
@@ -142,16 +143,18 @@ page, to preview the worktree's dev server next to its terminals.
 
 ## 6. Keyboard
 
-- While the page has focus, a key with `Cmd` goes to **Helm** (split, close pane,
-  tabs, palette, Run…) — except the text-editing chords, which stay the page's:
+- While the page has focus, a key with `Cmd` goes to **Helm** (tabs, palette,
+  sidebars, Run…) — except the text-editing chords, which stay the page's:
   `Cmd+C`, `Cmd+V`, `Cmd+X`, `Cmd+A`, `Cmd+Z`, `Cmd+Shift+Z`, and the app menu's
   `Cmd+Q`, `Cmd+H`, `Cmd+M`.
-- Every other key goes to the page. The pane counts as the focused pane for the
-  pane shortcuts (`Cmd+D`, `Cmd+W`, `Cmd+Alt+arrows`…).
-- While the pane has the keyboard (its page, its URL field, or the tree's focus
-  with no other field holding it), **New Tab** (`Cmd+T`) opens a tab in the pane
-  instead of a helm tab, and **Close pane** (`Cmd+W`) closes the shown tab; on
-  the last tab it closes the pane. **Zoom in / out / reset** (`Cmd+=`, `Cmd+-`,
+- Every other key goes to the page. The terminal shortcuts (`Cmd+D`,
+  `Cmd+Alt+arrows`…) are inert meanwhile: no terminal has focus.
+- While the browser has the keyboard (its page, its URL or find field), **New
+  Tab** (`Cmd+T`) opens a browser tab instead of a helm tab, and **Close pane**
+  (`Cmd+W`) closes the shown tab; on the last tab it hides the sidebar, never a
+  terminal. **Run** (`Cmd+R`) reloads the shown page, never the server;
+  `Cmd+Shift+R` (fixed) reloads it bypassing the cache.
+  **Zoom in / out / reset** (`Cmd+=`, `Cmd+-`,
   `Cmd+0`) zoom the shown page instead of the terminals' font, and `Cmd+F`
   (fixed) opens its find bar (§4).
 
@@ -164,7 +167,7 @@ page, to preview the worktree's dev server next to its terminals.
   their source and folder path.
 - Adding a favorite keeps the page's title, else its host; a URL is a favorite
   once per project (once for the shared ones).
-- The **start page** fills the page area while the pane has no page yet, or after
+- The **start page** fills the page area while the tab has no page yet, or after
   the toolbar's **Favorites** button; the native view is hidden meanwhile. Loading
   anything (tile, address, Dev server), navigating (back, forward, reload) or
   **Favorites** again leaves it.

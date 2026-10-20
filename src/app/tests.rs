@@ -2947,8 +2947,10 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         dark_theme: "tokyo".to_owned(),
         left_sidebar_width: 240.0,
         right_sidebar_width: 360.0,
+        browser_sidebar_width: 520.0,
         show_workspace: false,
         show_git: true,
+        show_browser: true,
         pull_default: PullDefault::Rebase,
         editor: Editor::default(),
         notify_on_agent_completion: true,
@@ -2998,6 +3000,8 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         "persisted closed state is restored"
     );
     assert!(app.sidebars.git, "persisted open state is restored");
+    assert!(app.sidebars.browser);
+    assert_eq!(app.browser_sidebar_width, 520.0);
     assert_eq!(app.pull_default, PullDefault::Rebase);
     assert_eq!(app.commit_message.agent, "Codex");
     assert_eq!(
@@ -5026,18 +5030,21 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
     assert!(app.diff.is_none() && app.viewer.is_none());
 }
 
-/// Browser panes of the split tree (browser.md §3, §4).
-mod browser_panes {
+/// The browser sidebar (browser.md §3, §4, §6).
+mod browser_sidebar {
     use super::*;
     use egui_kittest::kittest::Queryable;
 
-    fn page_harness(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
+    /// Frames run like the app's: keys, render, views.
+    fn harness(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 700.0))
+            .with_size(egui::vec2(1200.0, 700.0))
             .build_ui_state(
                 |ui, app: &mut HelmApp| {
                     let ctx = ui.ctx().clone();
+                    app.handle_keys(&ctx);
                     app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                    app.sync_browser_views(&ctx);
                 },
                 app,
             );
@@ -5051,86 +5058,34 @@ mod browser_panes {
         HelmApp::with_workspace(workspace)
     }
 
-    #[test]
-    fn a_fresh_shell_offers_the_browser() {
-        let dir = tempfile::tempdir().unwrap();
-        let harness = page_harness(app_in_repo(dir.path()));
-        harness.get_by_label("Open browser");
-    }
-
-    #[test]
-    fn a_pane_launched_for_a_command_offers_no_browser() {
-        let mut app = app_with(&["a"]);
-        let key = key_of(&app.workspace, 0, 0);
-        let pane =
-            Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
-        let mut panes = Panes::new();
-        panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
-        app.caches.panes.insert(key, panes);
-        let harness = page_harness(app);
-        assert!(harness.query_by_label("Open browser").is_none());
-    }
-
-    #[test]
-    fn typing_in_the_shell_dismisses_the_browser_offer() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut harness = page_harness(app_in_repo(dir.path()));
-        harness.event(egui::Event::Text("l".to_owned()));
-        harness.run();
-        assert!(harness.query_by_label("Open browser").is_none());
-    }
-
-    fn press_cmd_enter(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
-        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
-        harness.run();
-        harness.run();
-    }
-
-    #[test]
-    fn cmd_enter_on_a_fresh_shell_opens_the_browser() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = app_in_repo(dir.path());
-        let key = key_of(&app.workspace, 0, 0);
-        let mut harness = page_harness(app);
-        press_cmd_enter(&mut harness);
-        assert!(harness.state().caches.browsers[&key]
-            .pages
-            .contains_key(&PaneId(0)));
-    }
-
-    #[test]
-    fn cmd_enter_keeps_the_shell_once_the_offer_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = app_in_repo(dir.path());
-        let key = key_of(&app.workspace, 0, 0);
-        let mut harness = page_harness(app);
-        harness.event(egui::Event::Text("l".to_owned()));
-        harness.run();
-        press_cmd_enter(&mut harness);
-        assert!(harness.state().caches.panes[&key].contains_key(&PaneId(0)));
-    }
-
-    #[test]
-    fn clicking_browser_turns_the_pane_into_a_page_on_the_server_port() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_in_repo(dir.path());
+    fn with_dev_server(dir: &Path) -> HelmApp {
+        let mut app = app_in_repo(dir);
         app.prefs.set_project_settings(
-            dir.path().to_path_buf(),
+            dir.to_path_buf(),
             None,
             String::new(),
             "npm run dev -- --port $PORT".to_owned(),
         );
-        let key = key_of(&app.workspace, 0, 0);
-        let mut harness = page_harness(app);
-        harness.get_by_label("Open browser").click();
+        app
+    }
+
+    fn open_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
+        harness.get_by_label("Toggle browser sidebar").click();
         harness.run();
         harness.run();
-        let app = harness.state();
-        assert!(
-            !app.caches.panes[&key].contains_key(&PaneId(0)),
-            "shell closed"
-        );
-        assert!(app.caches.browsers[&key].pages.contains_key(&PaneId(0)));
+    }
+
+    fn browser_tabs(harness: &egui_kittest::Harness<'_, HelmApp>) -> usize {
+        let key = harness.state().active_repo_key().unwrap();
+        harness.state().caches.browsers[&key].tab_count()
+    }
+
+    #[test]
+    fn the_toggle_opens_the_browser_on_the_worktree_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        assert!(harness.state().sidebars.browser);
         harness.get(
             egui_kittest::kittest::By::new()
                 .role(egui::accesskit::Role::TextInput)
@@ -5141,16 +5096,8 @@ mod browser_panes {
     #[test]
     fn the_star_keeps_a_local_page_in_its_project() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = app_in_repo(dir.path());
-        app.prefs.set_project_settings(
-            dir.path().to_path_buf(),
-            None,
-            String::new(),
-            "npm run dev -- --port $PORT".to_owned(),
-        );
-        let mut harness = page_harness(app);
-        harness.get_by_label("Open browser").click();
-        harness.run();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
         harness.get_by_label("Add to favorites").click();
         harness.run();
         let app = harness.state();
@@ -5171,16 +5118,8 @@ mod browser_panes {
     #[test]
     fn the_favorites_button_shows_the_start_page_then_the_page_again() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = app_in_repo(dir.path());
-        app.prefs.set_project_settings(
-            dir.path().to_path_buf(),
-            None,
-            String::new(),
-            "npm run dev -- --port $PORT".to_owned(),
-        );
-        let mut harness = page_harness(app);
-        harness.get_by_label("Open browser").click();
-        harness.run();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
         assert!(harness.query_by_label("Import from Chrome").is_none());
         let favorites = || {
             egui_kittest::kittest::By::new()
@@ -5242,89 +5181,65 @@ mod browser_panes {
         );
     }
 
-    #[test]
-    fn cmd_w_closes_a_browser_pane() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_in_repo(dir.path());
-        app.workspace
-            .active_layout_mut()
-            .unwrap()
-            .split(Orient::Vertical);
-        let key = key_of(&app.workspace, 0, 0);
-        let mut harness = page_harness(app);
-        harness
-            .get_all_by_label("Open browser")
-            .next()
-            .unwrap()
-            .click();
+    /// `⌘⇧B` on a worktree without a server: the start page, its URL field
+    /// holding the keyboard.
+    fn browser_with_keyboard(dir: &Path) -> egui_kittest::Harness<'static, HelmApp> {
+        let mut harness = harness(app_in_repo(dir));
+        harness.key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::B,
+        );
         harness.run();
-        let focused = harness.state().workspace.active_layout().unwrap().focus();
-        assert!(harness.state().caches.browsers[&key]
-            .pages
-            .contains_key(&focused));
-        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
-        harness.run();
-        assert!(harness.state().caches.browsers[&key].pages.is_empty());
-        assert_eq!(harness.state().pane_count(), 1);
-    }
-
-    /// A browser pane beside a shell, holding the keyboard; frames run like the
-    /// app's: keys, render, views.
-    fn browser_harness(dir: &Path) -> (egui_kittest::Harness<'static, HelmApp>, PaneKey) {
-        let mut app = app_in_repo(dir);
-        app.workspace
-            .active_layout_mut()
-            .unwrap()
-            .split(Orient::Vertical);
-        let key = key_of(&app.workspace, 0, 0);
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 700.0))
-            .build_ui_state(
-                |ui, app: &mut HelmApp| {
-                    let ctx = ui.ctx().clone();
-                    app.handle_keys(&ctx);
-                    app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
-                    app.sync_browser_views(&ctx);
-                },
-                app,
-            );
         harness.run();
         harness
-            .get_all_by_label("Open browser")
-            .next()
-            .unwrap()
-            .click();
-        harness.run();
-        (harness, key)
-    }
-
-    fn browser_tabs(harness: &egui_kittest::Harness<'_, HelmApp>, key: &PaneKey) -> usize {
-        let pages = &harness.state().caches.browsers[key].pages;
-        pages.values().map(|browser| browser.tab_count()).sum()
     }
 
     #[test]
-    fn cmd_t_in_a_browser_pane_opens_a_tab_there_not_a_helm_tab() {
+    fn cmd_t_in_the_browser_opens_a_tab_there_not_a_helm_tab() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut harness, key) = browser_harness(dir.path());
+        let mut harness = browser_with_keyboard(dir.path());
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
         harness.run();
-        assert_eq!(browser_tabs(&harness, &key), 2);
+        assert_eq!(browser_tabs(&harness), 2);
         assert_eq!(harness.state().workspace.tab_titles().unwrap().len(), 1);
     }
 
     #[test]
-    fn cmd_w_closes_the_shown_tab_before_the_pane() {
+    fn closing_the_last_tab_drops_its_page_for_the_start_page() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut harness, key) = browser_harness(dir.path());
+        let mut harness = harness(with_dev_server(dir.path()));
+        let toggle = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        harness.key_press_modifiers(toggle, egui::Key::B);
+        harness.run();
+        harness.get_by_label("Close localhost:3000").click();
+        harness.run();
+        harness.key_press_modifiers(toggle, egui::Key::B);
+        harness.run();
+        harness.get_by_label("Close New tab");
+    }
+
+    #[test]
+    fn cmd_r_in_the_browser_reloads_the_page_not_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = browser_with_keyboard(dir.path());
+        harness.state_mut().sidebars.git = false;
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        harness.run();
+        assert!(!harness.state().sidebars.git);
+    }
+
+    #[test]
+    fn cmd_w_closes_the_shown_tab_then_the_sidebar_never_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = browser_with_keyboard(dir.path());
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
         harness.run();
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
         harness.run();
-        assert_eq!(browser_tabs(&harness, &key), 1);
+        assert_eq!(browser_tabs(&harness), 1);
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
         harness.run();
-        assert!(harness.state().caches.browsers[&key].pages.is_empty());
+        assert!(!harness.state().sidebars.browser);
         assert_eq!(harness.state().pane_count(), 1);
     }
 }

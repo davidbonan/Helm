@@ -164,7 +164,7 @@ use git_session::{
     RepoCaches, RepoKey,
 };
 
-mod browser_panes;
+mod browser_sidebar;
 mod command_palette;
 mod phone_access;
 mod render;
@@ -500,12 +500,13 @@ impl Page {
     }
 }
 
-/// The two sidebars are independent (⌘B / ⌘G can both be open) — grouped for
+/// The sidebars are independent (⌘B / ⌘G / ⌘⇧B can all be open) — grouped for
 /// persistence, **never** collapsed into one exclusive enum (M17-10).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SidebarVisibility {
     workspace: bool,
     git: bool,
+    browser: bool,
 }
 
 pub struct HelmApp {
@@ -582,6 +583,7 @@ pub struct HelmApp {
     installed_openers: Vec<WorkspaceOpener>,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
+    browser_sidebar_width: f32,
     tab_rename: Option<TabRename>,
     modal: Option<Modal>,
     /// Repo the open modal was armed on ([`Modal::targets_active_repo`]), stamped
@@ -744,7 +746,7 @@ pub struct HelmApp {
     /// Favorites and history of every browser pane (browser.md §7, §8); in
     /// memory unless loaded at boot.
     browser_library: crate::browser::library::LibraryStore,
-    browser_import: browser_panes::BrowserImport,
+    browser_import: browser_sidebar::BrowserImport,
     site_icons: site_icons::SiteIcons,
 }
 
@@ -823,6 +825,7 @@ impl HelmApp {
             sidebars: SidebarVisibility {
                 workspace: prefs.show_workspace,
                 git: prefs.show_git,
+                browser: prefs.show_browser,
             },
             page: Page::Main,
             preferences_section: PreferencesSection::default(),
@@ -841,6 +844,7 @@ impl HelmApp {
             installed_openers,
             left_sidebar_width: prefs.left_sidebar_width,
             right_sidebar_width: prefs.right_sidebar_width,
+            browser_sidebar_width: prefs.browser_sidebar_width,
             tab_rename: None,
             modal: None,
             modal_repo: None,
@@ -901,7 +905,7 @@ impl HelmApp {
             frame_log: crate::frame_log::FrameLog::from_env(),
             web_engine: None,
             browser_library: crate::browser::library::LibraryStore::default(),
-            browser_import: browser_panes::BrowserImport::default(),
+            browser_import: browser_sidebar::BrowserImport::default(),
             site_icons: site_icons::SiteIcons::default(),
         }
     }
@@ -1297,12 +1301,18 @@ impl HelmApp {
     fn persist_sidebar_widths_if_changed(&mut self, ctx: &egui::Context) {
         let left = crate::ui::left_sidebar_width(ctx).unwrap_or(self.left_sidebar_width);
         let right = crate::ui::right_sidebar_width(ctx).unwrap_or(self.right_sidebar_width);
-        if left != self.left_sidebar_width || right != self.right_sidebar_width {
+        let browser = crate::ui::browser_sidebar_width(ctx).unwrap_or(self.browser_sidebar_width);
+        if left != self.left_sidebar_width
+            || right != self.right_sidebar_width
+            || browser != self.browser_sidebar_width
+        {
             self.left_sidebar_width = left;
             self.right_sidebar_width = right;
+            self.browser_sidebar_width = browser;
             self.persist(|prefs| Prefs {
                 left_sidebar_width: left,
                 right_sidebar_width: right,
+                browser_sidebar_width: browser,
                 ..prefs
             });
         }
@@ -1343,6 +1353,7 @@ impl HelmApp {
             self.persist(move |prefs| Prefs {
                 show_workspace: sidebars.workspace,
                 show_git: sidebars.git,
+                show_browser: sidebars.browser,
                 ..prefs
             });
         }
@@ -4502,6 +4513,7 @@ impl eframe::App for HelmApp {
             self.toggle_preferences_page();
             ctx.request_repaint();
         }
+        self.focus_browser_if_opened(sidebars_were);
         self.flush_persistence(&ctx, sidebars_were);
         // Toasts (git.md §10): above everything, in all modes — a git action error
         // stays visible even outside the Graph view; a toast's action button is
