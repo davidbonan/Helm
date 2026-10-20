@@ -1,5 +1,17 @@
 # Release notes
 
+## 3.7.0
+
+- New **browser** sidebar on the right, one per worktree: toggle it from the
+  globe button or `⌘⇧B`. Pages open on the worktree's dev server.
+- Folder-style tabs tinted to the page, with a spinner while loading.
+- Favorites page with a sidebar: this project's favorites, starred, frequently
+  visited, and folders imported from Chrome or Safari (favorites, history,
+  cookies). Site icons on tiles and tabs.
+- More menu: find in page, zoom, tablet/mobile viewport, Web Inspector, open
+  in Chrome, copy URL.
+- With the browser focused, `⌘R` reloads the page (`⌘⇧R` bypasses the cache).
+
 ## 3.6.0
 
 - New **Files** tab in the right sidebar, beside Git: browse the worktree's
@@ -85,8 +97,3 @@
 - Choose which agents the phone can start (Claude Code, Codex and opencode
   by default) in Preferences › Agents › Phone launch.
 - Fixed a freeze when the last terminal closed while phone access was on.
-
-## 3.1.3
-
-- New `/` button next to the phone's quick keys: a menu that sends
-  Claude Code's `/clear`, `/compact` and `/model` in one tap.
