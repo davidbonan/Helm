@@ -9,7 +9,7 @@
 | [`testing.md`](testing.md) | Feedback loop: 3 test levels (unit, business e2e, UI e2e egui_kittest) |
 | [`terminal.md`](terminal.md) | PTY, emulation, splits, focus, scrollback, palette, per-repo tabs |
 | [`git.md`](git.md) | Status, hunk/line staging, diff, commit, branch, refresh |
-| [`files.md`](files.md) | Files tab of the right sidebar: worktree tree (ignored dimmed, git tint), read-only viewer |
+| [`files.md`](files.md) | Files sidebar, per worktree: worktree tree (ignored dimmed, git tint), read-only viewer |
 | [`browser.md`](browser.md) | Browser sidebar: per-worktree tabs, native WebKit view, toolbar, favorites, default server URL |
 | [`conflicts.md`](conflicts.md) | In-app 3-zone merge/rebase conflict editor: read stages, take checkboxes, resolve + Continue |
 | [`worktrees.md`](worktrees.md) | Worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree |
@@ -55,7 +55,10 @@ macOS). Tokens and components: [`design-system.md`](design-system.md).
 
 The right zone is part of the target layout, but it is **hidden initially**;
 it is revealed via the git sidebar action (shortcut in
-[`keybindings.md`](keybindings.md)) or the icon in the top right.
+[`keybindings.md`](keybindings.md)) or its icon in the title row. The right
+sidebars (files, browser, git) are rounded **blocks** inset from the window edges;
+their toggles sit in the terminals' title row, left of the first block
+([`design-system.md`](design-system.md) §4).
 
 ```
 ┌────────────┬───────────────────────────────┬──────────────────────────┐
@@ -84,7 +87,7 @@ center zone shows an empty state inviting **Open Folder…** (title + one-line
 tagline; both yield to the button + ⌘O hint when the central zone is narrower
 than the title); no terminal exists until a repository is added. The right
 sidebar, if shown, reads **No repository open** and the workspace
-launcher (top right) is hidden.
+launcher (title row) is hidden.
 
 ### 3.1 Left sidebar — navigation between repositories
 

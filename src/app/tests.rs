@@ -2948,6 +2948,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         left_sidebar_width: 240.0,
         right_sidebar_width: 360.0,
         browser_sidebar_width: 520.0,
+        files_sidebar_width: 300.0,
         show_workspace: false,
         show_git: true,
         browser_worktrees: std::collections::BTreeSet::from([PathBuf::from(
@@ -2976,7 +2977,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         pr_inbox_hidden: Default::default(),
         keybindings: std::collections::BTreeMap::new(),
         command_usage: Default::default(),
-        tab_states: std::collections::BTreeMap::new(),
+        files_sidebars: std::collections::BTreeMap::new(),
         project_settings: Vec::new(),
     };
 
@@ -3005,6 +3006,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
     assert!(app.sidebars.git, "persisted open state is restored");
     assert!(app.shows_browser(), "the active worktree's browser shows");
     assert_eq!(app.browser_sidebar_width, 520.0);
+    assert_eq!(app.files_sidebar_width, 300.0);
     assert_eq!(app.pull_default, PullDefault::Rebase);
     assert_eq!(app.commit_message.agent, "Codex");
     assert_eq!(
@@ -4412,12 +4414,9 @@ fn sidebar_page(names: &[&str]) -> egui_kittest::Harness<'static, HelmApp> {
         )
 }
 
-fn files_tab_toggled(harness: &egui_kittest::Harness<'_, HelmApp>) -> String {
-    use egui_kittest::kittest::{NodeT, Queryable};
-    format!(
-        "{:?}",
-        harness.get_by_label("Files").accesskit_node().toggled()
-    )
+fn files_sidebar_shown(harness: &egui_kittest::Harness<'_, HelmApp>) -> bool {
+    use egui_kittest::kittest::Queryable;
+    harness.query_by_label("Collapse all").is_some()
 }
 
 const CMD_SHIFT: egui::Modifiers = egui::Modifiers {
@@ -4428,33 +4427,26 @@ const CMD_SHIFT: egui::Modifiers = egui::Modifiers {
 };
 
 #[test]
-fn each_worktree_brings_back_its_own_sidebar_tab() {
+fn each_worktree_brings_back_its_own_files_sidebar() {
     use egui_kittest::kittest::Queryable;
     let mut harness = sidebar_page(&["a", "b"]);
     harness.run();
 
-    harness.get_by_label("Files").click();
+    harness.get_by_label("Toggle files sidebar").click();
     harness.run();
-    assert_eq!(files_tab_toggled(&harness), "Some(True)");
+    assert!(files_sidebar_shown(&harness));
     harness.state_mut().workspace.set_active(1);
     harness.run();
-    assert_eq!(
-        files_tab_toggled(&harness),
-        "Some(False)",
-        "b starts on Git"
-    );
+    assert!(!files_sidebar_shown(&harness), "b starts hidden");
     harness.state_mut().workspace.set_active(0);
     harness.run();
 
-    assert_eq!(files_tab_toggled(&harness), "Some(True)");
-    assert_eq!(
-        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
-        SidebarTab::Files
-    );
+    assert!(files_sidebar_shown(&harness));
+    assert!(harness.state().prefs.shows_files(Path::new("/tmp/a")));
 }
 
 #[test]
-fn cmd_shift_e_toggles_the_tab_reveals_the_sidebar_and_keeps_the_diff() {
+fn cmd_shift_e_toggles_the_files_sidebar_beside_the_hidden_git_one_and_keeps_the_diff() {
     let mut harness = sidebar_page(&["a"]);
     harness.state_mut().sidebars.git = false;
     let source = DiffSource::WorkingTree { staged: false };
@@ -4469,41 +4461,36 @@ fn cmd_shift_e_toggles_the_tab_reveals_the_sidebar_and_keeps_the_diff() {
     harness.run();
 
     let app = harness.state();
-    assert!(
-        app.sidebars.git,
-        "the hidden sidebar opens on the Files tab"
-    );
-    assert_eq!(app.shown_sidebar_tab(), Some(SidebarTab::Files));
-    assert!(app.diff.is_some(), "switching tab never closes the diff");
+    assert!(app.prefs.shows_files(Path::new("/tmp/a")));
+    assert!(!app.sidebars.git, "the git sidebar is left as it was");
+    assert!(app.diff.is_some(), "toggling never closes the diff");
     harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
     harness.run();
-    assert_eq!(harness.state().shown_sidebar_tab(), Some(SidebarTab::Git));
+    assert!(!harness.state().prefs.shows_files(Path::new("/tmp/a")));
 }
 
 #[test]
-fn graph_mode_has_no_tabs_and_ignores_cmd_shift_e() {
-    use egui_kittest::kittest::Queryable;
+fn the_files_sidebar_shows_in_graph_mode_and_hides_in_the_agents_mode() {
     let mut harness = sidebar_page(&["a"]);
     harness.state_mut().central_mode = CentralMode::Graph;
     harness.run_steps(2);
 
     harness.key_press_modifiers(CMD_SHIFT, egui::Key::E);
-    harness.run_steps(2);
+    harness.run_steps(10);
+    assert!(files_sidebar_shown(&harness));
+    harness.state_mut().central_mode = CentralMode::Agents;
+    harness.run_steps(10);
 
-    assert!(harness.query_by_label("Files").is_none());
-    assert_eq!(
-        harness.state().prefs.sidebar_tab(Path::new("/tmp/a")),
-        SidebarTab::Git
-    );
+    assert!(!files_sidebar_shown(&harness));
 }
 
 #[test]
-fn cmd_shift_e_without_a_repo_leaves_the_sidebar_hidden() {
+fn cmd_shift_e_without_a_repo_shows_nothing() {
     let mut app = HelmApp::default();
 
-    app.toggle_sidebar_tab();
+    app.toggle_files();
 
-    assert!(!app.sidebars.git);
+    assert!(app.prefs.files_sidebars.is_empty());
 }
 
 /// `src/main.rs` and `src/old/x.rs` in a fresh repo.
@@ -4516,16 +4503,15 @@ fn files_repo() -> tempfile::TempDir {
     tmp
 }
 
-/// The repo at `dir` open on its Files tab with that tree state, sidebar shown.
+/// The repo at `dir` with its files sidebar shown on that tree.
 fn app_on_files(dir: &Path, unfolded: &[&str], selected: &str) -> HelmApp {
     let mut workspace = Workspace::new();
     workspace.add(Repo::new(dir.to_path_buf()));
     let mut app = HelmApp::with_workspace(workspace);
-    app.sidebars.git = true;
-    app.prefs.edit_tab_state(dir, |state| {
-        state.tab = SidebarTab::Files;
-        state.unfolded = unfolded.iter().map(|folder| (*folder).to_owned()).collect();
-        state.selected = Some(selected.to_owned());
+    app.prefs.edit_files_sidebar(dir, |sidebar| {
+        sidebar.shown = true;
+        sidebar.unfolded = unfolded.iter().map(|folder| (*folder).to_owned()).collect();
+        sidebar.selected = Some(selected.to_owned());
     });
     app
 }
@@ -4539,7 +4525,7 @@ fn settle_tree(app: &mut HelmApp, ctx: &egui::Context, now: f64) {
             !git.worker
                 .has_pending(crate::git::worker::ResultKind::Folders)
         });
-        if idle && app.git_panel_state.file_tree.rows.is_some() {
+        if idle && app.file_tree.rows.is_some() {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -4548,12 +4534,7 @@ fn settle_tree(app: &mut HelmApp, ctx: &egui::Context, now: f64) {
 }
 
 fn tree_paths(app: &HelmApp) -> Vec<String> {
-    let rows = app
-        .git_panel_state
-        .file_tree
-        .rows
-        .as_deref()
-        .unwrap_or_default();
+    let rows = app.file_tree.rows.as_deref().unwrap_or_default();
     rows.iter()
         .filter_map(|row| row.entry())
         .map(|entry| entry.path.clone())
@@ -4581,7 +4562,7 @@ fn the_tree_relists_on_the_poll_and_forgets_the_paths_gone_from_disk() {
     settle_tree(&mut app, &ctx, 5.0);
 
     assert_eq!(tree_paths(&app), ["src", "src/main.rs", "src/new.rs"]);
-    let state = app.prefs.tab_state(tmp.path());
+    let state = app.prefs.files_sidebar(tmp.path());
     assert_eq!(
         state.unfolded,
         std::collections::BTreeSet::from(["src".to_owned()])
@@ -4590,11 +4571,10 @@ fn the_tree_relists_on_the_poll_and_forgets_the_paths_gone_from_disk() {
 }
 
 #[test]
-fn the_tree_is_listed_only_while_the_files_tab_shows() {
+fn the_tree_is_listed_only_while_the_files_sidebar_shows() {
     let tmp = files_repo();
     let mut app = app_on_files(tmp.path(), &[], "src");
-    app.prefs
-        .edit_tab_state(tmp.path(), |state| state.tab = SidebarTab::Git);
+    app.prefs.toggle_files(tmp.path());
     let ctx = egui::Context::default();
 
     app.sync_git_session(&ctx);
@@ -4604,7 +4584,7 @@ fn the_tree_is_listed_only_while_the_files_tab_shows() {
     assert!(!git
         .worker
         .has_pending(crate::git::worker::ResultKind::Folders));
-    assert!(app.git_panel_state.file_tree.rows.is_none());
+    assert!(app.file_tree.rows.is_none());
 }
 
 #[test]
@@ -4641,7 +4621,7 @@ fn a_worktree_reopens_its_tree_as_left_and_a_click_folds_it_in_the_prefs() {
     harness.step();
     harness.step();
 
-    let state = harness.state().prefs.tab_state(tmp.path());
+    let state = harness.state().prefs.files_sidebar(tmp.path());
     assert!(state.unfolded.is_empty());
     assert_eq!(state.selected.as_deref(), Some("src"));
     assert!(harness.query_by_label("src/main.rs").is_none());
@@ -4681,8 +4661,8 @@ fn shows(label: &'static str) -> impl Fn(&egui_kittest::Harness<'_, HelmApp>) ->
     move |harness| harness.query_by_label(label).is_some()
 }
 
-/// `files_repo` with `src/main.rs` reading `fn main() {}`, open on its Files tab
-/// with `src` unfolded and the tree's `src/main.rs` row on screen.
+/// `files_repo` with `src/main.rs` reading `fn main() {}`, its files sidebar
+/// shown with `src` unfolded and the tree's `src/main.rs` row on screen.
 fn viewer_page(tmp: &tempfile::TempDir) -> egui_kittest::Harness<'static, HelmApp> {
     std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
     let mut app = app_on_files(tmp.path(), &["src"], "src");
@@ -4742,8 +4722,8 @@ fn opening_a_diff_closes_the_viewer() {
     open_from_tree(&mut harness);
     let dir = tmp.path().to_path_buf();
     let app = harness.state_mut();
-    app.prefs
-        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.prefs.toggle_files(&dir);
+    app.sidebars.git = true;
     app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
         path: "src/main.rs".to_owned(),
         staged: false,
@@ -4994,8 +4974,8 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
 
     let dir = tmp.path().to_path_buf();
     let app = harness.state_mut();
-    app.prefs
-        .edit_tab_state(&dir, |state| state.tab = SidebarTab::Git);
+    app.prefs.toggle_files(&dir);
+    app.sidebars.git = true;
     app.git_panel_state.selected_file = Some(crate::ui::git_panel::GitFileSelection {
         path: "src/main.rs".to_owned(),
         staged: false,

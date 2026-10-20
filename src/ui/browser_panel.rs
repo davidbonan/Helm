@@ -19,6 +19,7 @@ use crate::ui::spinner::Spinner;
 use crate::ui::with_alpha;
 
 const BAR_HEIGHT: f32 = 40.0;
+const SIDEBAR_PAGE_RADIUS: f32 = crate::ui::sidebar_block::BLOCK_RADIUS as f32;
 const FOLDED_BAR_HEIGHT: f32 = 26.0;
 const FOLDED_TEXT_SIZE: f32 = 11.5;
 const FOLD_ANIMATION: f32 = 0.18;
@@ -204,6 +205,8 @@ pub struct BrowserPanelOutput {
     /// Where the page view goes, in egui points; `None` while the start page
     /// stands in its place.
     pub page_rect: Option<egui::Rect>,
+    /// Rounding of the page's bottom corners, those of the block it sits in.
+    pub page_bottom_radius: f32,
     /// The suggestions fall over the page: it shows frozen beneath them.
     pub page_overlaid: bool,
     /// A press in the toolbar off its fields (the page's own clicks are the
@@ -413,6 +416,7 @@ pub fn browser_panel(
         return BrowserPanelOutput {
             intents: Vec::new(),
             page_rect: Some(viewport),
+            page_bottom_radius: SIDEBAR_PAGE_RADIUS,
             page_overlaid: false,
             clicked: false,
             field_focused: false,
@@ -500,6 +504,7 @@ pub fn browser_panel(
     BrowserPanelOutput {
         intents,
         page_rect,
+        page_bottom_radius: SIDEBAR_PAGE_RADIUS,
         page_overlaid,
         clicked: pressed_in(ui, bar_rect) && !(address.pressed || find_pressed),
         field_focused: address.has_focus || find_focused,

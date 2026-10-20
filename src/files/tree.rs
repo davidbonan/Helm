@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::files::tab::TabState;
+use crate::files::sidebar::FilesSidebar;
 use crate::files::tint::{StatusTints, Tint};
 use crate::files::{child_path, folders_above, is_ignored, list_tree, parent_of, FileRow};
 
@@ -115,7 +115,7 @@ impl Listings {
 
     /// `state` without what the listings show is gone (files.md §6, §7): an
     /// unfolded folder drops out, the selection moves up to the nearest entry left.
-    pub fn prune(&self, state: &TabState) -> TabState {
+    pub fn prune(&self, state: &FilesSidebar) -> FilesSidebar {
         let unfolded = state
             .unfolded
             .iter()
@@ -131,8 +131,8 @@ impl Listings {
         {
             selected = Some(parent_of(path)).filter(|parent| !parent.is_empty());
         }
-        TabState {
-            tab: state.tab,
+        FilesSidebar {
+            shown: state.shown,
             unfolded,
             selected: selected.map(str::to_owned),
         }
@@ -323,7 +323,6 @@ fn activate(row: &EntryRow) -> TreeMove {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::files::tab::SidebarTab;
     use crate::git::status::{ChangeKind, FileEntry, RepoStatus};
 
     fn folder(path: &str, entries: &[(&str, EntryKind)]) -> ListedFolder {
@@ -376,9 +375,9 @@ mod tests {
             .collect()
     }
 
-    fn tab(unfolded: &[&str], selected: Option<&str>) -> TabState {
-        TabState {
-            tab: SidebarTab::Files,
+    fn sidebar(unfolded: &[&str], selected: Option<&str>) -> FilesSidebar {
+        FilesSidebar {
+            shown: true,
             unfolded: set(unfolded),
             selected: selected.map(str::to_owned),
         }
@@ -463,7 +462,7 @@ mod tests {
     fn prune_drops_unfolded_folders_gone_or_now_files_and_keeps_the_unknown() {
         let mut listings = sample();
         listings.store(vec![folder("src", &[("ui", EntryKind::File)])]);
-        let state = tab(&["src", "src/ui", "src/old", "docs", "docs/api"], None);
+        let state = sidebar(&["src", "src/ui", "src/old", "docs", "docs/api"], None);
 
         let pruned = listings.prune(&state);
 
@@ -478,9 +477,9 @@ mod tests {
             folder("src/ui", &[]),
         ]);
 
-        let file_gone = listings.prune(&tab(&[], Some("src/ui/mod.rs")));
-        let top_gone = listings.prune(&tab(&[], Some("old.txt")));
-        let unknown = listings.prune(&tab(&[], Some("docs/a.md")));
+        let file_gone = listings.prune(&sidebar(&[], Some("src/ui/mod.rs")));
+        let top_gone = listings.prune(&sidebar(&[], Some("old.txt")));
+        let unknown = listings.prune(&sidebar(&[], Some("docs/a.md")));
 
         assert_eq!(file_gone.selected.as_deref(), Some("src"));
         assert_eq!(top_gone.selected, None);

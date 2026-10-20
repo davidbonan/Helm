@@ -176,6 +176,7 @@ pub(crate) fn browser_pip(
         panel: BrowserPanelOutput {
             intents,
             page_rect,
+            page_bottom_radius: 0.0,
             page_overlaid: false,
             clicked,
             field_focused: false,

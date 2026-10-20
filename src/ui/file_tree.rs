@@ -1,12 +1,12 @@
-//! The Files tab's tree (specs/files.md §3, §5): one row per entry on show, keyboard
-//! moves once a row was clicked.
+//! The files sidebar (specs/files.md §2, §3, §5): its header, then one row per
+//! entry on show, keyboard moves once a row was clicked.
 
 use crate::files::file_type::file_type;
 use crate::files::tint::Tint;
 use crate::files::tree::{key_move, EntryRow, RowKind, TreeKey, TreeMove, TreeRow};
 use crate::theme::Palette;
 use crate::ui::file_list;
-use crate::ui::git_panel::GitIntent;
+use crate::ui::git_panel::{self, GitIntent};
 use crate::ui::FileIcon;
 
 const ROW_HEIGHT: f32 = 26.0;
@@ -32,12 +32,38 @@ pub struct FileTreeState {
     pub nav_armed: bool,
 }
 
-/// The Files tab's body; returns what this frame's clicks and keys ask for.
-pub fn file_tree(
+/// The whole sidebar: header with Collapse all, then the tree taking the rest of
+/// its height. Returns what this frame's clicks and keys ask for.
+pub fn files_sidebar(
     ui: &mut egui::Ui,
     palette: &Palette,
     state: &mut FileTreeState,
 ) -> Vec<GitIntent> {
+    let mut intents = Vec::new();
+    let height = git_panel::remaining_height(ui);
+    git_panel::card(ui, height, |ui| {
+        git_panel::band(ui, git_panel::HEADER_BAND_H, |ui| {
+            git_panel::sidebar_title(ui, palette, lucide_icons::Icon::Folder, "Files");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if git_panel::icon_button(
+                    ui,
+                    palette,
+                    palette.accent,
+                    true,
+                    "Collapse all",
+                    lucide_icons::Icon::ChevronsDownUp,
+                ) {
+                    intents.push(GitIntent::CollapseAllFolders);
+                }
+            });
+        });
+        git_panel::card_divider(ui, palette);
+        intents.extend(file_tree(ui, palette, state));
+    });
+    intents
+}
+
+fn file_tree(ui: &mut egui::Ui, palette: &Palette, state: &mut FileTreeState) -> Vec<GitIntent> {
     let mut intents = Vec::new();
     let Some(rows) = state.rows.as_deref() else {
         return intents;

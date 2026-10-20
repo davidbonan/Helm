@@ -6,7 +6,7 @@ use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPa
 use crate::agent_watch::AgentBadge;
 use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
 use crate::ai::AiRunner;
-use crate::files::tab::{SidebarTab, TabEdit, TabState};
+use crate::files::sidebar::{FilesSidebar, TreeEdit};
 use crate::git::branch::Branch;
 use crate::git::commit_detail::CommitDetail;
 use crate::git::diff::FileDiff;
@@ -35,6 +35,7 @@ use crate::ui::conflict_view::{
 };
 use crate::ui::diff_view::{diff_view, DiffViewState};
 use crate::ui::feedback_modal::{feedback_modal, FeedbackPage};
+use crate::ui::file_tree::FileTreeState;
 use crate::ui::file_viewer::{file_viewer, FileViewerState, ViewedFile, ViewerIntents};
 use crate::ui::git_panel::{abort_op_modal, discard_hunk_modal, GitIntent, GitPanelState};
 use crate::ui::graph_toolbar::{
@@ -150,7 +151,7 @@ fn group_probe_due(focus_regained: bool, membership_changed: bool, age_secs: f64
 mod keys;
 use keys::route_wall_keys;
 use keys::{
-    action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command, tab_edit,
+    action_pressed, command_palette_pressed, open_agents_pressed, overlay_or_command, tree_edit,
 };
 pub use keys::{
     focus_zone, route_cycle_repo_keys, route_layout_keys, route_select_repo_keys, route_tab_keys,
@@ -502,7 +503,7 @@ impl Page {
 
 /// The sidebars are independent (⌘B / ⌘G can both be open) — grouped for
 /// persistence, **never** collapsed into one exclusive enum (M17-10). The browser
-/// sidebar shows per worktree: `Prefs::browser_worktrees`.
+/// and files sidebars show per worktree: `Prefs::{browser_worktrees, files_sidebars}`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SidebarVisibility {
     workspace: bool,
@@ -566,6 +567,9 @@ pub struct HelmApp {
     workspace: Workspace,
     git: Option<GitSession>,
     git_panel_state: GitPanelState,
+    /// The files sidebar's tree (files.md §3), projected each frame from the
+    /// active worktree's listings.
+    file_tree: FileTreeState,
     diff: Option<DiffState>,
     viewer: Option<FileViewer>,
     /// Interactive-rebase page (git.md §9), replacing the graph while open:
@@ -584,6 +588,7 @@ pub struct HelmApp {
     left_sidebar_width: f32,
     right_sidebar_width: f32,
     browser_sidebar_width: f32,
+    files_sidebar_width: f32,
     tab_rename: Option<TabRename>,
     modal: Option<Modal>,
     /// Repo the open modal was armed on ([`Modal::targets_active_repo`]), stamped
@@ -835,6 +840,7 @@ impl HelmApp {
                 unstaged_share: prefs.git_unstaged_share,
                 ..GitPanelState::default()
             },
+            file_tree: FileTreeState::default(),
             diff: None,
             viewer: None,
             rebase_page: None,
@@ -844,6 +850,7 @@ impl HelmApp {
             left_sidebar_width: prefs.left_sidebar_width,
             right_sidebar_width: prefs.right_sidebar_width,
             browser_sidebar_width: prefs.browser_sidebar_width,
+            files_sidebar_width: prefs.files_sidebar_width,
             tab_rename: None,
             modal: None,
             modal_repo: None,
@@ -1301,17 +1308,21 @@ impl HelmApp {
         let left = crate::ui::left_sidebar_width(ctx).unwrap_or(self.left_sidebar_width);
         let right = crate::ui::right_sidebar_width(ctx).unwrap_or(self.right_sidebar_width);
         let browser = crate::ui::browser_sidebar_width(ctx).unwrap_or(self.browser_sidebar_width);
+        let files = crate::ui::files_sidebar_width(ctx).unwrap_or(self.files_sidebar_width);
         if left != self.left_sidebar_width
             || right != self.right_sidebar_width
             || browser != self.browser_sidebar_width
+            || files != self.files_sidebar_width
         {
             self.left_sidebar_width = left;
             self.right_sidebar_width = right;
             self.browser_sidebar_width = browser;
+            self.files_sidebar_width = files;
             self.persist(|prefs| Prefs {
                 left_sidebar_width: left,
                 right_sidebar_width: right,
                 browser_sidebar_width: browser,
+                files_sidebar_width: files,
                 ..prefs
             });
         }
@@ -1802,56 +1813,55 @@ impl HelmApp {
         }
     }
 
-    /// The active worktree's right sidebar tab, shown in Terminal mode only (files.md §2).
-    fn shown_sidebar_tab(&self) -> Option<SidebarTab> {
-        if self.central_mode != CentralMode::Terminal {
-            return None;
-        }
-        let repo = self.workspace.active_repo()?;
-        Some(self.prefs.sidebar_tab(&repo.path))
-    }
-
-    /// The active worktree's sidebar state while its Files tab is on screen.
-    fn shown_files_state(&self) -> Option<TabState> {
-        let shown = self.sidebars.git && self.shown_sidebar_tab() == Some(SidebarTab::Files);
-        let repo = self.workspace.active_repo().filter(|_| shown)?;
-        Some(self.prefs.tab_state(&repo.path))
-    }
-
-    /// The Files tab's tree (files.md §3, §6, §7): lists the folders on show,
-    /// forgets the paths gone from disk, hands the rows to the sidebar.
-    pub(super) fn sync_file_tree(&mut self, now: f64) {
-        let (Some(state), Some(git)) = (self.shown_files_state(), self.git.as_mut()) else {
-            self.git_panel_state.file_tree.rows = None;
-            return;
-        };
-        let tree = &mut self.git_panel_state.file_tree;
-        git.poll_folders(now, &state.unfolded);
-        let pruned = git.listings.prune(&state);
-        tree.rows = git.listings.rows(&pruned.unfolded, &git.tints);
-        tree.selected = pruned.selected.clone();
-        if pruned != state {
-            self.edit_active_tab_state(|tab| *tab = pruned);
-        }
-    }
-
-    fn edit_active_tab_state(&mut self, edit: impl FnOnce(&mut TabState)) {
+    /// `⌘⇧E` or the folder toggle, on the active worktree only (files.md §2).
+    pub(super) fn toggle_files(&mut self) {
         let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
             return;
         };
         self.persist(|mut prefs| {
-            prefs.edit_tab_state(&worktree, edit);
+            prefs.toggle_files(&worktree);
             prefs
         });
     }
 
-    /// `Cmd+Shift+E` (keybindings.md §1): Git ⇄ Files, revealing the sidebar.
-    fn toggle_sidebar_tab(&mut self) {
-        let Some(tab) = self.shown_sidebar_tab() else {
+    /// The active worktree's files sidebar while on screen: hidden with the git
+    /// sidebar in the Agents and PR modes (files.md §2).
+    fn shown_files_sidebar(&self) -> Option<FilesSidebar> {
+        if matches!(
+            self.central_mode,
+            CentralMode::Agents | CentralMode::PullRequests
+        ) {
+            return None;
+        }
+        let repo = self.workspace.active_repo()?;
+        let sidebar = self.prefs.files_sidebar(&repo.path);
+        sidebar.shown.then_some(sidebar)
+    }
+
+    /// The files sidebar's tree (files.md §3, §6, §7): lists the folders on show,
+    /// forgets the paths gone from disk, hands the rows to the sidebar.
+    pub(super) fn sync_file_tree(&mut self, now: f64) {
+        let (Some(sidebar), Some(git)) = (self.shown_files_sidebar(), self.git.as_mut()) else {
+            self.file_tree.rows = None;
             return;
         };
-        self.edit_active_tab_state(|state| state.tab = tab.other());
-        self.sidebars.git = true;
+        git.poll_folders(now, &sidebar.unfolded);
+        let pruned = git.listings.prune(&sidebar);
+        self.file_tree.rows = git.listings.rows(&pruned.unfolded, &git.tints);
+        self.file_tree.selected = pruned.selected.clone();
+        if pruned != sidebar {
+            self.edit_active_files_sidebar(|edited| *edited = pruned);
+        }
+    }
+
+    fn edit_active_files_sidebar(&mut self, edit: impl FnOnce(&mut FilesSidebar)) {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        self.persist(|mut prefs| {
+            prefs.edit_files_sidebar(&worktree, edit);
+            prefs
+        });
     }
 
     fn active_repo_key(&self) -> Option<RepoKey> {

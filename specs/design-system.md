@@ -95,6 +95,7 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
 | Default window size              | 1280 × 800 (min 900 × 600) |
 | Left sidebar width               | ~330 (≈21 % window) → **helm default: 280** (min 200), resizable |
 | Right sidebar width              | **default 320** (min 260), resizable |
+| Right sidebar block              | gap **8** to the window edges and between blocks, radius **12** |
 | Row height (nav/chat)            | ~26–28 |
 | Sidebar horizontal padding       | ~12–14 |
 | Inter-section spacing            | ~16–20 |
@@ -210,9 +211,28 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   error banner below the toolbar (`text.primary` on `bg.surface`,
   `border.subtle` border, close cross). ([`git.md`](git.md) §10.)
   *Proposed, to be validated on prototype.*
-- **Git sidebar cards** (post-MVP) — the right sidebar (status mode)
-  stacks **two cards with no border or background of their own** on `bg.canvas` (the
-  sidebar edges form the frame; gap ~10pt): the **main card** (header
+- **Right sidebar block** — each right sidebar (files, browser, git) is a
+  **rounded block** (`ui::sidebar_block`): `bg.canvas` fill, 1px `border.subtle`
+  outline, radius 12, soft drop shadow, inset **8pt** from the window's top, right
+  and bottom edges and from the next block (the terminals' edge needs none). It
+  reaches the **top of the window**: its header shares the **title line** with the
+  terminals' switch and the title-row actions (all centered 26pt from the top).
+  Content painted square to the edges (browser toolbar, page) is rounded off; the
+  native page view clips its bottom corners to the same radius. Terminals keep
+  ≥ 280pt beside the blocks (each block's max width leaves the others' minimum).
+- **Title-row actions** — workspace launcher + Files / Browser / Git toggles (Folder /
+  Globe / GitBranch icons, accent while open), in the
+  terminals' title row, right-aligned **8pt left of the first block** (window's right
+  edge when no block is shown). The **Terminal ⇄ Git switch** keeps clear of them:
+  centered when it fits, shifted left otherwise, and **icons only** (label as
+  tooltip, no `⇧⌘G` badge) when its labels would run under them.
+- **Workspace sidebar footer** — bottom row of the left sidebar, under a 1px
+  `border.subtle` rule spanning the sidebar edge to edge (~44pt): **Phone** entry on
+  the left (only while phone access is on — Smartphone icon + status dot + label,
+  [`remote.md`](remote.md)), **Send feedback** (Bug) and **Preferences** (gear, `,`
+  badge under it while Cmd is held) icon buttons on the right. Hidden with the sidebar.
+- **Git sidebar cards** (post-MVP) — inside its block, the git sidebar (status mode)
+  stacks **two cards with no border or background of their own** (gap ~10pt): the **main card** (header
   "Git" + branch chip + icons, summary bar, Unstaged/Staged sections in
   **two fixed-height blocks** — same height at 0 entries, internal scroll) and the
   **commit card** detached at the bottom. Header and summary are separated by 1px
@@ -316,7 +336,7 @@ the aesthetic onto the 3 zones of [`overview.md`](overview.md) §3:
   (§4), split separators in 1px `border.subtle`. The **terminal rendering** keeps
   its own palette (background/ANSI), independent of the chrome's light/dark toggle;
   palette defined in [`terminal.md`](terminal.md) §9.
-- **Right sidebar (git, two cards)**: on `bg.canvas`, two cards
+- **Right sidebar (git, two cards)**: inside its block (§4), two cards
   **without border** (§4). **Main card**: header = git-branch icon +
   "Git" + branch chip (mono, §2) + **Discard all** / **Refresh** icons;
   summary bar = "N files changed" + totals **+A** / **−D** (`git.added` /

@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::files::tab::SidebarTab;
 use crate::git::edit::EditRequest;
 use crate::git::file_tree::{self, TreeRow};
 use crate::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
@@ -11,7 +10,6 @@ use crate::ui::file_list::{
     self, file_menu_entries, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput,
     FileViewMode, PATH_SIZE, ROW_HEIGHT,
 };
-use crate::ui::file_tree::FileTreeState;
 use crate::ui::spinner::Spinner;
 use crate::ui::SECTION_TOP_MARGIN;
 
@@ -78,9 +76,7 @@ pub enum GitIntent {
     /// again with `force` when the user answers **Overwrite** to a divergence
     /// notice. Self-contained — the intent outlives the editor that produced it.
     FlushEdit(EditRequest),
-    /// Git · Files tab click (files.md §2): the app keeps the tab per worktree.
-    SelectTab(SidebarTab),
-    /// Files header's Collapse all (files.md §2): folds the whole tree of the worktree.
+    /// Files sidebar's Collapse all (files.md §2): folds the whole tree of the worktree.
     CollapseAllFolders,
     /// Tree row selected by a click or a key (files.md §5), kept per worktree.
     SelectEntry(String),
@@ -167,11 +163,6 @@ pub struct GitPanelState {
     /// the staging / discard / commit actions are greyed out, since the worker
     /// refuses every mutation meanwhile (git.md §9).
     pub lock_busy: bool,
-    /// Header tab (files.md §2) — per-frame projection of the active worktree's tab
-    /// written by the app; `None` in Graph mode: no tab strip, the Git layout.
-    pub sidebar_tab: Option<SidebarTab>,
-    /// The Files tab's tree (files.md §3).
-    pub file_tree: FileTreeState,
 }
 
 impl GitPanelState {
@@ -243,9 +234,7 @@ const ICON_GLYPH: f32 = 15.0;
 // inner bands separated by full-width rules. Content aligned on the sidebar
 // margin, like the commit detail.
 const CARD_GAP: f32 = 10.0;
-const HEADER_BAND_H: f32 = 36.0;
-const TAB_PAD_X: f32 = 4.0;
-const TAB_UNDERLINE_H: f32 = 2.0;
+pub(crate) const HEADER_BAND_H: f32 = 36.0;
 const SUMMARY_BAND_H: f32 = 34.0;
 const SUMMARY_SIZE: f32 = 13.0;
 const SECTION_HEADER_H: f32 = 30.0;
@@ -313,7 +302,6 @@ pub fn git_panel(
     file_menu: &mut FileMenuOutput,
     view: FileViewMode,
 ) {
-    ui.add_space(4.0);
     // A merge / rebase / cherry-pick / revert in progress takes over the panel
     // with the dedicated conflict view (conflicts.md §2); the normal status +
     // commit layout returns once the op ends. The first snapshot is awaited first
@@ -326,18 +314,6 @@ pub fn git_panel(
     }
 
     let total_h = remaining_height(ui);
-    if state.sidebar_tab == Some(SidebarTab::Files) {
-        card(ui, total_h, |ui| {
-            header_band(ui, palette, branch, status, state, intents, view);
-            card_divider(ui, palette);
-            intents.extend(crate::ui::file_tree::file_tree(
-                ui,
-                palette,
-                &mut state.file_tree,
-            ));
-        });
-        return;
-    }
     let files_card_h = (total_h - COMMIT_CARD_H - CARD_GAP).max(0.0);
     card(ui, files_card_h, |ui| {
         header_band(ui, palette, branch, status, state, intents, view);
@@ -817,7 +793,7 @@ pub(crate) fn no_repo(ui: &mut egui::Ui, palette: &Palette, state: &mut GitPanel
 }
 
 /// Fixed-height zone, borderless (the sidebar edges form the frame).
-fn card(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn card(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
     let size = egui::vec2(ui.available_width(), height.max(0.0));
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let mut child = ui.new_child(
@@ -830,7 +806,7 @@ fn card(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Full-width horizontal band, content vertically centered.
-fn band(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn band(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
     let size = egui::vec2(ui.available_width(), height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let mut child = ui.new_child(
@@ -841,7 +817,7 @@ fn band(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
     contents(&mut child);
 }
 
-fn card_divider(ui: &mut egui::Ui, palette: &Palette) {
+pub(crate) fn card_divider(ui: &mut egui::Ui, palette: &Palette) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
     ui.painter().hline(
@@ -865,26 +841,13 @@ fn header_band(
         .iter()
         .any(|e| e.kind != ChangeKind::Conflicted);
     band(ui, HEADER_BAND_H, |ui| {
-        match state.sidebar_tab {
-            Some(active) => {
-                if let Some(tab) = tab_strip(ui, palette, active) {
-                    intents.push(GitIntent::SelectTab(tab));
-                }
-            }
-            None => {
-                git_title(ui, palette);
-                ui.add_space(4.0);
-                // Reserve the right-side actions (view toggle + refresh + discard, plus
-                // the implicit item_spacing between them) so a long branch name truncates
-                // instead of covering them.
-                let actions_w = 3.0 * ICON_HIT + 4.0 + ui.spacing().item_spacing.x + ACTION_GAP;
-                branch_chip(ui, palette, branch, ui.available_width() - actions_w);
-            }
-        }
-        if state.sidebar_tab == Some(SidebarTab::Files) {
-            files_header_actions(ui, palette, intents);
-            return;
-        }
+        sidebar_title(ui, palette, lucide_icons::Icon::GitBranch, "Git");
+        ui.add_space(4.0);
+        // Reserve the right-side actions (view toggle + refresh + discard, plus
+        // the implicit item_spacing between them) so a long branch name truncates
+        // instead of covering them.
+        let actions_w = 3.0 * ICON_HIT + 4.0 + ui.spacing().item_spacing.x + ACTION_GAP;
+        branch_chip(ui, palette, branch, ui.available_width() - actions_w);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if state.mutation_busy {
                 // Same footprint as the icon button so the band doesn't shift;
@@ -920,97 +883,28 @@ fn header_band(
     });
 }
 
-fn git_title(ui: &mut egui::Ui, palette: &Palette) {
+/// A sidebar card's title: its icon, then its name.
+pub(crate) fn sidebar_title(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: lucide_icons::Icon,
+    label: &str,
+) {
     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
     crate::ui::paint_icon(
         ui.painter(),
         icon_rect.center(),
         ICON_GLYPH,
-        lucide_icons::Icon::GitBranch,
+        icon,
         palette.text_primary,
     );
     ui.add_space(2.0);
     ui.label(
-        egui::RichText::new("Git")
+        egui::RichText::new(label)
             .size(TITLE_SIZE)
             .strong()
             .color(palette.text_primary),
     );
-}
-
-/// Git · Files strip (files.md §2): returns the tab clicked this frame.
-fn tab_strip(ui: &mut egui::Ui, palette: &Palette, active: SidebarTab) -> Option<SidebarTab> {
-    let mut clicked = None;
-    for tab in [SidebarTab::Git, SidebarTab::Files] {
-        if tab_button(ui, palette, tab, tab == active) {
-            clicked = Some(tab);
-        }
-    }
-    clicked
-}
-
-/// Icon + label, underlined in `accent` when active.
-fn tab_button(ui: &mut egui::Ui, palette: &Palette, tab: SidebarTab, active: bool) -> bool {
-    let (label, icon) = match tab {
-        SidebarTab::Git => ("Git", lucide_icons::Icon::GitBranch),
-        SidebarTab::Files => ("Files", lucide_icons::Icon::Folder),
-    };
-    // Rests on the card divider laid out right below the band.
-    let underline_y = ui.max_rect().bottom() + ui.spacing().item_spacing.y - TAB_UNDERLINE_H / 2.0;
-    let response = ui
-        .scope_builder(
-            egui::UiBuilder::new()
-                .id_salt(("sidebar_tab", tab))
-                .sense(egui::Sense::click()),
-            |ui| {
-                let color = if active || ui.response().hovered() {
-                    palette.text_primary
-                } else {
-                    palette.text_secondary
-                };
-                ui.add_space(TAB_PAD_X);
-                let (icon_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                crate::ui::paint_icon(ui.painter(), icon_rect.center(), ICON_GLYPH, icon, color);
-                ui.add_space(2.0);
-                let galley = ui.painter().layout_no_wrap(
-                    label.to_owned(),
-                    egui::FontId::proportional(TITLE_SIZE),
-                    color,
-                );
-                let (text_rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-                ui.painter().galley(text_rect.min, galley, color);
-                ui.add_space(TAB_PAD_X);
-            },
-        )
-        .response
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if active {
-        ui.painter().hline(
-            response.rect.x_range(),
-            underline_y,
-            egui::Stroke::new(TAB_UNDERLINE_H, palette.accent),
-        );
-    }
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
-    response.clicked()
-}
-
-/// Files tab header (files.md §2): Collapse all alone on the right.
-fn files_header_actions(ui: &mut egui::Ui, palette: &Palette, intents: &mut Vec<GitIntent>) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if icon_button(
-            ui,
-            palette,
-            palette.accent,
-            true,
-            "Collapse all",
-            lucide_icons::Icon::ChevronsDownUp,
-        ) {
-            intents.push(GitIntent::CollapseAllFolders);
-        }
-    });
 }
 
 fn summary_band(ui: &mut egui::Ui, palette: &Palette, status: &RepoStatus) {
@@ -1393,7 +1287,7 @@ fn leaf_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, name)| name)
 }
 
-fn remaining_height(ui: &egui::Ui) -> f32 {
+pub(crate) fn remaining_height(ui: &egui::Ui) -> f32 {
     let bottom = ui
         .clip_rect()
         .bottom()
@@ -2400,7 +2294,7 @@ fn refresh_spinner(ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-fn icon_button(
+pub(crate) fn icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     intent: egui::Color32,

@@ -37,10 +37,11 @@ terminals, to preview the worktree's dev server next to them.
 - A **globe toggle** in the title bar, left of the git sidebar's toggle (accent
   while shown), and **Toggle browser sidebar** (`⌘⇧B`) show or hide the browser
   sidebar. Both can stay open with the git sidebar: the browser sits between the
-  terminals and it. Hidden, with the git sidebar, in the Agents and PR modes, and
+  terminals and it, the files sidebar ([`files.md`](files.md) §2) between the
+  terminals and the browser. Hidden, with the git sidebar, in the Agents and PR modes, and
   while no worktree is active.
 - Resizable by its left edge, 320 pt at least, the terminals keeping 240 pt; its
-  width is kept across launches (560 pt by default).
+  width is kept across launches (a 560 pt block by default).
 - Each **worktree has its own browser** (tabs, pages) and **its own toggle**: the
   toggle and `⌘⇧B` show or hide the active worktree's sidebar only, kept per
   worktree across launches. The first time its sidebar shows, it opens on the

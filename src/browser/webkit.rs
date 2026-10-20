@@ -155,6 +155,8 @@ struct WebKitView {
     icon: Rc<RefCell<Option<(String, String)>>>,
     /// Hidden while it had focus: focus comes back with it.
     refocus_on_show: bool,
+    /// The bottom corners' rounding last given to the frame's layer.
+    bottom_radius: f64,
     /// The snapshot asked last, once WebKit hands it.
     snapshot: Rc<RefCell<Option<PageSnapshot>>>,
     /// Counts the snapshots asked: an answer to an older one is dropped.
@@ -194,6 +196,7 @@ impl WebKitView {
                 NSAutoresizingMaskOptions::NSViewWidthSizable
                     | NSAutoresizingMaskOptions::NSViewHeightSizable,
             );
+            frame.setWantsLayer(true);
             frame.addSubview(&view);
             frame.setHidden(true);
             host.addSubview(&frame);
@@ -207,6 +210,7 @@ impl WebKitView {
             pointer,
             icon,
             refocus_on_show: false,
+            bottom_radius: 0.0,
             snapshot: Rc::default(),
             snapshot_asks: Rc::default(),
             find_result: Rc::default(),
@@ -235,6 +239,23 @@ impl WebKitView {
     }
 }
 
+/// `kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner`: the bottom corners of an
+/// unflipped view's layer.
+const BOTTOM_CORNERS: usize = 1 | 2;
+
+/// Clips the page to the rounded bottom corners of the block it sits in.
+fn round_bottom_corners(frame: &NSView, radius: f64) {
+    let layer: Option<Retained<AnyObject>> = unsafe { msg_send_id![frame, layer] };
+    let Some(layer) = layer else {
+        return;
+    };
+    unsafe {
+        let _: () = msg_send![&*layer, setCornerRadius: radius];
+        let _: () = msg_send![&*layer, setMaskedCorners: BOTTOM_CORNERS];
+        let _: () = msg_send![&*layer, setMasksToBounds: radius > 0.0];
+    }
+}
+
 impl WebView for WebKitView {
     fn place(&mut self, rect: Option<ViewRect>) {
         let Some(rect) = rect else {
@@ -255,6 +276,10 @@ impl WebView for WebKitView {
             if self.frame.frame() != area {
                 self.frame.setFrame(area);
             }
+        }
+        if self.bottom_radius != rect.bottom_radius {
+            round_bottom_corners(&self.frame, rect.bottom_radius);
+            self.bottom_radius = rect.bottom_radius;
         }
         if self.is_hidden() {
             self.frame.setHidden(false);

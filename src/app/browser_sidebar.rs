@@ -39,6 +39,8 @@ pub(crate) struct WorktreeBrowser {
     takes_keyboard: bool,
     /// The page area drawn this frame, in egui points.
     placed: Option<egui::Rect>,
+    /// Rounding of the drawn page area's bottom corners.
+    placed_bottom_radius: f32,
     /// The panel's own suggestions fell over the page this frame.
     overlaid: bool,
     /// A field of the panel held the keyboard when last drawn.
@@ -179,7 +181,9 @@ impl BrowserTab {
         if let Some(snapshot) = snapshot {
             self.state.backdrop = Some(backdrop_texture(ctx, snapshot));
         }
-        let rect = sync.placed.map(|rect| view_rect(rect, ctx.zoom_factor()));
+        let rect = sync
+            .placed
+            .map(|rect| view_rect(rect, sync.bottom_radius, ctx.zoom_factor()));
         match self
             .freeze
             .step(sync.cover, snapshot_in, std::time::Instant::now())
@@ -213,6 +217,7 @@ impl BrowserTab {
 struct ViewSync<'a> {
     cover: Cover,
     placed: Option<egui::Rect>,
+    bottom_radius: f32,
     /// A first load takes the keyboard.
     focused: bool,
     ctx: &'a egui::Context,
@@ -226,6 +231,7 @@ impl WorktreeBrowser {
             active: 0,
             takes_keyboard: true,
             placed: None,
+            placed_bottom_radius: 0.0,
             overlaid: false,
             field_focused: false,
             drawn: false,
@@ -372,6 +378,7 @@ impl WorktreeBrowser {
             let sync = ViewSync {
                 cover: if shown { cover } else { Cover::Away },
                 placed: placed.filter(|_| shown),
+                bottom_radius: self.placed_bottom_radius,
                 focused: shown && self.takes_keyboard,
                 ctx,
             };
@@ -391,13 +398,14 @@ fn backdrop_texture(ctx: &egui::Context, snapshot: PageSnapshot) -> egui::Textur
     ctx.load_texture("browser-snapshot", image, egui::TextureOptions::LINEAR)
 }
 
-fn view_rect(rect: egui::Rect, zoom: f32) -> ViewRect {
+fn view_rect(rect: egui::Rect, bottom_radius: f32, zoom: f32) -> ViewRect {
     let zoom = f64::from(zoom);
     ViewRect {
         x: f64::from(rect.left()) * zoom,
         y: f64::from(rect.top()) * zoom,
         width: f64::from(rect.width()) * zoom,
         height: f64::from(rect.height()) * zoom,
+        bottom_radius: f64::from(bottom_radius) * zoom,
     }
 }
 
@@ -519,6 +527,7 @@ impl WorktreeBrowser {
         output: BrowserPanelOutput,
     ) -> Vec<BrowserIntent> {
         self.placed = output.page_rect;
+        self.placed_bottom_radius = output.page_bottom_radius;
         self.overlaid = output.page_overlaid;
         let native_focus = self.has_native_focus();
         hold_keyboard_for_page(ui, panel, native_focus);

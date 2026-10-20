@@ -548,7 +548,7 @@ same one as commit/working-tree review.
   across the split; the ± totals live in the toolbar, which always has room for them
   where a usefully narrow rail does not. File rows show only quiet monochrome icons
   when they carry forge-review draft comments or agent notes.
-  The rail **collapses** via the header toggle (`PanelRight*`) or **⌘G** (the
+  The rail **collapses** via **⌘G** (no title-row toggle; the
   git-sidebar key, rebound here since the standard git sidebar is suppressed in the
   PR cockpit), persisted in `Prefs.pr_rail_collapsed`; the split width stays
   `Prefs.pr_detail_width` (dragging the split **right** widens it now that the rail

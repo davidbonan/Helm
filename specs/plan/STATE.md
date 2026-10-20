@@ -131,6 +131,52 @@ tabs. Counter: **18/22**.
 
 ---
 
+## ◐ Milestone — M-SidebarBlocks · Right sidebars as floating blocks
+
+Spec: [`specs/design-system.md`](../design-system.md) §3, §4; [`specs/overview.md`](../overview.md) §3.
+Per the user (canvas mockup approved): files, browser and git sidebars become rounded
+blocks inset 8 pt from the window edges, reaching the top; their toggles move to the
+terminals' title row, left of the blocks; Phone / Feedback / Preferences move to a
+footer of the workspace sidebar. Counter: **2/3**.
+
+- ☑ **SB1 — Blocks, title-row actions, footer.** `ui::sidebar_block` (block frame,
+  corner masks, shadow), `ui::sidebar_footer` (phone entry, feedback, gear); title
+  actions anchored on the terminals' right edge, one title line (26 pt) for switch,
+  actions and block headers; compact switch when its labels would run under the
+  actions; every block's max width keeps the terminals 280 pt and the others' minimum;
+  native page view clips its bottom corners (`ViewRect::bottom_radius`); browser
+  default 568 (560 pt block). *Tests*: 3 UI e2e (actions left of the git block +
+  header in the title row, footer actions, compact switch); existing suites adapted.
+- ☑ **SB2 — Headless verification.** Dark + light at 1440×900: no block, Git, Files +
+  Git, Files + Browser + Git — toggles left of the first block, headers on the title
+  line, footer at the sidebar's foot. Evidence: `verify-artifacts/20261020_155800_15007/`.
+- ☐ **SB3 — Manual check in the real window.** Not done: page's rounded bottom
+  corners (layer orientation), window drag in the title band over the block headers,
+  resize by a block's edge, PiP undock/dock.
+
+---
+
+## ◐ Milestone — M-FilesSidebar · Files tree in its own sidebar
+
+Spec: [`specs/files.md`](../files.md) §2, §7; [`specs/keybindings.md`](../keybindings.md).
+Per the user: the Files tab leaves the git sidebar for its own sidebar, like the
+browser's: per-worktree toggle, folder icon in the title bar, left of the browser
+(terminals | Files | Browser | Git), shown in Graph mode too. Counter: **2/3**.
+
+- ☑ **FS1 — Files sidebar.** `files::sidebar::FilesSidebar` (shown + tree) in
+  `Prefs.files_sidebars` (reads the old `tab_states`), `files_sidebar_width`; panel
+  between the terminals and the browser, folder toggle + `⌘⇧E`
+  (`toggle-files-sidebar`); git header back to title + branch chip, no tabs.
+  *Tests*: 2 persistence, 4 app (per worktree, `⌘⇧E`, Graph/Agents, no repo),
+  1 UI e2e (header + Collapse all); file-tree tests moved over.
+- ☑ **FS2 — Headless verification.** Dark + light: toggle order, sidebar shown with
+  its tree, order terminals | Files | Browser | Git, per-worktree hide/show, Graph
+  mode, `⌘⇧E` hides. Evidence: `verify-artifacts/20261020_151437_16525/`.
+- ☐ **FS3 — Manual check in the real window.** Not done: resize by the edge, width
+  kept across launches, with the native browser page beside it.
+
+---
+
 ## ☑ Milestone — M-FilesPlus · File-type icons, editable viewer, notes
 
 Spec: [`specs/files.md`](../files.md) §3.1, §4, §4.1, §4.2; [`specs/git.md`](../git.md) §4.

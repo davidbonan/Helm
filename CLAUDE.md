@@ -15,7 +15,7 @@ UI locked on `eframe`/`egui` (overview §4). Dependencies in place (`eframe`,
 - `specs/testing.md` — feedback loop: 3 levels of tests (unit, business e2e, UI e2e egui_kittest).
 - `specs/terminal.md` — PTY, emulation, splits, focus, scrollback, ANSI palette.
 - `specs/git.md` — status, hunk/line staging, diff, commit, branch indicator, refresh.
-- `specs/files.md` — Files tab of the right sidebar: worktree tree + read-only viewer.
+- `specs/files.md` — files sidebar, per worktree (toggle + `⌘⇧E`): worktree tree + read-only viewer.
 - `specs/browser.md` — browser sidebar: native WebKit view behind an engine port, per-worktree tabs, toggle + `⌘⇧B`.
 - `specs/conflicts.md` — in-app conflict editor: 3 zones, take checkboxes, resolve + Continue, fallbacks.
 - `specs/worktrees.md` — worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree.

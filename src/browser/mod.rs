@@ -39,6 +39,8 @@ pub struct ViewRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// Rounding of the bottom corners, those of the block the page sits in.
+    pub bottom_radius: f64,
 }
 
 /// A picture of the page, standing in for the view while egui draws over it.

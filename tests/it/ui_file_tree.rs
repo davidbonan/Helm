@@ -2,20 +2,20 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use helm::files::file_type::FileType;
-use helm::files::tab::{SidebarTab, TabEdit, TabState};
+use helm::files::sidebar::{FilesSidebar, TreeEdit};
 use helm::files::tint::StatusTints;
 use helm::files::tree::{EntryKind, FolderListing, Listings, TreeEntry};
 use helm::git::status::{ChangeKind, FileEntry, RepoStatus};
 use helm::theme::Palette;
-use helm::ui::file_tree::{file_tree, FileTreeState};
+use helm::ui::file_tree::{files_sidebar, FileTreeState};
 use helm::ui::git_panel::GitIntent;
 
-/// The tree as the app drives it: rows projected from the listings and the tab
-/// state each frame, the frame's intents applied back to the tab state.
+/// The sidebar as the app drives it: rows projected from the listings and the
+/// worktree's sidebar state each frame, the frame's intents applied back to it.
 struct World {
     listings: Listings,
     tints: StatusTints,
-    tab: TabState,
+    sidebar: FilesSidebar,
     tree: FileTreeState,
     intents: Vec<GitIntent>,
 }
@@ -23,12 +23,13 @@ struct World {
 impl World {
     fn apply(&mut self, intent: &GitIntent) {
         let edit = match intent {
-            GitIntent::SelectEntry(path) => TabEdit::Select(path.clone()),
-            GitIntent::FoldFolder(folder) => TabEdit::Fold(folder.clone()),
-            GitIntent::UnfoldFolder(folder) => TabEdit::Unfold(folder.clone()),
+            GitIntent::SelectEntry(path) => TreeEdit::Select(path.clone()),
+            GitIntent::FoldFolder(folder) => TreeEdit::Fold(folder.clone()),
+            GitIntent::UnfoldFolder(folder) => TreeEdit::Unfold(folder.clone()),
+            GitIntent::CollapseAllFolders => TreeEdit::CollapseAll,
             _ => return,
         };
-        self.tab.apply(edit);
+        self.sidebar.apply(edit);
     }
 }
 
@@ -84,8 +85,8 @@ fn sample_world(unfolded: &[&str]) -> World {
     World {
         listings,
         tints: StatusTints::of(&status),
-        tab: TabState {
-            tab: SidebarTab::Files,
+        sidebar: FilesSidebar {
+            shown: true,
             unfolded: unfolded.iter().map(|folder| (*folder).to_owned()).collect(),
             selected: None,
         },
@@ -100,9 +101,9 @@ fn tree_harness(world: World) -> Harness<'static, World> {
         .with_size(egui::vec2(320.0, 400.0))
         .build_ui_state(
             move |ui, world: &mut World| {
-                world.tree.rows = world.listings.rows(&world.tab.unfolded, &world.tints);
-                world.tree.selected = world.tab.selected.clone();
-                let intents = file_tree(ui, &palette, &mut world.tree);
+                world.tree.rows = world.listings.rows(&world.sidebar.unfolded, &world.tints);
+                world.tree.selected = world.sidebar.selected.clone();
+                let intents = files_sidebar(ui, &palette, &mut world.tree);
                 for intent in &intents {
                     world.apply(intent);
                 }
@@ -115,7 +116,7 @@ fn tree_harness(world: World) -> Harness<'static, World> {
 }
 
 fn selected(harness: &Harness<'_, World>) -> Option<String> {
-    harness.state().tab.selected.clone()
+    harness.state().sidebar.selected.clone()
 }
 
 fn text_color(harness: &Harness<'_, World>, text: &str) -> egui::Color32 {
@@ -302,7 +303,7 @@ fn the_arrows_walk_fold_and_unfold_once_a_row_was_clicked() {
 #[test]
 fn the_arrows_do_nothing_until_a_row_is_clicked() {
     let mut world = sample_world(&[]);
-    world.tab.selected = Some("src".to_owned());
+    world.sidebar.selected = Some("src".to_owned());
     let mut harness = tree_harness(world);
 
     harness.key_press(egui::Key::ArrowDown);
@@ -333,4 +334,16 @@ fn nothing_shows_until_the_root_is_read() {
     let harness = tree_harness(world);
 
     assert!(harness.query_by_label("No files").is_none());
+}
+
+#[test]
+fn the_header_names_the_sidebar_and_collapse_all_folds_the_whole_tree() {
+    let mut harness = tree_harness(sample_world(&["src", "target"]));
+    harness.get_by_label("Files");
+
+    harness.get_by_label("Collapse all").click();
+    harness.run();
+
+    assert!(harness.state().sidebar.unfolded.is_empty());
+    assert!(harness.query_by_label("src/lib.rs").is_none());
 }

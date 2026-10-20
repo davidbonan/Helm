@@ -30,7 +30,7 @@ pub enum Action {
     ToggleGitSidebar,
     ToggleBrowserSidebar,
     ToggleGraph,
-    ToggleFilesTab,
+    ToggleFilesSidebar,
     NextRepo,
     PrevRepo,
     SplitRight,
@@ -62,7 +62,7 @@ impl Action {
         Self::ToggleGitSidebar,
         Self::ToggleBrowserSidebar,
         Self::ToggleGraph,
-        Self::ToggleFilesTab,
+        Self::ToggleFilesSidebar,
         Self::NextRepo,
         Self::PrevRepo,
         Self::SplitRight,
@@ -94,7 +94,7 @@ impl Action {
             Self::ToggleGitSidebar => "toggle-git-sidebar",
             Self::ToggleBrowserSidebar => "toggle-browser-sidebar",
             Self::ToggleGraph => "toggle-graph",
-            Self::ToggleFilesTab => "toggle-files-tab",
+            Self::ToggleFilesSidebar => "toggle-files-sidebar",
             Self::NextRepo => "next-repo",
             Self::PrevRepo => "prev-repo",
             Self::SplitRight => "split-right",
@@ -133,7 +133,7 @@ impl Action {
             // "/" rather than the spec's "⇄": the bundled fonts have no glyph
             // for U+21C4 (renders as tofu in the Keyboard section).
             Self::ToggleGraph => "Toggle Terminal / Git",
-            Self::ToggleFilesTab => "Toggle Git / Files tab",
+            Self::ToggleFilesSidebar => "Toggle files sidebar",
             Self::NextRepo => "Next repo",
             Self::PrevRepo => "Previous repo",
             Self::SplitRight => "Split right",
@@ -166,7 +166,7 @@ impl Action {
             | Self::ToggleGitSidebar
             | Self::ToggleBrowserSidebar
             | Self::ToggleGraph
-            | Self::ToggleFilesTab
+            | Self::ToggleFilesSidebar
             | Self::NextRepo
             | Self::PrevRepo
             | Self::Run
@@ -201,7 +201,7 @@ impl Action {
             Self::ToggleGitSidebar => Shortcut::cmd(Key::G),
             Self::ToggleBrowserSidebar => Shortcut::cmd_shift(Key::B),
             Self::ToggleGraph => Shortcut::cmd_shift(Key::G),
-            Self::ToggleFilesTab => Shortcut::cmd_shift(Key::E),
+            Self::ToggleFilesSidebar => Shortcut::cmd_shift(Key::E),
             Self::NextRepo => Shortcut::ctrl(Key::Tab),
             Self::PrevRepo => Shortcut::ctrl_shift(Key::Tab),
             Self::SplitRight => Shortcut::cmd(Key::D),

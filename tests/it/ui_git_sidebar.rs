@@ -9,7 +9,7 @@ use helm::theme::palette;
 use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::GitPanelState;
 use helm::ui::repo_sidebar::{ProjectHeader, RepoRow, SidebarAction, SidebarItem};
-use helm::ui::root_layout;
+use helm::ui::{central_switch, root_layout};
 use helm::workspace_launcher::WorkspaceOpener;
 
 struct State {
@@ -31,18 +31,37 @@ impl Default for State {
 }
 
 fn harness() -> Harness<'static, State> {
-    root_harness(None, false)
+    root_harness(None, false, no_terminals)
 }
 
 fn launcher_harness() -> Harness<'static, State> {
-    root_harness(Some(0), false)
+    root_harness(Some(0), false, no_terminals)
 }
 
 fn missing_harness() -> Harness<'static, State> {
-    root_harness(Some(0), true)
+    root_harness(Some(0), true, no_terminals)
 }
 
-fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, State> {
+fn no_terminals(_: &mut egui::Ui) {}
+
+/// The terminals' title row: only its Terminal ⇄ Git switch.
+fn switch_only(ui: &mut egui::Ui) {
+    central_switch(
+        ui,
+        &palette(Theme::Light),
+        false,
+        &Keymap::default(),
+        None,
+        None,
+        true,
+    );
+}
+
+fn root_harness(
+    active_repo: Option<usize>,
+    missing: bool,
+    terminals: fn(&mut egui::Ui),
+) -> Harness<'static, State> {
     Harness::new_ui_state(
         move |ui, state| {
             ui.ctx()
@@ -95,6 +114,7 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                 &mut state.show_workspace,
                 &mut state.show_git,
                 None,
+                None,
                 false,
                 None,
                 false,
@@ -115,19 +135,18 @@ fn root_harness(active_repo: Option<usize>, missing: bool) -> Harness<'static, S
                 &[],
                 0,
                 false,
-                false,
-                &mut false,
                 &mut sidebar,
                 280.0,
                 320.0,
                 480.0,
+                280.0,
                 &Keymap::default(),
                 false,
                 true,
                 200.0,
                 |_ui| {},
                 |_ui| {},
-                |_ui| {},
+                terminals,
             );
         },
         State::default(),
@@ -201,6 +220,76 @@ fn toggle_icon_hides_workspace_sidebar() {
     assert!(
         harness.query_by_label("Toggle workspace sidebar").is_some(),
         "the toggle remains reachable while the sidebar is hidden"
+    );
+}
+
+#[test]
+fn title_actions_sit_left_of_the_git_block_whose_header_rises_into_the_title_row() {
+    let mut harness = launcher_harness();
+    harness.run();
+    harness.get_by_label("Toggle git sidebar").click();
+    harness.run();
+
+    let toggle = harness.get_by_label("Toggle git sidebar").rect();
+    let refresh = harness.get_by_label("Refresh").rect();
+    assert!(
+        toggle.right() < refresh.left() - 200.0,
+        "the toggles leave the git block's width"
+    );
+    assert!(
+        refresh.top() < 40.0,
+        "the git header takes the title row the toggles left"
+    );
+}
+
+#[test]
+fn preferences_and_feedback_sit_in_the_workspace_sidebar_footer() {
+    let mut harness = harness();
+    harness.run();
+
+    let workspace = harness.get_by_label("PROJECTS").rect();
+    for label in ["Open preferences", "Send feedback"] {
+        let action = harness.get_by_label(label).rect();
+        assert!(
+            action.right() <= 280.0,
+            "{label} lives in the workspace sidebar"
+        );
+        assert!(
+            action.top() > workspace.bottom() + 200.0,
+            "{label} sits at the sidebar's foot"
+        );
+    }
+
+    harness.get_by_label("Toggle workspace sidebar").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Open preferences").is_none(),
+        "the footer hides with its sidebar"
+    );
+}
+
+#[test]
+fn the_switch_drops_its_labels_rather_than_run_under_the_title_actions() {
+    let mut harness = root_harness(Some(0), false, switch_only);
+    harness.run();
+    harness.get_by_label("Toggle git sidebar").click();
+    harness.run();
+    harness.run();
+
+    // The git block's title is also "Git": the switch's segment is the leftmost.
+    let graph = harness
+        .query_all_by_label("Git")
+        .map(|node| node.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    let launcher = harness.get_by_label("Open workspace in Zed").rect();
+    assert!(
+        graph.right() < launcher.left(),
+        "the switch ends before the actions"
+    );
+    assert!(
+        harness.query_by_label("Terminal").is_some(),
+        "a compact segment keeps its name for accessibility"
     );
 }
 

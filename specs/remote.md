@@ -43,9 +43,10 @@ back with it* in place of the code. When the macOS firewall keeps
 the phone out — *Block all incoming connections*, or helm's own rule set to block
 (`socketfilterfw`, no admin rights; re-read every 2 s while open) — a banner says
 so with **Open settings ›** (Firewall pane). While access is on, a
-**dot** (8 pt) left of the title bar's *Open with* selector says so — `git.added`
-while a phone is connected, `text.muted` while access waits for one, both at 45 %
-opacity (full under the pointer) — its tooltip naming who is connected (*Phone
+**Phone** entry at the left of the workspace sidebar's footer says so — a
+Smartphone icon carrying a status dot, `git.added` while a phone is connected,
+`text.muted` while access waits for one, both at 45 % opacity (full under the
+pointer) — its tooltip naming who is connected (*Phone
 access on — iPhone connected* / *— no phone connected*); a click opens the pairing
 modal. Hidden while off: starting and stopping stay in the palette. Paired devices and *Start at launch* live in Preferences › *Phone*
 ([`preferences.md`](preferences.md) §4).

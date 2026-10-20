@@ -1716,7 +1716,7 @@ fn action_description(action: Action) -> &'static str {
         Action::ToggleGitSidebar => "Show or hide the git sidebar",
         Action::ToggleBrowserSidebar => "Show or hide the browser sidebar",
         Action::ToggleGraph => "Switch the central zone between Terminal and Git",
-        Action::ToggleFilesTab => "Switch the git sidebar between its Git and Files tabs",
+        Action::ToggleFilesSidebar => "Show or hide the files sidebar",
         Action::NextRepo => "Switch to the next repo or worktree in the sidebar",
         Action::PrevRepo => "Switch to the previous repo or worktree in the sidebar",
         Action::SplitRight => "Split the focused pane to the right",

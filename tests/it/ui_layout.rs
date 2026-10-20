@@ -8,7 +8,7 @@ use helm::theme::Palette;
 use helm::ui::file_list::FileMenuOutput;
 use helm::ui::git_panel::GitPanelState;
 use helm::ui::repo_sidebar::{repo_sidebar, ProjectHeader, RepoRow, SidebarAction, SidebarItem};
-use helm::ui::{central_empty_state, root_layout, PhoneIndicator, PHONE_DOT_LABEL};
+use helm::ui::{central_empty_state, root_layout, PhoneIndicator, PHONE_ACCESS_LABEL};
 use helm::workspace_launcher::WorkspaceOpener;
 
 #[test]
@@ -62,6 +62,7 @@ fn renders_three_zones() {
             &mut show_workspace,
             &mut show_git,
             None,
+            None,
             false,
             None,
             false,
@@ -82,12 +83,11 @@ fn renders_three_zones() {
             &[],
             0,
             false,
-            false,
-            &mut false,
             &mut sidebar,
             280.0,
             320.0,
             480.0,
+            280.0,
             &Keymap::default(),
             false,
             true,
@@ -162,6 +162,7 @@ fn workspace_launcher_shows_only_installed_openers_and_main_button_tracks_the_la
             &mut show_workspace,
             &mut show_git,
             None,
+            None,
             false,
             None,
             false,
@@ -184,12 +185,11 @@ fn workspace_launcher_shows_only_installed_openers_and_main_button_tracks_the_la
             &[],
             0,
             false,
-            false,
-            &mut false,
             &mut sidebar,
             280.0,
             320.0,
             480.0,
+            280.0,
             &Keymap::default(),
             false,
             true,
@@ -257,6 +257,7 @@ fn workspace_sidebar_can_be_hidden() {
             &mut show_workspace,
             &mut show_git,
             None,
+            None,
             false,
             None,
             false,
@@ -277,12 +278,11 @@ fn workspace_sidebar_can_be_hidden() {
             &[],
             0,
             false,
-            false,
-            &mut false,
             &mut sidebar,
             280.0,
             320.0,
             480.0,
+            280.0,
             &Keymap::default(),
             false,
             true,
@@ -328,6 +328,7 @@ fn central_zone_invites_to_open_a_folder_when_no_repo() {
             &mut show_workspace,
             &mut show_git,
             None,
+            None,
             false,
             None,
             false,
@@ -348,12 +349,11 @@ fn central_zone_invites_to_open_a_folder_when_no_repo() {
             &[],
             0,
             false,
-            false,
-            &mut false,
             &mut sidebar,
             280.0,
             320.0,
             480.0,
+            280.0,
             &Keymap::default(),
             false,
             true,
@@ -426,66 +426,69 @@ fn sidebar_widths_round_trip_through_the_layout_state() {
     let left = 232.0;
     let right = 520.0;
 
-    let mut harness = Harness::new_ui(move |ui| {
-        let mut intents = Vec::new();
-        let mut show_workspace = true;
-        let mut show_git = true;
-        let mut sidebar = SidebarAction::default();
-        let mut git_state = GitPanelState::default();
-        let mut open_workspace = None;
-        root_layout(
-            ui,
-            &palette,
-            &[],
-            &[],
-            &[],
-            None,
-            "main",
-            &status,
-            false,
-            None,
-            &mut git_state,
-            &mut intents,
-            &mut show_workspace,
-            &mut show_git,
-            None,
-            false,
-            None,
-            false,
-            None,
-            &mut None,
-            None,
-            &mut FileMenuOutput::default(),
-            helm::ui::file_list::FileViewMode::default(),
-            WorkspaceOpener::default(),
-            &WorkspaceOpener::ALL,
-            &mut open_workspace,
-            &mut false,
-            &mut false,
-            None,
-            &mut false,
-            helm::agent_watch::AgentBadge::None,
-            false,
-            &[],
-            0,
-            false,
-            false,
-            &mut false,
-            &mut sidebar,
-            left,
-            right,
-            480.0,
-            &Keymap::default(),
-            false,
-            true,
-            200.0,
-            |_ui| {},
-            |_ui| {},
-            |ui| {
-                ui.label("zone centrale");
-            },
-        );
-    });
+    // Default window size: wide enough that no block is capped to keep the terminals.
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            let mut intents = Vec::new();
+            let mut show_workspace = true;
+            let mut show_git = true;
+            let mut sidebar = SidebarAction::default();
+            let mut git_state = GitPanelState::default();
+            let mut open_workspace = None;
+            root_layout(
+                ui,
+                &palette,
+                &[],
+                &[],
+                &[],
+                None,
+                "main",
+                &status,
+                false,
+                None,
+                &mut git_state,
+                &mut intents,
+                &mut show_workspace,
+                &mut show_git,
+                None,
+                None,
+                false,
+                None,
+                false,
+                None,
+                &mut None,
+                None,
+                &mut FileMenuOutput::default(),
+                helm::ui::file_list::FileViewMode::default(),
+                WorkspaceOpener::default(),
+                &WorkspaceOpener::ALL,
+                &mut open_workspace,
+                &mut false,
+                &mut false,
+                None,
+                &mut false,
+                helm::agent_watch::AgentBadge::None,
+                false,
+                &[],
+                0,
+                false,
+                &mut sidebar,
+                left,
+                right,
+                480.0,
+                280.0,
+                &Keymap::default(),
+                false,
+                true,
+                200.0,
+                |_ui| {},
+                |_ui| {},
+                |ui| {
+                    ui.label("zone centrale");
+                },
+            );
+        });
     harness.run();
 
     assert_eq!(
@@ -599,7 +602,7 @@ fn repo_sidebar_lists_repo_names() {
 }
 
 /// The full layout with phone access as `phone` says (`None` = off).
-/// The state is whether the dot asked for the pairing modal.
+/// The state is whether the footer asked for the pairing modal.
 fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static, bool> {
     let palette = Palette::dark();
     let status = RepoStatus::default();
@@ -623,6 +626,7 @@ fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static, bool> {
                 &mut true,
                 &mut true,
                 None,
+                None,
                 false,
                 None,
                 false,
@@ -643,12 +647,11 @@ fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static, bool> {
                 &[],
                 0,
                 false,
-                false,
-                &mut false,
                 &mut SidebarAction::default(),
                 280.0,
                 320.0,
                 480.0,
+                280.0,
                 &Keymap::default(),
                 false,
                 true,
@@ -663,20 +666,20 @@ fn layout_with_phone(phone: Option<PhoneIndicator>) -> Harness<'static, bool> {
 }
 
 #[test]
-fn the_phone_dot_shows_only_while_access_is_on_and_names_who_is_connected() {
+fn phone_access_shows_only_while_on_and_names_who_is_connected() {
     let mut off = layout_with_phone(None);
     off.run();
-    assert!(off.query_by_label(PHONE_DOT_LABEL).is_none());
+    assert!(off.query_by_label(PHONE_ACCESS_LABEL).is_none());
 
     let mut on = layout_with_phone(Some(PhoneIndicator {
         devices: vec!["iPhone".to_owned()],
     }));
     on.run();
-    on.get_by_label(PHONE_DOT_LABEL).hover();
+    on.get_by_label(PHONE_ACCESS_LABEL).hover();
     on.run();
 
     on.get_by_label("Phone access on — iPhone connected");
-    on.get_by_label(PHONE_DOT_LABEL).click();
+    on.get_by_label(PHONE_ACCESS_LABEL).click();
     on.run();
     assert!(*on.state(), "a click asks for the pairing modal");
 }

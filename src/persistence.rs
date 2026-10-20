@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{Agent, CommitMessageSettings, ReviewSettings};
 use crate::browser::pip::{BrowserPip, PipFrame};
 use crate::command_palette::CommandUsage;
-use crate::files::tab::{SidebarTab, TabState};
+use crate::files::sidebar::FilesSidebar;
 use crate::git::sync::PullDefault;
 use crate::keybindings::{Action, Keymap};
 use crate::pull_requests::model::InboxHidden;
@@ -19,7 +19,9 @@ use crate::workspace_launcher::WorkspaceOpener;
 const PREFS_FILE: &str = "prefs.toml";
 const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 280.0;
 const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 480.0;
-const DEFAULT_BROWSER_SIDEBAR_WIDTH: f32 = 560.0;
+/// A 560 pt block, its 8 pt gap to the window edge included: the start page opens wide.
+const DEFAULT_BROWSER_SIDEBAR_WIDTH: f32 = 568.0;
+const DEFAULT_FILES_SIDEBAR_WIDTH: f32 = 280.0;
 /// Default width of the PR cockpit's detail panel; the user resizes it by
 /// dragging the list/detail split (specs/pull-requests.md §5).
 const DEFAULT_PR_DETAIL_WIDTH: f32 = 460.0;
@@ -101,6 +103,7 @@ pub struct Prefs {
     pub left_sidebar_width: f32,
     pub right_sidebar_width: f32,
     pub browser_sidebar_width: f32,
+    pub files_sidebar_width: f32,
     pub show_workspace: bool,
     pub show_git: bool,
     /// Worktrees whose browser sidebar shows (browser.md §3).
@@ -169,10 +172,10 @@ pub struct Prefs {
     /// Agent the review notes and the PR review surface hand work to
     /// (pull-requests.md §11). Regular table.
     pub review: ReviewSettings,
-    /// Right sidebar per worktree path (files.md §7); a worktree absent here shows
-    /// the Git tab, every folder folded. A table of tables, like `command_usage`.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub tab_states: BTreeMap<PathBuf, TabState>,
+    /// Files sidebar per worktree path (files.md §7); a worktree absent here hides
+    /// it, every folder folded. A table of tables, like `command_usage`.
+    #[serde(alias = "tab_states", skip_serializing_if = "BTreeMap::is_empty")]
+    pub files_sidebars: BTreeMap<PathBuf, FilesSidebar>,
     /// Agents helm can start (preferences.md §4). Absent ⇒ the defaults;
     /// present, even empty ⇒ verbatim.
     pub agents: Vec<Agent>,
@@ -192,6 +195,7 @@ impl Default for Prefs {
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
             browser_sidebar_width: DEFAULT_BROWSER_SIDEBAR_WIDTH,
+            files_sidebar_width: DEFAULT_FILES_SIDEBAR_WIDTH,
             show_workspace: true,
             show_git: false,
             browser_worktrees: BTreeSet::new(),
@@ -214,7 +218,7 @@ impl Default for Prefs {
             command_usage: CommandUsage::default(),
             commit_message: CommitMessageSettings::default(),
             review: ReviewSettings::default(),
-            tab_states: BTreeMap::new(),
+            files_sidebars: BTreeMap::new(),
             agents: Agent::defaults(),
             projects: Vec::new(),
             project_settings: Vec::new(),
@@ -408,15 +412,21 @@ impl Prefs {
         });
     }
 
-    pub fn sidebar_tab(&self, worktree: &Path) -> SidebarTab {
-        self.tab_states
+    pub fn files_sidebar(&self, worktree: &Path) -> FilesSidebar {
+        self.files_sidebars
             .get(worktree)
-            .map(|state| state.tab)
+            .cloned()
             .unwrap_or_default()
     }
 
-    pub fn tab_state(&self, worktree: &Path) -> TabState {
-        self.tab_states.get(worktree).cloned().unwrap_or_default()
+    pub fn shows_files(&self, worktree: &Path) -> bool {
+        self.files_sidebars
+            .get(worktree)
+            .is_some_and(|sidebar| sidebar.shown)
+    }
+
+    pub fn toggle_files(&mut self, worktree: &Path) {
+        self.edit_files_sidebar(worktree, |sidebar| sidebar.shown = !sidebar.shown);
     }
 
     pub fn shows_browser(&self, worktree: &Path) -> bool {
@@ -458,13 +468,13 @@ impl Prefs {
             .frame = Some(frame);
     }
 
-    /// Edits the right sidebar state of `worktree`, dropping it once back to the
+    /// Edits the files sidebar of `worktree`, dropping it once back to the
     /// default so the TOML only holds worktrees that left it.
-    pub fn edit_tab_state(&mut self, worktree: &Path, edit: impl FnOnce(&mut TabState)) {
-        let mut state = self.tab_states.remove(worktree).unwrap_or_default();
-        edit(&mut state);
-        if state != TabState::default() {
-            self.tab_states.insert(worktree.to_path_buf(), state);
+    pub fn edit_files_sidebar(&mut self, worktree: &Path, edit: impl FnOnce(&mut FilesSidebar)) {
+        let mut sidebar = self.files_sidebars.remove(worktree).unwrap_or_default();
+        edit(&mut sidebar);
+        if sidebar != FilesSidebar::default() {
+            self.files_sidebars.insert(worktree.to_path_buf(), sidebar);
         }
     }
 
@@ -697,6 +707,7 @@ mod tests {
             left_sidebar_width: 240.0,
             right_sidebar_width: 300.0,
             browser_sidebar_width: 520.0,
+            files_sidebar_width: 300.0,
             show_workspace: false,
             show_git: true,
             browser_worktrees: BTreeSet::from([PathBuf::from("/Users/dev/alpha.worktrees/feat")]),
@@ -741,10 +752,10 @@ mod tests {
                 agent: "Opus".to_owned(),
                 ..ReviewSettings::default()
             },
-            tab_states: BTreeMap::from([(
+            files_sidebars: BTreeMap::from([(
                 PathBuf::from("/Users/dev/alpha.worktrees/feat"),
-                TabState {
-                    tab: SidebarTab::Files,
+                FilesSidebar {
+                    shown: true,
                     unfolded: BTreeSet::from(["src".to_owned(), "src/ui".to_owned()]),
                     selected: Some("src/ui/mod.rs".to_owned()),
                 },
@@ -948,35 +959,34 @@ agent = "Mine"
     }
 
     #[test]
-    fn a_worktree_absent_or_partly_written_reads_as_the_defaults() {
-        let prefs = Prefs::from_toml("[tab_states.\"/a.wt/feat\"]\ntab = \"files\"\n").unwrap();
+    fn a_worktree_absent_or_written_as_the_old_tab_reads_as_a_hidden_sidebar() {
+        let toml = "[tab_states.\"/a.wt/feat\"]\ntab = \"files\"\nunfolded = [\"src\"]\n";
+        let prefs = Prefs::from_toml(toml).unwrap();
 
+        let feat = prefs.files_sidebar(Path::new("/a.wt/feat"));
+        assert!(!feat.shown);
+        assert_eq!(feat.unfolded, BTreeSet::from(["src".to_owned()]));
         assert_eq!(
-            prefs.sidebar_tab(Path::new("/a.wt/feat")),
-            SidebarTab::Files
+            prefs.files_sidebar(Path::new("/a")),
+            FilesSidebar::default()
         );
-        assert_eq!(
-            prefs.tab_states[Path::new("/a.wt/feat")].unfolded,
-            BTreeSet::new()
-        );
-        assert_eq!(prefs.sidebar_tab(Path::new("/a")), SidebarTab::Git);
     }
 
     #[test]
-    fn a_tab_state_back_to_the_default_leaves_the_toml() {
+    fn a_files_sidebar_back_to_the_default_leaves_the_toml() {
         let wt = Path::new("/a.wt/feat");
         let mut prefs = Prefs::default();
-        prefs.edit_tab_state(wt, |state| {
-            state.tab = SidebarTab::Files;
-            state.unfolded.insert("src".to_owned());
+        prefs.edit_files_sidebar(wt, |sidebar| {
+            sidebar.unfolded.insert("src".to_owned());
         });
-        prefs.edit_tab_state(wt, |state| state.tab = SidebarTab::Git);
-        assert!(prefs.to_toml().unwrap().contains("tab_states"));
+        prefs.toggle_files(wt);
+        prefs.toggle_files(wt);
+        assert!(prefs.to_toml().unwrap().contains("files_sidebars"));
 
-        prefs.edit_tab_state(wt, |state| state.unfolded.clear());
+        prefs.edit_files_sidebar(wt, |sidebar| sidebar.unfolded.clear());
 
-        assert!(prefs.tab_states.is_empty());
-        assert!(!prefs.to_toml().unwrap().contains("tab_states"));
+        assert!(prefs.files_sidebars.is_empty());
+        assert!(!prefs.to_toml().unwrap().contains("files_sidebars"));
     }
 
     #[test]

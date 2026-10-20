@@ -6,13 +6,14 @@
 ## 1. Goal
 
 A discreet entry point to report a bug or suggest an improvement from the app:
-a top-right icon opens a small modal (kind + description); **Send** opens the
+an icon in the workspace sidebar's footer opens a small modal (kind + description); **Send** opens the
 GitHub "new issue" form in the browser, pre-filled, ready for the user to submit.
 
 ## 2. Entry point
 
-- **Icon** in the top-right action row (`ui::top_right_actions`), left of the
+- **Icon** in the workspace sidebar footer (`ui::sidebar_footer`), left of the
   Preferences gear: a `lucide::Bug` glyph, same icon-button shape as the gear.
+  Hidden with the sidebar.
 - A click opens the **feedback modal** (single `Modal::Feedback`, exclusive
   with the other modals like every confirmation surface).
 

@@ -550,8 +550,8 @@ impl HelmApp {
         if action_pressed(ctx, &self.keymap, Action::FocusFinishedAgent) {
             self.focus_first_finished_agent(ctx);
         }
-        if action_pressed(ctx, &self.keymap, Action::ToggleFilesTab) {
-            self.toggle_sidebar_tab();
+        if action_pressed(ctx, &self.keymap, Action::ToggleFilesSidebar) {
+            self.toggle_files();
         }
         route_select_repo_keys(ctx, &mut self.workspace);
         route_cycle_repo_keys(ctx, &self.keymap, &mut self.workspace);
@@ -634,7 +634,6 @@ impl HelmApp {
             ),
         });
         let font_size = self.font_zoom.point_size();
-        self.git_panel_state.sidebar_tab = self.shown_sidebar_tab();
         // The active row follows the git session's live snapshot (checkout from the
         // terminal or the graph, edits, commits) without waiting for a sync trigger.
         if let Some(g) = &self.git {
@@ -910,6 +909,7 @@ impl HelmApp {
         let left_sidebar_width = self.left_sidebar_width;
         let right_sidebar_width = self.right_sidebar_width;
         let browser_sidebar_width = self.browser_sidebar_width;
+        let files_sidebar_width = self.files_sidebar_width;
         let keymap = &self.keymap;
         let clear_shortcut = self.keymap.shortcut_for(Action::ClearTerminal);
 
@@ -1088,7 +1088,6 @@ impl HelmApp {
         let mut pr_checkout = false;
         let mut pr_set_detail_width = None;
         let mut pr_toggle_inbox_hidden: Option<crate::pull_requests::model::PullRequest> = None;
-        let mut pr_toggle_rail = false;
         let mut pr_back = false;
         let mut pr_close_file = false;
         let mut pr_select_file: Option<usize> = None;
@@ -1226,6 +1225,11 @@ impl HelmApp {
                     Some(browser) if browser_pip.floating => (None, Some(browser)),
                     browser => (browser, None),
                 };
+                let files_were_shown = self.prefs.shows_files(&cwd);
+                let mut files_panel = crate::ui::FilesPanel {
+                    shown: files_were_shown,
+                    tree: &mut self.file_tree,
+                };
                 let browser_project = run_root.display().to_string();
                 let browser_chrome = crate::ui::browser_panel::BrowserChrome {
                     palette: &palette,
@@ -1271,6 +1275,7 @@ impl HelmApp {
                     show_workspace,
                     show_git,
                     Some(&mut browser_toggle),
+                    Some(&mut files_panel),
                     graph_mode && selected_commit.is_some(),
                     commit_detail,
                     can_amend_head,
@@ -1291,12 +1296,11 @@ impl HelmApp {
                     &done_agents,
                     pr_to_review,
                     pr_active,
-                    pr_rail_collapsed,
-                    &mut pr_toggle_rail,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
                     browser_sidebar_width,
+                    files_sidebar_width,
                     keymap,
                     true,
                     run_collapsed,
@@ -1621,6 +1625,7 @@ impl HelmApp {
                         }
                     },
                 );
+                let files_toggled = files_panel.shown != files_were_shown;
                 let mut pip_moved = None;
                 if let Some(browser) = floating_browser.filter(|_| !(agents_active || pr_active)) {
                     let placement =
@@ -2128,7 +2133,7 @@ impl HelmApp {
                 // row (git.md §3).
                 if any_focused {
                     self.git_panel_state.file_nav_active = false;
-                    self.git_panel_state.file_tree.nav_armed = false;
+                    self.file_tree.nav_armed = false;
                 }
                 // Only the working-tree overlay claims the DiffView zone: the commit
                 // diff is read-only and never had the §3 staging shortcuts.
@@ -2137,6 +2142,9 @@ impl HelmApp {
                 });
                 if browser_toggle.shown != browser_was_shown {
                     self.toggle_browser();
+                }
+                if files_toggled {
+                    self.toggle_files();
                 }
                 if let Some(frame) = pip_moved {
                     self.move_browser_pip(frame);
@@ -2233,6 +2241,7 @@ impl HelmApp {
                     show_workspace,
                     show_git,
                     None,
+                    None,
                     false,
                     None,
                     false,
@@ -2253,12 +2262,11 @@ impl HelmApp {
                     &done_agents,
                     pr_to_review,
                     pr_active,
-                    pr_rail_collapsed,
-                    &mut pr_toggle_rail,
                     &mut sidebar,
                     left_sidebar_width,
                     right_sidebar_width,
                     browser_sidebar_width,
+                    files_sidebar_width,
                     keymap,
                     false,
                     true,
@@ -2385,17 +2393,17 @@ impl HelmApp {
             self.apply_review_intent(intent, ctx);
         }
 
-        let mut tab_edits = Vec::new();
-        intents.retain(|intent| match tab_edit(intent) {
+        let mut tree_edits = Vec::new();
+        intents.retain(|intent| match tree_edit(intent) {
             Some(edit) => {
-                tab_edits.push(edit);
+                tree_edits.push(edit);
                 false
             }
             None => true,
         });
-        if !tab_edits.is_empty() {
-            self.edit_active_tab_state(|state| {
-                tab_edits.into_iter().for_each(|edit| state.apply(edit))
+        if !tree_edits.is_empty() {
+            self.edit_active_files_sidebar(|sidebar| {
+                tree_edits.into_iter().for_each(|edit| sidebar.apply(edit))
             });
         }
 
@@ -2703,14 +2711,6 @@ impl HelmApp {
             self.persist(move |mut prefs| {
                 prefs.pr_inbox_hidden.toggle(&pr);
                 prefs
-            });
-        }
-        if pr_toggle_rail {
-            let collapsed = !self.pr_rail_collapsed;
-            self.pr_rail_collapsed = collapsed;
-            self.persist(move |prefs| Prefs {
-                pr_rail_collapsed: collapsed,
-                ..prefs
             });
         }
         // `Esc` leaves the dashboard — unless its mirrored terminal holds focus, in

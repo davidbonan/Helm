@@ -26,9 +26,9 @@ is customizable from the Preferences page (§6).
 | `Cmd+1` … `Cmd+9` | Select **tab** 1 to 9 of the active repo. Beyond 9: no shortcut (click) |
 | `Cmd+,` | Toggle the full-window **Preferences page** ([`preferences.md`](preferences.md)); reopening = closing |
 | `Cmd+B` | Show / hide the **workspace sidebar** (left), with animation. Visible by default |
-| `Cmd+G` | Show / hide the **git sidebar** (right), with animation. Hidden by default; also drivable via the top-right icon |
-| `Cmd+Shift+B` | Show / hide the **browser sidebar** (between the terminals and the git sidebar), its page taking the keyboard; also the top-right globe ([`browser.md`](browser.md) §3). Hidden by default |
-| `Cmd+Shift+E` | Toggle the right sidebar tab **Git ⇄ Files** in Terminal mode ([`files.md`](files.md) §2); reveals the sidebar if hidden. Graph mode or no active repo: no-op |
+| `Cmd+G` | Show / hide the **git sidebar** (right), with animation. Hidden by default; also drivable via its title-row icon |
+| `Cmd+Shift+B` | Show / hide the **browser sidebar** (between the terminals and the git sidebar), its page taking the keyboard; also the title-row globe ([`browser.md`](browser.md) §3). Hidden by default |
+| `Cmd+Shift+E` | Show / hide the active worktree's **files sidebar** (between the terminals and the browser sidebar); also the title-row folder ([`files.md`](files.md) §2). Hidden by default. Without an active repo: no-op |
 | `Cmd+Shift+G` | Toggle the center zone **Terminal ⇄ Git** (equivalent to the header switch, [`git.md`](git.md) §9; entering Graph reveals the git sidebar). Without an active repo: no-op |
 | `Cmd+R` | **Run / Relaunch** the active project's server in the Run strip ([`git.md`](git.md) §3): starts it, or relaunches it if already running. Reveals the git sidebar and expands the strip; with no command resolved, opens the inline editor. Without an active repo: no-op |
 
@@ -148,10 +148,10 @@ changing the layout.
 | Tabs 1 to 9 in the active repo (tab bar) | `⌘1` … `⌘9` (for `Cmd+1` … `Cmd+9`) |
 | **Open Folder** button / zone | `O` (for `Cmd+O`) |
 | Workspace sidebar icon (in the left sidebar) | `B` (for `Cmd+B`) |
-| Git sidebar icon (top right) | `G` (for `Cmd+G`) |
+| Git sidebar icon (title row, left of the right blocks) | `G` (for `Cmd+G`) |
 | "Terminal ⇄ Git" switch (center zone header) | `⇧⌘G` (for `Cmd+Shift+G`) |
 | **Run / Relaunch** button (Run strip, git sidebar) | `⌘R` (for `Cmd+R`) — left of the button the shortcut triggers (Run when stopped, Relaunch when running); reloads the page instead while the browser has the keyboard |
-| Access to **Preferences** | `,` (for `Cmd+,`) |
+| **Preferences** gear (workspace sidebar footer) | `,` (for `Cmd+,`) |
 
 Beyond the 9th repo, no badge (no associated shortcut, §1). Only the
 **global shortcuts associated with a clickable zone** are shown: triggerable
@@ -181,7 +181,7 @@ fixed. The §1–§3 tables are the defaults.
 | Global | `toggle-git-sidebar` | `Cmd+G` |
 | Global | `toggle-browser-sidebar` | `Cmd+Shift+B` |
 | Global | `toggle-graph` | `Cmd+Shift+G` |
-| Global | `toggle-files-tab` | `Cmd+Shift+E` |
+| Global | `toggle-files-sidebar` | `Cmd+Shift+E` |
 | Global | `next-repo` / `prev-repo` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Terminal | `split-right` / `split-down` | `Cmd+D` / `Cmd+Shift+D` |
 | Terminal | `close-pane` | `Cmd+W` |

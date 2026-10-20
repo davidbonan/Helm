@@ -1,5 +1,5 @@
-//! What the right sidebar keeps per worktree (specs/files.md §2, §7): the tab on
-//! show, the folders unfolded in the tree, the row selected there.
+//! What the files sidebar keeps per worktree (specs/files.md §2, §7): whether it
+//! shows, the folders unfolded in the tree, the row selected there.
 
 use std::collections::BTreeSet;
 
@@ -7,54 +7,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::files::folders_above;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SidebarTab {
-    #[default]
-    Git,
-    Files,
-}
-
-impl SidebarTab {
-    pub fn other(self) -> Self {
-        match self {
-            Self::Git => Self::Files,
-            Self::Files => Self::Git,
-        }
-    }
-}
-
 /// Paths relative to the worktree, `/`-separated as in the git status.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TabState {
-    pub tab: SidebarTab,
+pub struct FilesSidebar {
+    pub shown: bool,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub unfolded: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<String>,
 }
 
-/// One change to a worktree's [`TabState`], as the sidebar asks for it.
+/// One change to a worktree's tree, as the sidebar asks for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabEdit {
-    Show(SidebarTab),
+pub enum TreeEdit {
     Select(String),
     Unfold(String),
     Fold(String),
     CollapseAll,
 }
 
-impl TabState {
-    pub fn apply(&mut self, edit: TabEdit) {
+impl FilesSidebar {
+    pub fn apply(&mut self, edit: TreeEdit) {
         match edit {
-            TabEdit::Show(tab) => self.tab = tab,
-            TabEdit::Select(path) => self.selected = Some(path),
-            TabEdit::Unfold(folder) => {
+            TreeEdit::Select(path) => self.selected = Some(path),
+            TreeEdit::Unfold(folder) => {
                 self.unfolded.insert(folder);
             }
-            TabEdit::Fold(folder) => self.fold(&folder),
-            TabEdit::CollapseAll => self.collapse_all(),
+            TreeEdit::Fold(folder) => self.fold(&folder),
+            TreeEdit::CollapseAll => self.collapse_all(),
         }
     }
 
@@ -88,9 +69,9 @@ impl TabState {
 mod tests {
     use super::*;
 
-    fn state(unfolded: &[&str], selected: &str) -> TabState {
-        TabState {
-            tab: SidebarTab::Files,
+    fn state(unfolded: &[&str], selected: &str) -> FilesSidebar {
+        FilesSidebar {
+            shown: true,
             unfolded: unfolded.iter().map(|folder| folder.to_string()).collect(),
             selected: Some(selected.to_owned()),
         }
@@ -98,20 +79,20 @@ mod tests {
 
     #[test]
     fn folding_a_folder_keeps_its_unfolded_children_and_lifts_a_selection_inside_it() {
-        let mut tab = state(&["src", "src/ui"], "src/ui/mod.rs");
+        let mut sidebar = state(&["src", "src/ui"], "src/ui/mod.rs");
 
-        tab.apply(TabEdit::Fold("src".to_owned()));
+        sidebar.apply(TreeEdit::Fold("src".to_owned()));
 
-        assert_eq!(tab, state(&["src/ui"], "src"));
+        assert_eq!(sidebar, state(&["src/ui"], "src"));
     }
 
     #[test]
     fn folding_a_folder_leaves_a_selection_outside_it() {
-        let mut tab = state(&["src", "srcs"], "srcs/lib.rs");
+        let mut sidebar = state(&["src", "srcs"], "srcs/lib.rs");
 
-        tab.apply(TabEdit::Fold("src".to_owned()));
+        sidebar.apply(TreeEdit::Fold("src".to_owned()));
 
-        assert_eq!(tab, state(&["srcs"], "srcs/lib.rs"));
+        assert_eq!(sidebar, state(&["srcs"], "srcs/lib.rs"));
     }
 
     #[test]
@@ -119,8 +100,8 @@ mod tests {
         let mut nested = state(&["src", "src/ui"], "src/ui/mod.rs");
         let mut top_level = state(&["src"], "README.md");
 
-        nested.apply(TabEdit::CollapseAll);
-        top_level.apply(TabEdit::CollapseAll);
+        nested.apply(TreeEdit::CollapseAll);
+        top_level.apply(TreeEdit::CollapseAll);
 
         assert_eq!(nested, state(&[], "src"));
         assert_eq!(top_level, state(&[], "README.md"));

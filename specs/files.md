@@ -1,36 +1,39 @@
-# Files — worktree explorer in the right sidebar
+# Files — worktree explorer in its own sidebar
 
-Spec for the **Files** tab of the right sidebar (Terminal mode) and its
+Spec for the **files sidebar** (per worktree, like the browser's) and its
 read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 
 ## 1. Scope
 
 | In v1 | Out of v1 |
 |-------|-----------|
-| **Git \| Files** tabs in the right sidebar header, Terminal mode only | Files tab in Graph mode (tree at a commit) |
+| A **files sidebar** with its own title-bar toggle and `⌘⇧E`, shown per worktree, in Terminal and Graph modes | Tree at a commit in Graph mode |
 | Lazy tree of the **active worktree**: every entry but `.git`, gitignored ones dimmed | Filter / fuzzy search in the tree |
 | Git status tint on files and their parent folders | Any write: create, rename, move, delete, drag & drop |
 | Click a file ⇒ **viewer** in the center zone (overlay, like the diff): click to edit, agent notes (§4.1, §4.2) | Context menu (Open in editor, Reveal in Finder, Copy path) |
 | Keyboard navigation in the tree, same arming rule as the git file list | Forge (PR) notes in the viewer, insert a path into the terminal |
-| Tab, unfolded folders and selection kept **per worktree**, persisted | FS watching (the poll stays the only refresh, [`git.md`](git.md) §7) |
+| Shown, unfolded folders and selection kept **per worktree**, persisted | FS watching (the poll stays the only refresh, [`git.md`](git.md) §7) |
 
-## 2. Tabs
+## 2. Sidebar
 
-- The main card header ([`git.md`](git.md) §3, band 1) swaps the **Git** title for
-  a two-tab strip **Git** · **Files** (folder icon), aligned left. Active tab:
-  `text.primary` + 2px `accent` underline; inactive: `text.secondary`, hover
-  `text.primary` ([`design-system.md`](design-system.md) §4).
-- **Git** tab: the sidebar as today (Discard all / Refresh, summary, Unstaged /
-  Staged, commit card). No count on its label, and no branch chip beside the tabs:
-  the workspace sidebar already names the branch.
-- **Files** tab: Discard all / Refresh give way to a single **Collapse all** icon. The tree takes the **whole sidebar
-  height** — the commit card belongs to Git and is hidden here.
-- **Graph mode**: no tabs; the sidebar shows the WIP status or the commit detail
-  as today ([`git.md`](git.md) §9). Back in Terminal mode, the worktree's last
-  tab returns.
-- Switching tab never closes an open diff or viewer.
-- Shortcut `Cmd+Shift+E` toggles Git ⇄ Files and reveals the sidebar if hidden
-  ([`keybindings.md`](keybindings.md)).
+- A **folder toggle** in the title bar, left of the browser's globe (accent while
+  shown), and **Toggle files sidebar** (`⌘⇧E`, [`keybindings.md`](keybindings.md))
+  show or hide the files sidebar. It sits between the terminals and the browser
+  sidebar ([`browser.md`](browser.md) §3), the git sidebar staying rightmost; any of
+  the three can be open with the others.
+- Each **worktree has its own toggle**: shown or hidden per worktree, kept across
+  launches (§7). Switching worktree shows the other's tree, or none if hidden
+  there. Hidden by default.
+- Shown in Terminal and **Graph** modes (a file opens in the viewer over the
+  graph); hidden, with the git sidebar, in the Agents and PR modes, and while no
+  worktree is active.
+- Resizable by its left edge, 200 pt at least, the terminals keeping 240 pt; its
+  width is kept across launches (280 pt by default).
+- **Header**: Folder icon + **Files** title, **Collapse all** icon on the right.
+  The tree takes the rest of the sidebar's height.
+- The git sidebar no longer has tabs: its header is the **Git** title + branch
+  chip ([`git.md`](git.md) §3).
+- Toggling never closes an open diff or viewer.
 
 ## 3. Tree
 
@@ -89,7 +92,7 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
   size changes; scroll position kept. Deleted meanwhile ⇒ *File no longer exists*.
 - **Scroll position** kept per file (as the diff).
 - Opening a file that is also in Unstaged/Staged still opens the **viewer**, not
-  the diff — the diff stays reachable from the Git tab.
+  the diff — the diff stays reachable from the git sidebar.
 
 ### 4.1 Editing
 
@@ -144,16 +147,19 @@ rule as the git file list ([`git.md`](git.md) §3).
 ## 6. Refresh
 
 - No FS watcher. On each status poll tick ([`git.md`](git.md) §7), **only while the
-  Files tab is visible**, the unfolded folders are re-listed in the worker (gated
+  files sidebar is visible**, the unfolded folders are re-listed in the worker (gated
   like status: a tick is skipped while the previous listing runs). Added/removed
   entries appear without touching fold state or selection.
 - A selected entry that disappears moves the selection to its parent.
 
 ## 7. Persistence
 
-Per worktree, in `Prefs` keyed by worktree path (as the `$PORT` overrides): active tab (`git` / `files`),
-set of unfolded folders (relative paths), selected path. Missing paths on reload
-are dropped silently. Default: Git tab, everything folded.
+Per worktree, in `Prefs.files_sidebars` keyed by worktree path (as the `$PORT`
+overrides): shown, set of unfolded folders (relative paths), selected path. Missing
+paths on reload are dropped silently. Default: hidden, everything folded. The
+sidebar width is global (`files_sidebar_width`). The former `tab_states` table is
+read back for its folders and selection; its `tab` is dropped, so a worktree that
+was on Files starts hidden.
 
 ## 8. Architecture
 
@@ -171,4 +177,4 @@ are dropped silently. Default: Git tab, everything folded.
 |-------|--------|
 | Unit | Sort (folders first, natural, case-insensitive); status → folder dot priority; `.git` and non-UTF-8 skipped; 2,000 cap |
 | Business e2e | Real repo: ignored entry flagged, untracked/modified tints, symlink not followed, re-list picks up a new file |
-| UI e2e (kittest) | Tabs switch and persist per worktree; unfold + click opens viewer with content; `↑/↓/←/→` navigation; Graph mode hides tabs; binary/too-large placeholders |
+| UI e2e (kittest) | Toggle and `⌘⇧E` show/hide per worktree; Graph mode keeps it, Agents mode hides it; header Collapse all; unfold + click opens viewer with content; `↑/↓/←/→` navigation; binary/too-large placeholders |

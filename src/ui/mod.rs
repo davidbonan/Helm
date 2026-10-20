@@ -24,6 +24,8 @@ pub mod release_notes;
 pub mod repo_sidebar;
 pub mod review_notes;
 pub mod run_panel;
+pub(crate) mod sidebar_block;
+pub(crate) mod sidebar_footer;
 pub mod spinner;
 pub mod syntax_highlight;
 pub mod tab_bar;
@@ -42,18 +44,27 @@ use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, RADIUS_MENU_ITEM, RADIUS_PILL, SHORTCUT_BADGE_SIZE};
 use crate::ui::commit_detail::commit_detail_panel;
 use crate::ui::file_list::{FileMenuOutput, FileViewMode};
+use crate::ui::file_tree::{files_sidebar, FileTreeState};
 use crate::ui::git_panel::{git_panel, GitIntent, GitPanelState};
 use crate::ui::repo_sidebar::{
     repo_sidebar, DoneAgentRow, ProjectVisibility, SidebarAction, SidebarItem,
 };
+use crate::ui::sidebar_block::{block_panel_frame, sidebar_block, BLOCK_GAP};
+use crate::ui::sidebar_footer::{sidebar_footer, SidebarFooter, FOOTER_HEIGHT};
+pub use crate::ui::sidebar_footer::{PhoneIndicator, PHONE_ACCESS_LABEL};
 use crate::workspace_launcher::WorkspaceOpener;
 
 const LEFT_SIDEBAR_ID: &str = "repos";
+const LEFT_SIDEBAR_FOOTER_ID: &str = "repos_footer";
 const RIGHT_SIDEBAR_ID: &str = "git";
 const BROWSER_SIDEBAR_ID: &str = "browser";
 const BROWSER_SIDEBAR_MIN_WIDTH: f32 = 320.0;
-/// Width the terminals keep beside the browser sidebar.
-const BROWSER_SIDEBAR_CENTRAL_RESERVE: f32 = 240.0;
+const FILES_SIDEBAR_ID: &str = "files";
+const FILES_SIDEBAR_MIN_WIDTH: f32 = 200.0;
+const GIT_SIDEBAR_MIN_WIDTH: f32 = 260.0;
+/// Width the terminals keep beside the browser and files sidebars: their title
+/// row still holds the sidebar actions and a compact switch.
+const SIDEBAR_CENTRAL_RESERVE: f32 = 280.0;
 const RUN_PANEL_ID: &str = "run_terminal_panel";
 /// Folded Run strip: a separate panel id so collapsing leaves the expanded
 /// panel's remembered height untouched (git.md §3).
@@ -469,7 +480,7 @@ pub fn central_switch(
     // The switch shares the traffic-light line like the side controls; the row
     // then pads down to TITLEBAR_HEIGHT so the central content aligns with the
     // side panels.
-    let row_top = f32::from(MACOS_TITLEBAR_INSET) / 2.0 - SWITCH_HEIGHT / 2.0;
+    let row_top = (TITLE_LINE_Y - SWITCH_HEIGHT / 2.0 - ui.cursor().top()).max(0.0);
     ui.add_space(row_top);
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), SWITCH_HEIGHT),
@@ -478,17 +489,17 @@ pub fn central_switch(
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             // Cmd held (alone) ⇒ toggle badge in the toggle's target segment;
             // unbound ⇒ no badge (keybindings §5).
-            let cmd_held = ui.input(|i| {
-                let m = i.modifiers;
-                m.command && !m.shift && !m.alt && !m.ctrl
-            });
+            let room = room_before_title_actions(ui);
+            let fit = switch_fit(ui, room);
+            // A compact segment has no room for the badge (keybindings §5).
             let badge = keymap
                 .shortcut_for(Action::ToggleGraph)
-                .filter(|_| cmd_held)
+                .filter(|_| cmd_held(ui) && fit == SwitchFit::Labeled)
                 .map(|s| s.display());
-            let terminal_w = segment_width(ui, SWITCH_TERMINAL);
-            let total = terminal_w + segment_width(ui, SWITCH_GRAPH);
-            let gutter = ((ui.available_width() - total) / 2.0).max(0.0);
+            let terminal_w = segment_width(ui, SWITCH_TERMINAL, fit);
+            let total = terminal_w + segment_width(ui, SWITCH_GRAPH, fit);
+            let centered = (ui.available_width() - total) / 2.0;
+            let gutter = centered.min(room - total).max(0.0);
             if let Some(project) = project {
                 paint_project_reminder(ui, palette, project, worktree, workspace_shown, gutter);
             }
@@ -510,10 +521,13 @@ pub fn central_switch(
             let terminal = switch_segment(
                 ui,
                 palette,
-                SWITCH_TERMINAL,
-                lucide_icons::Icon::SquareTerminal,
-                !graph_active,
-                badge.as_deref().filter(|_| graph_active),
+                Segment {
+                    label: SWITCH_TERMINAL,
+                    icon: lucide_icons::Icon::SquareTerminal,
+                    active: !graph_active,
+                    badge: badge.as_deref().filter(|_| graph_active),
+                    fit,
+                },
             );
             if terminal.clicked() && graph_active {
                 requested = Some(false);
@@ -521,10 +535,13 @@ pub fn central_switch(
             let graph = switch_segment(
                 ui,
                 palette,
-                SWITCH_GRAPH,
-                lucide_icons::Icon::GitBranch,
-                graph_active,
-                badge.as_deref().filter(|_| !graph_active),
+                Segment {
+                    label: SWITCH_GRAPH,
+                    icon: lucide_icons::Icon::GitBranch,
+                    active: graph_active,
+                    badge: badge.as_deref().filter(|_| !graph_active),
+                    fit,
+                },
             );
             if graph.clicked() && !graph_active {
                 requested = Some(true);
@@ -534,6 +551,43 @@ pub fn central_switch(
     );
     ui.add_space(f32::from(TITLEBAR_HEIGHT) - row_top - SWITCH_HEIGHT);
     requested
+}
+
+/// How the switch's segments are drawn: labeled, or icons only when the labels
+/// would run under the title-row actions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SwitchFit {
+    Labeled,
+    Compact,
+}
+
+fn switch_fit(ui: &egui::Ui, room: f32) -> SwitchFit {
+    let labeled = segment_width(ui, SWITCH_TERMINAL, SwitchFit::Labeled)
+        + segment_width(ui, SWITCH_GRAPH, SwitchFit::Labeled);
+    if labeled <= room {
+        SwitchFit::Labeled
+    } else {
+        SwitchFit::Compact
+    }
+}
+
+struct Segment<'a> {
+    label: &'a str,
+    icon: lucide_icons::Icon,
+    active: bool,
+    badge: Option<&'a str>,
+    fit: SwitchFit,
+}
+
+/// Width from the row's left edge to the title-row actions drawn last frame, less
+/// the gap the switch keeps from them.
+fn room_before_title_actions(ui: &egui::Ui) -> f32 {
+    let row = ui.max_rect();
+    let actions = ui.ctx().memory(|m| m.area_rect(title_actions_id()));
+    let right = actions.map_or(row.right(), |actions| {
+        actions.left().min(row.right()) - SWITCH_LABEL_GAP
+    });
+    right - row.left()
 }
 
 /// Accent bottom border under the active segment: a thicker restroke of the
@@ -660,7 +714,10 @@ fn paint_project_reminder(
     );
 }
 
-fn segment_width(ui: &egui::Ui, label: &str) -> f32 {
+fn segment_width(ui: &egui::Ui, label: &str, fit: SwitchFit) -> f32 {
+    if fit == SwitchFit::Compact {
+        return SWITCH_ICON_SIZE + SWITCH_SEG_PAD_X * 2.0;
+    }
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
         egui::FontId::proportional(SWITCH_LABEL_SIZE),
@@ -669,19 +726,12 @@ fn segment_width(ui: &egui::Ui, label: &str) -> f32 {
     SWITCH_ICON_SIZE + SWITCH_ICON_GAP + galley.size().x + SWITCH_SEG_RESERVE * 2.0
 }
 
-fn switch_segment(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    label: &str,
-    icon: lucide_icons::Icon,
-    active: bool,
-    badge: Option<&str>,
-) -> egui::Response {
+fn switch_segment(ui: &mut egui::Ui, palette: &Palette, segment: Segment<'_>) -> egui::Response {
     // Stable id per segment: the badge's `new_child` (conditional on Cmd) would
     // otherwise shift the next segment's auto-id — egui then paints a red
     // "widget changed id between passes" box (same trap as the tab bar).
-    ui.push_id(label, |ui| {
-        switch_segment_body(ui, palette, label, icon, active, badge)
+    ui.push_id(segment.label, |ui| {
+        switch_segment_body(ui, palette, segment)
     })
     .inner
 }
@@ -689,18 +739,34 @@ fn switch_segment(
 fn switch_segment_body(
     ui: &mut egui::Ui,
     palette: &Palette,
-    label: &str,
-    icon: lucide_icons::Icon,
-    active: bool,
-    badge: Option<&str>,
+    segment: Segment<'_>,
 ) -> egui::Response {
+    let Segment {
+        label,
+        icon,
+        active,
+        badge,
+        fit,
+    } = segment;
     let (rect, response, hovered) = clickable(
         ui,
-        egui::vec2(segment_width(ui, label), SWITCH_HEIGHT),
+        egui::vec2(segment_width(ui, label, fit), SWITCH_HEIGHT),
         true,
     );
     let label_color = switch_label_color(palette, active, hovered);
     let icon_color = switch_icon_color(palette, active, hovered);
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
+    if fit == SwitchFit::Compact {
+        paint_icon(
+            ui.painter(),
+            rect.center(),
+            SWITCH_ICON_SIZE,
+            icon,
+            icon_color,
+        );
+        return response.on_hover_text(label);
+    }
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
         egui::FontId::proportional(SWITCH_LABEL_SIZE),
@@ -740,8 +806,6 @@ fn switch_segment_body(
         );
     }
     response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
-    response
 }
 
 fn switch_label_color(palette: &Palette, active: bool, hovered: bool) -> egui::Color32 {
@@ -769,6 +833,12 @@ pub struct BrowserToggle {
     pub floating: bool,
 }
 
+/// The title bar's files toggle and the tree its sidebar shows (files.md §2).
+pub struct FilesPanel<'a> {
+    pub shown: bool,
+    pub tree: &'a mut FileTreeState,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn root_layout(
     ui: &mut egui::Ui,
@@ -787,6 +857,8 @@ pub fn root_layout(
     show_git: &mut bool,
     // `None` without an active worktree: no browser sidebar nor toggle.
     show_browser: Option<&mut BrowserToggle>,
+    // `None` without an active worktree: no files sidebar nor toggle.
+    mut files: Option<&mut FilesPanel>,
     show_commit_detail: bool,
     commit_detail: Option<&CommitDetail>,
     // The selected commit is HEAD ⇒ its message can be amended from the detail panel.
@@ -808,15 +880,11 @@ pub fn root_layout(
     done_agents: &[DoneAgentRow],
     pr_to_review: usize,
     pr_active: bool,
-    // The PR cockpit's changed-files rail (pull-requests.md §11) is toggled from
-    // the title bar — the slot the git toggle vacates in a Helm central mode — so
-    // its collapse state and click signal ride alongside `show_git`.
-    pr_rail_collapsed: bool,
-    pr_toggle_rail: &mut bool,
     sidebar: &mut SidebarAction,
     left_sidebar_width: f32,
     right_sidebar_width: f32,
     browser_sidebar_width: f32,
+    files_sidebar_width: f32,
     keymap: &Keymap,
     // Run terminal strip at the bottom of the git sidebar (git.md §3): mounted only
     // when `show_run`, folded to its header when `run_collapsed`. `run_panel` paints
@@ -847,6 +915,28 @@ pub fn root_layout(
         .frame(sidebar_frame)
         .show_animated_inside(ui, *show_workspace, |ui| {
             ui.set_min_width(ui.available_width());
+            let preferences_badge = keymap
+                .shortcut_for(Action::TogglePreferences)
+                .filter(|_| cmd_held(ui))
+                .map(|shortcut| shortcut.display());
+            egui::Panel::bottom(LEFT_SIDEBAR_FOOTER_ID)
+                .frame(egui::Frame::NONE)
+                .resizable(false)
+                .show_separator_line(false)
+                .exact_size(FOOTER_HEIGHT)
+                .show_inside(ui, |ui| {
+                    sidebar_footer(
+                        ui,
+                        palette,
+                        SidebarFooter {
+                            phone,
+                            open_phone,
+                            open_feedback,
+                            open_preferences,
+                            preferences_badge,
+                        },
+                    );
+                });
             repo_sidebar(
                 ui,
                 palette,
@@ -864,130 +954,164 @@ pub fn root_layout(
             );
         });
 
-    let git_frame = egui::Frame::side_top_panel(ui.style())
-        .fill(palette.bg_canvas)
-        .inner_margin(egui::Margin {
-            left: SIDEBAR_PAD_X,
-            right: SIDEBAR_PAD_X,
-            top: TITLEBAR_HEIGHT,
-            bottom: SIDEBAR_PAD_Y,
-        });
-
-    egui::Panel::right(RIGHT_SIDEBAR_ID)
-        .resizable(true)
-        .default_size(right_sidebar_width)
-        .min_size(260.0)
-        .frame(git_frame)
-        .show_animated_inside(ui, *show_git && !helm_central, |ui| {
-            ui.set_min_width(ui.available_width());
-            // Run terminal strip pinned to the bottom; the status/detail content
-            // fills the remaining height above it (git.md §3).
-            if show_run {
-                let run_frame =
-                    egui::Frame::new()
-                        .fill(palette.bg_canvas)
-                        .inner_margin(egui::Margin {
-                            left: 0,
-                            right: 0,
-                            top: 4,
-                            bottom: 0,
-                        });
-                let panel = if run_collapsed {
-                    // A distinct id while folded: egui prefers a panel's stored size
-                    // over default_size, so sharing the id would overwrite the
-                    // remembered height with the header height and reopen the strip
-                    // clamped to its minimum (git.md §3).
-                    egui::Panel::bottom(RUN_PANEL_COLLAPSED_ID)
-                        .frame(run_frame)
-                        .resizable(false)
-                        .exact_size(crate::ui::run_panel::HEADER_HEIGHT)
-                } else {
-                    let max = (ui.available_height() - RUN_PANEL_RESERVE).max(RUN_PANEL_MIN_HEIGHT);
-                    egui::Panel::bottom(RUN_PANEL_ID)
-                        .frame(run_frame)
-                        .resizable(true)
-                        .default_size(run_panel_height)
-                        .min_size(RUN_PANEL_MIN_HEIGHT)
-                        .max_size(max)
-                };
-                panel.show_inside(ui, run_panel);
-            }
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
-                .show_inside(ui, |ui| {
-                    // A commit selected in Graph mode (M9-6) ⇒ its detail in place of
-                    // the status sections (git.md §9); no selection ⇒ the status
-                    // sections stay (WIP is the implicit selection — never a "select a
-                    // commit" state).
-                    if show_commit_detail {
-                        let mut set_view = None;
-                        let mut amend = None;
-                        commit_detail_panel(
-                            ui,
-                            palette,
-                            commit_detail,
-                            commit_diff_file,
-                            open_commit_file,
-                            repo_root,
-                            file_menu,
-                            git_file_view,
-                            &mut set_view,
-                            can_amend_head,
-                            &mut amend,
-                        );
-                        if let Some(view) = set_view {
-                            intents.push(crate::ui::git_panel::GitIntent::SetFileView(view));
-                        }
-                        if let Some(message) = amend {
-                            intents.push(crate::ui::git_panel::GitIntent::AmendMessage(message));
-                        }
-                    } else if active_repo.is_none() {
-                        git_panel::no_repo(ui, palette, git_state);
-                    } else {
-                        git_panel(
-                            ui,
-                            palette,
-                            branch,
-                            status,
-                            op_in_progress,
-                            op,
-                            git_state,
-                            keymap,
-                            intents,
-                            repo_root,
-                            file_menu,
-                            git_file_view,
-                        );
-                    }
-                });
-        });
-
+    let git_shown = *show_git && !helm_central;
     let browser_shown = show_browser
         .as_deref()
         .is_some_and(|browser| browser.shown && !browser.floating)
         && !helm_central;
-    let browser_frame = egui::Frame::side_top_panel(ui.style())
-        .fill(palette.bg_canvas)
-        .inner_margin(egui::Margin {
-            top: TITLEBAR_HEIGHT,
-            ..egui::Margin::ZERO
+    let files_shown = files.as_ref().is_some_and(|files| files.shown) && !helm_central;
+    let browser_min = if browser_shown {
+        BROWSER_SIDEBAR_MIN_WIDTH
+    } else {
+        0.0
+    };
+    let files_min = if files_shown {
+        FILES_SIDEBAR_MIN_WIDTH
+    } else {
+        0.0
+    };
+    // Each block leaves the terminals their reserve and the blocks laid out after
+    // it their minimum width.
+    let room_after_git = SIDEBAR_CENTRAL_RESERVE + browser_min + files_min;
+    let git_max = (ui.available_width() - room_after_git).max(GIT_SIDEBAR_MIN_WIDTH);
+    let git_block_padding = egui::Margin {
+        left: SIDEBAR_PAD_X,
+        right: SIDEBAR_PAD_X,
+        top: 0,
+        bottom: SIDEBAR_PAD_Y,
+    };
+    egui::Panel::right(RIGHT_SIDEBAR_ID)
+        .resizable(true)
+        .default_size(right_sidebar_width)
+        .min_size(GIT_SIDEBAR_MIN_WIDTH)
+        .max_size(git_max)
+        .frame(block_panel_frame(palette))
+        .show_separator_line(false)
+        .show_animated_inside(ui, git_shown, |ui| {
+            ui.set_min_width(ui.available_width());
+            sidebar_block(ui, palette, git_block_padding, |ui| {
+                // Run terminal strip pinned to the bottom; the status/detail content
+                // fills the remaining height above it (git.md §3).
+                if show_run {
+                    let run_frame =
+                        egui::Frame::new()
+                            .fill(palette.bg_canvas)
+                            .inner_margin(egui::Margin {
+                                left: 0,
+                                right: 0,
+                                top: 4,
+                                bottom: 0,
+                            });
+                    let panel = if run_collapsed {
+                        // A distinct id while folded: egui prefers a panel's stored size
+                        // over default_size, so sharing the id would overwrite the
+                        // remembered height with the header height and reopen the strip
+                        // clamped to its minimum (git.md §3).
+                        egui::Panel::bottom(RUN_PANEL_COLLAPSED_ID)
+                            .frame(run_frame)
+                            .resizable(false)
+                            .exact_size(crate::ui::run_panel::HEADER_HEIGHT)
+                    } else {
+                        let max =
+                            (ui.available_height() - RUN_PANEL_RESERVE).max(RUN_PANEL_MIN_HEIGHT);
+                        egui::Panel::bottom(RUN_PANEL_ID)
+                            .frame(run_frame)
+                            .resizable(true)
+                            .default_size(run_panel_height)
+                            .min_size(RUN_PANEL_MIN_HEIGHT)
+                            .max_size(max)
+                    };
+                    panel.show_inside(ui, run_panel);
+                }
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| {
+                        // A commit selected in Graph mode (M9-6) ⇒ its detail in place of
+                        // the status sections (git.md §9); no selection ⇒ the status
+                        // sections stay (WIP is the implicit selection — never a "select a
+                        // commit" state).
+                        if show_commit_detail {
+                            let mut set_view = None;
+                            let mut amend = None;
+                            commit_detail_panel(
+                                ui,
+                                palette,
+                                commit_detail,
+                                commit_diff_file,
+                                open_commit_file,
+                                repo_root,
+                                file_menu,
+                                git_file_view,
+                                &mut set_view,
+                                can_amend_head,
+                                &mut amend,
+                            );
+                            if let Some(view) = set_view {
+                                intents.push(crate::ui::git_panel::GitIntent::SetFileView(view));
+                            }
+                            if let Some(message) = amend {
+                                intents
+                                    .push(crate::ui::git_panel::GitIntent::AmendMessage(message));
+                            }
+                        } else if active_repo.is_none() {
+                            git_panel::no_repo(ui, palette, git_state);
+                        } else {
+                            git_panel(
+                                ui,
+                                palette,
+                                branch,
+                                status,
+                                op_in_progress,
+                                op,
+                                git_state,
+                                keymap,
+                                intents,
+                                repo_root,
+                                file_menu,
+                                git_file_view,
+                            );
+                        }
+                    });
+            });
         });
-    let browser_max =
-        (ui.available_width() - BROWSER_SIDEBAR_CENTRAL_RESERVE).max(BROWSER_SIDEBAR_MIN_WIDTH);
+
+    let room_after_browser = SIDEBAR_CENTRAL_RESERVE + files_min;
+    let browser_max = (ui.available_width() - room_after_browser).max(BROWSER_SIDEBAR_MIN_WIDTH);
     egui::Panel::right(BROWSER_SIDEBAR_ID)
         .resizable(true)
         .default_size(browser_sidebar_width)
         .min_size(BROWSER_SIDEBAR_MIN_WIDTH)
         .max_size(browser_max)
-        .frame(browser_frame)
+        .frame(block_panel_frame(palette))
+        .show_separator_line(false)
         .show_animated_inside(ui, browser_shown, |ui| {
             ui.set_min_width(ui.available_width());
-            browser_panel(ui);
+            sidebar_block(ui, palette, egui::Margin::ZERO, browser_panel);
         });
 
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        central(ui);
-    });
+    let files_max = (ui.available_width() - SIDEBAR_CENTRAL_RESERVE).max(FILES_SIDEBAR_MIN_WIDTH);
+    egui::Panel::right(FILES_SIDEBAR_ID)
+        .resizable(true)
+        .default_size(files_sidebar_width)
+        .min_size(FILES_SIDEBAR_MIN_WIDTH)
+        .max_size(files_max)
+        .frame(block_panel_frame(palette))
+        .show_separator_line(false)
+        .show_animated_inside(ui, files_shown, |ui| {
+            ui.set_min_width(ui.available_width());
+            sidebar_block(ui, palette, git_block_padding, |ui| {
+                if let Some(files) = files.as_deref_mut() {
+                    intents.extend(files_sidebar(ui, palette, files.tree));
+                }
+            });
+        });
+
+    let terminals = egui::CentralPanel::default()
+        .show_inside(ui, |ui| {
+            central(ui);
+        })
+        .response
+        .rect;
 
     // Single title row: both clusters center vertically in the title strip so the
     // left sidebar toggle and the right actions share one baseline. The macOS
@@ -1006,14 +1130,10 @@ pub fn root_layout(
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(toggle_x, controls_y))
         .show(ui.ctx(), |ui| {
-            let cmd_held = ui.input(|i| {
-                let m = i.modifiers;
-                m.command && !m.shift && !m.alt && !m.ctrl
-            });
             let workspace = workspace_toggle(ui, palette, show_workspace);
             if let Some(shortcut) = keymap
                 .shortcut_for(Action::ToggleWorkspaceSidebar)
-                .filter(|_| cmd_held)
+                .filter(|_| cmd_held(ui))
             {
                 shortcut_badge(
                     ui,
@@ -1025,9 +1145,15 @@ pub fn root_layout(
             }
         });
 
-    egui::Area::new(egui::Id::new("top_right_actions"))
+    // The right sidebars are blocks reaching the top of the window: their actions
+    // ride the terminals' title row, against the first block.
+    egui::Area::new(title_actions_id())
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, controls_y))
+        .fixed_pos(egui::pos2(
+            terminals.right() - TITLE_ACTIONS_MARGIN,
+            TITLE_LINE_Y - TOGGLE_HIT.y / 2.0,
+        ))
+        .pivot(egui::Align2::RIGHT_TOP)
         .show(ui.ctx(), |ui| {
             let can_open_workspace = active_repo
                 .and_then(|index| {
@@ -1037,32 +1163,39 @@ pub fn root_layout(
                     })
                 })
                 .is_some_and(|row| !row.missing);
-            let cmd_held = ui.input(|i| {
-                let m = i.modifiers;
-                m.command && !m.shift && !m.alt && !m.ctrl
-            });
-            top_right_actions(
+            let launcher = Launcher {
+                shown: !items.is_empty(),
+                enabled: can_open_workspace,
+                default_opener: default_workspace_opener,
+                installed: installed_openers,
+                open: open_workspace,
+            };
+            title_actions(
                 ui,
                 palette,
-                !items.is_empty(),
-                can_open_workspace,
-                cmd_held,
                 keymap,
-                default_workspace_opener,
-                installed_openers,
-                open_workspace,
-                open_preferences,
-                open_feedback,
-                phone,
-                open_phone,
-                helm_central,
-                show_git,
-                show_browser,
-                pr_active,
-                pr_rail_collapsed,
-                pr_toggle_rail,
+                launcher,
+                SidebarToggles {
+                    helm_central,
+                    show_git,
+                    show_browser,
+                    show_files: files.map(|files| &mut files.shown),
+                },
             )
         });
+}
+
+/// The title-row actions; [`central_switch`] reads where they were last drawn.
+fn title_actions_id() -> egui::Id {
+    egui::Id::new("title_actions")
+}
+
+/// Cmd alone is held: shortcut badges show (keybindings §5).
+fn cmd_held(ui: &egui::Ui) -> bool {
+    ui.input(|i| {
+        let m = i.modifiers;
+        m.command && !m.shift && !m.alt && !m.ctrl
+    })
 }
 
 /// Current left sidebar width after interaction (resize drag). `egui` stores the
@@ -1082,6 +1215,11 @@ pub fn browser_sidebar_width(ctx: &egui::Context) -> Option<f32> {
     panel_width(ctx, BROWSER_SIDEBAR_ID)
 }
 
+/// Current files sidebar width (see [`left_sidebar_width`]).
+pub fn files_sidebar_width(ctx: &egui::Context) -> Option<f32> {
+    panel_width(ctx, FILES_SIDEBAR_ID)
+}
+
 fn panel_width(ctx: &egui::Context, id: &str) -> Option<f32> {
     egui::containers::panel::PanelState::load(ctx, egui::Id::new(id)).map(|s| s.size().x)
 }
@@ -1092,121 +1230,102 @@ pub fn run_panel_height(ctx: &egui::Context) -> Option<f32> {
     egui::containers::panel::PanelState::load(ctx, egui::Id::new(RUN_PANEL_ID)).map(|s| s.size().y)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn top_right_actions(
+/// The workspace launcher of the title row: hidden until a repository is imported,
+/// disabled while the active folder is missing.
+struct Launcher<'a> {
+    shown: bool,
+    enabled: bool,
+    default_opener: WorkspaceOpener,
+    installed: &'a [WorkspaceOpener],
+    open: &'a mut Option<WorkspaceOpener>,
+}
+
+/// The right sidebars' toggles of the title row.
+struct SidebarToggles<'a> {
+    helm_central: bool,
+    show_git: &'a mut bool,
+    show_browser: Option<&'a mut BrowserToggle>,
+    show_files: Option<&'a mut bool>,
+}
+
+fn title_actions(
     ui: &mut egui::Ui,
     palette: &Palette,
-    show_launcher: bool,
-    has_workspace: bool,
-    cmd_held: bool,
     keymap: &Keymap,
-    default_workspace_opener: WorkspaceOpener,
-    installed_openers: &[WorkspaceOpener],
-    open_workspace: &mut Option<WorkspaceOpener>,
-    open_preferences: &mut bool,
-    open_feedback: &mut bool,
-    phone: Option<&PhoneIndicator>,
-    open_phone: &mut bool,
-    helm_central: bool,
-    show_git: &mut bool,
-    show_browser: Option<&mut BrowserToggle>,
-    pr_active: bool,
-    pr_rail_collapsed: bool,
-    pr_toggle_rail: &mut bool,
+    launcher: Launcher<'_>,
+    toggles: SidebarToggles<'_>,
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOP_ACTION_GAP;
-        // The row centers each item on the height it has reached so far: the dot,
-        // laid out first, is painted once its neighbour has settled.
-        let phone_slot = phone.map(|phone| (phone, ui.allocate_space(PHONE_DOT_HIT).1));
-        // No repository imported ⇒ no launcher at all; once repos exist, a
-        // missing active folder keeps it visible but disabled (tooltip below).
-        let launcher = show_launcher.then(|| {
+        if launcher.shown {
             workspace_launcher(
                 ui,
                 palette,
-                has_workspace,
-                default_workspace_opener,
-                installed_openers,
-                open_workspace,
-            )
-        });
-        let browser = show_browser
-            .filter(|_| !helm_central)
-            .map(|browser| browser_toggle(ui, palette, &mut browser.shown));
-        // The git panel is forced hidden while a Helm central mode is open, so its
-        // toggle would be inert. The PR cockpit reuses that slot for its own
-        // changed-files rail toggle (same glyph, same ⌘G shortcut), so all sidebars
-        // collapse from the one place; the Agents dashboard has no rail, so none.
-        let git = if pr_active {
-            let mut shown = !pr_rail_collapsed;
-            let resp = sidebar_toggle(
-                ui,
-                palette,
-                &mut shown,
-                "Toggle files panel",
-                SidebarToggleSide::Right,
+                launcher.enabled,
+                launcher.default_opener,
+                launcher.installed,
+                launcher.open,
             );
-            if resp.clicked() {
-                *pr_toggle_rail = true;
-            }
-            Some(resp)
-        } else if !helm_central {
-            Some(git_toggle(ui, palette, show_git))
-        } else {
-            None
-        };
-        let feedback = feedback_button(ui, palette, open_feedback);
-        let prefs = preferences_button(ui, palette, open_preferences);
-        if let Some((phone, slot)) = phone_slot {
-            let neighbour = launcher
-                .or(git.as_ref().map(|git| git.rect))
-                .unwrap_or(feedback.rect);
-            let center = egui::pos2(slot.center().x, neighbour.center().y);
-            if phone_indicator(ui, palette, phone, center).clicked() {
-                *open_phone = true;
-            }
         }
+        let shown = sidebar_toggles(ui, palette, toggles);
         // Badges are painted as an overlay below their icon (not inserted into the
         // flow): a `new_child` does not advance the cursor, so the row keeps its
         // width and the icons do not shift when Cmd toggles the display.
-        if cmd_held {
-            if let (Some(browser), Some(shortcut)) =
-                (&browser, keymap.shortcut_for(Action::ToggleBrowserSidebar))
-            {
-                shortcut_badge(
-                    ui,
-                    palette,
-                    "shortcut_badge_browser",
-                    &shortcut.display(),
-                    browser.rect,
-                );
-            }
-            if let (Some(git), Some(shortcut)) =
-                (&git, keymap.shortcut_for(Action::ToggleGitSidebar))
-            {
-                shortcut_badge(
-                    ui,
-                    palette,
-                    "shortcut_badge_git",
-                    &shortcut.display(),
-                    git.rect,
-                );
-            }
-            if let Some(shortcut) = keymap.shortcut_for(Action::TogglePreferences) {
-                shortcut_badge(
-                    ui,
-                    palette,
-                    "shortcut_badge_prefs",
-                    &shortcut.display(),
-                    prefs.rect,
-                );
+        if !cmd_held(ui) {
+            return;
+        }
+        for (toggle, action, id_salt) in shown {
+            if let Some(shortcut) = keymap.shortcut_for(action) {
+                shortcut_badge(ui, palette, id_salt, &shortcut.display(), toggle.rect);
             }
         }
     });
 }
 
+/// Draws the toggles that apply; each drawn one with the action its badge names.
+fn sidebar_toggles(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    toggles: SidebarToggles<'_>,
+) -> Vec<(egui::Response, Action, &'static str)> {
+    let mut shown = Vec::new();
+    if let Some(files) = toggles.show_files.filter(|_| !toggles.helm_central) {
+        let toggle = title_toggle(
+            ui,
+            palette,
+            files,
+            "Toggle files sidebar",
+            lucide_icons::Icon::Folder,
+        );
+        shown.push((toggle, Action::ToggleFilesSidebar, "shortcut_badge_files"));
+    }
+    if let Some(browser) = toggles.show_browser.filter(|_| !toggles.helm_central) {
+        let toggle = title_toggle(
+            ui,
+            palette,
+            &mut browser.shown,
+            "Toggle browser sidebar",
+            lucide_icons::Icon::Globe,
+        );
+        shown.push((
+            toggle,
+            Action::ToggleBrowserSidebar,
+            "shortcut_badge_browser",
+        ));
+    }
+    if !toggles.helm_central {
+        let toggle = git_toggle(ui, palette, toggles.show_git);
+        shown.push((toggle, Action::ToggleGitSidebar, "shortcut_badge_git"));
+    }
+    shown
+}
+
 const TOP_ACTION_GAP: f32 = 6.0;
+/// Height of the line the terminals' switch, the title-row actions and the right
+/// blocks' headers are centered on, from the window's top.
+const TITLE_LINE_Y: f32 = BLOCK_GAP as f32 + git_panel::HEADER_BAND_H / 2.0;
+/// Room between the title-row actions and the first right sidebar block.
+const TITLE_ACTIONS_MARGIN: f32 = 8.0;
 const SHORTCUT_BADGE_DROP: f32 = 3.0;
 const SHORTCUT_BADGE_BOX: egui::Vec2 = egui::vec2(40.0, SHORTCUT_BADGE_SIZE + 4.0);
 
@@ -1232,56 +1351,6 @@ fn shortcut_badge(
             .color(palette.text_muted),
     );
 }
-/// Phone access is on (specs/remote.md §2): who is connected, for the title bar dot.
-pub struct PhoneIndicator {
-    pub devices: Vec<String>,
-}
-
-const PHONE_DOT_HIT: egui::Vec2 = egui::vec2(12.0, 24.0);
-const PHONE_DOT_RADIUS: f32 = 4.0;
-pub const PHONE_DOT_LABEL: &str = "Phone access";
-/// Opacity at rest: a hint, not a status light.
-const PHONE_DOT_FADE: f32 = 0.45;
-
-/// Faded green while a phone is connected, muted while access waits for one; full
-/// strength under the pointer. A click opens the pairing modal.
-fn phone_indicator(
-    ui: &egui::Ui,
-    palette: &Palette,
-    phone: &PhoneIndicator,
-    center: egui::Pos2,
-) -> egui::Response {
-    let response = ui
-        .interact(
-            egui::Rect::from_center_size(center, PHONE_DOT_HIT),
-            ui.id().with("phone_dot"),
-            egui::Sense::click(),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let hovered = response.hovered();
-    let color = if phone.devices.is_empty() {
-        palette.text_muted
-    } else {
-        palette.git_added
-    };
-    let color = if hovered {
-        color
-    } else {
-        color.gamma_multiply(PHONE_DOT_FADE)
-    };
-    ui.painter().circle_filled(center, PHONE_DOT_RADIUS, color);
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, PHONE_DOT_LABEL));
-    response.on_hover_text(phone_indicator_tooltip(&phone.devices))
-}
-
-pub fn phone_indicator_tooltip(devices: &[String]) -> String {
-    match devices {
-        [] => "Phone access on — no phone connected".to_owned(),
-        names => format!("Phone access on — {} connected", names.join(", ")),
-    }
-}
-
 const LAUNCHER_MAIN_HIT: egui::Vec2 = egui::vec2(32.0, 24.0);
 const LAUNCHER_MENU_HIT: egui::Vec2 = egui::vec2(18.0, 24.0);
 const LAUNCHER_ICON_SIZE: f32 = 20.0;
@@ -1524,76 +1593,53 @@ fn opener_icon_texture(
 
 const TOGGLE_HIT: egui::Vec2 = egui::vec2(28.0, 24.0);
 const TOGGLE_GLYPH: egui::Vec2 = egui::vec2(16.0, 13.0);
-
-#[derive(Clone, Copy)]
-enum SidebarToggleSide {
-    Left,
-    Right,
-}
-
-fn workspace_toggle(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    show_workspace: &mut bool,
-) -> egui::Response {
-    sidebar_toggle(
-        ui,
-        palette,
-        show_workspace,
-        "Toggle workspace sidebar",
-        SidebarToggleSide::Left,
-    )
-}
+const TITLE_TOGGLE_GLYPH: f32 = 15.0;
 
 fn git_toggle(ui: &mut egui::Ui, palette: &Palette, show_git: &mut bool) -> egui::Response {
-    sidebar_toggle(
+    title_toggle(
         ui,
         palette,
         show_git,
         "Toggle git sidebar",
-        SidebarToggleSide::Right,
+        lucide_icons::Icon::GitBranch,
     )
 }
 
-fn browser_toggle(ui: &mut egui::Ui, palette: &Palette, show_browser: &mut bool) -> egui::Response {
+/// An icon flipping `shown`, accent while on.
+fn title_toggle(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    shown: &mut bool,
+    label: &str,
+    icon: lucide_icons::Icon,
+) -> egui::Response {
     let (rect, response, hovered) = clickable(ui, TOGGLE_HIT, true);
     if response.clicked() {
-        *show_browser = !*show_browser;
+        *shown = !*shown;
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toggle browser sidebar")
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let painter = ui.painter();
     if hovered {
         painter.rect_filled(rect, egui::CornerRadius::same(6), palette.bg_surface_hover);
     }
-    let color = if *show_browser {
+    let color = if *shown {
         palette.accent
     } else {
         palette.text_muted
     };
-    paint_icon(
-        painter,
-        rect.center(),
-        FEEDBACK_GLYPH,
-        lucide_icons::Icon::Globe,
-        color,
-    );
+    paint_icon(painter, rect.center(), TITLE_TOGGLE_GLYPH, icon, color);
     response
 }
 
-fn sidebar_toggle(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    show: &mut bool,
-    label: &'static str,
-    side: SidebarToggleSide,
-) -> egui::Response {
+/// A panel glyph whose left column fills while the workspace sidebar is shown.
+fn workspace_toggle(ui: &mut egui::Ui, palette: &Palette, show: &mut bool) -> egui::Response {
     let (rect, response, hovered) = clickable(ui, TOGGLE_HIT, true);
     if response.clicked() {
         *show = !*show;
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toggle workspace sidebar")
+    });
 
     let painter = ui.painter();
     if hovered {
@@ -1607,19 +1653,9 @@ fn sidebar_toggle(
         palette.text_muted
     };
     let stroke = egui::Stroke::new(1.5_f32, color);
-    let divider_x = match side {
-        SidebarToggleSide::Left => glyph.left() + glyph.width() * 0.38,
-        SidebarToggleSide::Right => glyph.right() - glyph.width() * 0.38,
-    };
+    let divider_x = glyph.left() + glyph.width() * 0.38;
     if *show {
-        let column = match side {
-            SidebarToggleSide::Left => {
-                egui::Rect::from_min_max(glyph.min, egui::pos2(divider_x, glyph.bottom()))
-            }
-            SidebarToggleSide::Right => {
-                egui::Rect::from_min_max(egui::pos2(divider_x, glyph.top()), glyph.max)
-            }
-        };
+        let column = egui::Rect::from_min_max(glyph.min, egui::pos2(divider_x, glyph.bottom()));
         painter.rect_filled(column, egui::CornerRadius::ZERO, palette.accent_subtle);
     }
     painter.rect_stroke(
@@ -1634,72 +1670,6 @@ fn sidebar_toggle(
             egui::pos2(divider_x, glyph.bottom()),
         ],
         stroke,
-    );
-    response
-}
-
-const FEEDBACK_HIT: egui::Vec2 = egui::vec2(28.0, 24.0);
-const FEEDBACK_GLYPH: f32 = 15.0;
-
-/// Bug/suggestion report (specs/feedback.md): opens the feedback modal. Same
-/// icon-button shape as the preferences gear.
-fn feedback_button(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    open_feedback: &mut bool,
-) -> egui::Response {
-    let (rect, response, hovered) = clickable(ui, FEEDBACK_HIT, true);
-    if response.clicked() {
-        *open_feedback = true;
-    }
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Send feedback"));
-
-    let painter = ui.painter();
-    if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::same(6), palette.bg_surface_hover);
-    }
-    paint_icon(
-        painter,
-        rect.center(),
-        FEEDBACK_GLYPH,
-        lucide_icons::Icon::Bug,
-        palette.text_muted,
-    );
-    response
-}
-
-const PREFS_HIT: egui::Vec2 = egui::vec2(28.0, 24.0);
-const PREFS_GLYPH: f32 = 15.0;
-
-fn preferences_button(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    open_preferences: &mut bool,
-) -> egui::Response {
-    let (rect, response, hovered) = clickable(ui, PREFS_HIT, true);
-    if response.clicked() {
-        *open_preferences = !*open_preferences;
-    }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open preferences")
-    });
-
-    let painter = ui.painter();
-    if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::same(6), palette.bg_surface_hover);
-    }
-    let color = if *open_preferences {
-        palette.text_primary
-    } else {
-        palette.text_muted
-    };
-    paint_icon(
-        painter,
-        rect.center(),
-        PREFS_GLYPH,
-        lucide_icons::Icon::Settings,
-        color,
     );
     response
 }

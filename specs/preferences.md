@@ -20,7 +20,7 @@ floating preferences window. Tokens and components: [`design-system.md`](design-
 
 - `Cmd+,` **toggles** the page: open ⇒ close, closed ⇒ open
   ([`keybindings.md`](keybindings.md) §1).
-- The **gear icon** (top-right) opens the page (the `,` badge while holding
+- The **gear icon** (workspace sidebar footer, design-system §4) opens the page (the `,` badge while holding
   `Cmd` is unchanged, keybindings §5).
 - Exit: **← Back to app** row (nav header), `Esc`, or `Cmd+,`.
 - The page **covers the whole window** (the 3 zones are no longer rendered)
