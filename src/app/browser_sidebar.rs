@@ -22,6 +22,7 @@ use super::keys::{consume_action, consume_zoom_commands, ZoomCommand};
 use super::{HelmApp, Page, TerminalState};
 use crate::keybindings::Action;
 use crate::persistence::Prefs;
+use crate::tab_drop::TabDrop;
 
 /// Lines of the Run strip scanned for the server's URL (browser.md §5).
 const SERVER_OUTPUT_LINES: usize = 400;
@@ -282,6 +283,13 @@ impl WorktreeBrowser {
         }
     }
 
+    /// The shown tab stays shown wherever it goes.
+    fn move_tab(&mut self, drop: TabDrop) {
+        if let Some(active) = drop.apply(&mut self.tabs, self.active) {
+            self.active = active;
+        }
+    }
+
     fn has_native_focus(&self) -> bool {
         self.tabs[self.active]
             .view
@@ -329,6 +337,7 @@ impl WorktreeBrowser {
             BrowserIntent::NewTab => self.open_tab(),
             BrowserIntent::OpenInNewTab(url) => self.open_background_tab(url),
             BrowserIntent::SelectTab(index) => self.select_tab(index),
+            BrowserIntent::MoveTab(drop) => self.move_tab(drop),
             BrowserIntent::CloseTab(index) if last_tab => {
                 self.close_tab(index);
                 return Some(intent);

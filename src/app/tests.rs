@@ -5264,6 +5264,38 @@ mod browser_sidebar {
         assert_eq!(harness.state().pane_count(), 1);
     }
 
+    #[test]
+    fn dragging_a_tab_past_another_moves_it_the_shown_one_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+        // The terminals' tab bar has its own New tab, left of the browser's.
+        harness
+            .get_all_by_label("New tab")
+            .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .unwrap()
+            .click();
+        harness.run();
+        let server_tab = |harness: &egui_kittest::Harness<'_, HelmApp>| {
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, "localhost:3000")
+                .rect()
+        };
+        let grab = server_tab(&harness).center();
+        let past = harness.get_by_label("Close New tab").rect().right_center();
+        harness.hover_at(grab);
+        harness.drag_at(grab);
+        harness.run();
+        harness.hover_at(past);
+        harness.run();
+        harness.drop_at(past);
+        harness.run();
+        assert!(
+            harness.get_by_label("Close New tab").rect().left() < server_tab(&harness).left(),
+            "the server's tab now sits after the new one, which stays shown"
+        );
+    }
+
     fn float_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
         harness.get_by_label("More").click();
         harness.run();

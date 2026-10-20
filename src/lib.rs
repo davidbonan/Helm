@@ -21,6 +21,7 @@ pub mod release_notes;
 pub mod remote;
 pub mod review;
 pub mod run;
+pub mod tab_drop;
 pub mod terminal;
 pub mod theme;
 pub mod ui;

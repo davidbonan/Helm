@@ -124,6 +124,10 @@ tabs. Counter: **18/22**.
   units, 1 prefs, 3 app (float, hover bar + Dock, drag); headless
   `verify-artifacts/20261020_102636_575/`. Not done: real window (WebKit view
   placement, JS hover).
+- ☑ **B24 — Reorder tabs by drag.** A tab dragged along the row moves, an accent
+  line marking its gap; the shown tab stays shown. Drop slot shared with the
+  terminal tab bar (`tab_drop::TabDrop`). *Tests*: 3 units, 1 app (drag past the
+  new tab). Not done: real window (drag over the native page).
 
 ---
 

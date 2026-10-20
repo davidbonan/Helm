@@ -2,6 +2,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use helm::keybindings::{Action, Keymap, Shortcut};
+use helm::tab_drop::TabDrop;
 use helm::theme::Palette;
 use helm::ui::tab_bar::{tab_bar, TabBarAction, TabRename};
 
@@ -89,7 +90,11 @@ fn dropping_a_tab_after_another_emits_a_reorder() {
 
     assert_eq!(
         harness.state().action.reorder,
-        Some((0, 2, true)),
+        Some(TabDrop {
+            from: 0,
+            anchor: 2,
+            after: true
+        }),
         "Tab 1 (0) is dropped after Tab 3 (2)"
     );
 }

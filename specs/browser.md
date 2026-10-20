@@ -11,7 +11,7 @@ terminals, to preview the worktree's dev server next to them.
 | **Picture in Picture**: the browser detached into a floating panel over the window (§11) | A separate macOS window, floating over other apps |
 | Native engine view (WebKit) over the sidebar, real input, IME, cursor, scroll | Chromium engine (CEF) — the engine port keeps it a drop-in (§2) |
 | Toolbar: back, forward, address pill (reload/stop inside), Dev server, Favorites, More (Find in page, page zoom, viewport width, Web Inspector, Open in Chrome, Copy URL) | Downloads, device emulation beyond the width |
-| Tabs per worktree: a tab row under the toolbar | Reordering tabs, `target="_blank"` in a new tab |
+| Tabs per worktree: a tab row under the toolbar, reordered by dragging | `target="_blank"` in a new tab, a tab dragged out to its own browser |
 | Default URL: the server the Run strip printed, else `localhost:$PORT` | Following the server after the first load, element picker, agent bridge |
 | One persistent profile shared by every worktree (cookies, storage survive restarts) | Per-worktree profiles, private mode |
 | Helm's `Cmd` shortcuts keep working while the page has focus | Tabs persisted across launches (terminals are not either) |
@@ -81,8 +81,8 @@ terminals, to preview the worktree's dev server next to them.
     loading, `Shift`-click reloads bypassing the cache.
   - **Tabs**: a worktree's browser holds one or more tabs, each its own page (own view,
     history, scroll, toolbar fold); the address pill is the shown tab's. The
-    **tab row** (34 pt, at the foot of the bar) lists them all, even a lone one, in a
-    fixed order, ended by **New tab** (`+`). A tab: a badge (the site's icon,
+    **tab row** (34 pt, at the foot of the bar) lists them all, even a lone one, in
+    order, ended by **New tab** (`+`). A tab: a badge (the site's icon,
     §10, else its letter as on the start page, or a globe in a grey one while it
     has no page; a spinner while its page loads) and the elided title. The shown
     tab is a folder tab: the page's color, its top corners rounded, its foot
@@ -97,6 +97,9 @@ terminals, to preview the worktree's dev server next to them.
       one, else the previous. Closing the last tab (its `×`, a middle click or
       `Cmd+W`, §6) hides the sidebar and drops its page: the next opening shows
       a tab on the start page.
+    - A tab dragged along the row moves: an accent line marks the gap it would
+      land in, on the pointer's side of the tab under it; released, it lands
+      there. The shown tab stays shown.
   - **New tab** (`+`): a tab after the shown one, on the start page with the
     URL field focused.
   - **Favorites** (star): shows the start page (§7), pressed meanwhile; a second

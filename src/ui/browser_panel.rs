@@ -12,6 +12,7 @@ use crate::browser::import::{ImportSource, ImportStatus};
 use crate::browser::library::{Library, Suggestion};
 use crate::browser::page_view::{PageView, Viewport, ZoomChange};
 use crate::browser::{url, Navigation, PageState};
+use crate::tab_drop::TabDrop;
 use crate::theme::Palette;
 use crate::ui::browser_start_page::{elided, paint_badge, Badge, FavoritesView};
 use crate::ui::spinner::Spinner;
@@ -190,6 +191,7 @@ pub enum BrowserIntent {
     NewTab,
     SelectTab(usize),
     CloseTab(usize),
+    MoveTab(TabDrop),
     /// Out of the sidebar, onto the floating panel (browser.md §11).
     Float,
     /// Off the floating panel, back into the sidebar.
@@ -1515,6 +1517,9 @@ fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<Brow
     picked.or(new_tab)
 }
 
+/// Drag payload of a tab being moved: its index in the row.
+struct DraggedTab(usize);
+
 struct Tab<'a> {
     index: usize,
     summary: &'a TabSummary,
@@ -1522,16 +1527,24 @@ struct Tab<'a> {
     shown: bool,
 }
 
-/// One tab of the row: a click shows it; its `×` (titled: on hover, always on
-/// the shown tab) or a middle click closes it.
+/// One tab of the row: a click shows it, a drag moves it; its `×` (titled: on
+/// hover, always on the shown tab) or a middle click closes it.
 fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<BrowserIntent> {
     let (rect, colors) = (tab.rect, row.colors);
     let label = tab.summary.label();
     let titled = rect.width() >= TAB_TITLED_MIN_WIDTH;
     let response = ui
-        .interact(rect, ui.id().with(("tab", tab.index)), egui::Sense::click())
+        .interact(
+            rect,
+            ui.id().with(("tab", tab.index)),
+            egui::Sense::click_and_drag(),
+        )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(label);
+    response.dnd_set_drag_payload(DraggedTab(tab.index));
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
     let hovered = ui.rect_contains_pointer(rect);
     if tab.shown {
         paint_folder_tab(ui, rect, &row.fills);
@@ -1567,6 +1580,9 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
             &tab_badge(row.chrome, badge_center, tab.summary),
         );
     }
+    if let Some(drop) = tab_drop(ui, row, tab, &response) {
+        return Some(BrowserIntent::MoveTab(drop));
+    }
     if titled {
         let crossed = hovered || tab.shown;
         let close_room = if crossed { TAB_CLOSE_SIZE } else { 0.0 };
@@ -1600,6 +1616,41 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         return Some(BrowserIntent::CloseTab(tab.index));
     }
     (response.clicked() && !tab.shown).then_some(BrowserIntent::SelectTab(tab.index))
+}
+
+/// A tab dragged over this one: a line marks where it would land, on the side of
+/// the pointer; released, it is dropped there.
+fn tab_drop(
+    ui: &egui::Ui,
+    row: &TabRow<'_>,
+    tab: &Tab<'_>,
+    response: &egui::Response,
+) -> Option<TabDrop> {
+    let dragged = response.dnd_hover_payload::<DraggedTab>()?;
+    let after = ui
+        .input(|i| i.pointer.interact_pos())
+        .is_some_and(|pointer| pointer.x > tab.rect.center().x);
+    let drop = TabDrop {
+        from: dragged.0,
+        anchor: tab.index,
+        after,
+    };
+    drop.slot(row.strip.tabs.len())?;
+    if response.dnd_release_payload::<DraggedTab>().is_some() {
+        return Some(drop);
+    }
+    let x = if after {
+        tab.rect.right() + TAB_GAP / 2.0
+    } else {
+        tab.rect.left() - TAB_GAP / 2.0
+    };
+    let lit = lit_rect(tab.rect);
+    ui.painter().vline(
+        x,
+        lit.top()..=lit.bottom(),
+        egui::Stroke::new(2.0_f32, row.chrome.palette.accent),
+    );
+    None
 }
 
 /// An unshown tab's hover light, clear of the shown tab's flares and the page.

@@ -1,4 +1,5 @@
 use crate::keybindings::{Action, Keymap};
+use crate::tab_drop::TabDrop;
 use crate::theme::{Palette, RADIUS_PILL, SHORTCUT_BADGE_SIZE};
 use crate::ui::MAX_SHORTCUT;
 
@@ -9,9 +10,9 @@ pub struct TabBarAction {
     pub close: Option<usize>,
     pub new: bool,
     pub rename: Option<(usize, String)>,
-    /// Drag-and-drop reorder of the active repo's tabs: move tab `from` to land
-    /// before (or `after`) tab `anchor`. `Workspace::reorder_tab` arbitrates.
-    pub reorder: Option<(usize, usize, bool)>,
+    /// Drag-and-drop reorder of the active repo's tabs; `Workspace::reorder_tab`
+    /// arbitrates.
+    pub reorder: Option<TabDrop>,
 }
 
 /// Drag payload carried while a tab chip is dragged: its index in the tab bar.
@@ -100,8 +101,8 @@ pub fn tab_bar(
             // Chips in render order — feeds the drop insertion line, drawn after the
             // loop once every rect is known.
             let mut placed: Vec<(usize, egui::Rect)> = Vec::new();
-            let mut hovering: Option<(usize, usize, bool)> = None;
-            let mut released: Option<(usize, usize, bool)> = None;
+            let mut hovering: Option<TabDrop> = None;
+            let mut released: Option<TabDrop> = None;
             for (index, title) in titles.iter().enumerate() {
                 // Stable id per chip: the badge's `new_child` (conditional on Cmd)
                 // would otherwise shift the auto-ids of the following chips (egui red
@@ -121,11 +122,16 @@ pub fn tab_bar(
                     })
                     .inner;
                 let after = pointer.is_some_and(|p| p.x > response.rect.center().x);
+                let drop = |drag: std::sync::Arc<DragTab>| TabDrop {
+                    from: drag.0,
+                    anchor: index,
+                    after,
+                };
                 if let Some(drag) = response.dnd_hover_payload::<DragTab>() {
-                    hovering = Some((drag.0, index, after));
+                    hovering = Some(drop(drag));
                 }
                 if let Some(drag) = response.dnd_release_payload::<DragTab>() {
-                    released = Some((drag.0, index, after));
+                    released = Some(drop(drag));
                 }
                 placed.push((index, response.rect));
                 divider(ui, palette);
@@ -138,14 +144,10 @@ pub fn tab_bar(
                         .color(palette.text_muted),
                 );
             }
-            if let Some((from, anchor, after)) = released {
-                if tab_insert_at(from, anchor, after, titles.len()).is_some() {
-                    out.reorder = Some((from, anchor, after));
-                }
-            } else if let Some((from, anchor, after)) = hovering {
-                if let Some(insert_at) = tab_insert_at(from, anchor, after, titles.len()) {
-                    draw_tab_drop_line(ui, palette, &placed, insert_at);
-                }
+            if let Some(drop) = released {
+                out.reorder = drop.slot(titles.len()).map(|_| drop);
+            } else if let Some(slot) = hovering.and_then(|drop| drop.slot(titles.len())) {
+                draw_tab_drop_line(ui, palette, &placed, slot);
             }
             // Bottom borders are painted on the bar's own layer: drawing them after
             // this closure (parent painter) lands them past the bar — the terminal
@@ -183,17 +185,6 @@ fn divider(ui: &mut egui::Ui, palette: &Palette) {
         (rect.center().y - half)..=(rect.center().y + half),
         egui::Stroke::new(1.0_f32, palette.border_input),
     );
-}
-
-/// Insertion slot (0..=len, in the pre-removal indexing) for dropping tab `from`
-/// against `anchor`, or `None` for a no-op drop onto its own edge. Used both to
-/// gate the emitted reorder and to position the preview line.
-fn tab_insert_at(from: usize, anchor: usize, after: bool, len: usize) -> Option<usize> {
-    if from >= len || anchor >= len {
-        return None;
-    }
-    let insert_at = if after { anchor + 1 } else { anchor };
-    (insert_at != from && insert_at != from + 1).then_some(insert_at)
 }
 
 /// Vertical insertion indicator drawn during a tab drag: an accent line in the gap

@@ -2203,8 +2203,8 @@ impl HelmApp {
                 if tab_action.new {
                     self.workspace.add_tab();
                 }
-                if let Some((from, anchor, after)) = tab_action.reorder {
-                    self.workspace.reorder_tab(from, anchor, after);
+                if let Some(drop) = tab_action.reorder {
+                    self.workspace.reorder_tab(drop);
                 }
                 // Before `close`: an edit commit and a close in the same frame must
                 // rename the targeted tab before the reindexing.

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::persistence::Project;
+use crate::tab_drop::TabDrop;
 use crate::terminal::layout::{Layout, PaneId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,34 +326,16 @@ impl Workspace {
         }
     }
 
-    /// Reorders the active repo's tabs: tab `from` is dropped just `after` (or
-    /// before) tab `anchor`. `active_tab` follows its tab by identity. Returns
+    /// Reorders the active repo's tabs; `active_tab` follows its tab. Returns
     /// whether the tabs actually moved (a drop onto its own edge is a no-op).
-    pub fn reorder_tab(&mut self, from: usize, anchor: usize, after: bool) -> bool {
+    pub fn reorder_tab(&mut self, drop: TabDrop) -> bool {
         let Some(e) = self.active_entry_mut() else {
             return false;
         };
-        let len = e.tabs.len();
-        if from >= len || anchor >= len {
+        let Some(active) = drop.apply(&mut e.tabs, e.active_tab) else {
             return false;
-        }
-        let insert_at = if after { anchor + 1 } else { anchor };
-        if insert_at == from || insert_at == from + 1 {
-            return false;
-        }
-        let active_id = e.tabs[e.active_tab].id;
-        let tab = e.tabs.remove(from);
-        let dest = if insert_at > from {
-            insert_at - 1
-        } else {
-            insert_at
         };
-        e.tabs.insert(dest, tab);
-        e.active_tab = e
-            .tabs
-            .iter()
-            .position(|t| t.id == active_id)
-            .unwrap_or(e.active_tab);
+        e.active_tab = active;
         true
     }
 
@@ -1182,7 +1165,11 @@ mod tests {
         assert_eq!(ws.add_tab(), None);
         assert!(!ws.close_tab(0));
         assert!(!ws.set_active_tab(0));
-        assert!(!ws.reorder_tab(0, 0, true));
+        assert!(!ws.reorder_tab(TabDrop {
+            from: 0,
+            anchor: 0,
+            after: true
+        }));
     }
 
     #[test]
@@ -1393,7 +1380,11 @@ mod tests {
         assert_eq!(ws.active_tab(), Some(2));
 
         // Drop tab 0 after tab 2 (the end): order becomes [1, 2, 0].
-        assert!(ws.reorder_tab(0, 2, true));
+        assert!(ws.reorder_tab(TabDrop {
+            from: 0,
+            anchor: 2,
+            after: true
+        }));
         assert_eq!(ws.tab_id(0, 2).unwrap(), id0, "tab 0 moved to the end");
         assert_eq!(ws.tab_id(0, 1).unwrap(), id2);
         assert_eq!(
@@ -1410,9 +1401,30 @@ mod tests {
         ws.add_tab();
         ws.add_tab();
 
-        assert!(!ws.reorder_tab(1, 1, false), "dropped on its own left edge");
-        assert!(!ws.reorder_tab(1, 1, true), "dropped on its own right edge");
-        assert!(!ws.reorder_tab(0, 3, true), "anchor out of bounds");
+        assert!(
+            !ws.reorder_tab(TabDrop {
+                from: 1,
+                anchor: 1,
+                after: false
+            }),
+            "dropped on its own left edge"
+        );
+        assert!(
+            !ws.reorder_tab(TabDrop {
+                from: 1,
+                anchor: 1,
+                after: true
+            }),
+            "dropped on its own right edge"
+        );
+        assert!(
+            !ws.reorder_tab(TabDrop {
+                from: 0,
+                anchor: 3,
+                after: true
+            }),
+            "anchor out of bounds"
+        );
         assert_eq!(ws.active_tab(), Some(2));
     }
 
