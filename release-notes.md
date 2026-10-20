@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.7.2
+
+- Browser tabs can be reordered: drag a tab along the row to move it.
+- `⌘R` right after clicking a page now reloads it, instead of restarting the
+  dev server.
+
 ## 3.7.1
 
 - **Picture in Picture**: More › Picture in Picture floats the
@@ -83,16 +89,3 @@
 - Phone: selecting terminal text works while the agent is running —
   the selection handles can be dragged and the screen holds still
   until you tap away.
-
-## 3.3.0
-
-- Phone pairing now lasts: a paired phone stays paired across restarts of
-  helm for 30 days, and scanning the QR code again lands on its agents.
-- New Preferences › Phone: start phone access at launch when the Mac is on
-  the network the phone paired on, and revoke paired devices.
-- A dot beside **Open with** shows phone access is on and who is connected;
-  click it to open the pairing modal.
-- Git sidebar: folding Unstaged or Staged gives its room to the other list,
-  and the split between them is draggable.
-- Going back from an agent started on the phone lands on the agents list.
-- Removed the AI rebase (graph menu entry and its Preferences provider).
