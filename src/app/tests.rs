@@ -5037,6 +5037,8 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
 mod browser_sidebar {
     use super::*;
     use egui_kittest::kittest::Queryable;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     /// Frames run like the app's: keys, render, views.
     fn harness(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
@@ -5247,6 +5249,78 @@ mod browser_sidebar {
         harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
         harness.run();
         assert!(!harness.state().sidebars.git);
+    }
+
+    /// A page whose native focus the test moves itself, as a click on it does:
+    /// no egui frame runs in between.
+    #[derive(Clone, Default)]
+    struct FakePage {
+        focused: Rc<Cell<bool>>,
+        reloads: Rc<Cell<usize>>,
+    }
+
+    impl crate::browser::WebEngine for FakePage {
+        fn open(&self) -> Box<dyn crate::browser::WebView> {
+            Box::new(self.clone())
+        }
+        fn import_cookies(&self, _: &[crate::browser::Cookie]) -> usize {
+            0
+        }
+    }
+
+    impl crate::browser::WebView for FakePage {
+        fn place(&mut self, _: Option<crate::browser::ViewRect>) {}
+        fn load(&mut self, _: &str) {}
+        fn navigate(&mut self, navigation: crate::browser::Navigation) {
+            if navigation == crate::browser::Navigation::Reload {
+                self.reloads.set(self.reloads.get() + 1);
+            }
+        }
+        fn page(&self) -> crate::browser::PageState {
+            crate::browser::PageState::default()
+        }
+        fn focus(&mut self) {
+            self.focused.set(true);
+        }
+        fn is_focused(&self) -> bool {
+            self.focused.get()
+        }
+        fn show_inspector(&mut self) {}
+        fn request_snapshot(&mut self) {}
+        fn take_snapshot(&mut self) -> Option<crate::browser::PageSnapshot> {
+            None
+        }
+        fn set_zoom(&mut self, _: f64) {}
+        fn find(&mut self, _: &str, _: bool) {}
+        fn take_find_result(&mut self) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn cmd_r_right_after_clicking_the_page_reloads_it_not_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage::default();
+        let mut app = with_dev_server(dir.path());
+        app.web_engine = Some(Box::new(page.clone()));
+        let mut harness = harness(app);
+        open_browser(&mut harness);
+        page.focused.set(false);
+        harness.run();
+        harness.state_mut().sidebars.git = false;
+        page.focused.set(true);
+        // Cmd and R in one frame: no frame saw the click before the chord.
+        harness.input_mut().modifiers = egui::Modifiers::COMMAND;
+        harness.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::R,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        harness.run();
+        assert_eq!(page.reloads.get(), 1);
+        assert!(!harness.state().sidebars.git, "the server must not run");
     }
 
     #[test]

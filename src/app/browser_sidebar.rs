@@ -41,8 +41,8 @@ pub(crate) struct WorktreeBrowser {
     placed: Option<egui::Rect>,
     /// The panel's own suggestions fell over the page this frame.
     overlaid: bool,
-    /// The page or a field of the panel held the keyboard when last drawn.
-    has_keyboard: bool,
+    /// A field of the panel held the keyboard when last drawn.
+    field_focused: bool,
     /// Drawn this frame.
     drawn: bool,
 }
@@ -227,7 +227,7 @@ impl WorktreeBrowser {
             takes_keyboard: true,
             placed: None,
             overlaid: false,
-            has_keyboard: false,
+            field_focused: false,
             drawn: false,
         }
     }
@@ -297,6 +297,11 @@ impl WorktreeBrowser {
             .is_some_and(|view| view.is_focused())
     }
 
+    /// The page's focus is read live: a click on it runs no egui frame.
+    fn has_keyboard(&self) -> bool {
+        self.field_focused || self.has_native_focus()
+    }
+
     /// Applies the browser's own intent; the shared ones (favorites, import, server,
     /// closing the last tab) come back for the app.
     fn apply(&mut self, intent: BrowserIntent) -> Option<BrowserIntent> {
@@ -353,7 +358,7 @@ impl WorktreeBrowser {
     /// draws over it; the other tabs' views stay hidden (browser.md §4).
     fn sync_views(&mut self, engine: Option<&dyn WebEngine>, covered: bool, ctx: &egui::Context) {
         if !std::mem::take(&mut self.drawn) {
-            self.has_keyboard = false;
+            self.field_focused = false;
         }
         let placed = self.placed.take();
         let overlaid = std::mem::take(&mut self.overlaid);
@@ -528,7 +533,7 @@ impl WorktreeBrowser {
                 view.focus();
             }
         }
-        self.has_keyboard = native_focus || output.field_focused;
+        self.field_focused = output.field_focused;
         self.drawn = true;
         output
             .intents
@@ -775,7 +780,7 @@ impl HelmApp {
             .caches
             .browsers
             .get_mut(&key)
-            .filter(|browser| browser.has_keyboard)
+            .filter(|browser| browser.has_keyboard())
         else {
             return;
         };

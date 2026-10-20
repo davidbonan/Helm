@@ -206,7 +206,8 @@ pub struct BrowserPanelOutput {
     pub page_rect: Option<egui::Rect>,
     /// The suggestions fall over the page: it shows frozen beneath them.
     pub page_overlaid: bool,
-    /// A press in the toolbar (the page's own clicks are the engine's).
+    /// A press in the toolbar off its fields (the page's own clicks are the
+    /// engine's).
     pub clicked: bool,
     /// The URL or find field holds the keyboard.
     pub field_focused: bool,
@@ -413,7 +414,7 @@ pub fn browser_panel(
             intents: Vec::new(),
             page_rect: Some(viewport),
             page_overlaid: false,
-            clicked: pressed_in(ui, bar_rect),
+            clicked: false,
             field_focused: false,
         };
     }
@@ -468,9 +469,11 @@ pub fn browser_panel(
     let find_top = bar_rect.top() + BAR_HEIGHT;
     let find_area = bar_band(bar_rect, find_top, find_height);
     let mut find_focused = false;
+    let mut find_pressed = false;
     if finding && find_area.height() > 0.0 {
         let found = find_bar(ui, &colors, &mut tab.find, find_area);
         find_focused = found.has_focus;
+        find_pressed = found.pressed;
         intents.extend(found.intent);
     }
     let row_area = bar_band(bar_rect, find_top + find_height, TAB_ROW_HEIGHT);
@@ -498,7 +501,7 @@ pub fn browser_panel(
         intents,
         page_rect,
         page_overlaid,
-        clicked: pressed_in(ui, bar_rect),
+        clicked: pressed_in(ui, bar_rect) && !(address.pressed || find_pressed),
         field_focused: address.has_focus || find_focused,
     }
 }
@@ -761,6 +764,7 @@ fn viewport_row(ui: &mut egui::Ui, viewport: &mut Viewport) {
 
 struct FindOutput {
     has_focus: bool,
+    pressed: bool,
     intent: Option<BrowserIntent>,
 }
 
@@ -775,6 +779,7 @@ fn find_bar(
     let Some(find) = slot.as_mut() else {
         return FindOutput {
             has_focus: false,
+            pressed: false,
             intent: None,
         };
     };
@@ -850,18 +855,25 @@ fn find_bar(
         })
         .inner;
     let has_focus = field.has_focus();
+    let pressed = field.is_pointer_button_down_on();
     if closed || (field.lost_focus() && escape) {
         *slot = None;
         return FindOutput {
             has_focus: false,
+            pressed,
             intent: Some(BrowserIntent::FocusPage),
         };
     }
-    FindOutput { has_focus, intent }
+    FindOutput {
+        has_focus,
+        pressed,
+        intent,
+    }
 }
 
 struct AddressOutput {
     has_focus: bool,
+    pressed: bool,
     intent: Option<BrowserIntent>,
     /// The list to show under the pill (browser.md §8).
     suggestions: Vec<Suggestion>,
@@ -920,6 +932,7 @@ fn address_bar(
     };
     AddressOutput {
         has_focus: field.has_focus,
+        pressed: field.pressed,
         intent,
         suggestions,
         pill_rect: field.rect,
@@ -961,6 +974,7 @@ fn move_selection(ui: &egui::Ui, bar: &mut AddressBar, count: usize) {
 struct FieldOutput {
     rect: egui::Rect,
     has_focus: bool,
+    pressed: bool,
     /// What the field held on `Enter`.
     entered: Option<String>,
     star_clicked: bool,
@@ -1006,6 +1020,7 @@ fn address_field(
         return FieldOutput {
             rect,
             has_focus: false,
+            pressed: response.is_pointer_button_down_on(),
             entered: None,
             star_clicked,
             navigated: reload_button(ui, colors, reload_center, page.loading),
@@ -1063,6 +1078,8 @@ fn address_field(
     FieldOutput {
         rect,
         has_focus: output.response.has_focus(),
+        pressed: response.is_pointer_button_down_on()
+            || output.response.is_pointer_button_down_on(),
         entered: entered.then(|| bar.text.clone()),
         star_clicked: false,
         navigated: None,

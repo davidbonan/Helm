@@ -22,6 +22,8 @@ struct Shown {
     intents: Vec<BrowserIntent>,
     page_rect: Option<egui::Rect>,
     overlaid: bool,
+    /// A frame reported a press in the toolbar.
+    toolbar_pressed: bool,
 }
 
 type Seen = Rc<RefCell<Shown>>;
@@ -90,6 +92,7 @@ fn mount(fixture: Fixture) -> (Harness<'static, ()>, Seen) {
             seen.intents.extend(out.intents);
             seen.page_rect = out.page_rect;
             seen.overlaid = out.page_overlaid;
+            seen.toolbar_pressed |= out.clicked;
         });
     harness.run();
     (harness, seen)
@@ -202,6 +205,43 @@ fn reload_sits_in_the_pill() {
         seen.borrow().intents,
         vec![BrowserIntent::Navigate(Navigation::Reload)]
     );
+}
+
+fn press_and_release(harness: &mut Harness<'static, ()>, pos: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run();
+    }
+}
+
+#[test]
+fn a_press_on_the_url_field_keeps_the_keyboard_off_the_page() {
+    let (mut harness, seen) = pane(page_at("http://localhost:3000/admin"), Library::default());
+    let address = harness
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("address field")
+        .rect()
+        .center();
+    press_and_release(&mut harness, address);
+    assert!(!seen.borrow().toolbar_pressed);
+}
+
+#[test]
+fn a_press_on_reload_gives_the_page_the_keyboard() {
+    let (mut harness, seen) = pane(page_at("http://localhost:3000/admin"), Library::default());
+    let reload = harness
+        .get_by_label("Reload (⇧ ignores the cache)")
+        .rect()
+        .center();
+    press_and_release(&mut harness, reload);
+    assert!(seen.borrow().toolbar_pressed);
 }
 
 #[test]
