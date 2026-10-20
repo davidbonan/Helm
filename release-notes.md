@@ -1,5 +1,13 @@
 # Release notes
 
+## 3.7.1
+
+- **Picture in Picture**: More › Picture in Picture floats the
+  browser over the window. Drag it anywhere, resize it from any edge; hover
+  it for host, reload and Dock back into the sidebar.
+- The browser sidebar now shows per worktree: toggling it in one worktree
+  leaves the others as they were.
+
 ## 3.7.0
 
 - New **browser** sidebar on the right, one per worktree: toggle it from the
@@ -88,12 +96,3 @@
   and the split between them is draggable.
 - Going back from an agent started on the phone lands on the agents list.
 - Removed the AI rebase (graph menu entry and its Preferences provider).
-
-## 3.2.0
-
-- Start a new agent from the phone: the **+** on the Agents screen
-  picks a project or worktree and an agent, then opens it in a new tab on
-  the Mac — even with helm hidden or the Mac locked.
-- Choose which agents the phone can start (Claude Code, Codex and opencode
-  by default) in Preferences › Agents › Phone launch.
-- Fixed a freeze when the last terminal closed while phone access was on.
