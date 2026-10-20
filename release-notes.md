@@ -1,5 +1,14 @@
 # Release notes
 
+## 3.7.3
+
+- **Files** now has its own sidebar, per worktree: toggle it from the folder
+  button or `⌘⇧E`. It sits left of the browser, and shows in Graph mode too.
+- The right sidebars are now rounded blocks floating off the window edges.
+  Their toggles sit in the terminals' title row, and Git's shows the Git icon.
+- Phone, Send feedback and Preferences moved to the bottom of the left
+  sidebar.
+
 ## 3.7.2
 
 - Browser tabs can be reordered: drag a tab along the row to move it.
@@ -81,11 +90,3 @@
   are carried over.
 - Phone: the pairing modal says when the macOS firewall keeps the phone
   out, with a link to the Firewall settings.
-
-## 3.3.1
-
-- Agents wall and phone: each split of a tab now shows its own
-  agent's name instead of the last focused one's.
-- Phone: selecting terminal text works while the agent is running —
-  the selection handles can be dragged and the screen holds still
-  until you tap away.
