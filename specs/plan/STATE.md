@@ -6,6 +6,21 @@
 
 ---
 
+## ☑ Milestone — M-AgentLinks · Cmd+click links in agent output
+
+Spec: [`specs/terminal.md`](../terminal.md) §12, [`specs/browser.md`](../browser.md) §3.
+Per the user: Cmd+click barely worked in agents; URLs open in helm's browser,
+folders in the IDE, from the Agents mode after jumping to the worktree. Counter: **1/1**.
+
+- ☑ **AL1 — Agent-shaped links.** `links::link_on_screen` (hard-wrap join,
+  soft-only fallback), URL from its scheme, path bounded by brackets/quotes,
+  `:line-line`, `LinkAction::Folder` + `folder_argv`; `HelmApp::open_link` →
+  `open_in_browser` (new shown tab), `LinkClick.agent` → `focus_agent`.
+  *Tests*: 7 unit, 1 business e2e (`links_e2e`), 1 UI e2e (`ui_terminal_view`),
+  2 app UI e2e (`browser_sidebar`). Checked on a real Claude Code capture (80 cols).
+
+---
+
 ## ☑ Milestone — M-NotifyAway · Completion banners from a backgrounded helm
 
 Spec: [`specs/agents.md`](../agents.md) §1, §5. Per the user: banners went

@@ -284,27 +284,41 @@ convention): its cells are **underlined** (keeping their foreground color) and
 the cursor switches to a pointing hand; **Cmd+click opens it**. Without Cmd,
 nothing changes — selection (§7) and click-to-focus (§6) are untouched.
 
-- **Detected (v1)**: `http(s)://` URLs; **file paths** (absolute, `~`, or
-  relative), with an optional `:line(:col)` suffix (compiler/grep output, e.g.
-  `src/main.rs:42:7`); **OSC 8 hyperlinks** (already parsed by the emulation —
-  the contiguous run of cells sharing the same URI forms the link). A bare
-  domain (`example.com`) is **not** a link; trailing punctuation
-  (`.,;:)]}'">`) is trimmed.
+- **Detected (v1)**: `http(s)://` URLs; **file and folder paths** (absolute,
+  `~`, or relative), with an optional `:line(:col)` or `:line-line` suffix
+  (compiler/grep/agent output, e.g. `src/main.rs:42:7`, `src/a.rs:12-30`);
+  **OSC 8 hyperlinks** (already parsed by the emulation — the contiguous run of
+  cells sharing the same URI forms the link). A bare domain (`example.com`) is
+  **not** a link; trailing punctuation (`.,;:)]}'">` and backtick) is trimmed.
+  A URL starts at its scheme wherever it sits in a token (`(https://…)`,
+  `[docs](https://…)`, the way agents render markdown links); a path is bounded
+  by brackets, quotes and backticks too (`Update(src/a.rs)`, `` `src/a.rs` ``).
 - **Detection is hover-anchored**: the token under the pointer is expanded on
-  the **logical line** (soft-wrapped rows joined via the wrap flag, capped at
-  8 visual rows) — no regex, no grid scan; it runs only while Cmd is held
-  with the pointer over a cell (and at click time).
-- **File paths must exist** to be actionable: relative paths and `~` are
-  resolved against the **live cwd of the pane's shell** (same `proc_pidinfo`
-  mechanism as §2), falling back to the pane's spawn cwd; a candidate that
-  does not resolve to an existing file shows no affordance. Limits (v1):
-  paths containing spaces are not detected; directories are not links.
-- **Actions**: URL → macOS `open` (default browser). File → the configured
-  **IDE** ([`preferences.md`](preferences.md) §4 Terminal: VS Code / Cursor /
-  Zed, default VS Code), its CLI spawned detached with the file path and line;
-  a CLI that fails surfaces an **error toast** naming the command (no silent
-  fallback). OSC 8: `http(s)` URI → browser; `file://` URI (percent-decoded) →
-  the file route; other schemes are ignored (v1).
+  the **logical line** — capped at 8 visual rows — no regex, no grid scan; it
+  runs only while Cmd is held with the pointer over a cell (and at click time).
+  The logical line crosses **soft wraps** (the wrap flag) and the **hard wraps**
+  TUIs insert themselves (Ink — Claude Code, Codex — breaks a word too long for
+  its box with a newline and re-indents its tail): a row inked up to the right
+  edge runs on into the next non-blank row, its indent skipped. When that line
+  finds nothing, the soft-wrap-only line is tried, so a full-width row (a rule)
+  never hides a link below it.
+- **Paths must exist** to be actionable: relative paths and `~` are resolved
+  against the **live cwd of the pane's shell** (same `proc_pidinfo` mechanism
+  as §2), falling back to the pane's spawn cwd; a candidate that does not
+  resolve to an existing file or folder shows no affordance. Limits (v1): paths
+  containing spaces are not detected; a hard wrap is only seen at the grid's
+  right edge (a box with a right margin, like Claude Code's echoed prompt, is
+  not joined).
+- **Actions**: URL → a **new tab of helm's browser** ([`browser.md`](browser.md))
+  of the pane's worktree, shown (the sidebar opens if hidden); from an agent
+  card in the Agents mode ([`agents.md`](agents.md)), helm first jumps to that
+  agent's worktree and terminal. File → the configured **IDE**
+  ([`preferences.md`](preferences.md) §4 Terminal: VS Code / Cursor / Zed,
+  default VS Code), its CLI spawned detached with the file path and line;
+  folder → the same IDE's CLI given the folder alone (opened as a workspace); a
+  CLI that fails surfaces an **error toast** naming the command (no silent
+  fallback). OSC 8: `http(s)` URI → the URL route; `file://` URI
+  (percent-decoded) → the file route; other schemes are ignored (v1).
 - The rendering stays signal-only: the pane emits an `open_link` intent (path
   already resolved and validated); the app executes it
   ([`architecture.md`](architecture.md) §1).

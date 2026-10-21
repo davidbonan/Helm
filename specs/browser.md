@@ -49,6 +49,9 @@ terminals, to preview the worktree's dev server next to them.
   it is hidden there; a worktree leaving the workspace drops its browser.
 - Opening the sidebar gives its page the keyboard (the URL field on the start
   page).
+- A URL Cmd+clicked in a terminal ([`terminal.md`](terminal.md) §12) opens in a
+  new tab of its worktree's browser, shown; the sidebar opens if hidden, and a
+  browser not yet opened starts on that URL instead of the default one.
 
 ## 4. Panel
 

@@ -52,22 +52,156 @@ pub enum LinkAction {
         line: Option<u32>,
         column: Option<u32>,
     },
+    Folder(PathBuf),
 }
 
 /// A link under the pointer: the flat-column run to underline plus its action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
-    pub range: Range<usize>,
-    pub action: LinkAction,
+struct Link {
+    range: Range<usize>,
+    action: LinkAction,
 }
 
-const TRAILING_PUNCT: &[char] = &['.', ',', ';', ':', ')', ']', '}', '\'', '"', '>'];
+/// One visible terminal row as the link scanner reads it: a char and an OSC 8
+/// URI per cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenRow {
+    pub chars: Vec<char>,
+    pub uris: Vec<Option<String>>,
+    /// The row soft-wraps into the next one (its last cell carries `WRAPLINE`).
+    pub wrapped: bool,
+}
 
-/// Detect a link anchored at flat column `idx` of a logical line (soft-wrapped
-/// rows already joined by the caller). `uris` carries the OSC 8 hyperlink of each
-/// cell, parallel to `text`'s chars. Resolution order: OSC 8 span, then an
-/// `http(s)://` URL token, then an existing file path. `None` if nothing matches.
-pub fn link_at(text: &str, uris: &[Option<String>], idx: usize, cwd: &Path) -> Option<Link> {
+/// A link found on screen: its action plus the `(row, col)` cells to underline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenLink {
+    pub action: LinkAction,
+    pub cells: Vec<(usize, usize)>,
+}
+
+/// A link can span at most this many visual rows — the join window walked
+/// around the hovered cell (terminal.md §12).
+pub const MAX_LOGICAL_ROWS: usize = 8;
+
+const TRAILING_PUNCT: &[char] = &['.', ',', ';', ':', ')', ']', '}', '\'', '"', '>', '`'];
+
+/// Chars that end a URL inside a token: quotes and angle brackets never belong to one.
+const URL_DELIMITERS: &[char] = &['"', '\'', '<', '>', '`'];
+
+/// Chars that wrap a path in agent and compiler output — `Update(src/a.rs)`,
+/// `` `src/a.rs` ``, `[src/a.rs]` — and so bound it.
+const PATH_DELIMITERS: &[char] = &['(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '`'];
+
+/// Which row breaks the logical line crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Joins {
+    /// Only the terminal's own soft wraps.
+    Soft,
+    /// Also the hard wraps TUIs (Ink: Claude Code, Codex) insert themselves.
+    SoftAndHard,
+}
+
+/// Detect the link covering cell `(row, col)` of `rows` (terminal.md §12). The
+/// logical line is first rebuilt across hard wraps too — a TUI breaks a long URL
+/// with a newline and re-indents its tail — then, if that finds nothing, across
+/// soft wraps only, so a full-width row never hides a link by gluing its
+/// neighbour on.
+pub fn link_on_screen(
+    rows: &[ScreenRow],
+    row: usize,
+    col: usize,
+    cwd: &Path,
+) -> Option<ScreenLink> {
+    [Joins::SoftAndHard, Joins::Soft]
+        .into_iter()
+        .find_map(|joins| {
+            let line = LogicalLine::around(rows, row, col, joins)?;
+            let link = link_at(&line.text, &line.uris, line.hover, cwd)?;
+            Some(ScreenLink {
+                action: link.action,
+                cells: line.cells[link.range].to_vec(),
+            })
+        })
+}
+
+/// Rows joined into one line of text, each char mapped back to its cell.
+struct LogicalLine {
+    text: String,
+    uris: Vec<Option<String>>,
+    cells: Vec<(usize, usize)>,
+    /// Flat index of the hovered cell.
+    hover: usize,
+}
+
+impl LogicalLine {
+    /// The line through `(row, col)`, capped at [`MAX_LOGICAL_ROWS`]; `None` when
+    /// the cell is out of the grid or in a hard-wrapped row's indent.
+    fn around(rows: &[ScreenRow], row: usize, col: usize, joins: Joins) -> Option<Self> {
+        if col >= rows.get(row)?.chars.len() {
+            return None;
+        }
+        let mut first = row;
+        while first > 0 && row - first + 1 < MAX_LOGICAL_ROWS && continues(rows, first - 1, joins) {
+            first -= 1;
+        }
+        let mut last = row;
+        while last + 1 < rows.len()
+            && last - first + 1 < MAX_LOGICAL_ROWS
+            && continues(rows, last, joins)
+        {
+            last += 1;
+        }
+        let mut line = LogicalLine {
+            text: String::new(),
+            uris: Vec::new(),
+            cells: Vec::new(),
+            hover: 0,
+        };
+        let mut hover = None;
+        for r in first..=last {
+            let screen_row = &rows[r];
+            let indent = if r > first && !rows[r - 1].wrapped {
+                screen_row
+                    .chars
+                    .iter()
+                    .take_while(|c| c.is_whitespace())
+                    .count()
+            } else {
+                0
+            };
+            for c in indent..screen_row.chars.len() {
+                if (r, c) == (row, col) {
+                    hover = Some(line.cells.len());
+                }
+                line.text.push(screen_row.chars[c]);
+                line.uris.push(screen_row.uris.get(c).cloned().flatten());
+                line.cells.push((r, c));
+            }
+        }
+        line.hover = hover?;
+        Some(line)
+    }
+}
+
+/// Whether row `upper` runs on into the next one: a soft wrap, or — for
+/// [`Joins::SoftAndHard`] — a row inked up to the right edge followed by a
+/// non-blank row, the shape of a TUI breaking a word too long for its box.
+fn continues(rows: &[ScreenRow], upper: usize, joins: Joins) -> bool {
+    if rows[upper].wrapped {
+        return true;
+    }
+    joins == Joins::SoftAndHard
+        && rows[upper].chars.last().is_some_and(|c| !c.is_whitespace())
+        && rows
+            .get(upper + 1)
+            .is_some_and(|lower| lower.chars.iter().any(|c| !c.is_whitespace()))
+}
+
+/// Detect a link anchored at flat column `idx` of a logical line. `uris` carries
+/// the OSC 8 hyperlink of each cell, parallel to `text`'s chars. Resolution
+/// order: OSC 8 span, then an `http(s)://` URL, then an existing file or folder
+/// path. `None` if nothing matches.
+fn link_at(text: &str, uris: &[Option<String>], idx: usize, cwd: &Path) -> Option<Link> {
     let chars: Vec<char> = text.chars().collect();
     if idx >= chars.len() {
         return None;
@@ -118,61 +252,81 @@ fn osc8_action(uri: &str) -> Option<LinkAction> {
     }
 }
 
-/// `[start, end)` of the whitespace-delimited token covering `idx`.
-fn token_bounds(chars: &[char], idx: usize) -> Option<Range<usize>> {
-    if idx >= chars.len() || chars[idx].is_whitespace() {
+/// `[start, end)` of the run covering `idx` bounded by whitespace or `delimiters`.
+fn token_bounds(chars: &[char], idx: usize, delimiters: &[char]) -> Option<Range<usize>> {
+    let bounds = |c: &char| c.is_whitespace() || delimiters.contains(c);
+    if bounds(chars.get(idx)?) {
         return None;
     }
     let mut start = idx;
-    while start > 0 && !chars[start - 1].is_whitespace() {
+    while start > 0 && !bounds(&chars[start - 1]) {
         start -= 1;
     }
     let mut end = idx + 1;
-    while end < chars.len() && !chars[end].is_whitespace() {
+    while end < chars.len() && !bounds(&chars[end]) {
         end += 1;
     }
     Some(start..end)
 }
 
-/// Token at `idx`, trailing punctuation trimmed, kept only if it carries an
-/// `http(s)://` scheme with a non-empty remainder.
-fn url_token_at(chars: &[char], idx: usize) -> Option<(Range<usize>, String)> {
-    let range = token_bounds(chars, idx)?;
+/// `range` with its trailing punctuation trimmed.
+fn trim_trailing_punct(chars: &[char], range: Range<usize>) -> Range<usize> {
     let mut end = range.end;
     while end > range.start && TRAILING_PUNCT.contains(&chars[end - 1]) {
         end -= 1;
     }
-    let token: String = chars[range.start..end].iter().collect();
-    let after = token
-        .strip_prefix("https://")
-        .or_else(|| token.strip_prefix("http://"))?;
-    if after.is_empty() {
+    range.start..end
+}
+
+/// The `http(s)://` URL covering `idx`: it starts at the scheme, wherever it sits
+/// in the token (`(https://…)`, `[docs](https://…)`), and ends at the token's end,
+/// trailing punctuation trimmed. A scheme with nothing after it is not a URL.
+fn url_token_at(chars: &[char], idx: usize) -> Option<(Range<usize>, String)> {
+    let token = token_bounds(chars, idx, URL_DELIMITERS)?;
+    let text: String = chars[token.clone()].iter().collect();
+    let start = token.start
+        + ["https://", "http://"]
+            .iter()
+            .flat_map(|scheme| text.match_indices(scheme))
+            .map(|(byte, _)| text[..byte].chars().count())
+            .filter(|&at| token.start + at <= idx)
+            .max()?;
+    let range = trim_trailing_punct(chars, start..token.end);
+    let url: String = chars[range.clone()].iter().collect();
+    let scheme_len = if url.starts_with("https://") { 8 } else { 7 };
+    (idx < range.end && url.len() > scheme_len).then_some((range, url))
+}
+
+/// The run at `idx` parsed as a path with an optional `:line(:col)` suffix,
+/// resolved against `cwd`: an existing file opens at its line, an existing
+/// folder as a folder.
+fn path_token_at(chars: &[char], idx: usize, cwd: &Path) -> Option<(Range<usize>, LinkAction)> {
+    let range = trim_trailing_punct(chars, token_bounds(chars, idx, PATH_DELIMITERS)?);
+    if idx >= range.end {
         return None;
     }
-    Some((range.start..end, token))
-}
-
-/// Token at `idx` parsed as a file path with an optional `:line(:col)` suffix,
-/// resolved against `cwd` and gated on `is_file()`.
-fn path_token_at(chars: &[char], idx: usize, cwd: &Path) -> Option<(Range<usize>, LinkAction)> {
-    let range = token_bounds(chars, idx)?;
-    let mut end = range.end;
-    while end > range.start && TRAILING_PUNCT.contains(&chars[end - 1]) {
-        end -= 1;
-    }
-    let token: String = chars[range.start..end].iter().collect();
+    let token: String = chars[range.clone()].iter().collect();
     let (path_part, line, column) = parse_line_col(&token);
     let path = resolve_path(path_part, cwd)?;
-    Some((range.start..end, LinkAction::File { path, line, column }))
+    let action = if path.is_dir() {
+        LinkAction::Folder(path)
+    } else {
+        LinkAction::File { path, line, column }
+    };
+    Some((range, action))
 }
 
-/// Split a trailing `:line` or `:line:col` off the path part.
+/// Split a trailing `:line`, `:line:col` or `:line-line` (a range, opened at its
+/// first line) off the path part.
 fn parse_line_col(token: &str) -> (&str, Option<u32>, Option<u32>) {
     if let Some((rest, n1)) = split_trailing_number(token) {
         if let Some((path, n2)) = split_trailing_number(rest) {
             return (path, Some(n2), Some(n1));
         }
         return (rest, Some(n1), None);
+    }
+    if let Some((rest, line)) = split_trailing_range(token) {
+        return (rest, Some(line), None);
     }
     (token, None, None)
 }
@@ -183,8 +337,15 @@ fn split_trailing_number(s: &str) -> Option<(&str, u32)> {
     Some((head, n))
 }
 
+fn split_trailing_range(s: &str) -> Option<(&str, u32)> {
+    let (head, tail) = s.rsplit_once(':')?;
+    let (from, to) = tail.split_once('-')?;
+    to.parse::<u32>().ok()?;
+    Some((head, from.parse().ok()?))
+}
+
 /// Resolve `~`, relative, and absolute paths against `cwd`; `None` unless the
-/// result is an existing file (directories are not links — terminal.md §12).
+/// result exists (a file or a folder).
 fn resolve_path(path: &str, cwd: &Path) -> Option<PathBuf> {
     let expanded = if path == "~" {
         PathBuf::from(std::env::var_os("HOME")?)
@@ -198,7 +359,7 @@ fn resolve_path(path: &str, cwd: &Path) -> Option<PathBuf> {
             cwd.join(p)
         }
     };
-    expanded.is_file().then_some(expanded)
+    expanded.exists().then_some(expanded)
 }
 
 fn percent_decode(s: &str) -> String {
@@ -254,9 +415,20 @@ pub fn editor_argv(template: &str, file: &Path, line: Option<u32>) -> Vec<String
         .collect()
 }
 
-/// Execute a resolved link (terminal.md §12): a URL — or a file with an empty
-/// `template` — opens through macOS `open` (default browser / app); a configured
-/// `template` opens the file in that editor, detached.
+/// Argv opening `folder` in the editor of `template`: its binary, given the
+/// folder alone — every supported IDE opens a folder argument as a workspace.
+fn folder_argv(template: &str, folder: &Path) -> Vec<String> {
+    template
+        .split_whitespace()
+        .take(1)
+        .map(str::to_owned)
+        .chain([folder.to_string_lossy().into_owned()])
+        .collect()
+}
+
+/// Execute a resolved link (terminal.md §12): a URL — or a file or folder with an
+/// empty `template` — opens through macOS `open` (default browser / app); a
+/// configured `template` opens the file or folder in that editor, detached.
 pub fn execute(action: &LinkAction, template: &str) -> Result<(), LinkError> {
     execute_with(Path::new("open"), action, template)
 }
@@ -270,7 +442,14 @@ pub fn execute_with(open: &Path, action: &LinkAction, template: &str) -> Result<
             if template.trim().is_empty() {
                 run_open(open, &path.to_string_lossy())
             } else {
-                spawn_editor(template, path, *line)
+                spawn_editor(editor_argv(template, path, *line), template)
+            }
+        }
+        LinkAction::Folder(path) => {
+            if template.trim().is_empty() {
+                run_open(open, &path.to_string_lossy())
+            } else {
+                spawn_editor(folder_argv(template, path), template)
             }
         }
     }
@@ -311,11 +490,10 @@ fn run_open(open: &Path, arg: &str) -> Result<(), LinkError> {
     Ok(())
 }
 
-/// Spawn the configured editor on `file`, detached: a reaper thread reaps it so a
+/// Spawn the configured editor's `argv`, detached: a reaper thread reaps it so a
 /// GUI editor that lingers leaves no zombie. Only a spawn failure (missing or
 /// unrunnable binary) is surfaced — a detached process' exit code is unobservable.
-fn spawn_editor(template: &str, file: &Path, line: Option<u32>) -> Result<(), LinkError> {
-    let argv = editor_argv(template, file, line);
+fn spawn_editor(argv: Vec<String>, template: &str) -> Result<(), LinkError> {
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| LinkError::NotFound(template.to_owned()))?;
@@ -356,6 +534,129 @@ mod tests {
 
     fn no_uris(text: &str) -> Vec<Option<String>> {
         vec![None; text.chars().count()]
+    }
+
+    const COLS: usize = 40;
+
+    /// Rows as a TUI draws them: each line padded to `COLS`, no soft wrap.
+    fn screen(lines: &[&str]) -> Vec<ScreenRow> {
+        lines
+            .iter()
+            .map(|line| {
+                let mut chars: Vec<char> = line.chars().collect();
+                chars.resize(COLS, ' ');
+                ScreenRow {
+                    uris: vec![None; COLS],
+                    chars,
+                    wrapped: false,
+                }
+            })
+            .collect()
+    }
+
+    fn col_of(line: &str, needle: &str) -> usize {
+        line[..line.find(needle).unwrap()].chars().count()
+    }
+
+    #[test]
+    fn a_url_hard_wrapped_by_a_tui_is_joined_across_its_indent() {
+        let rows = screen(&[
+            "  See (https://example.com/pull/1/files#",
+            "  diff-0123) here.",
+        ]);
+        let link = link_on_screen(&rows, 1, 3, Path::new("/")).unwrap();
+        assert_eq!(
+            link.action,
+            LinkAction::Url("https://example.com/pull/1/files#diff-0123".to_string())
+        );
+        assert_eq!(link.cells.first(), Some(&(0, 7)));
+        assert_eq!(link.cells.last(), Some(&(1, 10)));
+    }
+
+    #[test]
+    fn a_full_width_row_above_never_hides_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        let rule = "─".repeat(COLS);
+        let rows = screen(&[&rule, "a.rs:3 ok"]);
+        let link = link_on_screen(&rows, 1, 1, dir.path()).unwrap();
+        assert_eq!(
+            link.action,
+            LinkAction::File {
+                path: dir.path().join("a.rs"),
+                line: Some(3),
+                column: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_url_rendered_as_a_markdown_link_is_found_past_its_bracket() {
+        for line in [
+            "docs (https://example.com/a).",
+            "[docs](https://example.com/a)",
+        ] {
+            let rows = screen(&[line]);
+            let col = col_of(line, "example");
+            let link = link_on_screen(&rows, 0, col, Path::new("/")).unwrap();
+            assert_eq!(
+                link.action,
+                LinkAction::Url("https://example.com/a".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_wrapped_in_a_tool_call_or_backticks_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        for line in ["Update(a.rs)", "edited `a.rs:12-30`."] {
+            let rows = screen(&[line]);
+            let link = link_on_screen(&rows, 0, col_of(line, "a.rs"), dir.path()).unwrap();
+            assert!(
+                matches!(&link.action, LinkAction::File { path, .. } if path == &dir.path().join("a.rs")),
+                "{line}: {:?}",
+                link.action
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_range_suffix_opens_at_its_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        let link = link_on_screen(&screen(&["a.rs:12-30"]), 0, 0, dir.path()).unwrap();
+        assert_eq!(
+            link.action,
+            LinkAction::File {
+                path: dir.path().join("a.rs"),
+                line: Some(12),
+                column: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_existing_folder_is_a_folder_link() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let link = link_on_screen(&screen(&["folder src/ ok"]), 0, 8, dir.path()).unwrap();
+        assert_eq!(link.action, LinkAction::Folder(dir.path().join("src")));
+        assert_eq!(link.cells, [(0, 7), (0, 8), (0, 9), (0, 10)]);
+    }
+
+    #[test]
+    fn each_editor_opens_a_folder_with_its_binary_alone() {
+        let folder = Path::new("/src");
+        assert_eq!(
+            folder_argv(Editor::VsCode.template(), folder),
+            ["code", "/src"]
+        );
+        assert_eq!(
+            folder_argv(Editor::Cursor.template(), folder),
+            ["cursor", "/src"]
+        );
+        assert_eq!(folder_argv(Editor::Zed.template(), folder), ["zed", "/src"]);
     }
 
     #[test]

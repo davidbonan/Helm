@@ -125,6 +125,23 @@ fn a_configured_editor_receives_the_substituted_file_and_line() {
 }
 
 #[test]
+fn a_configured_editor_receives_a_folder_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let capture = tmp.path().join("argv.txt");
+    let editor = fake_tool(tmp.path(), "edit", &capture, 0);
+    let template = format!("{} -g {{file}}:{{line}}", editor.display());
+
+    execute_with(
+        Path::new("open"),
+        &LinkAction::Folder(tmp.path().to_path_buf()),
+        &template,
+    )
+    .unwrap();
+
+    assert_eq!(wait_for_capture(&capture), [tmp.path().to_string_lossy()]);
+}
+
+#[test]
 fn a_missing_editor_binary_surfaces_a_not_found_error() {
     let tmp = tempfile::tempdir().unwrap();
     let missing = tmp.path().join("no-such-editor");

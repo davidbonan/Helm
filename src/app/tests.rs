@@ -5112,6 +5112,51 @@ mod browser_sidebar {
         );
     }
 
+    fn url_click(url: &str, agent: Option<usize>) -> LinkClick {
+        LinkClick {
+            action: LinkAction::Url(url.to_owned()),
+            agent,
+        }
+    }
+
+    #[test]
+    fn a_cmd_clicked_url_opens_in_a_new_shown_tab_of_the_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        open_browser(&mut harness);
+
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .open_link(url_click("https://example.com/a", None), &ctx);
+        harness.run();
+
+        assert_eq!(browser_tabs(&harness), 2);
+        harness.get(
+            egui_kittest::kittest::By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .value("https://example.com/a"),
+        );
+    }
+
+    #[test]
+    fn a_url_cmd_clicked_on_an_agent_card_opens_in_its_worktree_browser() {
+        let mut app = app_with(&["a", "b"]);
+        app.caches.agents = vec![agent_entry(&app, 1, 0, ("claude", AgentBadge::Working))];
+        app.central_mode = CentralMode::Agents;
+
+        app.open_link(
+            url_click("https://example.com/a", Some(0)),
+            &egui::Context::default(),
+        );
+
+        assert_eq!(app.workspace.active(), Some(1));
+        assert_eq!(app.central_mode, CentralMode::Terminal);
+        assert!(app.shows_browser());
+        let key = app.active_repo_key().unwrap();
+        assert_eq!(app.caches.browsers[&key].tab_count(), 1);
+    }
+
     #[test]
     fn the_star_keeps_a_local_page_in_its_project() {
         let dir = tempfile::tempdir().unwrap();

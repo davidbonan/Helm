@@ -1031,7 +1031,7 @@ impl HelmApp {
         let mut open_feedback_request = false;
         let mut open_phone_request = false;
         let mut open_dialog_requested = false;
-        let mut open_link: Option<LinkAction> = None;
+        let mut open_link: Option<LinkClick> = None;
         let mut file_menu = crate::ui::file_list::FileMenuOutput::default();
         let mut close_diff = false;
         let mut close_viewer = false;
@@ -1544,6 +1544,7 @@ impl HelmApp {
                                     );
                                     central_area = ui.available_rect_before_wrap();
                                     let panes = panes_all.entry(pane_key.clone()).or_default();
+                                    let mut pane_link = None;
                                     output = Some(terminal_tree(
                                         ui,
                                         layout,
@@ -1559,10 +1560,16 @@ impl HelmApp {
                                                 &palette,
                                                 clear_shortcut,
                                                 &mut any_focused,
-                                                &mut open_link,
+                                                &mut pane_link,
                                             )
                                         },
                                     ));
+                                    if let Some(action) = pane_link {
+                                        open_link = Some(LinkClick {
+                                            action,
+                                            agent: None,
+                                        });
+                                    }
                                 }
                                 CentralMode::Graph => {
                                     // Interactive-rebase page (git.md §9): exclusive
@@ -2738,10 +2745,13 @@ impl HelmApp {
             reveal_in_finder(Some(path.as_path()));
         }
         if let Some(path) = file_menu.open_in_editor {
-            open_link.get_or_insert(LinkAction::File {
-                path,
-                line: None,
-                column: None,
+            open_link.get_or_insert(LinkClick {
+                action: LinkAction::File {
+                    path,
+                    line: None,
+                    column: None,
+                },
+                agent: None,
             });
         }
         if let Some(index) = sidebar.remove {
@@ -3260,7 +3270,7 @@ fn mirror_agent_terminal(
     palette: &theme::Palette,
     clear_shortcut: Option<Shortcut>,
     any_focused: &mut bool,
-    open_link: &mut Option<LinkAction>,
+    open_link: &mut Option<LinkClick>,
 ) -> bool {
     let Some(key) = keys.get(idx) else {
         return false;
@@ -3270,7 +3280,8 @@ fn mirror_agent_terminal(
     let Some(panes) = panes.get_mut(&(rk.clone(), *tid)) else {
         return false;
     };
-    render_pane(
+    let mut link = None;
+    let clicked = render_pane(
         ui,
         panes,
         *pid,
@@ -3280,8 +3291,15 @@ fn mirror_agent_terminal(
         palette,
         clear_shortcut,
         any_focused,
-        open_link,
-    )
+        &mut link,
+    );
+    if let Some(action) = link {
+        *open_link = Some(LinkClick {
+            action,
+            agent: Some(idx),
+        });
+    }
+    clicked
 }
 
 #[allow(clippy::too_many_arguments)]

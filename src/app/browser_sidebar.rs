@@ -251,10 +251,11 @@ impl WorktreeBrowser {
         self.tabs.len()
     }
 
-    /// A tab on the start page, after the shown one, shown in its place.
-    fn open_tab(&mut self) {
+    /// A tab on `url` (the start page without one), after the shown one, shown in
+    /// its place.
+    fn open_tab(&mut self, url: Option<String>) {
         self.active += 1;
-        self.tabs.insert(self.active, BrowserTab::opening(None));
+        self.tabs.insert(self.active, BrowserTab::opening(url));
         self.takes_keyboard = true;
     }
 
@@ -345,7 +346,7 @@ impl WorktreeBrowser {
                 }
             }
             BrowserIntent::OpenInChrome => open_in_chrome(&tab.page().url),
-            BrowserIntent::NewTab => self.open_tab(),
+            BrowserIntent::NewTab => self.open_tab(None),
             BrowserIntent::OpenInNewTab(url) => self.open_background_tab(url),
             BrowserIntent::SelectTab(index) => self.select_tab(index),
             BrowserIntent::MoveTab(drop) => self.move_tab(drop),
@@ -643,6 +644,31 @@ impl HelmApp {
         }
     }
 
+    /// A terminal Cmd+clicked URL (terminal.md §12): a new tab of the active
+    /// worktree's browser, shown — on its own first tab if the browser had none.
+    /// `false` without an active worktree.
+    pub(super) fn open_in_browser(&mut self, url: String) -> bool {
+        let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
+            return false;
+        };
+        let Some(key) = self.active_repo_key() else {
+            return false;
+        };
+        self.persist(|mut prefs| {
+            prefs.show_browser(&worktree);
+            prefs
+        });
+        match self.caches.browsers.get_mut(&key) {
+            Some(browser) => browser.open_tab(Some(url)),
+            None => {
+                self.caches
+                    .browsers
+                    .insert(key, WorktreeBrowser::opening(Some(url)));
+            }
+        }
+        true
+    }
+
     fn hide_browser(&mut self) {
         let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
             return;
@@ -794,7 +820,7 @@ impl HelmApp {
             return;
         };
         if consume_action(ctx, &self.keymap, Action::NewTab) {
-            browser.open_tab();
+            browser.open_tab(None);
         }
         if consume_action(ctx, &self.keymap, Action::Run) {
             browser.apply(BrowserIntent::Navigate(Navigation::Reload));

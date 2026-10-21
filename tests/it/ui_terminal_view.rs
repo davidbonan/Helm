@@ -894,13 +894,7 @@ fn cmd_v_paste_is_forwarded_to_the_pty() {
 /// pointer can be aimed at a specific cell.
 fn grid_metrics(ui: &egui::Ui) -> (f32, f32, f32, f32) {
     let origin = ui.next_widget_position();
-    let (w, h) = ui.ctx().fonts_mut(|f| {
-        let font = egui::FontId::monospace(DEFAULT_FONT_SIZE);
-        (
-            f.glyph_width(&font, ' ').max(1.0),
-            f.row_height(&font).max(1.0),
-        )
-    });
+    let (w, h) = cell_metrics(ui.ctx(), DEFAULT_FONT_SIZE);
     (origin.x, origin.y, w, h)
 }
 
@@ -1105,6 +1099,53 @@ fn cmd_click_on_a_file_path_emits_open_file_with_line() {
         }
         other => panic!("expected an open-file action, got {other:?}"),
     }
+}
+
+#[test]
+fn cmd_click_on_the_tail_of_a_url_a_tui_hard_wrapped_opens_the_whole_url() {
+    use std::sync::{Arc, Mutex};
+
+    let term = shared_term(14, 40);
+    feed(&term, b"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n");
+    feed(
+        &term,
+        b"  See (https://example.com/pull/1/files#\r\n  diff-0123) here.",
+    );
+
+    let palette = TermPalette::variant(TermTheme::Dark);
+    let cwd = std::env::temp_dir();
+    let metrics: Arc<Mutex<(f32, f32, f32, f32)>> = Arc::new(Mutex::new((0.0, 0.0, 8.0, 16.0)));
+    let opened: Arc<Mutex<Option<LinkAction>>> = Arc::new(Mutex::new(None));
+    let probe = metrics.clone();
+    let sink = opened.clone();
+    let mut harness = Harness::new_ui(move |ui| {
+        *probe.lock().unwrap() = grid_metrics(ui);
+        let input = terminal_view(
+            ui,
+            &term,
+            &palette,
+            DEFAULT_FONT_SIZE,
+            true,
+            false,
+            CLEAR,
+            Some(cwd.as_path()),
+        );
+        if let Some(action) = input.open_link {
+            *sink.lock().unwrap() = Some(action);
+        }
+    });
+    harness.run();
+
+    let (ox, oy, w, h) = *metrics.lock().unwrap();
+    harness.input_mut().modifiers = CMD;
+    click_cell(&mut harness, egui::pos2(ox + 4.5 * w, oy + 11.5 * h));
+
+    assert_eq!(
+        *opened.lock().unwrap(),
+        Some(LinkAction::Url(
+            "https://example.com/pull/1/files#diff-0123".to_string()
+        ))
+    );
 }
 
 #[test]

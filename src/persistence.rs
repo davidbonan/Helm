@@ -439,6 +439,10 @@ impl Prefs {
         }
     }
 
+    pub fn show_browser(&mut self, worktree: &Path) {
+        self.browser_worktrees.insert(worktree.to_path_buf());
+    }
+
     pub fn hide_browser(&mut self, worktree: &Path) {
         self.browser_worktrees.remove(worktree);
     }

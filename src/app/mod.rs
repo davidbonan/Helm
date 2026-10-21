@@ -1885,6 +1885,24 @@ impl HelmApp {
         });
     }
 
+    /// A terminal Cmd+click (terminal.md §12): a URL opens in the browser of the
+    /// pane's worktree — reached first from an agent card; a file or folder goes
+    /// to the configured editor, a failure toasting the command.
+    fn open_link(&mut self, link: LinkClick, ctx: &egui::Context) {
+        if let LinkAction::Url(url) = &link.action {
+            if let Some(agent) = link.agent {
+                self.focus_agent(agent, ctx);
+            }
+            if self.open_in_browser(url.clone()) {
+                return;
+            }
+        }
+        if let Err(err) = crate::terminal::links::execute(&link.action, self.editor.template()) {
+            let now = ctx.input(|i| i.time);
+            self.toasts.error(err.message(), now);
+        }
+    }
+
     fn active_repo_key(&self) -> Option<RepoKey> {
         let index = self.workspace.active()?;
         self.caches.keys.get(index).cloned()
@@ -4485,14 +4503,8 @@ impl eframe::App for HelmApp {
         let keys = self.handle_keys(&ctx);
         self.poll_workers(&ctx);
         let actions = self.render_page(ui, palette, term_palette, &ctx, keys.toggle_graph);
-        // A terminal Cmd+click (terminal.md §12) is executed here, where `self` is
-        // fully borrowed: the URL/file is handed to the configured editor (or
-        // macOS `open`), and a failure surfaces as a toast naming the command.
         if let Some(link) = actions.open_link {
-            if let Err(err) = crate::terminal::links::execute(&link, self.editor.template()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.error(err.message(), now);
-            }
+            self.open_link(link, &ctx);
         }
         self.render_modals(ui, palette, &ctx);
         // ⌘O converges here (and no longer upstream): a single site that imports **and**
@@ -4569,7 +4581,13 @@ struct PageActions {
     toggle_preferences: bool,
     /// A terminal Cmd+click resolved to a link this frame (terminal.md §12),
     /// executed back in `ui()` where `self` is fully borrowed (toasts + editor).
-    open_link: Option<LinkAction>,
+    open_link: Option<LinkClick>,
+}
+
+/// A Cmd+clicked terminal link, with the agent card it came from in the Agents mode.
+struct LinkClick {
+    action: LinkAction,
+    agent: Option<usize>,
 }
 
 fn rect(area: egui::Rect) -> Rect {

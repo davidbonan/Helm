@@ -63,7 +63,7 @@ reserved by macOS for screenshots).
 | `Shift+Enter` | `CSI 13;2u` without negotiation (kitty/Ghostty convention) — newline in agent harnesses (Claude Code, Codex) ([`terminal.md`](terminal.md) §3) |
 | `Option+Enter` | `Esc`+`CR` (meta+enter) — Claude Code newline ([`terminal.md`](terminal.md) §3) |
 | `Cmd+V` | Paste into the PTY |
-| `Cmd+click` | Opens the **URL / file path** under the pointer; holding `Cmd` underlines the hovered link ([`terminal.md`](terminal.md) §12) |
+| `Cmd+click` | Opens the **URL** (helm's browser, new tab) / **file or folder path** (IDE) under the pointer; holding `Cmd` underlines the hovered link ([`terminal.md`](terminal.md) §12) |
 | `Cmd+=` / `Cmd+-` | Font zoom +/− (**global**: all panes and repos) |
 | `Cmd+0` | Reset font zoom (global) |
 | `Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, … | Forwarded as is to the PTY (shell signals) |

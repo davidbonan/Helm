@@ -16,7 +16,7 @@ use crate::terminal::layout::{
     first_leaf, split_rects, Dir, Layout, Node, Orient, PaneId, Rect as PaneRect, MIN_COLS,
     MIN_LINES,
 };
-use crate::terminal::links::{link_at, LinkAction};
+use crate::terminal::links::{link_on_screen, LinkAction, ScreenLink, ScreenRow, MAX_LOGICAL_ROWS};
 use crate::terminal::palette::{Rgb, TermPalette};
 use crate::terminal::selection::{covers, selected_text, Cell, Selection, SelectionMode};
 use crate::terminal::sizing::GridSize;
@@ -1460,50 +1460,24 @@ fn sync_terminal_ime_purpose(ctx: &egui::Context, id: egui::Id, listening: bool)
     ctx.data_mut(|d| d.insert_temp(key, listening));
 }
 
-/// A link under the pointer: the action plus the visible cells (line, col) to
-/// underline.
-struct HoverLink {
-    action: LinkAction,
-    cells: Vec<(usize, usize)>,
-}
-
-/// A link can span at most this many soft-wrapped visual rows — the join window
-/// the scanner walks around the hovered cell (terminal.md §12).
-const MAX_LOGICAL_ROWS: usize = 8;
-
-/// Detect the link under `hover`: rebuild the logical (soft-wrapped) line by
-/// joining contiguous `WRAPLINE` rows around it — capped at `MAX_LOGICAL_ROWS` —
-/// then hand the flat text + per-cell OSC 8 URIs to the domain scanner. The
-/// returned range is mapped back to grid cells for underlining.
-fn hovered_link(snap: &GridSnapshot, hover: Cell, cwd: &Path) -> Option<HoverLink> {
+/// Detect the link under `hover` from the rows around it — as many as a link
+/// may span either side — mapped back to grid lines for underlining.
+fn hovered_link(snap: &GridSnapshot, hover: Cell, cwd: &Path) -> Option<ScreenLink> {
     let line = hover.line.max(0) as usize;
-    let cols = snap.rows.get(line)?.len();
-    if cols == 0 || hover.col >= cols {
-        return None;
+    let first = line.saturating_sub(MAX_LOGICAL_ROWS - 1);
+    let last = (line + MAX_LOGICAL_ROWS).min(snap.rows.len());
+    let rows: Vec<ScreenRow> = (first..last)
+        .map(|i| ScreenRow {
+            chars: snap.rows[i].iter().map(|cell| cell.c).collect(),
+            uris: snap.rows[i].iter().map(|cell| cell.link.clone()).collect(),
+            wrapped: snap.wrapped[i],
+        })
+        .collect();
+    let mut link = link_on_screen(&rows, line - first, hover.col, cwd)?;
+    for cell in &mut link.cells {
+        cell.0 += first;
     }
-    let mut start = line;
-    while start > 0 && snap.wrapped[start - 1] && (line - start + 1) < MAX_LOGICAL_ROWS {
-        start -= 1;
-    }
-    let mut end = line;
-    while end + 1 < snap.rows.len() && snap.wrapped[end] && (end - start + 1) < MAX_LOGICAL_ROWS {
-        end += 1;
-    }
-    let mut text = String::new();
-    let mut uris = Vec::with_capacity((end - start + 1) * cols);
-    for row in &snap.rows[start..=end] {
-        for cell in row {
-            text.push(cell.c);
-            uris.push(cell.link.clone());
-        }
-    }
-    let idx = (line - start) * cols + hover.col;
-    let link = link_at(&text, &uris, idx, cwd)?;
-    let cells = link.range.map(|f| (start + f / cols, f % cols)).collect();
-    Some(HoverLink {
-        action: link.action,
-        cells,
-    })
+    Some(link)
 }
 
 /// Underlines the hovered link's cells with each cell's own foreground color, a
