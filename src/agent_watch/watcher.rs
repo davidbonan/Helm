@@ -1,7 +1,8 @@
 //! The agent state machine on its own thread (specs/remote.md §4): a hidden app
 //! gets no frame, yet the badges must keep moving — the phone reads them precisely
 //! when helm is out of sight. The UI hands over the live panes and the focused
-//! ones, then reads the published readings.
+//! ones, then reads the published readings; completions are reported from here,
+//! since a backgrounded helm draws no frame to post them (specs/agents.md §5).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
-use super::{probe, AgentBadge, PaneAgentState};
+use super::{newly_completed, probe, AgentBadge, PaneAgentState};
 use crate::terminal::activity::{now_ms, PaneActivity};
 use crate::terminal::pane::{Pane, PaneUid};
 use crate::terminal::pty::PgidProbe;
@@ -24,16 +25,32 @@ pub struct WatchedPane {
     uid: PaneUid,
     activity: Arc<PaneActivity>,
     pgid_probe: Arc<PgidProbe>,
+    origin: PaneOrigin,
 }
 
 impl WatchedPane {
-    pub fn of(pane: &Pane) -> Self {
+    pub fn of(pane: &Pane, origin: PaneOrigin) -> Self {
         Self {
             uid: pane.uid(),
             activity: pane.shared_activity(),
             pgid_probe: pane.shared_pgid_probe(),
+            origin,
         }
     }
+}
+
+/// Where a pane runs, as its completion banner names it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneOrigin {
+    pub repo: String,
+    pub branch: Option<String>,
+}
+
+/// An agent finished a turn nobody saw: its pane just rose into `Done`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub agent: &'static str,
+    pub origin: PaneOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +67,30 @@ pub struct Readings {
     pub panes: HashMap<PaneUid, PaneReading>,
 }
 
-struct Track {
-    panes: Vec<WatchedPane>,
-    focused: HashSet<PaneUid>,
+/// What the UI hands over at each poll.
+pub struct Track {
+    pub panes: Vec<WatchedPane>,
+    /// Panes the user is looking at — seeing acknowledges a green
+    /// (specs/agents.md §1).
+    pub focused: HashSet<PaneUid>,
+    /// Completions reach `on_completion` (Preferences › Completion notifications).
+    pub alert_on_completion: bool,
+}
+
+impl Track {
+    /// Nobody looking, no completion reported.
+    pub fn new(panes: Vec<WatchedPane>) -> Self {
+        Self {
+            panes,
+            focused: HashSet::new(),
+            alert_on_completion: false,
+        }
+    }
+}
+
+struct Sinks<'a> {
+    on_change: &'a dyn Fn(),
+    on_completion: &'a dyn Fn(&Completion),
 }
 
 enum Command {
@@ -77,14 +115,24 @@ pub struct AgentWatcher {
 }
 
 impl AgentWatcher {
-    /// `on_change` runs on the watcher thread whenever a reading changes.
-    pub fn spawn(on_change: impl Fn() + Send + 'static) -> Self {
+    /// Both run on the watcher thread: `on_change` whenever a reading changes,
+    /// `on_completion` once per finished turn while the `Track` asks for it.
+    pub fn spawn(
+        on_change: impl Fn() + Send + 'static,
+        on_completion: impl Fn(&Completion) + Send + 'static,
+    ) -> Self {
         let (sender, commands) = crossbeam_channel::unbounded();
         let readings = Arc::new(Mutex::new(Readings::default()));
         let published = Arc::clone(&readings);
         let thread = std::thread::Builder::new()
             .name("agent-watch".into())
-            .spawn(move || run(&commands, &published, &on_change))
+            .spawn(move || {
+                let sinks = Sinks {
+                    on_change: &on_change,
+                    on_completion: &on_completion,
+                };
+                run(&commands, &published, &sinks)
+            })
             .expect("spawn the agent watcher thread");
         Self {
             commands: Some(sender),
@@ -93,11 +141,10 @@ impl AgentWatcher {
         }
     }
 
-    /// Replaces the watched set. `focused`: panes the user is looking at —
-    /// seeing acknowledges a green (specs/agents.md §1).
-    pub fn track(&self, panes: Vec<WatchedPane>, focused: HashSet<PaneUid>) {
+    /// Replaces the watched set.
+    pub fn track(&self, track: Track) {
         if let Some(commands) = &self.commands {
-            let _ = commands.send(Command::Track(Track { panes, focused }));
+            let _ = commands.send(Command::Track(track));
         }
     }
 
@@ -162,10 +209,11 @@ fn lock(readings: &Mutex<Readings>) -> MutexGuard<'_, Readings> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dyn Fn()) {
+fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, sinks: &Sinks) {
     let mut watched: Vec<WatchedPane> = Vec::new();
     let mut launched: Vec<WatchedPane> = Vec::new();
     let mut focused: HashSet<PaneUid> = HashSet::new();
+    let mut alert_on_completion = false;
     // Phones showing each pane: two phones on one agent both count.
     let mut phone_seen: HashMap<PaneUid, usize> = HashMap::new();
     let mut states: HashMap<PaneUid, PaneAgentState> = HashMap::new();
@@ -176,6 +224,7 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dy
                 let focus_moved = track.focused != focused;
                 watched = track.panes;
                 focused = track.focused;
+                alert_on_completion = track.alert_on_completion;
                 launched.retain(|pane| !watched.iter().any(|w| w.uid == pane.uid));
                 states
                     .retain(|uid, _| watched.iter().chain(&launched).any(|pane| pane.uid == *uid));
@@ -210,7 +259,12 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dy
         if !sight_moved {
             continue;
         }
-        let seen: HashSet<PaneUid> = focused.iter().chain(phone_seen.keys()).copied().collect();
+        let mut seen: HashSet<PaneUid> = phone_seen.keys().copied().collect();
+        // A frame reports the focus, and a hidden or napping helm draws none: the
+        // last focus reported must not keep acknowledging once helm is away.
+        if probe::helm_is_frontmost() {
+            seen.extend(&focused);
+        }
         let panes = tick(
             watched.iter().chain(&launched),
             &seen,
@@ -220,12 +274,39 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, on_change: &dy
         next_tick = Instant::now() + TICK;
         let mut readings = lock(published);
         if readings.panes != panes {
+            let completed = if alert_on_completion {
+                completions(&readings.panes, &panes, watched.iter().chain(&launched))
+            } else {
+                Vec::new()
+            };
             readings.generation += 1;
             readings.panes = panes;
             drop(readings);
-            on_change();
+            (sinks.on_change)();
+            for completion in &completed {
+                (sinks.on_completion)(completion);
+            }
         }
     }
+}
+
+/// Panes whose reading just rose into `Done`: one report per finished turn, never
+/// repeated while the green lasts.
+fn completions<'a>(
+    before: &HashMap<PaneUid, PaneReading>,
+    after: &HashMap<PaneUid, PaneReading>,
+    watched: impl Iterator<Item = &'a WatchedPane>,
+) -> Vec<Completion> {
+    watched
+        .filter_map(|pane| {
+            let now = after.get(&pane.uid)?;
+            let prev = before.get(&pane.uid).map_or(AgentBadge::None, |r| r.badge);
+            newly_completed(prev, now.badge).then(|| Completion {
+                agent: now.agent.unwrap_or("agent"),
+                origin: pane.origin.clone(),
+            })
+        })
+        .collect()
 }
 
 fn tick<'a>(
@@ -257,7 +338,7 @@ mod tests {
 
     #[test]
     fn dropping_the_watcher_ends_its_thread_while_a_phone_link_lives() {
-        let watcher = AgentWatcher::spawn(|| {});
+        let watcher = AgentWatcher::spawn(|| {}, |_| {});
         let _phone = watcher.link();
         let (done, dropped) = crossbeam_channel::bounded(1);
 

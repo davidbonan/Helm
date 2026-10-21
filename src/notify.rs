@@ -16,6 +16,7 @@
 
 use std::path::Path;
 
+use crate::agent_watch::watcher::Completion;
 use crate::git::cli::{self, CliError, CliOutput};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,16 @@ pub fn completion_message(agent: &str, repo: &str, branch: Option<&str>) -> (Str
         _ => repo.to_owned(),
     };
     (title, body)
+}
+
+/// Posts the banner of an agent's finished turn.
+pub fn post_completion(completion: &Completion) {
+    let (title, body) = completion_message(
+        completion.agent,
+        &completion.origin.repo,
+        completion.origin.branch.as_deref(),
+    );
+    post(&title, &body);
 }
 
 fn failure_detail(output: &CliOutput) -> String {

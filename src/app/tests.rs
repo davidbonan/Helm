@@ -4310,7 +4310,7 @@ fn a_phone_launched_pane_whose_entry_left_is_dropped_and_forgotten() {
             worktree: PathBuf::from("/tmp/gone"),
             handle: pane.handle(),
         },
-        crate::agent_watch::watcher::WatchedPane::of(&pane),
+        crate::agent_watch::watcher::WatchedPane::of(&pane, Default::default()),
     );
     adopt
         .send(crate::remote::launch::LaunchedPane {

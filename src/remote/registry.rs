@@ -263,7 +263,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_watch::watcher::WatchedPane;
+    use crate::agent_watch::watcher::{PaneOrigin, WatchedPane};
     use crate::terminal::pane::Pane;
 
     fn cat() -> Pane {
@@ -306,7 +306,10 @@ mod tests {
         let registry = Registry::default();
         let pane = cat();
         let theme = theme::preset("helm", true);
-        registry.add_launched(exposed(&pane, "Claude Code"), WatchedPane::of(&pane));
+        registry.add_launched(
+            exposed(&pane, "Claude Code"),
+            WatchedPane::of(&pane, PaneOrigin::default()),
+        );
 
         registry.publish(Vec::new(), None, theme);
         let before_adoption = tab_of(&registry, &pane);
@@ -323,7 +326,10 @@ mod tests {
     fn a_forgotten_launched_pane_is_no_longer_exposed() {
         let registry = Registry::default();
         let pane = cat();
-        registry.add_launched(exposed(&pane, "Claude Code"), WatchedPane::of(&pane));
+        registry.add_launched(
+            exposed(&pane, "Claude Code"),
+            WatchedPane::of(&pane, PaneOrigin::default()),
+        );
 
         registry.forget(pane.uid());
 

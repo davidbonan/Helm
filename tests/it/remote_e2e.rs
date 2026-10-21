@@ -2,7 +2,6 @@
 //! real panes, a real WebSocket client — and the one assertion only the system
 //! can answer (the sleep assertion).
 
-use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -11,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use alacritty_terminal::grid::Dimensions;
 
-use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
+use helm::agent_watch::watcher::{AgentWatcher, PaneOrigin, Track, WatchedPane};
 use helm::agents::Agent;
 use helm::remote::access::AccessAlert;
 use helm::remote::awake::{KeepAwake, REASON};
@@ -74,11 +73,11 @@ impl Fixture {
         let bin = compile_agent(dir.path(), "claude", source);
         let agent = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
         let shell = Pane::from_command(CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
-        let watcher = AgentWatcher::spawn(|| {});
-        watcher.track(
-            vec![WatchedPane::of(&agent), WatchedPane::of(&shell)],
-            HashSet::new(),
-        );
+        let watcher = AgentWatcher::spawn(|| {}, |_| {});
+        watcher.track(Track::new(vec![
+            WatchedPane::of(&agent, PaneOrigin::default()),
+            WatchedPane::of(&shell, PaneOrigin::default()),
+        ]));
         let worktree = dir.path().join("worktree");
         std::fs::create_dir(&worktree).unwrap();
         let registry = Registry::default();

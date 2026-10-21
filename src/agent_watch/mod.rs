@@ -255,6 +255,13 @@ impl PaneAgentState {
 pub mod probe {
     use super::classify;
 
+    /// `true` while helm is the active app. Asked of the system, not of a frame:
+    /// a hidden or napping helm draws none, so the focus a frame last reported
+    /// goes stale. `NSRunningApplication` is thread-safe, the watcher reads it.
+    pub fn helm_is_frontmost() -> bool {
+        unsafe { objc2_app_kit::NSRunningApplication::currentApplication().isActive() }
+    }
+
     /// `true` if a watchlist agent is a member of group `pgid`.
     pub fn agent_in_group(pgid: i32) -> bool {
         foreground_agent(pgid).is_some()

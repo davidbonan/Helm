@@ -6,6 +6,19 @@
 
 ---
 
+## ☑ Milestone — M-NotifyAway · Completion banners from a backgrounded helm
+
+Spec: [`specs/agents.md`](../agents.md) §1, §5. Per the user: banners went
+missing. Counter: **1/1**.
+
+- ☑ **NA1 — Watcher posts, frontmost gates the focus.** `AgentWatcher::spawn(on_change,
+  on_completion)`, `Track { panes, focused, alert_on_completion }`, `PaneOrigin`
+  per `WatchedPane`; `notify::post_completion`; `probe::helm_is_frontmost`
+  (`NSRunningApplication.isActive`). *Tests*: 3 business e2e (`agent_watch_e2e`).
+  Not done: check on the installed `.app` (hidden, minimized, behind another app).
+
+---
+
 ## ◐ Milestone — M-Browser · Browser sidebar
 
 Spec: [`specs/browser.md`](../browser.md), [`specs/keybindings.md`](../keybindings.md) §4.

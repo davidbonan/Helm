@@ -7,11 +7,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use helm::agent_watch::probe;
-use helm::agent_watch::watcher::{AgentWatcher, PaneReading, WatchedPane};
+use helm::agent_watch::watcher::{
+    AgentWatcher, Completion, PaneOrigin, PaneReading, Track, WatchedPane,
+};
 use helm::agent_watch::AgentBadge;
 use helm::terminal::pane::Pane;
 use portable_pty::CommandBuilder;
@@ -230,8 +232,11 @@ fn the_watcher_reads_an_agent_without_any_ui_frame() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_agent(tmp.path());
     let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
-    let watcher = AgentWatcher::spawn(|| {});
-    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+    let watcher = AgentWatcher::spawn(|| {}, |_| {});
+    watcher.track(Track::new(vec![WatchedPane::of(
+        &pane,
+        PaneOrigin::default(),
+    )]));
 
     let idle_agent = PaneReading {
         agent: Some("claude"),
@@ -252,11 +257,14 @@ fn an_untracked_pane_leaves_the_readings() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_agent(tmp.path());
     let pane = Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap();
-    let watcher = AgentWatcher::spawn(|| {});
-    watcher.track(vec![WatchedPane::of(&pane)], HashSet::new());
+    let watcher = AgentWatcher::spawn(|| {}, |_| {});
+    watcher.track(Track::new(vec![WatchedPane::of(
+        &pane,
+        PaneOrigin::default(),
+    )]));
     assert!(wait_until(|| reading_of(&watcher, &pane).is_some()));
 
-    watcher.track(Vec::new(), HashSet::new());
+    watcher.track(Track::new(Vec::new()));
     let gone = wait_until(|| reading_of(&watcher, &pane).is_none());
 
     drop(watcher);
@@ -265,4 +273,97 @@ fn an_untracked_pane_leaves_the_readings() {
         gone,
         "a pane the UI dropped must not linger in the readings"
     );
+}
+
+/// Works ~3 s, then waits silently for the next prompt: one finished turn.
+const ONE_TURN_AGENT: &str = "#include <stdio.h>\n#include <unistd.h>\n\
+int main(void){sleep(1);for(int i=0;i<30;i++){\
+printf(\"working %02d ............................................................\\n\",i);\
+fflush(stdout);usleep(100000);}for(;;)pause();}\n";
+
+/// Work, then the silence that arms the green, then a tick.
+const TURN: Duration = Duration::from_secs(20);
+
+fn one_turn_pane(dir: &Path) -> Pane {
+    let bin = compile_agent(dir, "claude", ONE_TURN_AGENT);
+    Pane::from_command(CommandBuilder::new(&bin), 24, 80, || {}).unwrap()
+}
+
+fn reporting_watcher() -> (AgentWatcher, Arc<Mutex<Vec<Completion>>>) {
+    let reported = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&reported);
+    let watcher = AgentWatcher::spawn(
+        || {},
+        move |completion: &Completion| sink.lock().unwrap().push(completion.clone()),
+    );
+    (watcher, reported)
+}
+
+fn is_done(watcher: &AgentWatcher, pane: &Pane) -> bool {
+    reading_of(watcher, pane).is_some_and(|reading| reading.badge == AgentBadge::Done)
+}
+
+#[test]
+fn the_watcher_reports_a_finished_turn_without_any_ui_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pane = one_turn_pane(tmp.path());
+    let (watcher, reported) = reporting_watcher();
+    let origin = PaneOrigin {
+        repo: "helm".to_owned(),
+        branch: Some("main".to_owned()),
+    };
+    watcher.track(Track {
+        alert_on_completion: true,
+        ..Track::new(vec![WatchedPane::of(&pane, origin.clone())])
+    });
+
+    let finished = wait_until_within(TURN, || !reported.lock().unwrap().is_empty());
+
+    drop(watcher);
+    teardown(pane);
+    assert!(finished, "a backgrounded helm draws no frame to post it");
+    assert_eq!(
+        *reported.lock().unwrap(),
+        vec![Completion {
+            agent: "claude",
+            origin
+        }]
+    );
+}
+
+#[test]
+fn a_focus_reported_while_helm_is_not_frontmost_does_not_acknowledge() {
+    // The test process is never the active app: like a helm hidden before it drew
+    // the frame that would have cleared the focus it last reported.
+    let tmp = tempfile::tempdir().unwrap();
+    let pane = one_turn_pane(tmp.path());
+    let (watcher, _) = reporting_watcher();
+    watcher.track(Track {
+        focused: HashSet::from([pane.uid()]),
+        ..Track::new(vec![WatchedPane::of(&pane, PaneOrigin::default())])
+    });
+
+    let done = wait_until_within(TURN, || is_done(&watcher, &pane));
+
+    drop(watcher);
+    teardown(pane);
+    assert!(done, "nobody saw the turn: its green must arm");
+}
+
+#[test]
+fn a_finished_turn_is_not_reported_when_alerts_are_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pane = one_turn_pane(tmp.path());
+    let (watcher, reported) = reporting_watcher();
+    watcher.track(Track::new(vec![WatchedPane::of(
+        &pane,
+        PaneOrigin::default(),
+    )]));
+
+    let done = wait_until_within(TURN, || is_done(&watcher, &pane));
+
+    drop(watcher);
+    teardown(pane);
+    assert!(done);
+    assert!(reported.lock().unwrap().is_empty());
 }

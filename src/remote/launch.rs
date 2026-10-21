@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::agent_watch::watcher::WatchedPane;
+use crate::agent_watch::watcher::{PaneOrigin, WatchedPane};
 use crate::agents::Agent;
 use crate::remote::protocol::path_id;
 use crate::remote::registry::{ExposedPane, Registry};
@@ -93,6 +93,10 @@ impl Launcher {
         let pane = Pane::typing(&typed, size.phone(), move || wake())
             .map_err(|err| format!("Could not start {} — {err}", agent.name))?;
         let uid = pane.uid();
+        let origin = PaneOrigin {
+            repo: target.project.clone(),
+            branch: target.branch.clone(),
+        };
         registry.add_launched(
             ExposedPane {
                 uid,
@@ -102,7 +106,7 @@ impl Launcher {
                 worktree: target.path.clone(),
                 handle: pane.handle(),
             },
-            WatchedPane::of(&pane),
+            WatchedPane::of(&pane, origin),
         );
         let launched = LaunchedPane {
             entry: target.path,

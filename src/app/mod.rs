@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::agent_watch::watcher::{AgentWatcher, PaneReading, Readings, WatchedPane};
+use crate::agent_watch::watcher::{
+    AgentWatcher, PaneOrigin, PaneReading, Readings, Track, WatchedPane,
+};
 use crate::agent_watch::AgentBadge;
 use crate::agents::{Agent, CommitMessageSettings, PullRequestRef, ReviewSettings};
 use crate::ai::AiRunner;
@@ -1120,9 +1122,16 @@ impl HelmApp {
             self.agent_watcher
                 .get_or_insert_with(|| {
                     let ctx = ctx.clone();
-                    AgentWatcher::spawn(move || ctx.request_repaint())
+                    AgentWatcher::spawn(
+                        move || ctx.request_repaint(),
+                        crate::notify::post_completion,
+                    )
                 })
-                .track(watched, focused);
+                .track(Track {
+                    panes: watched,
+                    focused,
+                    alert_on_completion: self.notify_on_agent_completion,
+                });
             self.sync_phone_access(ctx);
         }
         let changed = self
@@ -1145,13 +1154,29 @@ impl HelmApp {
     fn watched_panes(&self) -> Vec<WatchedPane> {
         self.caches
             .panes
-            .values()
-            .flat_map(|panes| panes.values())
-            .filter_map(|state| match state {
-                TerminalState::Live(pane) => Some(WatchedPane::of(pane)),
-                TerminalState::Failed(_) => None,
+            .iter()
+            .flat_map(|(key, panes)| {
+                let origin = self.pane_origin(&key.0);
+                panes.values().filter_map(move |state| match state {
+                    TerminalState::Live(pane) => Some(WatchedPane::of(pane, origin.clone())),
+                    TerminalState::Failed(_) => None,
+                })
             })
             .collect()
+    }
+
+    fn pane_origin(&self, repo: &RepoKey) -> PaneOrigin {
+        let name = self
+            .caches
+            .keys
+            .iter()
+            .position(|key| key == repo)
+            .and_then(|i| self.workspace.repo(i))
+            .map(|repo| repo.name.clone());
+        PaneOrigin {
+            repo: name.unwrap_or_default(),
+            branch: self.caches.branch_labels.get(repo).cloned(),
+        }
     }
 
     /// Seeing a pane acknowledges its green — but only on the terminal view: the
@@ -1181,14 +1206,14 @@ impl HelmApp {
     }
 
     /// Rebuilds the sidebar badges and the cross-repo agent list from the watcher's
-    /// readings, and posts the completion notifications.
+    /// readings.
     fn rebuild_agent_entries(&mut self) {
         let readings = &self.agent_readings.panes;
         let now_ms = crate::terminal::activity::now_ms();
         // Previous tick's per-pane badge, agent name and completion stamp: the rising
-        // edge into `Done` fires the notification and stamps the flash, a green that
-        // persists carries its stamp forward, and a just-departed agent (the green
-        // outlives the probe by one tolerated absent tick) keeps its name.
+        // edge into `Done` stamps the flash, a green that persists carries its stamp
+        // forward, and a just-departed agent (the green outlives the probe by one
+        // tolerated absent tick) keeps its name.
         let prev: HashMap<(PaneKey, PaneId), (AgentBadge, &'static str, Option<u64>)> = self
             .caches
             .agents
@@ -1200,13 +1225,6 @@ impl HelmApp {
                 )
             })
             .collect();
-        let repo_names: HashMap<RepoKey, String> = self
-            .caches
-            .keys
-            .iter()
-            .enumerate()
-            .filter_map(|(i, key)| Some((key.clone(), self.workspace.repo(i)?.name.clone())))
-            .collect();
         let group_names: HashMap<RepoKey, String> = self
             .caches
             .keys
@@ -1216,7 +1234,6 @@ impl HelmApp {
             .collect();
         let mut badges: HashMap<RepoKey, AgentBadge> = HashMap::new();
         let mut entries: Vec<AgentEntry> = Vec::new();
-        let mut notifications: Vec<(String, String)> = Vec::new();
         for (key, panes) in &self.caches.panes {
             for (pane_id, state) in panes {
                 let TerminalState::Live(pane) = state else {
@@ -1242,18 +1259,8 @@ impl HelmApp {
                     badge,
                     now_ms,
                 );
-                let repo_name = repo_names.get(&key.0).cloned().unwrap_or_default();
                 let group_name = group_names.get(&key.0).cloned().unwrap_or_default();
                 let branch = self.caches.branch_labels.get(&key.0).cloned();
-                if self.notify_on_agent_completion
-                    && crate::agent_watch::newly_completed(prev_badge, badge)
-                {
-                    notifications.push(crate::notify::completion_message(
-                        agent,
-                        &repo_name,
-                        branch.as_deref(),
-                    ));
-                }
                 entries.push(AgentEntry {
                     repo_key: key.0.clone(),
                     group_name,
@@ -1285,9 +1292,6 @@ impl HelmApp {
         });
         self.caches.agent_badges = badges;
         self.caches.agents = entries;
-        for (title, body) in notifications {
-            crate::notify::post(&title, &body);
-        }
     }
 
     /// Tab auto-naming (terminal.md §4): name each pane after its current activity;

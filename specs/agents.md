@@ -26,7 +26,9 @@ app at the animation frame rate for as long as the completion lingered, never
 letting the app return to idle. Only `Working` — genuine transient activity — animates.
 
 The green one is an **unread completion signal**: it clears on **tab focus**
-(active entry + active tab + focused window — seeing = acknowledging), on the
+(active entry + active tab + focused window — seeing = acknowledging; the window
+counts as focused only while macOS reports helm **frontmost**, since the focus a
+frame last reported goes stale once helm is hidden or napping), on the
 **phone showing it** ([`remote.md`](remote.md) §6 `watch`), or on **typing in the pane** (replying = acknowledging). An acknowledged episode
 never re-arms the green one; only a **new** work episode can. Use case: send a
 prompt, switch workspace — spinner during the turn, green at the end, gray on
@@ -125,6 +127,10 @@ posts a macOS banner — title *"Claude finished"*, body `repo · branch`
 (`notify` module). Gated by a Preferences toggle (*Agents → Completion
 notifications*, on by default); clicking the banner is a no-op — focus is the
 dashboard's job.
+
+The **watcher thread** detects the edge and posts it, never a frame: a helm in
+the background is App Napped within seconds and draws no frame, a hidden one none
+at all (measured: the edge reached `Done` on time, the banner never left).
 
 Two backends behind `notify::post`. From the `.app`, **`UserNotifications`**:
 the banner carries helm's own bundle identity, the only form the system

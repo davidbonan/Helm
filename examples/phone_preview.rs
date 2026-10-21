@@ -4,10 +4,9 @@
 //! The **+** sheet launches the fake agent (as *Claude Code*) in a throwaway directory.
 //! Every pane's files (§7.3) are those of the directory the preview runs in.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
+use helm::agent_watch::watcher::{AgentWatcher, PaneOrigin, Track, WatchedPane};
 use helm::agents::Agent;
 use helm::remote::launch::{LaunchTarget, LaunchTargets, Launcher};
 use helm::remote::registry::{ExposedPane, PhoneProject, Registry};
@@ -82,8 +81,13 @@ fn main() {
         .into_iter()
         .map(|cmd| Pane::from_command(cmd, 40, 60, || {}).unwrap())
         .collect();
-    let watcher = AgentWatcher::spawn(|| {});
-    watcher.track(panes.iter().map(WatchedPane::of).collect(), HashSet::new());
+    let watcher = AgentWatcher::spawn(|| {}, |_| {});
+    watcher.track(Track::new(
+        panes
+            .iter()
+            .map(|pane| WatchedPane::of(pane, PaneOrigin::default()))
+            .collect(),
+    ));
     let registry = Registry::default();
     let cwd = std::env::current_dir().unwrap();
     let avoda = dir.path().join("avoda");
