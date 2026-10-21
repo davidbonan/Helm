@@ -1,5 +1,12 @@
 # Release notes
 
+## 3.7.4
+
+- Agent completion notifications now arrive when helm is in the
+  background or hidden, not only when its window is in front.
+- Phone: hide or show a project from the eye next to the + in the Agents
+  title — shared with the sidebar's eye on the Mac.
+
 ## 3.7.3
 
 - **Files** now has its own sidebar, per worktree: toggle it from the folder
@@ -79,14 +86,3 @@
   tabs — with the system emoji font, as in Ghostty.
 - Terminal: an emoji followed by a variation selector (⚠️) no longer shows
   a stray box.
-
-## 3.4.0
-
-- New Preferences › Agents: one list of agents — Claude Code, Codex and
-  opencode pre-filled — each with its own commands. Add your own: an alias
-  or a wrapper works too.
-- Commit message and review now pick an agent from that list, and their
-  prompts are editable with a **Restore default**. Your previous settings
-  are carried over.
-- Phone: the pairing modal says when the macOS firewall keeps the phone
-  out, with a link to the Firewall settings.
