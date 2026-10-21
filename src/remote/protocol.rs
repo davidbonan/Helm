@@ -1,13 +1,16 @@
 //! The WebSocket messages (specs/remote.md §6), one JSON object per text frame.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_watch::AgentBadge;
 use crate::remote::launch::LaunchTargets;
-use crate::remote::registry::ExposedAgent;
+use crate::remote::registry::{ExposedAgent, PhoneProject};
 use crate::terminal::keys::{key_bytes, Key, Mods};
 use crate::terminal::palette::TermPalette;
 use crate::terminal::screen::{HistoryPage, Run, Screen, ScreenLine};
@@ -34,6 +37,32 @@ impl AgentRow {
                 AgentBadge::Done => "done",
                 AgentBadge::Idle | AgentBadge::None => "idle",
             },
+        }
+    }
+}
+
+/// The id the page names a path by: stable across the UI's republishes, no path on the wire.
+pub fn path_id(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    // The page's JS reads JSON numbers exactly only below 2^53.
+    hasher.finish() >> 11
+}
+
+/// A workspace project as the phone shows or hides it: no path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectRow {
+    pub id: u64,
+    pub name: String,
+    pub hidden: bool,
+}
+
+impl ProjectRow {
+    pub fn of(project: &PhoneProject) -> Self {
+        Self {
+            id: path_id(&project.root),
+            name: project.name.clone(),
+            hidden: project.hidden,
         }
     }
 }
@@ -190,6 +219,9 @@ pub enum ToPhone {
         id: u64,
     },
     Targets(Targets),
+    Projects {
+        projects: Vec<ProjectRow>,
+    },
     Launched {
         id: u64,
     },
@@ -257,6 +289,10 @@ pub enum FromPhone {
         rows: u16,
         cols: u16,
     },
+    SetProjectHidden {
+        project: u64,
+        hidden: bool,
+    },
     /// `lines > 0` = upward, at the cell under the finger — the Mac wheel's encoding.
     Scroll {
         id: u64,
@@ -300,6 +336,11 @@ impl QuickKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_id_survives_the_pages_json_numbers() {
+        assert!(path_id(Path::new("/Users/dev/api")) < 1 << 53);
+    }
 
     #[test]
     fn quick_keys_use_the_terminal_encoding() {

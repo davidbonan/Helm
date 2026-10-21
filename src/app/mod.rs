@@ -1099,6 +1099,7 @@ impl HelmApp {
     /// workspace entry for the sidebar badge.
     fn update_agent_watch(&mut self, ctx: &egui::Context) {
         self.adopt_launched_panes();
+        self.apply_phone_visibility_requests();
         if self.caches.panes.is_empty() {
             self.caches.agent_badges.clear();
             self.caches.agents.clear();
@@ -1366,6 +1367,22 @@ impl HelmApp {
                 ..prefs
             });
         }
+    }
+
+    /// From the sidebar's eye or the phone. Hiding the active project leaves the
+    /// central area on the dashboard — no orphaned terminal for a row no longer in
+    /// the sidebar.
+    fn set_project_hidden(&mut self, root: usize, hidden: bool) {
+        self.workspace.set_user_hidden(root, hidden);
+        if self
+            .workspace
+            .active()
+            .is_some_and(|a| self.workspace.is_in_hidden_project(a))
+        {
+            self.central_mode = CentralMode::Agents;
+        }
+        let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+        self.persist(move |_| next);
     }
 
     /// Records the change in the in-memory prefs; the TOML write is debounced
@@ -3792,13 +3809,7 @@ fn index_of(workspace: &Workspace, target: &Path) -> Option<usize> {
 /// row (§3).
 fn reveal_row(workspace: &mut Workspace, index: usize) {
     let root = match workspace.parent_root(index) {
-        Some(parent) => {
-            let parent = parent.to_path_buf();
-            (0..workspace.len()).find(|&i| {
-                workspace.parent_root(i).is_none()
-                    && workspace.repo(i).is_some_and(|r| r.path == parent)
-            })
-        }
+        Some(parent) => workspace.project_root_index(parent),
         None => Some(index),
     };
     if let Some(root) = root {

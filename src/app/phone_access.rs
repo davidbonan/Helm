@@ -5,7 +5,7 @@ use super::*;
 use crate::remote::firewall::FirewallBlock;
 use crate::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
 use crate::remote::qr::QrMatrix;
-use crate::remote::registry::{ExposedPane, Registry};
+use crate::remote::registry::{ExposedPane, PhoneProject, Registry};
 use crate::remote::server::{PhoneServer, PhoneServices, StartError};
 use crate::theme::Palette;
 use crate::ui::phone_access_modal::{phone_access_modal, OfferedPairingView, PhoneAccessView};
@@ -265,12 +265,13 @@ impl HelmApp {
             self.theme_preset,
         );
         phone.registry.publish_targets(self.launch_targets());
+        phone.registry.publish_projects(self.phone_projects());
     }
 
-    /// Every entry of a visible project, bare roots aside (remote.md §7.2).
+    /// Every entry, bare roots aside (remote.md §7.2); the registry leaves out
+    /// those of a hidden project.
     fn launch_targets(&self) -> LaunchTargets {
         let entries = (0..self.workspace.len())
-            .filter(|&index| !self.workspace.is_in_hidden_project(index))
             .filter_map(|index| {
                 let repo = self.workspace.repo(index).filter(|repo| !repo.bare)?;
                 let branch = self
@@ -294,6 +295,40 @@ impl HelmApp {
             .cloned()
             .collect();
         LaunchTargets { entries, agents }
+    }
+
+    /// Every project, hidden ones included: the phone lists them all, like the eye (remote.md §7.4).
+    fn phone_projects(&self) -> Vec<PhoneProject> {
+        let repos: Vec<&Repo> = self.workspace.repos().collect();
+        (0..repos.len())
+            .filter(|&index| self.workspace.parent_root(index).is_none())
+            .map(|root| {
+                let entries = (0..repos.len())
+                    .filter(|&i| {
+                        i == root || self.workspace.parent_root(i) == Some(&repos[root].path)
+                    })
+                    .map(|i| repos[i].path.clone())
+                    .collect();
+                PhoneProject {
+                    root: repos[root].path.clone(),
+                    name: repos[root].name.clone(),
+                    hidden: self.workspace.is_user_hidden(root),
+                    entries,
+                }
+            })
+            .collect()
+    }
+
+    /// What the phone hid or showed meanwhile; a project that left the workspace is skipped.
+    pub(super) fn apply_phone_visibility_requests(&mut self) {
+        let Some(phone) = &self.phone else {
+            return;
+        };
+        for request in phone.registry.take_visibility_requests() {
+            if let Some(root) = self.workspace.project_root_index(&request.root) {
+                self.set_project_hidden(root, request.hidden);
+            }
+        }
     }
 
     /// Panes the phone launched become tabs of their entry, not activated; one

@@ -15,6 +15,7 @@ to install. Module: `remote` (+ `agent_watch` off the UI thread, §4).
 | Launching a configured agent in a new tab of a workspace project or worktree (§7.2) | Initial prompt at launch (the composer sends the first one) |
 | Works with the Mac locked / helm hidden | HTTPS, Tailscale, push notifications |
 | Browsing and opening the files of an agent's worktree (§7.3) | Editing, uploading or deleting a file |
+| Hiding / showing a workspace project, shared with the sidebar's eye (§7.4) | Removing a project, reordering |
 
 **Agents only**: a pane is exposed while `agent_watch` sees an agent in its
 foreground (badge ≠ `None`, [`agents.md`](agents.md) §2). The phone never reaches
@@ -180,8 +181,13 @@ moves to a **watcher thread** (refactor, first task):
   channel with its entry's key; the next `update` drains it and inserts it as a new
   tab. A pending pane / watcher extra stays until a UI `publish` / `track` lists
   it, or the UI drops it unadopted (entry gone) and forgets it. The UI publishes
-  the launch targets beside the panes: the workspace entries (not hidden) and the
+  the launch targets beside the panes: the workspace entries and the
   agent list from Preferences; its repaint pacer wakes the UI at launch.
+- **Hiding without the UI** (§7.4): the UI publishes every project (root, name,
+  hidden, entries). A phone `set_project_hidden` flips the flag in the registry
+  at once — its agents and launch targets drop out there — and queues a request
+  the UI takes at its next `update` (applies, persists). Until then a UI publish
+  keeps the queued flag on top, so a stale publish never undoes the phone.
 
 Phone input goes through `Pane`'s write path semantics: bytes stamp
 `PaneActivity` input, so replying from the phone **acknowledges** a green exactly
@@ -212,7 +218,8 @@ Server → phone:
 | `screen` | `{id, cols, rows, fg, bg, lines, cursor, writable, app_scrolls}` | watched pane, on change, ≤ 10 /s — ≤ 60 /s for 600 ms after a phone `send`/`key`/`scroll`, so a swipe reads as motion; `fg`/`bg` = the palette's own, what a blank cell shows; `app_scrolls` = the app takes the wheel ([`terminal.md`](terminal.md) §8) |
 | `history` | `{id, first, lines}` | reply to `history`; `first` = next page's `before` |
 | `ended` | `{id}` | watched pane dropped |
-| `targets` | `{entries: [{id, project, branch, worktree}], agents: [{id, name}]}` | on connect, then when the workspace or the agent list changes |
+| `targets` | `{entries: [{id, project, branch, worktree}], agents: [{id, name}]}` | on connect, then when the workspace or the agent list changes; entries of a hidden project left out |
+| `projects` | `[{id, name, hidden}]` — every project, hidden ones included | on connect, then on change (Mac sidebar or a phone) |
 | `launched` | `{id}` | reply to `launch`: the new pane, watchable at once |
 | `launch_failed` | `{message}` | reply to `launch`: unknown entry / agent, spawn error |
 | `ping` | — | every 3 s, with a WebSocket ping frame |
@@ -238,6 +245,7 @@ Phone → server:
 | `send` | `{id, text}` | re-claims the size, then `Pane::paste` semantics (bracketed when the mode is on) then `\r` |
 | `key` | `{id, key}` | re-claims the size, then one quick key (§7), encoded like the Mac keyboard |
 | `history` | `{id, before, count}` | `count` scrollback lines above line `before` |
+| `set_project_hidden` | `{project, hidden}` | hide or show that project, Mac included (§7.4) |
 | `launch` | `{entry, agent, rows, cols}` | spawn the agent in a new tab of that entry, sized for the phone (§7.2) |
 | `scroll` | `{id, lines, line, col}` | re-claims the size, then the Mac wheel's bytes (`wheel_bytes`: `lines > 0` = up, cell under the finger, ≤ 100 lines); nothing when the app does not take the wheel |
 
@@ -394,6 +402,18 @@ What the agent wrote — a screenshot, a video, a report — opens on the phone.
   Safari*.
 - **The mirror stays watched** while the files are open: the pane keeps the
   phone's size, no redraw on the way back.
+
+### 7.4 Hiding projects
+
+- **Entry**: an **eye** button left of the **+** in the *Agents* large title;
+  hidden while the Mac has no project.
+- **Sheet** (`#/projects`, same chrome and history as §7.2): *Projects* — one row
+  per project, hidden ones included, a check on the shown ones; *Done*, a backdrop
+  tap or a back swipe close it.
+- **A tap** hides or shows the project, **on the Mac too**: the same flag as the
+  sidebar's eye ([`worktrees.md`](worktrees.md) §1), persisted. The row flips at
+  once; the Mac's next `projects` confirms it. A hidden project's agents leave the
+  list and its entries the launch sheet; a mirror already open on one stays.
 
 ## 8. Testing
 

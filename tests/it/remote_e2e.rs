@@ -17,7 +17,7 @@ use helm::remote::access::AccessAlert;
 use helm::remote::awake::{KeepAwake, REASON};
 use helm::remote::devices::PairedDevices;
 use helm::remote::launch::{LaunchTarget, LaunchTargets, LaunchedPane, Launcher};
-use helm::remote::registry::{ExposedPane, Registry};
+use helm::remote::registry::{ExposedPane, PhoneProject, Registry, VisibilityRequest};
 use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
 use helm::theme;
@@ -560,6 +560,51 @@ fn a_paired_phone_lists_the_agent_only_and_types_into_it() {
     assert_eq!(listed, [agent_id], "the plain `cat` pane is never exposed");
     let screen = echoed.expect("the typed text reaches the agent's PTY and its screen");
     assert_eq!(screen["writable"], true);
+}
+
+#[test]
+fn a_project_hidden_from_the_phone_leaves_its_list_and_waits_for_the_mac() {
+    let fixture = Fixture::new();
+    fixture.registry.publish_projects(vec![PhoneProject {
+        root: fixture.worktree(),
+        name: "api".to_owned(),
+        hidden: false,
+        entries: vec![fixture.worktree()],
+    }]);
+    let cookie = fixture.pair();
+    let mut ws = fixture.connect(&cookie);
+
+    let listed = wait_for(&mut ws, "agents", |m| {
+        m["agents"].as_array().is_some_and(|a| !a.is_empty())
+    });
+    let shown = wait_for(&mut ws, "projects", |m| m["projects"][0]["hidden"] == false);
+    let project = shown.as_ref().map(|m| m["projects"][0]["id"].clone());
+    ws.send(Message::text(
+        json!({"type": "set_project_hidden", "project": project, "hidden": true}).to_string(),
+    ))
+    .unwrap();
+    let emptied = wait_for(&mut ws, "agents", |m| {
+        m["agents"].as_array().is_some_and(|a| a.is_empty())
+    });
+    let hidden = wait_for(&mut ws, "projects", |m| m["projects"][0]["hidden"] == true);
+    let requests = fixture.registry.take_visibility_requests();
+
+    let worktree = fixture.worktree();
+    fixture.close();
+    assert!(
+        listed.is_some() && shown.is_some(),
+        "the project starts shown"
+    );
+    assert!(emptied.is_some(), "its agent leaves the list at once");
+    assert!(hidden.is_some());
+    assert_eq!(
+        requests,
+        [VisibilityRequest {
+            root: worktree,
+            hidden: true
+        }],
+        "the UI applies it when it next draws"
+    );
 }
 
 /// The fixture's directory as the only entry, the echo agent (named `claude`, so

@@ -243,6 +243,22 @@ Counter: **5/5**.
 
 ---
 
+## ☑ Milestone — M-PhoneHide · Hide a project from the phone
+
+Spec: [`specs/remote.md`](../remote.md) §1, §4, §6, §7.4. Per the user: hide /
+show a project like the desktop eye, shared with the Mac. Counter: **1/1**.
+
+- ☑ **PH1 — Projects sheet.** `PhoneProject` + `VisibilityRequest` in the
+  registry (filters agents and launch targets, survives stale publishes);
+  `projects` / `set_project_hidden` messages; UI `apply_phone_visibility_requests`
+  via `set_project_hidden` (shared with the sidebar eye); eye button + `#/projects`
+  sheet. *Tests*: 3 unit + 1 app + 1 business e2e (`remote_e2e`). Simulator: hide
+  drops the project's agents at once.
+  Not done: *Done*/backdrop closing not confirmed on the simulator — the launch
+  sheet's *Cancel* fails there the same way (history after pairing); to check on an iPhone.
+
+---
+
 ## ☑ Milestone — M-InboxHide · Hide a PR from the Inbox
 
 Spec: [`specs/pull-requests.md`](../pull-requests.md) §5. Per the user: take a PR

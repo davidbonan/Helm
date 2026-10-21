@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
 
 use crate::remote::launch::Launcher;
-use crate::remote::protocol::{AgentRow, FromPhone, PageTheme, Targets, ToPhone};
+use crate::remote::protocol::{AgentRow, FromPhone, PageTheme, ProjectRow, Targets, ToPhone};
 use crate::remote::registry::Registry;
 use crate::terminal::emu::wheel_bytes;
 use crate::terminal::pane::{PaneHandle, PaneUid};
@@ -54,6 +54,7 @@ pub struct PhoneSocket {
     sent_theme: Option<PageTheme>,
     sent_agents: Option<Vec<AgentRow>>,
     sent_targets: Option<Targets>,
+    sent_projects: Option<Vec<ProjectRow>>,
     sent_screen: Option<ToPhone>,
     last_push: Option<Instant>,
     driven_until: Option<Instant>,
@@ -75,6 +76,7 @@ impl PhoneSocket {
             sent_theme: None,
             sent_agents: None,
             sent_targets: None,
+            sent_projects: None,
             sent_screen: None,
             last_push: None,
             driven_until: None,
@@ -192,6 +194,10 @@ impl PhoneSocket {
                 };
                 return self.push(&reply);
             }
+            FromPhone::SetProjectHidden { project, hidden } => {
+                self.registry.set_project_hidden(project, hidden);
+                self.last_push = None;
+            }
             FromPhone::Send { id, text } => self.type_into(id, |pane| {
                 pane.paste(&text)?;
                 pane.feed(b"\r")
@@ -291,6 +297,18 @@ impl PhoneSocket {
         if self.sent_targets.as_ref() != Some(&targets) {
             self.push(&ToPhone::Targets(targets.clone()))?;
             self.sent_targets = Some(targets);
+        }
+        let projects: Vec<ProjectRow> = self
+            .registry
+            .projects()
+            .iter()
+            .map(ProjectRow::of)
+            .collect();
+        if self.sent_projects.as_ref() != Some(&projects) {
+            self.push(&ToPhone::Projects {
+                projects: projects.clone(),
+            })?;
+            self.sent_projects = Some(projects);
         }
         let Some(id) = self.watched else {
             return Ok(());

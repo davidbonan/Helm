@@ -462,6 +462,13 @@ impl Workspace {
         }
     }
 
+    /// Index of the project whose root is at `root`; `None` for a linked worktree's path.
+    pub fn project_root_index(&self, root: &Path) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.parent.is_none() && e.repo.path == root)
+    }
+
     /// User-hidden state of a group root; `false` for a child or a standalone
     /// entry read directly (the project-level flag lives on the root).
     pub fn is_user_hidden(&self, index: usize) -> bool {
@@ -471,12 +478,6 @@ impl Workspace {
     pub fn set_user_hidden(&mut self, index: usize, hidden: bool) {
         if let Some(e) = self.entries.get_mut(index) {
             e.hidden = hidden;
-        }
-    }
-
-    pub fn toggle_user_hidden(&mut self, index: usize) {
-        if let Some(e) = self.entries.get_mut(index) {
-            e.hidden = !e.hidden;
         }
     }
 

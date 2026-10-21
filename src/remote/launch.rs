@@ -3,8 +3,6 @@
 //! command line. The server thread spawns the pane — helm may draw no frame — and
 //! hands it to the UI, which adopts it as a tab.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,6 +10,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::agent_watch::watcher::WatchedPane;
 use crate::agents::Agent;
+use crate::remote::protocol::path_id;
 use crate::remote::registry::{ExposedPane, Registry};
 use crate::terminal::pane::{Pane, TypedCommand};
 use crate::terminal::sizing::GridSize;
@@ -27,13 +26,9 @@ pub struct LaunchTarget {
 }
 
 impl LaunchTarget {
-    /// The id is derived from the path: stable across the UI's republishes.
     pub fn new(path: PathBuf, project: String, branch: Option<String>, worktree: bool) -> Self {
-        let mut hasher = DefaultHasher::new();
-        path.hash(&mut hasher);
         Self {
-            // The page's JS reads JSON numbers exactly only below 2^53.
-            id: hasher.finish() >> 11,
+            id: path_id(&path),
             path,
             project,
             branch,
@@ -119,22 +114,5 @@ impl Launcher {
         }
         (self.wake)();
         Ok(uid.get())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_entry_id_survives_the_pages_json_numbers() {
-        let target = LaunchTarget::new(
-            PathBuf::from("/Users/dev/api"),
-            "api".to_owned(),
-            None,
-            false,
-        );
-
-        assert!(target.id < 1 << 53);
     }
 }

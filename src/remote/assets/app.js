@@ -1,4 +1,4 @@
-// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer, launch sheet, files.
+// Phone page of helm (specs/remote.md §7): agents list, terminal mirror, composer, launch and projects sheets, files.
 "use strict";
 
 const HISTORY_PAGE = 200;
@@ -7,6 +7,7 @@ const RECONNECT_MS = 1500;
 const SILENT_MS = 10000;
 const SILENCE_CHECK_MS = 2000;
 const LAUNCH_ROUTE = "#/new";
+const PROJECTS_ROUTE = "#/projects";
 const FONT_MIN = 3;
 const FONT_MAX = 20;
 const READING_FONT_MIN = 7;
@@ -52,6 +53,8 @@ const state = {
   // The latest frame received while the user selects text: painting it would drop the selection.
   heldFrame: null,
   targets: { entries: [], agents: [] },
+  // Every project of the Mac, hidden ones included.
+  projects: [],
   // Last entry id and agent name picked on this phone.
   choice: loadChoice(),
   launching: false,
@@ -148,6 +151,7 @@ function receive(message) {
     case "history": if (message.id === state.watched) prependHistory(message); break;
     case "ended": if (message.id === state.watched) endMirror(); break;
     case "targets": receiveTargets(message); break;
+    case "projects": receiveProjects(message.projects); break;
     case "launched": launched(message.id); break;
     case "launch_failed": launchFailed(message.message); break;
   }
@@ -617,6 +621,39 @@ function launchFailed(message) {
   $("launch-error").hidden = false;
 }
 
+// Projects sheet (specs/remote.md §7.4): the sidebar's eye, shared with the Mac.
+
+function receiveProjects(projects) {
+  state.projects = projects;
+  $("projects-open").hidden = projects.length === 0;
+  if (!$("projects").hidden) renderProjects();
+}
+
+function renderProjects() {
+  $("project-rows").innerHTML = state.projects
+    .map((p) => `<button class="row choice" type="button" role="checkbox" aria-checked="${!p.hidden}"
+      data-project="${p.id}"><span class="who"><div class="name">${escapeHtml(p.name)}</div></span>${p.hidden ? "" : icon("check")}</button>`)
+    .join("");
+}
+
+// Shown at once; the Mac's next `projects` confirms it, or puts it back.
+function toggleProject(id) {
+  const project = state.projects.find((p) => p.id === id);
+  if (!project) return;
+  project.hidden = !project.hidden;
+  renderProjects();
+  send({ type: "set_project_hidden", project: id, hidden: project.hidden });
+}
+
+function openProjects() {
+  renderProjects();
+  $("projects").hidden = false;
+}
+
+function closeProjects() {
+  $("projects").hidden = true;
+}
+
 // Files of an agent's worktree (specs/remote.md §7.3): one folder at a time, newest first.
 
 function worktreeUrl(route, pane, path) {
@@ -851,6 +888,15 @@ $("files-back").addEventListener("click", () => history.back());
 $("file-back").addEventListener("click", () => history.back());
 $("files-open").addEventListener("click", () => { location.hash = worktreeHash("files", state.watched, ""); });
 $("new-agent").addEventListener("click", () => { location.hash = LAUNCH_ROUTE; });
+$("projects-open").addEventListener("click", () => { location.hash = PROJECTS_ROUTE; });
+$("projects-done").addEventListener("click", () => history.back());
+$("projects").addEventListener("click", (event) => {
+  if (event.target === $("projects")) history.back();
+});
+$("project-rows").addEventListener("click", (event) => {
+  const row = event.target.closest(".row");
+  if (row) toggleProject(Number(row.dataset.project));
+});
 $("launch-cancel").addEventListener("click", () => history.back());
 $("launch").addEventListener("click", (event) => {
   if (event.target === $("launch")) history.back();
@@ -928,12 +974,14 @@ document.addEventListener("selectionchange", () => {
 function route() {
   const match = location.hash.match(/^#\/pane\/(\d+)(?:\/(files|file)\/(.*))?$/);
   if (location.hash !== LAUNCH_ROUTE) closeLaunch();
+  if (location.hash !== PROJECTS_ROUTE) closeProjects();
   closeFile();
   if (!match) closeMirror();
   else if (match[2] === "files") openFiles(Number(match[1]), decodeURIComponent(match[3]));
   else if (match[2] === "file") openFile(Number(match[1]), decodeURIComponent(match[3]));
   else openMirror(Number(match[1]));
   if (location.hash === LAUNCH_ROUTE) openLaunch();
+  if (location.hash === PROJECTS_ROUTE) openProjects();
 }
 window.addEventListener("hashchange", route);
 

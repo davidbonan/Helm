@@ -15,6 +15,7 @@
   <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25"/></symbol>
   <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></symbol>
   <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></symbol>
   <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.75 4.25c0-.83.67-1.5 1.5-1.5h2.6l1.5 1.75h5.4c.83 0 1.5.67 1.5 1.5v5.75c0 .83-.67 1.5-1.5 1.5h-9.5c-.83 0-1.5-.67-1.5-1.5z"/></symbol>
   <symbol id="i-file" viewBox="0 0 16 16"><path d="M4.25 1.75h4.5l3.5 3.5v7.5c0 .83-.67 1.5-1.5 1.5h-6.5c-.83 0-1.5-.67-1.5-1.5v-9.5c0-.83.67-1.5 1.5-1.5z"/><path d="M8.5 2v3.5H12"/></symbol>
@@ -26,6 +27,7 @@
       <header class="bar large">
         <h1>Agents</h1>
         <span id="link" class="link" hidden>Reconnecting…</span>
+        <button id="projects-open" class="icon-button eye" type="button" aria-label="Projects" hidden><svg class="icon"><use href="#i-eye"/></svg></button>
         <button id="new-agent" class="icon-button add" type="button" aria-label="New agent" hidden><svg class="icon"><use href="#i-plus"/></svg></button>
       </header>
       <div id="agents"></div>
@@ -46,6 +48,17 @@
           <p id="launch-error" class="launch-error" role="alert" hidden></p>
           <button id="launch-start" class="primary" type="button">Start</button>
         </footer>
+      </div>
+    </div>
+    <div id="projects" class="sheet-backdrop" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="projects-title">
+        <header class="sheet-bar">
+          <h2 id="projects-title">Projects</h2>
+          <button id="projects-done" class="text-button" type="button">Done</button>
+        </header>
+        <div class="sheet-body">
+          <div id="project-rows" class="card"></div>
+        </div>
       </div>
     </div>
   </section>

@@ -33,7 +33,7 @@ below it.
   or by unchecking the project in the **eye** dropdown at the **PROJECTS**
   section label ([`design-system.md`](design-system.md)) — that dropdown lists
   **every** project, hidden ones included, and is the only place to bring one
-  back. Hiding is purely a view filter: the project keeps its place, config and
+  back — the phone's *Projects* sheet aside ([`remote.md`](remote.md) §7.4). Hiding is purely a view filter: the project keeps its place, config and
   worktrees, and the state is **persisted** (§5). If the **active** worktree
   belongs to the project being hidden, the central area falls back to the
   **agents dashboard** ([`agents.md`](agents.md)).

@@ -4326,6 +4326,22 @@ fn a_phone_launched_pane_whose_entry_left_is_dropped_and_forgotten() {
 }
 
 #[test]
+fn a_project_the_phone_hides_is_hidden_and_persisted_on_the_mac() {
+    let mut app = app_with(&["a", "b"]);
+    let (registry, _adopt) = phone_on(&mut app);
+    let project = crate::remote::protocol::path_id(Path::new("/tmp/b"));
+
+    registry.set_project_hidden(project, true);
+    app.apply_phone_visibility_requests();
+
+    assert!(app.workspace.is_user_hidden(1));
+    assert!(
+        app.prefs.projects[1].hidden,
+        "persisted like the sidebar's eye"
+    );
+}
+
+#[test]
 fn cmd_p_never_replaces_another_modal() {
     let mut app = app_with(&["a"]);
     app.modal = Some(Modal::AbortOp);

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use helm::agent_watch::watcher::{AgentWatcher, WatchedPane};
 use helm::agents::Agent;
 use helm::remote::launch::{LaunchTarget, LaunchTargets, Launcher};
-use helm::remote::registry::{ExposedPane, Registry};
+use helm::remote::registry::{ExposedPane, PhoneProject, Registry};
 use helm::remote::server::{PhoneServer, PhoneServices};
 use helm::terminal::pane::Pane;
 use helm::theme;
@@ -48,13 +48,13 @@ fn compile_agent(dir: &Path) -> PathBuf {
     bin
 }
 
-fn exposed(pane: &Pane, project: &str, tab: &str) -> ExposedPane {
+fn exposed(pane: &Pane, project: &str, tab: &str, worktree: &Path) -> ExposedPane {
     ExposedPane {
         uid: pane.uid(),
         project: project.to_owned(),
         branch: Some("main".to_owned()),
         tab: tab.to_owned(),
-        worktree: std::env::current_dir().unwrap(),
+        worktree: worktree.to_path_buf(),
         handle: pane.handle(),
     }
 }
@@ -85,11 +85,13 @@ fn main() {
     let watcher = AgentWatcher::spawn(|| {});
     watcher.track(panes.iter().map(WatchedPane::of).collect(), HashSet::new());
     let registry = Registry::default();
+    let cwd = std::env::current_dir().unwrap();
+    let avoda = dir.path().join("avoda");
     registry.publish(
         vec![
-            exposed(&panes[0], "helm-studio", "Tab 1"),
-            exposed(&panes[1], "helm-studio", "Tab 2"),
-            exposed(&panes[2], "avoda", "Tab 1"),
+            exposed(&panes[0], "helm-studio", "Tab 1", &cwd),
+            exposed(&panes[1], "helm-studio", "Tab 2", &cwd),
+            exposed(&panes[2], "avoda", "Tab 1", &avoda),
         ],
         Some(watcher.link()),
         theme::preset("helm", !has("--light")),
@@ -111,6 +113,30 @@ fn main() {
             Agent::new("Codex", &fake_command),
         ],
     });
+    registry.publish_projects(vec![
+        PhoneProject {
+            root: cwd.clone(),
+            name: "helm-studio".to_owned(),
+            hidden: false,
+            entries: vec![
+                cwd,
+                dir.path().join("helm-studio"),
+                dir.path().join("phone-launch"),
+            ],
+        },
+        PhoneProject {
+            root: avoda.clone(),
+            name: "avoda".to_owned(),
+            hidden: false,
+            entries: vec![avoda],
+        },
+        PhoneProject {
+            root: dir.path().join("billing"),
+            name: "billing".to_owned(),
+            hidden: true,
+            entries: Vec::new(),
+        },
+    ]);
     // Launched panes wait here forever: no UI adopts them in the preview.
     let (launcher, _launches) = Launcher::channel(|| {});
     let services = PhoneServices::unpersisted(registry, launcher);

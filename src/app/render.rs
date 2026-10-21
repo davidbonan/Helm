@@ -2766,18 +2766,7 @@ impl HelmApp {
             self.persist(move |_| next);
         }
         if let Some(index) = sidebar.toggle_hidden {
-            self.workspace.toggle_user_hidden(index);
-            // Hiding the active project's group leaves the central area on the
-            // dashboard — no orphaned terminal for a row no longer in the sidebar.
-            if self
-                .workspace
-                .active()
-                .is_some_and(|a| self.workspace.is_in_hidden_project(a))
-            {
-                self.central_mode = CentralMode::Agents;
-            }
-            let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
-            self.persist(move |_| next);
+            self.set_project_hidden(index, !self.workspace.is_user_hidden(index));
         }
         if let Some(reorder) = sidebar.reorder {
             if self
