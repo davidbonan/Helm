@@ -1,5 +1,14 @@
 # Release notes
 
+## 3.7.5
+
+- Cmd+click in a terminal now catches the links agents print:
+  markdown links, long URLs and paths the agent wrapped over several lines,
+  paths inside `Update(…)` or backticks, and `file:12-30` ranges.
+- Cmd+click on a URL opens it in a new tab of helm's browser; from the
+  Agents view, helm jumps to that agent's worktree first.
+- Cmd+click on a folder opens it in your editor.
+
 ## 3.7.4
 
 - Agent completion notifications now arrive when helm is in the
@@ -79,10 +88,3 @@
 - Phone: open the files of an agent's worktree. A new **Files** button in
   the terminal header browses its folders, newest first, and shows images,
   video, audio and text; **Open** hands the file to Safari.
-
-## 3.4.1
-
-- Emoji are drawn in color everywhere — terminal, pull requests, sidebar,
-  tabs — with the system emoji font, as in Ghostty.
-- Terminal: an emoji followed by a variation selector (⚠️) no longer shows
-  a stray box.
