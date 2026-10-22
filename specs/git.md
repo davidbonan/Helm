@@ -141,7 +141,9 @@ one file and opens its diff. **Right-click** anchors the menu on the clicked
 row (making it the lone target when it sits outside the current selection). One
 file ⇒ the contextual **Stage**/**Unstage** + **Discard** (unstaged rows) +
 **Stash** over the shared **Copy path** / **Copy relative path** / **Reveal in
-Finder** / **Open in editor** entries; a multi-selection ⇒ the batch
+Finder** / **Open in editor** entries, **Reveal in Files** above **Reveal in
+Finder** (not on a deleted file): the files sidebar ([`files.md`](files.md))
+shows, unfolded down to the file, selected and scrolled into view; a multi-selection ⇒ the batch
 **Stage** / **Unstage** / **Discard** / **Stash** only. **Stash** shelves the
 **whole** file — staged **and** unstaged changes together, untracked included,
 **never a partial stash** — and a multi-file stash lands in a **single** entry;

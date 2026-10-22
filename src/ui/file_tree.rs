@@ -30,6 +30,8 @@ pub struct FileTreeState {
     /// `↑↓←→ Enter` — armed here by a row click, disarmed by the app when a
     /// terminal takes keyboard focus (files.md §5, git.md §3).
     pub nav_armed: bool,
+    /// Path revealed from the git sidebar, scrolled to once its folders are read.
+    pub reveal: Option<String>,
 }
 
 /// The whole sidebar: header with Collapse all, then the tree taking the rest of
@@ -76,6 +78,7 @@ fn file_tree(ui: &mut egui::Ui, palette: &Palette, state: &mut FileTreeState) ->
         painter.muted(ui, 0, NO_FILES_LABEL);
         return intents;
     }
+    scroll_to_revealed(ui, state);
     let focused = hold_focus(ui);
     if let Some(moved) = focused.then(|| keyboard_move(ui, state)).flatten() {
         request_scroll(ui, &moved);
@@ -158,6 +161,26 @@ fn pressed_key(ui: &egui::Ui) -> Option<TreeKey> {
 fn request_scroll(ui: &egui::Ui, moved: &TreeMove) {
     if let TreeMove::Select(path) | TreeMove::Open(path) = moved {
         file_list::request_row_scroll(ui, scroll_id(), path.clone());
+    }
+}
+
+/// Waits for the revealed row to be listed; dropped once the selection moves off it.
+fn scroll_to_revealed(ui: &egui::Ui, state: &mut FileTreeState) {
+    let Some(target) = state.reveal.take() else {
+        return;
+    };
+    if state.selected.as_ref() != Some(&target) {
+        return;
+    }
+    let listed = state
+        .rows
+        .iter()
+        .flatten()
+        .any(|row| row.entry().is_some_and(|entry| entry.path == target));
+    if listed {
+        file_list::request_row_scroll(ui, scroll_id(), target);
+    } else {
+        state.reveal = Some(target);
     }
 }
 

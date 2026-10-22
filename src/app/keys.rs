@@ -44,7 +44,8 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
         GitIntent::CollapseAllFolders
         | GitIntent::SelectEntry(_)
         | GitIntent::FoldFolder(_)
-        | GitIntent::UnfoldFolder(_) => None,
+        | GitIntent::UnfoldFolder(_)
+        | GitIntent::RevealInFiles(_) => None,
         // The read-only viewer (files.md §4) is opened app-side, its read sent from there.
         GitIntent::OpenFile(_) => None,
     }
@@ -57,6 +58,7 @@ pub(crate) fn tree_edit(intent: &GitIntent) -> Option<TreeEdit> {
         GitIntent::SelectEntry(path) => Some(TreeEdit::Select(path.clone())),
         GitIntent::FoldFolder(folder) => Some(TreeEdit::Fold(folder.clone())),
         GitIntent::UnfoldFolder(folder) => Some(TreeEdit::Unfold(folder.clone())),
+        GitIntent::RevealInFiles(path) => Some(TreeEdit::Reveal(path.clone())),
         _ => None,
     }
 }

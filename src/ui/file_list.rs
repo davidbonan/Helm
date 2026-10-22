@@ -100,15 +100,22 @@ pub(crate) fn file_context_menu(response: &egui::Response, rel_path: &str, ctx: 
         .show(|ui| file_menu_entries(ui, rel_path, ctx));
 }
 
-/// The clipboard / reveal / open-in-editor entries, shared by the commit-detail
-/// menu and the WIP sidebar menu (which prepends its own stage/discard/stash
-/// actions). Added to an already-open menu `ui`, not its own popup.
-pub(crate) fn file_menu_entries(ui: &mut egui::Ui, rel_path: &str, ctx: &mut FileMenuCtx) {
-    let abs = ctx.root.map(|root| root.join(rel_path));
+/// The clipboard / reveal / open-in-editor entries; the WIP sidebar menu
+/// composes its own from the two groups, its actions around them.
+fn file_menu_entries(ui: &mut egui::Ui, rel_path: &str, ctx: &mut FileMenuCtx) {
+    copy_path_entries(ui, rel_path, ctx.root);
+    if ctx.root.is_some() {
+        ui.separator();
+        open_elsewhere_entries(ui, rel_path, ctx);
+    }
+}
+
+pub(crate) fn copy_path_entries(ui: &mut egui::Ui, rel_path: &str, root: Option<&Path>) {
     if ui.button("Copy path").clicked() {
-        let text = abs
-            .as_ref()
-            .map_or_else(|| rel_path.to_owned(), |p| p.to_string_lossy().into_owned());
+        let text = root.map_or_else(
+            || rel_path.to_owned(),
+            |root| root.join(rel_path).to_string_lossy().into_owned(),
+        );
         ui.ctx().copy_text(text);
         ui.close();
     }
@@ -116,16 +123,20 @@ pub(crate) fn file_menu_entries(ui: &mut egui::Ui, rel_path: &str, ctx: &mut Fil
         ui.ctx().copy_text(rel_path.to_owned());
         ui.close();
     }
-    if let Some(abs) = abs {
-        ui.separator();
-        if ui.button("Reveal in Finder").clicked() {
-            ctx.out.reveal = Some(abs.clone());
-            ui.close();
-        }
-        if ui.button("Open in editor").clicked() {
-            ctx.out.open_in_editor = Some(abs);
-            ui.close();
-        }
+}
+
+/// Reveal in Finder / Open in editor — nothing without a root to resolve the path.
+pub(crate) fn open_elsewhere_entries(ui: &mut egui::Ui, rel_path: &str, ctx: &mut FileMenuCtx) {
+    let Some(root) = ctx.root else {
+        return;
+    };
+    if ui.button("Reveal in Finder").clicked() {
+        ctx.out.reveal = Some(root.join(rel_path));
+        ui.close();
+    }
+    if ui.button("Open in editor").clicked() {
+        ctx.out.open_in_editor = Some(root.join(rel_path));
+        ui.close();
     }
 }
 

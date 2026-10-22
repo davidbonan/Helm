@@ -1875,6 +1875,18 @@ impl HelmApp {
         }
     }
 
+    /// The active worktree's tree edits; a revealed path is also scrolled to once listed.
+    pub(super) fn apply_tree_edits(&mut self, edits: Vec<TreeEdit>) {
+        for edit in &edits {
+            if let TreeEdit::Reveal(path) = edit {
+                self.file_tree.reveal = Some(path.clone());
+            }
+        }
+        self.edit_active_files_sidebar(|sidebar| {
+            edits.into_iter().for_each(|edit| sidebar.apply(edit))
+        });
+    }
+
     fn edit_active_files_sidebar(&mut self, edit: impl FnOnce(&mut FilesSidebar)) {
         let Some(worktree) = self.workspace.active_repo().map(|repo| repo.path.clone()) else {
             return;

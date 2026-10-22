@@ -25,6 +25,8 @@ pub enum TreeEdit {
     Unfold(String),
     Fold(String),
     CollapseAll,
+    /// Shows the sidebar unfolded down to the path, selected.
+    Reveal(String),
 }
 
 impl FilesSidebar {
@@ -36,7 +38,15 @@ impl FilesSidebar {
             }
             TreeEdit::Fold(folder) => self.fold(&folder),
             TreeEdit::CollapseAll => self.collapse_all(),
+            TreeEdit::Reveal(path) => self.reveal(path),
         }
+    }
+
+    fn reveal(&mut self, path: String) {
+        self.shown = true;
+        self.unfolded
+            .extend(folders_above(&path).map(str::to_owned));
+        self.selected = Some(path);
     }
 
     /// Folders unfolded inside `folder` stay so; a selection hidden by the fold
@@ -105,5 +115,17 @@ mod tests {
 
         assert_eq!(nested, state(&[], "src"));
         assert_eq!(top_level, state(&[], "README.md"));
+    }
+
+    #[test]
+    fn reveal_shows_the_sidebar_unfolded_down_to_the_selected_path() {
+        let mut sidebar = FilesSidebar {
+            unfolded: ["docs".to_owned()].into(),
+            ..FilesSidebar::default()
+        };
+
+        sidebar.apply(TreeEdit::Reveal("src/ui/mod.rs".to_owned()));
+
+        assert_eq!(sidebar, state(&["docs", "src", "src/ui"], "src/ui/mod.rs"));
     }
 }

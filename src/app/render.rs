@@ -2409,9 +2409,7 @@ impl HelmApp {
             None => true,
         });
         if !tree_edits.is_empty() {
-            self.edit_active_files_sidebar(|sidebar| {
-                tree_edits.into_iter().for_each(|edit| sidebar.apply(edit))
-            });
+            self.apply_tree_edits(tree_edits);
         }
 
         let mut generate_requested = false;

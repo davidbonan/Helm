@@ -1396,6 +1396,42 @@ fn file_row_menu_hides_reveal_and_open_without_a_repo_root() {
 }
 
 #[test]
+fn file_menu_reveals_the_file_in_the_files_sidebar() {
+    let status = RepoStatus {
+        unstaged: vec![file("src/main.rs", ChangeKind::Modified)],
+        staged: vec![],
+    };
+    let intents = drive(status, "", |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        h.get_by_label("Reveal in Files").click();
+    });
+    assert!(intents.contains(&GitIntent::RevealInFiles("src/main.rs".to_owned())));
+}
+
+#[test]
+fn file_menu_lists_reveal_in_files_right_above_reveal_in_finder() {
+    let _ = drive_file_menu(Some("/repo".into()), |harness| {
+        let files = harness.get_by_label("Reveal in Files").rect();
+        let finder = harness.get_by_label("Reveal in Finder").rect();
+        assert!(files.bottom() <= finder.top() && finder.top() - files.bottom() < 8.0);
+    });
+}
+
+#[test]
+fn file_menu_offers_no_reveal_in_files_on_a_deleted_file() {
+    let status = RepoStatus {
+        unstaged: vec![file("src/main.rs", ChangeKind::Deleted)],
+        staged: vec![],
+    };
+    drive(status, "", |h| {
+        h.get_by_label("src/main.rs").click_secondary();
+        h.run();
+        assert!(h.query_by_label("Reveal in Files").is_none());
+    });
+}
+
+#[test]
 fn file_menu_stash_confirms_then_emits_stash_files() {
     let status = RepoStatus {
         unstaged: vec![file("src/main.rs", ChangeKind::Modified)],

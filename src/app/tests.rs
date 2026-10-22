@@ -4643,6 +4643,31 @@ fn a_worktree_reopens_its_tree_as_left_and_a_click_folds_it_in_the_prefs() {
     assert!(harness.query_by_label("src/main.rs").is_none());
 }
 
+#[test]
+fn reveal_in_files_shows_the_hidden_tree_unfolded_and_scrolled_down_to_the_file() {
+    let tmp = files_repo();
+    let mut app = app_on_files(tmp.path(), &[], "src");
+    app.prefs.toggle_files(tmp.path());
+    let key = key_of(&app.workspace, 0, 0);
+    app.caches.panes.insert(key, tagged_panes("stub"));
+    let mut harness = files_page(app);
+    harness.step();
+
+    harness
+        .state_mut()
+        .apply_tree_edits(vec![TreeEdit::Reveal("src/old/x.rs".to_owned())]);
+    step_until(&mut harness, |h| h.state().file_tree.reveal.is_none());
+
+    let state = harness.state().prefs.files_sidebar(tmp.path());
+    assert!(state.shown);
+    assert_eq!(
+        state.unfolded,
+        std::collections::BTreeSet::from(["src".to_owned(), "src/old".to_owned()])
+    );
+    assert_eq!(state.selected.as_deref(), Some("src/old/x.rs"));
+    assert!(shows("src/old/x.rs")(&harness));
+}
+
 /// `app` rendered with its workers polled and its keys handled each frame.
 fn files_page(app: HelmApp) -> egui_kittest::Harness<'static, HelmApp> {
     egui_kittest::Harness::builder()

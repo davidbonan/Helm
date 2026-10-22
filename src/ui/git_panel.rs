@@ -7,8 +7,8 @@ use crate::git::status::{ChangeKind, FileEntry, OpSummary, RepoStatus};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, PILL_SIZE, RADIUS_PILL, SECTION_TITLE_SIZE, TITLE_SIZE};
 use crate::ui::file_list::{
-    self, file_menu_entries, file_row_fill, row_separator, FileMenuCtx, FileMenuOutput,
-    FileViewMode, PATH_SIZE, ROW_HEIGHT,
+    self, copy_path_entries, file_row_fill, open_elsewhere_entries, row_separator, FileMenuCtx,
+    FileMenuOutput, FileViewMode, PATH_SIZE, ROW_HEIGHT,
 };
 use crate::ui::spinner::Spinner;
 use crate::ui::SECTION_TOP_MARGIN;
@@ -84,6 +84,8 @@ pub enum GitIntent {
     UnfoldFolder(String),
     /// Opens the tree's file in the read-only viewer (files.md §4).
     OpenFile(String),
+    /// WIP row's Reveal in Files (git.md §3): the files sidebar unfolded down to it.
+    RevealInFiles(String),
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).
@@ -1744,12 +1746,13 @@ fn stash_confirm(
 /// clicked row's section.
 fn wip_file_context_menu(
     response: &egui::Response,
-    rel_path: &str,
+    entry: &FileEntry,
     staged: bool,
     state: &mut GitPanelState,
     intents: &mut Vec<GitIntent>,
     menu: &mut FileMenuCtx,
 ) {
+    let rel_path = entry.path.as_str();
     let marked = state.marked_files.clone();
     egui::Popup::context_menu(response)
         .style(crate::theme::menu_style)
@@ -1809,7 +1812,17 @@ fn wip_file_context_menu(
                     ui.close();
                 }
                 ui.separator();
-                file_menu_entries(ui, rel_path, menu);
+                copy_path_entries(ui, rel_path, menu.root);
+                // A deleted file is not in the tree (files.md §3).
+                let in_tree = entry.kind != ChangeKind::Deleted;
+                if in_tree || menu.root.is_some() {
+                    ui.separator();
+                }
+                if in_tree && ui.button("Reveal in Files").clicked() {
+                    intents.push(GitIntent::RevealInFiles(rel_path.to_owned()));
+                    ui.close();
+                }
+                open_elsewhere_entries(ui, rel_path, menu);
             }
         });
 }
@@ -2138,7 +2151,7 @@ fn file_row(
         if selected {
             file_list::consume_row_scroll(ui, &path_response, file_scroll_id(), &sel);
         }
-        wip_file_context_menu(&path_response, &entry.path, staged, state, intents, menu);
+        wip_file_context_menu(&path_response, entry, staged, state, intents, menu);
         path_response
             .on_hover_text(&entry.path)
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &entry.path));
