@@ -1,5 +1,10 @@
 # Release notes
 
+## 3.7.6
+
+- Right-click a changed file in the Git sidebar › **Reveal in Files**: the
+  Files sidebar opens, unfolded down to that file and selected.
+
 ## 3.7.5
 
 - Cmd+click in a terminal now catches the links agents print:
@@ -82,9 +87,3 @@
 - Preferences › Agents: a start command prefixed by environment variables
   (`CLAUDE_CONFIG_DIR=~/.claude-perso claude`) no longer shows the
   "helm won't detect … as an agent" warning.
-
-## 3.5.0
-
-- Phone: open the files of an agent's worktree. A new **Files** button in
-  the terminal header browses its folders, newest first, and shows images,
-  video, audio and text; **Open** hands the file to Safari.
