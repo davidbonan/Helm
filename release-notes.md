@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.8.0
+
+- Right-click a file or folder in the Files sidebar: **Copy path**, **Copy
+  relative path**, and **Reveal ›** to open it in Finder, your editor, a
+  terminal or GitKraken.
+
 ## 3.7.7
 
 - Ctrl+Enter now reaches the terminal: in Claude Code it sends your message
@@ -74,15 +80,3 @@
   again from its role tab).
 - Terminal: Hebrew renders, and accents and other combining marks sit on
   their letter instead of shifting the line.
-
-## 3.5.2
-
-- Phone: access no longer stops by itself. It survives the Mac leaving and
-  rejoining its network, even with helm hidden, and follows the Mac's address
-  when the router hands it a new one.
-- Phone: a weak Wi-Fi or a locked iPhone no longer unpairs the phone — no
-  more rescanning the QR code.
-- Phone: a lost connection is noticed instead of leaving a frozen screen, and
-  the Mac's pane gets its own size back.
-- Pull requests: review time tracking and the `helm pr time` command are
-  gone — the figure no longer reflected how reviews are done.
