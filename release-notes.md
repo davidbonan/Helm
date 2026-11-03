@@ -1,5 +1,10 @@
 # Release notes
 
+## 3.7.7
+
+- Ctrl+Enter now reaches the terminal: in Claude Code it sends your message
+  right away instead of queuing it.
+
 ## 3.7.6
 
 - Right-click a changed file in the Git sidebar › **Reveal in Files**: the
@@ -81,9 +86,3 @@
   the Mac's pane gets its own size back.
 - Pull requests: review time tracking and the `helm pr time` command are
   gone — the figure no longer reflected how reviews are done.
-
-## 3.5.1
-
-- Preferences › Agents: a start command prefixed by environment variables
-  (`CLAUDE_CONFIG_DIR=~/.claude-perso claude`) no longer shows the
-  "helm won't detect … as an agent" warning.
