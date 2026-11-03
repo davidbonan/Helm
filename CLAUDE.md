@@ -21,6 +21,7 @@ UI locked on `eframe`/`egui` (overview §4). Dependencies in place (`eframe`,
 - `specs/worktrees.md` — worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree.
 - `specs/agents.md` — AI agent detection in terminals: sidebar activity badge (states, heuristic, limits).
 - `specs/pull-requests.md` — workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud, list/detail/checkout.
+- `specs/workflows.md` — chained Claude Code steps: global definitions (Preferences), `Cmd+P` launch + inputs, Stop-hook + end-marker completion, workflow strip.
 - `specs/preferences.md` — full-window Preferences page: left nav + settings cards.
 - `specs/update.md` — distribution (.app bundle, GitHub releases) + integrated app update.
 - `specs/cli.md` — `helm <path>` + the `helm://` scheme: opening a project/worktree from outside, single instance.

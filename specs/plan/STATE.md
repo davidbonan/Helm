@@ -6,6 +6,38 @@
 
 ---
 
+## ☐ Milestone — M-Workflows · Chained Claude Code steps
+
+Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
+global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **0/8**.
+
+- ☐ **WF0 — Spike: hooks and injection on real Claude Code.** Verify: `--settings`
+  hooks fire alongside the user's own hooks; `Stop` input fields (last message
+  present, else `transcript_path`); `Notification` on a permission prompt; positional
+  prompt starts the turn; bracketed paste + `\r` submits a multi-line prompt.
+  Findings in the commit message, spec §5–6 amended if they differ.
+- ☐ **WF1 — Definitions domain.** `workflow::{Workflow, Input, Step}`, validation
+  (errors + `/compact` `/clear` warning), template rendering (inputs + `{branch}`
+  `{worktree}` `{repo}`), persisted in prefs. *Tests*: unit.
+- ☐ **WF2 — Run state machine.** Pure `WorkflowRun`: Running / Awaiting reply /
+  Needs you / Gate / Done / Stopped × events (stop ± marker, notification,
+  Continue, Next step, Stop, process exit); one advance per step. *Tests*: unit.
+- ☐ **WF3 — Hooks + runner.** Per-run settings file (`current_exe` +
+  `workflow-event`), `helm workflow-event` subcommand, `workflow_event` socket op
+  routed to the runner **off the UI thread**, step 2+ via `PaneHandle::paste` + `\r`.
+  *Tests*: unit (settings, argv/stdin) + business e2e (fake `claude` firing hooks).
+- ☐ **WF4 — Launch.** `Cmd+P` **Launch workflow ›** + inputs modal; new tab
+  spawning `claude --settings … "<step 1>"`. *Tests*: UI e2e + app unit.
+- ☐ **WF5 — Workflow strip.** Bar on the run's tab, state + actions (Continue /
+  Next step / Stop), palette commands, end notification. *Tests*: UI e2e per state.
+- ☐ **WF6 — Preferences editor.** Workflows section: list, inputs, steps (add /
+  remove / reorder), inline validation. *Tests*: UI e2e.
+- ☐ **WF7 — Verification.** `headless-verify` (palette, modal, strip states,
+  editor) + by hand: real 3-step run with a gate, helm hidden during step 2.
+
+---
+
 ## ☑ Milestone — M-AgentLinks · Cmd+click links in agent output
 
 Spec: [`specs/terminal.md`](../terminal.md) §12, [`specs/browser.md`](../browser.md) §3.
