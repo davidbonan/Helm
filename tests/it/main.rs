@@ -60,5 +60,6 @@ mod ui_terminal_tree;
 mod ui_terminal_view;
 mod ui_toast;
 mod ui_workflow_launch_modal;
+mod ui_workflow_strip;
 mod update_e2e;
 mod workflow_e2e;

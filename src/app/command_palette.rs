@@ -12,7 +12,9 @@ use crate::git::stash::StashEntry;
 use crate::ui::command_palette::{command_palette_modal, Leading, PaletteRow, PaletteView};
 use crate::ui::graph_view::StashTarget;
 use crate::ui::run_panel::{RunPanelAction, RunStatus};
+use crate::ui::workflow_strip::StripAction;
 use crate::workflow::definition::Workflow;
+use crate::workflow::run::RunState;
 
 const STOP_SERVER_LABEL: &str = "Stop server";
 const DROP_STASH_LABEL: &str = "Drop stash";
@@ -188,6 +190,14 @@ impl HelmApp {
             Command::LaunchWorkflow => {
                 active.is_some() && self.prefs.workflows.iter().any(Workflow::is_launchable)
             }
+            Command::ContinueWorkflow => self.active_workflow_state() == Some(RunState::Gate),
+            Command::NextWorkflowStep => matches!(
+                self.active_workflow_state(),
+                Some(RunState::AwaitingReply | RunState::NeedsYou)
+            ),
+            Command::StopWorkflow => self
+                .active_workflow_state()
+                .is_some_and(|state| !matches!(state, RunState::Done | RunState::Stopped)),
         }
     }
 
@@ -533,6 +543,9 @@ impl HelmApp {
             }
             Command::WhatsNew => self.modal = Some(Modal::WhatsNew),
             Command::OpenOnPhone => self.open_on_phone(ctx, now),
+            Command::ContinueWorkflow => self.apply_active_workflow(StripAction::Continue),
+            Command::NextWorkflowStep => self.apply_active_workflow(StripAction::NextStep),
+            Command::StopWorkflow => self.apply_active_workflow(StripAction::Stop),
             Command::StopPhoneAccess => self.stop_phone_access(),
             Command::SwitchTo
             | Command::RunningServers
@@ -632,6 +645,9 @@ fn command_icon(command: Command) -> Icon {
         Command::PullRequests => Icon::GitPullRequest,
         Command::Agents => Icon::Bot,
         Command::LaunchWorkflow => Icon::Workflow,
+        Command::ContinueWorkflow => Icon::Play,
+        Command::NextWorkflowStep => Icon::SkipForward,
+        Command::StopWorkflow => Icon::Square,
         Command::OpenOnPhone => Icon::QrCode,
         Command::StopPhoneAccess => Icon::PhoneOff,
         Command::ToggleTheme => Icon::SunMoon,

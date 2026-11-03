@@ -5658,3 +5658,72 @@ fn an_exited_claude_stops_its_run_and_closing_the_tab_forgets_it() {
     assert!(app.workflow_tabs.is_empty());
     assert!(app.workflows.snapshot(&run).is_none());
 }
+
+/// A launched `Ticket` run (one prompt step) on `api`, its id returned.
+fn launched_ticket(tmp: &Path) -> (HelmApp, String) {
+    let mut app = app_with_workflows(tmp, "exec cat");
+    let values = std::collections::BTreeMap::from([("ticket".to_owned(), "BAPS-1".to_owned())]);
+    app.launch_workflow(&ticket_workflow(), &values, &egui::Context::default());
+    let run = app.workflow_tabs.values().next().unwrap().run.clone();
+    (app, run)
+}
+
+#[test]
+fn the_palette_offers_the_workflow_command_the_run_state_allows() {
+    use crate::command_palette::Screen;
+    use crate::workflow::hooks::Hook;
+    use crate::workflow::run::RunState;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, run) = launched_ticket(tmp.path());
+    let mut harness = palette_harness(app, Screen::Commands);
+    let offered = |harness: &egui_kittest::Harness<'static, HelmApp>| {
+        ["Continue workflow", "Next workflow step", "Stop workflow"]
+            .into_iter()
+            .filter(|label| harness.query_by_label(label).is_some())
+            .collect::<Vec<_>>()
+    };
+    harness.run();
+    assert_eq!(offered(&harness), vec!["Stop workflow"]);
+
+    let unmarked = Hook::Stop {
+        turn: "t1".to_owned(),
+        last_message: Some("Which ticket?".to_owned()),
+    };
+    harness.state().workflows.deliver(&run, unmarked);
+    harness.run();
+    assert_eq!(
+        offered(&harness),
+        vec!["Next workflow step", "Stop workflow"]
+    );
+
+    harness.get_by_label("Next workflow step").click();
+    harness.run();
+    let app = harness.state();
+    assert_eq!(
+        app.workflows.snapshot(&run).unwrap().state(),
+        RunState::Done
+    );
+}
+
+#[test]
+fn dismissing_a_finished_run_drops_its_strip_but_keeps_the_tab() {
+    use crate::ui::workflow_strip::StripAction;
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut app, run) = launched_ticket(tmp.path());
+    let key = app.active_pane_key().unwrap();
+    app.apply_workflow_strip(&key, StripAction::Stop);
+    assert!(
+        super::workflow::workflow_strip_view(&app.workflow_tabs, &app.workflows, &key).is_some()
+    );
+
+    app.apply_workflow_strip(&key, StripAction::Dismiss);
+    assert!(
+        super::workflow::workflow_strip_view(&app.workflow_tabs, &app.workflows, &key).is_none()
+    );
+    assert!(app.workflows.snapshot(&run).is_none());
+    assert!(
+        app.caches.panes.contains_key(&key),
+        "Claude stays open in its tab"
+    );
+}

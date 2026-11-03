@@ -29,6 +29,9 @@ pub enum Command {
     PullRequests,
     Agents,
     LaunchWorkflow,
+    ContinueWorkflow,
+    NextWorkflowStep,
+    StopWorkflow,
     OpenOnPhone,
     StopPhoneAccess,
     ToggleTheme,
@@ -38,7 +41,7 @@ pub enum Command {
 
 impl Command {
     /// Listing order on the `Commands` screen.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 28] = [
         Self::SwitchTo,
         Self::RunningServers,
         Self::RunServer,
@@ -59,6 +62,9 @@ impl Command {
         Self::PullRequests,
         Self::Agents,
         Self::LaunchWorkflow,
+        Self::ContinueWorkflow,
+        Self::NextWorkflowStep,
+        Self::StopWorkflow,
         Self::OpenOnPhone,
         Self::StopPhoneAccess,
         Self::ToggleTheme,
@@ -89,6 +95,9 @@ impl Command {
             Self::PullRequests => "pull-requests",
             Self::Agents => "agents",
             Self::LaunchWorkflow => "launch-workflow",
+            Self::ContinueWorkflow => "continue-workflow",
+            Self::NextWorkflowStep => "next-workflow-step",
+            Self::StopWorkflow => "stop-workflow",
             Self::OpenOnPhone => "open-on-phone",
             Self::StopPhoneAccess => "stop-phone-access",
             Self::ToggleTheme => "toggle-theme",
@@ -119,6 +128,9 @@ impl Command {
             Self::PullRequests => Screen::PullRequests.title(),
             Self::Agents => Screen::Agents.title(),
             Self::LaunchWorkflow => Screen::Workflows.title(),
+            Self::ContinueWorkflow => "Continue workflow",
+            Self::NextWorkflowStep => "Next workflow step",
+            Self::StopWorkflow => "Stop workflow",
             Self::OpenOnPhone => "Open on phone",
             Self::StopPhoneAccess => "Stop phone access",
             Self::ToggleTheme => "Toggle light / dark theme",

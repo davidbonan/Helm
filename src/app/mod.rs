@@ -1191,6 +1191,12 @@ impl HelmApp {
         }
     }
 
+    /// The active worktree's active tab.
+    pub(super) fn active_pane_key(&self) -> Option<PaneKey> {
+        let (index, tab) = self.workspace.active().zip(self.workspace.active_tab())?;
+        self.caches.pane_key(&self.workspace, index, tab)
+    }
+
     /// Seeing a pane acknowledges its green — but only on the terminal view: the
     /// dashboard lists completions, so reading it must not auto-ack them.
     fn focused_pane_uids(&self, ctx: &egui::Context) -> HashSet<PaneUid> {
@@ -1203,10 +1209,7 @@ impl HelmApp {
         if !on_terminal_view {
             return HashSet::new();
         }
-        self.workspace
-            .active()
-            .zip(self.workspace.active_tab())
-            .and_then(|(index, tab)| self.caches.pane_key(&self.workspace, index, tab))
+        self.active_pane_key()
             .and_then(|key| self.caches.panes.get(&key))
             .into_iter()
             .flat_map(|panes| panes.values())

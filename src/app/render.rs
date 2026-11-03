@@ -1155,6 +1155,12 @@ impl HelmApp {
                 // command and live status are computed here, before the `caches.panes`
                 // borrows below take over `self`.
                 let run_key = pane_key.0.clone();
+                let workflow_strip_view = super::workflow::workflow_strip_view(
+                    &self.workflow_tabs,
+                    &self.workflows,
+                    &pane_key,
+                );
+                let mut workflow_strip_action = None;
                 let run_root = active_project_root.clone().unwrap_or_else(|| cwd.clone());
                 let run_command_resolved =
                     HelmApp::resolved_run_command(&self.prefs, &run_root, &cwd);
@@ -1548,6 +1554,12 @@ impl HelmApp {
                                         keymap,
                                         &mut tab_action,
                                     );
+                                    if let Some(view) = &workflow_strip_view {
+                                        workflow_strip_action =
+                                            crate::ui::workflow_strip::workflow_strip(
+                                                ui, &palette, view,
+                                            );
+                                    }
                                     central_area = ui.available_rect_before_wrap();
                                     let panes = panes_all.entry(pane_key.clone()).or_default();
                                     let mut pane_link = None;
@@ -2231,6 +2243,9 @@ impl HelmApp {
                 // rename the targeted tab before the reindexing.
                 if let Some((tab, name)) = tab_action.rename {
                     self.workspace.rename_tab(tab, &name);
+                }
+                if let Some(action) = workflow_strip_action {
+                    self.apply_workflow_strip(&pane_key, action);
                 }
                 if let Some(tab) = tab_action.close {
                     self.close_active_tab(tab);

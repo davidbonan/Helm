@@ -148,8 +148,8 @@ the actions that apply.
 | Awaiting reply | `Stop` without marker | Next step · Stop |
 | Needs you | `Notification` received | Next step · Stop |
 | Gate | paused on a Gate step (its message shown) | Continue · Stop |
-| Done | last step completed | — (strip stays, dismissible) |
-| Stopped | user stopped it, or Claude exited | — (dismissible) |
+| Done | last step completed | Dismiss |
+| Stopped | user stopped it, or Claude exited | Dismiss |
 
 The same actions appear in `Cmd+P` while the active tab holds a run (**Continue
 workflow**, **Next workflow step**, **Stop workflow**). The run's end posts a
@@ -178,7 +178,8 @@ keep talking to it.
   `prompt_id` identifies the turn, and the turn that advanced a step is never
   applied again.
 - A Permission prompt or **Next step** while on a Gate is ignored; **Next step** while
-  Running too (it only forces a run waiting on the user).
+  Running too (it only forces a run waiting on the user). **Next step** on the last
+  step finishes the run (**Done**).
 - Hidden helm: events still advance the run (§6); the strip catches up on the next
   frame.
 - **Untrusted folder**: Claude's trust dialog comes first, its default choice being

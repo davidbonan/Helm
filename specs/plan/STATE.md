@@ -10,7 +10,7 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **5/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **6/8**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
@@ -36,8 +36,11 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
   `reconcile_workflow_runs`: closed tab forgets, exited Claude stops; rekey on
   rename), windowed runner armed on the socket. *Tests*: 1 unit + 3 UI e2e +
   3 app. *Verified*: headless `verify-artifacts/20261103_203915_787/`.
-- ☐ **WF5 — Workflow strip.** Bar on the run's tab, state + actions (Continue /
-  Next step / Stop), palette commands, end notification. *Tests*: UI e2e per state.
+- ☑ **WF5 — Workflow strip.** `ui::workflow_strip` (state, step, gate message,
+  Continue / Next step / Stop / Dismiss) above the run's terminal;
+  `Continue workflow` · `Next workflow step` · `Stop workflow` in `Cmd+P`;
+  `HelmApp::active_pane_key`. *Tests*: 3 UI e2e + 2 app. *Verified*: headless
+  `verify-artifacts/20261103_204544_16282/` (gate → stopped, real Claude, no prompt).
 - ☐ **WF6 — Preferences editor.** Workflows section: list, inputs, steps (add /
   remove / reorder), inline validation. *Tests*: UI e2e.
 - ☐ **WF7 — Verification.** `headless-verify` (palette, modal, strip states,
