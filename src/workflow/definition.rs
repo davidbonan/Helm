@@ -88,6 +88,35 @@ impl Issue {
     pub fn is_error(&self) -> bool {
         !matches!(self, Self::TurnlessCommand { .. })
     }
+
+    /// Steps and inputs are numbered from 1, as the editor lists them.
+    pub fn message(&self) -> String {
+        match self {
+            Self::MissingName => "Name is required".to_owned(),
+            Self::NoStep => "Add at least one step".to_owned(),
+            Self::BlankPrompt { step } => format!("Step {}: the prompt is empty", step + 1),
+            Self::InvalidKey { input } => format!(
+                "Input {}: the key takes lowercase letters, digits and _",
+                input + 1
+            ),
+            Self::ReservedKey { key } => format!("Input “{key}”: reserved for a built-in variable"),
+            Self::DuplicateKey { key } => format!("Input “{key}” is declared twice"),
+            Self::SelectWithoutOption { key } => {
+                format!("Input “{key}”: a choice list needs at least one option")
+            }
+            Self::DefaultNotAnOption { key } => {
+                format!("Input “{key}”: the default is not one of its options")
+            }
+            Self::UnknownPlaceholder { step, name } => format!(
+                "Step {}: {{{name}}} is neither an input nor a built-in",
+                step + 1
+            ),
+            Self::TurnlessCommand { step, command } => format!(
+                "Step {}: {command} ends no turn, so the step would never finish",
+                step + 1
+            ),
+        }
+    }
 }
 
 impl Workflow {

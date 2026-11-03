@@ -57,18 +57,20 @@ pub enum PreferencesSection {
     Keyboard,
     Terminal,
     Agents,
+    Workflows,
     Phone,
     PullRequests,
     Project,
     Updates,
 }
 
-const SECTIONS: [PreferencesSection; 9] = [
+const SECTIONS: [PreferencesSection; 10] = [
     PreferencesSection::Appearance,
     PreferencesSection::Git,
     PreferencesSection::Keyboard,
     PreferencesSection::Terminal,
     PreferencesSection::Agents,
+    PreferencesSection::Workflows,
     PreferencesSection::Phone,
     PreferencesSection::PullRequests,
     PreferencesSection::Project,
@@ -83,6 +85,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => "Keyboard",
             PreferencesSection::Terminal => "Terminal",
             PreferencesSection::Agents => "Agents",
+            PreferencesSection::Workflows => "Workflows",
             PreferencesSection::Phone => "Phone",
             PreferencesSection::PullRequests => "Pull Requests",
             PreferencesSection::Project => "Project",
@@ -97,6 +100,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => lucide_icons::Icon::Keyboard,
             PreferencesSection::Terminal => lucide_icons::Icon::SquareTerminal,
             PreferencesSection::Agents => lucide_icons::Icon::Bot,
+            PreferencesSection::Workflows => lucide_icons::Icon::Workflow,
             PreferencesSection::Phone => lucide_icons::Icon::Smartphone,
             PreferencesSection::PullRequests => lucide_icons::Icon::GitPullRequest,
             PreferencesSection::Project => lucide_icons::Icon::FolderGit2,
@@ -184,6 +188,9 @@ pub struct PreferencesAction {
     /// The agents table, the commit message or the review agent was edited
     /// (preferences.md §4 *Agents*).
     pub agents_changed: bool,
+    /// A workflow definition was edited, added, duplicated or deleted
+    /// (workflows.md §2).
+    pub workflows_changed: bool,
     /// The *Start at launch* toggle flipped — the app persists it (remote.md §3.4).
     pub phone_at_launch_changed: bool,
     /// Revoke the paired device at this index of `PhoneView::devices`.
@@ -234,6 +241,7 @@ pub fn preferences_page(
     pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
     mut agents: AgentsView<'_>,
+    workflows: &mut Vec<crate::workflow::definition::Workflow>,
     phone: PhoneView<'_>,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
@@ -432,6 +440,10 @@ pub fn preferences_page(
                                 },
                             );
                         });
+                    }
+                    PreferencesSection::Workflows => {
+                        action.workflows_changed =
+                            crate::ui::workflow_editor::workflows_section(ui, palette, workflows);
                     }
                     PreferencesSection::Phone => phone_section(ui, palette, phone, &mut action),
                     PreferencesSection::PullRequests => {
@@ -2453,6 +2465,7 @@ mod tests {
                 "Keyboard",
                 "Terminal",
                 "Agents",
+                "Workflows",
                 "Phone",
                 "Pull Requests",
                 "Project",

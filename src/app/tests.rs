@@ -5727,3 +5727,31 @@ fn dismissing_a_finished_run_drops_its_strip_but_keeps_the_tab() {
         "Claude stays open in its tab"
     );
 }
+
+#[test]
+fn a_workflow_made_in_preferences_lands_in_the_prefs_the_palette_reads() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with(&["a"]);
+    app.preferences_section = PreferencesSection::Workflows;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_preferences(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run_steps(2);
+    harness.get_by_label("+ New workflow").click();
+    harness.run_steps(2);
+
+    let names: Vec<&str> = harness
+        .state()
+        .prefs
+        .workflows
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert_eq!(names, ["New workflow"]);
+}

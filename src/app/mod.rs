@@ -650,6 +650,9 @@ pub struct HelmApp {
     phone_access_at_launch: bool,
     /// Agents helm can start (preferences.md §4), edited in Preferences.
     agents: Vec<Agent>,
+    /// Workflow definitions edited in Preferences (workflows.md §2); persisted into
+    /// `prefs.workflows`, which the palette reads.
+    workflow_definitions: Vec<crate::workflow::definition::Workflow>,
     /// Live workflow runs (workflows.md §6), shared with the control-socket thread.
     workflows: crate::workflow::runner::WorkflowRunner,
     /// The run each workflow tab carries, and the pane Claude runs in.
@@ -882,6 +885,7 @@ impl HelmApp {
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             phone_access_at_launch: prefs.phone_access_at_launch,
             agents: prefs.agents,
+            workflow_definitions: prefs.workflows.clone(),
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),

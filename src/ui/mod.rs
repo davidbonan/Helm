@@ -32,6 +32,7 @@ pub mod tab_bar;
 pub mod terminal_view;
 pub mod text_selection;
 pub mod toast;
+pub mod workflow_editor;
 pub mod workflow_launch_modal;
 pub mod workflow_strip;
 

@@ -236,6 +236,7 @@ impl HelmApp {
                 commit_message: &mut self.commit_message,
                 review: &mut self.review_agent,
             },
+            &mut self.workflow_definitions,
             PhoneView {
                 start_at_launch: &mut self.phone_access_at_launch,
                 devices: &device_rows,
@@ -296,6 +297,10 @@ impl HelmApp {
                 review,
                 ..prefs
             });
+        }
+        if action.workflows_changed {
+            let workflows = self.workflow_definitions.clone();
+            self.persist(move |prefs| Prefs { workflows, ..prefs });
         }
         if action.phone_at_launch_changed {
             let phone_access_at_launch = self.phone_access_at_launch;

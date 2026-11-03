@@ -175,9 +175,19 @@ work to ([`pull-requests.md`](pull-requests.md) §11).
 Intents pattern — the page never writes prefs itself; any edit of the section
 raises one `agents_changed`.
 
+### Workflows
+
+Below *Agents* in the nav (Lucide `Workflow`). The structured editor of the global
+workflow definitions ([`workflows.md`](workflows.md) §2): one folded card per
+workflow (name, inputs, steps — add / remove / reorder, Duplicate, Delete behind a
+second click), its validation messages listed under it (errors in the deleted
+color, the turnless-command warning in the modified color), and **+ New workflow**
+below the cards. Any edit raises one `workflows_changed`; the app persists
+`prefs.workflows`, which `Cmd+P › Launch workflow` reads.
+
 ### Phone
 
-Below *Agents* in the nav (Lucide `Smartphone`). Phone access itself starts from
+Below *Workflows* in the nav (Lucide `Smartphone`). Phone access itself starts from
 the palette ([`remote.md`](remote.md) §2); this section holds what outlives it.
 
 | Setting | Description (UI) | Control | Behavior |
