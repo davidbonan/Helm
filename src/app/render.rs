@@ -2920,6 +2920,20 @@ impl HelmApp {
             return;
         }
 
+        if let Some(Modal::LaunchWorkflow(form)) = self.modal.as_mut() {
+            let action =
+                crate::ui::workflow_launch_modal::workflow_launch_modal(ui, &palette, form);
+            if action.launch {
+                if let Some(Modal::LaunchWorkflow(form)) = self.modal.take() {
+                    self.launch_workflow(&form.workflow, &form.values, ctx);
+                }
+                ctx.request_repaint();
+            } else if action.dismiss {
+                self.modal = None;
+            }
+            return;
+        }
+
         // Feedback (specs/feedback.md): Submit opens the GitHub "new issue" form
         // pre-filled in the browser (synchronous, instant) and closes the modal.
         if let Some(Modal::Feedback(page)) = self.modal.as_mut() {
@@ -3010,6 +3024,7 @@ impl HelmApp {
                 | Modal::Feedback(_)
                 | Modal::CommandPalette(_)
                 | Modal::PhoneAccess
+                | Modal::LaunchWorkflow(_)
                 | Modal::WhatsNew => {
                     unreachable!("handled above")
                 }
@@ -3150,6 +3165,7 @@ impl HelmApp {
                         | Modal::Feedback(_)
                         | Modal::CommandPalette(_)
                         | Modal::PhoneAccess
+                        | Modal::LaunchWorkflow(_)
                         | Modal::WhatsNew,
                     )
                     | None => {}

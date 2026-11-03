@@ -32,6 +32,7 @@ pub mod tab_bar;
 pub mod terminal_view;
 pub mod text_selection;
 pub mod toast;
+pub mod workflow_launch_modal;
 
 use std::path::Path;
 

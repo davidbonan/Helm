@@ -135,21 +135,27 @@ impl WorkflowRunner {
     }
 
     pub fn apply(&self, run_id: &str, event: RunEvent) {
-        let outcome = {
+        let (outcome, changed) = {
             let mut runs = self.lock_runs();
             let Some(live) = runs.get_mut(run_id) else {
                 return;
             };
+            let before = (live.run.state(), live.run.step_index());
             let effect = live.run.apply(event);
             if live.run.is_over() {
                 let _ = fs::remove_file(&live.settings);
             }
-            effect.map(|effect| (effect, live.pane.clone(), live.origin.clone()))
+            let changed = before != (live.run.state(), live.run.step_index());
+            let outcome = effect.map(|effect| (effect, live.pane.clone(), live.origin.clone()));
+            (outcome, changed)
         };
         if let Some((effect, pane, origin)) = outcome {
             self.perform(effect, pane, &origin);
         }
-        (self.shared.on_change)();
+        // Only on a change: the app re-reports a dead process every frame.
+        if changed {
+            (self.shared.on_change)();
+        }
     }
 
     pub fn snapshot(&self, run_id: &str) -> Option<WorkflowRun> {

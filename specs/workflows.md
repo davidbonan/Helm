@@ -48,7 +48,8 @@ An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder i
 ## 3. Launch
 
 - `Cmd+P` → **Launch workflow ›** (sub-screen, listed when the active worktree
-  exists and at least one valid workflow exists) → one row per workflow.
+  exists and at least one valid workflow exists) → one row per **valid** workflow
+  (name + step count); an invalid one stays in Preferences until fixed.
 - `Enter` opens the **inputs modal**: one field per input, in order, defaults
   pre-filled; every input is required. `Enter` in a single-line field / `Cmd+Enter`
   anywhere launches; `Esc` cancels. A workflow with no input skips the modal.

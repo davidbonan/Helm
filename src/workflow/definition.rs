@@ -108,6 +108,31 @@ impl Workflow {
         self.issues().iter().all(|issue| !issue.is_error())
     }
 
+    /// The launch form's starting values: each default, else a Select's first option.
+    pub fn initial_values(&self) -> BTreeMap<String, String> {
+        self.inputs
+            .iter()
+            .map(|input| {
+                let value = match &input.kind {
+                    InputKind::Select { options } if input.default.is_empty() => {
+                        options.first().cloned().unwrap_or_default()
+                    }
+                    _ => input.default.clone(),
+                };
+                (input.key.clone(), value)
+            })
+            .collect()
+    }
+
+    /// Every input is required (workflows.md §3).
+    pub fn accepts(&self, values: &BTreeMap<String, String>) -> bool {
+        self.inputs.iter().all(|input| {
+            values
+                .get(&input.key)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+    }
+
     fn input_issues(&self) -> Vec<Issue> {
         let mut issues = Vec::new();
         let mut seen = BTreeSet::new();
@@ -316,6 +341,20 @@ mod tests {
         assert!(with(|w| w.steps.push(prompt("/review the diff")))
             .issues()
             .is_empty());
+    }
+
+    #[test]
+    fn the_form_starts_on_defaults_and_needs_every_input() {
+        let workflow = with(|w| w.inputs[1].default = String::new());
+        let mut values = workflow.initial_values();
+        assert_eq!(values["ticket"], "");
+        assert_eq!(
+            values["depth"], "light",
+            "a Select starts on its first option"
+        );
+        assert!(!workflow.accepts(&values));
+        values.insert("ticket".to_owned(), "BAPS-12".to_owned());
+        assert!(workflow.accepts(&values));
     }
 
     #[test]

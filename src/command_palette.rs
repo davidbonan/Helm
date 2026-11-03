@@ -28,6 +28,7 @@ pub enum Command {
     CopyPath,
     PullRequests,
     Agents,
+    LaunchWorkflow,
     OpenOnPhone,
     StopPhoneAccess,
     ToggleTheme,
@@ -37,7 +38,7 @@ pub enum Command {
 
 impl Command {
     /// Listing order on the `Commands` screen.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::SwitchTo,
         Self::RunningServers,
         Self::RunServer,
@@ -57,6 +58,7 @@ impl Command {
         Self::CopyPath,
         Self::PullRequests,
         Self::Agents,
+        Self::LaunchWorkflow,
         Self::OpenOnPhone,
         Self::StopPhoneAccess,
         Self::ToggleTheme,
@@ -86,6 +88,7 @@ impl Command {
             Self::CopyPath => "copy-path",
             Self::PullRequests => "pull-requests",
             Self::Agents => "agents",
+            Self::LaunchWorkflow => "launch-workflow",
             Self::OpenOnPhone => "open-on-phone",
             Self::StopPhoneAccess => "stop-phone-access",
             Self::ToggleTheme => "toggle-theme",
@@ -115,6 +118,7 @@ impl Command {
             Self::CopyPath => "Copy path",
             Self::PullRequests => Screen::PullRequests.title(),
             Self::Agents => Screen::Agents.title(),
+            Self::LaunchWorkflow => Screen::Workflows.title(),
             Self::OpenOnPhone => "Open on phone",
             Self::StopPhoneAccess => "Stop phone access",
             Self::ToggleTheme => "Toggle light / dark theme",
@@ -132,6 +136,7 @@ impl Command {
             Self::OpenInEditor => Some(Screen::Editors),
             Self::PullRequests => Some(Screen::PullRequests),
             Self::Agents => Some(Screen::Agents),
+            Self::LaunchWorkflow => Some(Screen::Workflows),
             _ => None,
         }
     }
@@ -147,6 +152,7 @@ pub enum Screen {
     Editors,
     PullRequests,
     Agents,
+    Workflows,
 }
 
 impl Screen {
@@ -160,6 +166,7 @@ impl Screen {
             Self::Editors => "Open in editor",
             Self::PullRequests => "Pull requests",
             Self::Agents => "Agents",
+            Self::Workflows => "Launch workflow",
         }
     }
 
@@ -173,6 +180,7 @@ impl Screen {
             Self::Editors => "Filter editors…",
             Self::PullRequests => "Filter by title, number, author or branch…",
             Self::Agents => "Filter by agent, project or tab…",
+            Self::Workflows => "Filter workflows…",
         }
     }
 
@@ -186,6 +194,7 @@ impl Screen {
             Self::Editors => "No editor available.",
             Self::PullRequests => "No open pull request.",
             Self::Agents => "No agent is running.",
+            Self::Workflows => "No workflow ready — add one in Preferences › Workflows.",
         }
     }
 }

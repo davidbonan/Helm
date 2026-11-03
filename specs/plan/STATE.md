@@ -10,7 +10,7 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **4/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **5/8**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
@@ -30,8 +30,12 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
   `workflow_event` socket op routed before the UI park (`ipc::arm_workflows`);
   `shell_single_quote` moved to `terminal::pty`. *Tests*: 4 unit + 1 CLI unit +
   2 business e2e (fake `claude` in a PTY).
-- ☐ **WF4 — Launch.** `Cmd+P` **Launch workflow ›** + inputs modal; new tab
-  spawning `claude --settings … "<step 1>"`. *Tests*: UI e2e + app unit.
+- ☑ **WF4 — Launch.** `Command::LaunchWorkflow` + `Screen::Workflows` (valid
+  workflows only), `ui::workflow_launch_modal` (`LaunchForm`), `app::workflow`
+  (`launch_workflow` → named tab, `claude` via `run_command` + `RUN_ENV`;
+  `reconcile_workflow_runs`: closed tab forgets, exited Claude stops; rekey on
+  rename), windowed runner armed on the socket. *Tests*: 1 unit + 3 UI e2e +
+  3 app. *Verified*: headless `verify-artifacts/20261103_203915_787/`.
 - ☐ **WF5 — Workflow strip.** Bar on the run's tab, state + actions (Continue /
   Next step / Stop), palette commands, end notification. *Tests*: UI e2e per state.
 - ☐ **WF6 — Preferences editor.** Workflows section: list, inputs, steps (add /

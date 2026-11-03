@@ -5515,3 +5515,146 @@ mod browser_sidebar {
         assert_eq!((after.x, after.y), (before.x - 100.0, before.y - 50.0));
     }
 }
+
+fn ticket_workflow() -> crate::workflow::definition::Workflow {
+    use crate::workflow::definition::{Input, InputKind, Step, StepKind, Workflow};
+    Workflow {
+        name: "Ticket".to_owned(),
+        inputs: vec![Input {
+            key: "ticket".to_owned(),
+            label: "Ticket number".to_owned(),
+            default: String::new(),
+            kind: InputKind::Text,
+        }],
+        steps: vec![Step {
+            title: "Dev".to_owned(),
+            kind: StepKind::Prompt {
+                text: "Fix {ticket} on {repo}".to_owned(),
+            },
+        }],
+    }
+}
+
+/// One real worktree `api`, workflows `Ticket` (launchable) and `Broken` (no step),
+/// and a runner whose `claude` is `script`, logging its argv to `argv.log`.
+fn app_with_workflows(tmp: &Path, script: &str) -> HelmApp {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = tmp.join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo));
+    let mut app = HelmApp::with_workspace(ws);
+    let broken = crate::workflow::definition::Workflow {
+        name: "Broken".to_owned(),
+        ..Default::default()
+    };
+    app.prefs.workflows = vec![ticket_workflow(), broken];
+    let claude = tmp.join("claude");
+    let log = tmp.join("argv.log");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n{script}\n",
+        log.display()
+    );
+    std::fs::write(&claude, body).unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.workflows = crate::workflow::runner::WorkflowRunner::new(
+        crate::workflow::runner::RunnerConfig {
+            dir: tmp.join("settings"),
+            helm_exe: PathBuf::from("/Apps/helm"),
+            claude: claude.display().to_string(),
+        },
+        || {},
+    );
+    app
+}
+
+fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+fn the_palette_offers_only_launchable_workflows() {
+    use crate::command_palette::Screen;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = palette_harness(app_with_workflows(tmp.path(), "exec cat"), Screen::Commands);
+    harness.run();
+    harness.get_by_label("Launch workflow").click();
+    harness.run();
+    harness.get_by_label("Ticket");
+    assert!(
+        harness.query_by_label("Broken").is_none(),
+        "an invalid workflow waits in Preferences"
+    );
+
+    let mut harness = palette_harness(app_with(&["a"]), Screen::Commands);
+    harness.run();
+    assert!(
+        harness.query_by_label("Launch workflow").is_none(),
+        "no workflow, no command"
+    );
+}
+
+#[test]
+fn launching_opens_a_named_tab_running_claude_on_the_rendered_first_step() {
+    use crate::command_palette::Screen;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = palette_harness(
+        app_with_workflows(tmp.path(), "exec cat"),
+        Screen::Workflows,
+    );
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(matches!(
+        harness.state().modal,
+        Some(Modal::LaunchWorkflow(_))
+    ));
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .type_text("BAPS-1");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let app = harness.state();
+    assert!(app.modal.is_none());
+    assert_eq!(
+        app.workspace.tab_titles(),
+        Some(vec!["Tab 1".to_owned(), "Ticket".to_owned()])
+    );
+    assert_eq!(app.workflow_tabs.len(), 1);
+    let log = tmp.path().join("argv.log");
+    assert!(eventually(|| std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("Fix BAPS-1 on api")));
+}
+
+#[test]
+fn an_exited_claude_stops_its_run_and_closing_the_tab_forgets_it() {
+    use crate::workflow::run::RunState;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = app_with_workflows(tmp.path(), "exit 0");
+    let ctx = egui::Context::default();
+    let values = std::collections::BTreeMap::from([("ticket".to_owned(), "BAPS-1".to_owned())]);
+    app.launch_workflow(&ticket_workflow(), &values, &ctx);
+    let run = app.workflow_tabs.values().next().unwrap().run.clone();
+
+    assert!(eventually(|| {
+        app.reconcile_workflow_runs();
+        app.workflows.snapshot(&run).unwrap().state() == RunState::Stopped
+    }));
+    assert!(app.close_active_tab(1));
+    app.reconcile_workflow_runs();
+    assert!(app.workflow_tabs.is_empty());
+    assert!(app.workflows.snapshot(&run).is_none());
+}
