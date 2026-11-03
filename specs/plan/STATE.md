@@ -10,7 +10,7 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **2/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **3/8**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
@@ -21,9 +21,9 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
   `Input`, `Step`, `Issue` (errors + turnless `/compact` `/clear` warning),
   `Workflow::render` (inputs + `{branch}` `{worktree}` `{repo}`, marker
   instruction appended), `Prefs::workflows`. *Tests*: 7 unit + round trip.
-- ☐ **WF2 — Run state machine.** Pure `WorkflowRun`: Running / Awaiting reply /
-  Needs you / Gate / Done / Stopped × events (stop ± marker, notification,
-  Continue, Next step, Stop, process exit); one advance per step. *Tests*: unit.
+- ☑ **WF2 — Run state machine.** `workflow::run::WorkflowRun` (`start`, `apply` →
+  `Effect`), `RunState`, `RunEvent`; duplicate `Stop` deduped by turn
+  (`prompt_id`). *Tests*: 8 unit.
 - ☐ **WF3 — Hooks + runner.** Per-run settings file (`current_exe` +
   `workflow-event`), `helm workflow-event` subcommand, `workflow_event` socket op
   routed to the runner **off the UI thread**, step 2+ via `PaneHandle::paste` + `\r`.

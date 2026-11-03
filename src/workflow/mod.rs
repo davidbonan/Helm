@@ -2,4 +2,5 @@
 //! Claude Code session.
 
 pub mod definition;
+pub mod run;
 pub mod template;

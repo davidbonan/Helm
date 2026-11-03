@@ -171,8 +171,11 @@ keep talking to it.
 - `[[STEP_DONE]]` quoted mid-message (Claude explaining the marker) still counts —
   accepted; the instruction asks for it at the end.
 - A `Stop` arriving while the run is on a Gate or Done is ignored.
-- Two `Stop` before helm sent the next step (double hook delivery) — the runner
-  advances once per step: an event is applied to the step it was emitted for.
+- A `Stop` delivered twice for the same turn — the run advances once: the hook's
+  `prompt_id` identifies the turn, and the turn that advanced a step is never
+  applied again.
+- A Permission prompt or **Next step** while on a Gate is ignored; **Next step** while
+  Running too (it only forces a run waiting on the user).
 - Hidden helm: events still advance the run (§6); the strip catches up on the next
   frame.
 - **Untrusted folder**: Claude's trust dialog comes first, its default choice being
