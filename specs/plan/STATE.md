@@ -6,17 +6,17 @@
 
 ---
 
-## ☐ Milestone — M-Workflows · Chained Claude Code steps
+## ◐ Milestone — M-Workflows · Chained Claude Code steps
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **0/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **1/8**.
 
-- ☐ **WF0 — Spike: hooks and injection on real Claude Code.** Verify: `--settings`
-  hooks fire alongside the user's own hooks; `Stop` input fields (last message
-  present, else `transcript_path`); `Notification` on a permission prompt; positional
-  prompt starts the turn; bracketed paste + `\r` submits a multi-line prompt.
-  Findings in the commit message, spec §5–6 amended if they differ.
+- ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
+  in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
+  `last_assistant_message`; `Notification` `permission_prompt`; env reaches hooks;
+  positional prompt survives the trust dialog; paste + `\r` = one message.
+  Spec §5, §9 amended.
 - ☐ **WF1 — Definitions domain.** `workflow::{Workflow, Input, Step}`, validation
   (errors + `/compact` `/clear` warning), template rendering (inputs + `{branch}`
   `{worktree}` `{repo}`), persisted in prefs. *Tests*: unit.

@@ -71,8 +71,8 @@ A Prompt step ends on Claude's **`Stop` hook** (§6) — never on the output-sil
 heuristic of [`agents.md`](agents.md), which arms mid-turn on a silent tool call
 > 6 s and would send the next step while Claude still works.
 
-On each `Stop` of the run's session, helm reads Claude's **last message** (from the
-hook input, else the last assistant entry of `transcript_path`):
+On each `Stop` of the run's session, helm reads Claude's **last message** — the
+hook input's `last_assistant_message` (absent ⇒ treated as no marker):
 
 | Last message | Effect |
 |---|---|
@@ -84,8 +84,9 @@ is tested again. If Claude finished but forgot the marker, **Next step** forces
 the move.
 
 **Permissions**: Claude runs with the user's own settings — helm adds no
-`--permission-mode`. When Claude blocks on a permission or waits for input, its
-**`Notification` hook** puts the run in **Needs you** and posts a native
+`--permission-mode`. When Claude blocks on a permission, its **`Notification`
+hook** (`notification_type` = `permission_prompt`; other types are ignored — an
+`idle_prompt` only repeats Awaiting reply) puts the run in **Needs you** and posts a native
 notification (`notify`, gated by *Agents → Completion notifications*). The next
 `Stop` leaves it.
 
@@ -170,6 +171,9 @@ keep talking to it.
   advances once per step: an event is applied to the step it was emitted for.
 - Hidden helm: events still advance the run (§6); the strip catches up on the next
   frame.
+- **Untrusted folder**: Claude's trust dialog comes first, its default choice being
+  *No, exit*. helm never answers it — the user does, in the tab. *Yes* ⇒ step 1
+  (the initial prompt) starts as usual; *No* ⇒ Claude exits ⇒ **Stopped**.
 - Claude not installed / not on the login shell's `PATH`: the tab shows the shell's
   error, the run goes **Stopped** when the process exits.
 
