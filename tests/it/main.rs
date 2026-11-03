@@ -60,3 +60,4 @@ mod ui_terminal_tree;
 mod ui_terminal_view;
 mod ui_toast;
 mod update_e2e;
+mod workflow_e2e;

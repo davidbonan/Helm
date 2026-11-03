@@ -124,10 +124,12 @@ hidden or minimized helm draws no frame (cli.md §9), and a workflow left runnin
 while the user is away is the main case. The socket thread hands the event to the
 **workflow runner**, which owns each run's state and its pane's `PaneHandle` — the
 write path the phone already uses off the UI thread ([`remote.md`](remote.md) §4) —
-and replies `ok` at once. The UI reads the runs' state to draw the strip.
+and replies `{"result":"accepted"}` at once — unknown run included. The UI reads the runs' state to draw the strip.
 
 **Sending a step.** Steps 2+ are written as a **bracketed paste** (`PaneHandle::paste`)
-then `\r` — multi-line prompts stay one message.
+then `\r` — multi-line prompts stay one message. Claude runs its `Stop` hook
+synchronously, so the paste waits ~1 s for the hook to return and the prompt to be
+back; it happens on its own thread, never on the socket's.
 
 **Trust.** The socket gains one verb whose effect is bounded to a run helm created:
 an unknown run id is ignored. Event text is never executed; the only thing helm

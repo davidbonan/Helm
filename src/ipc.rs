@@ -22,6 +22,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::workflow::hooks::Hook;
+use crate::workflow::runner::WorkflowRunner;
+
 /// How long the socket thread waits for the UI thread. An awake app answers in
 /// milliseconds; past this it is asleep — **a hidden or minimized app gets no
 /// draw callbacks from macOS, so `update` never runs** and the request can only
@@ -49,13 +52,15 @@ pub enum Request {
     Relaunch { path: PathBuf },
     /// Tail of what the process printed: the strip's viewer, as text.
     Logs { path: PathBuf, lines: usize },
+    /// A Claude hook of a workflow run (workflows.md §6), answered off the UI thread.
+    WorkflowEvent { run: String, event: Hook },
 }
 
 impl Request {
     /// The worktree the request targets, if any.
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Request::List => None,
+            Request::List | Request::WorkflowEvent { .. } => None,
             Request::Status { path }
             | Request::Start { path }
             | Request::Stop { path }
@@ -128,6 +133,8 @@ pub enum Response {
     Error {
         message: String,
     },
+    /// A workflow event was taken; nothing to report back to the hook.
+    Accepted,
 }
 
 /// Why a request could not be answered. Both first variants mean "no answer to be
@@ -170,11 +177,35 @@ pub fn serve() {
         }
     };
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    std::thread::spawn(move || serve_loop(listener, park));
+    std::thread::spawn(move || serve_loop(listener, route));
 }
 
 static PENDING: Mutex<Vec<(Request, Sender<Response>)>> = Mutex::new(Vec::new());
 static REPAINTER: Mutex<Option<egui::Context>> = Mutex::new(None);
+static WORKFLOWS: Mutex<Option<WorkflowRunner>> = Mutex::new(None);
+
+/// The runs workflow events are delivered to.
+pub fn arm_workflows(runner: &WorkflowRunner) {
+    if let Ok(mut workflows) = WORKFLOWS.lock() {
+        *workflows = Some(runner.clone());
+    }
+}
+
+/// A workflow event never waits for a frame: a hidden helm draws none, and its runs
+/// must still advance. Everything else is parked for the UI thread.
+fn route(request: Request) -> Option<Response> {
+    let Request::WorkflowEvent { run, event } = request else {
+        return park(request);
+    };
+    let runner = WORKFLOWS
+        .lock()
+        .ok()
+        .and_then(|workflows| workflows.clone());
+    if let Some(runner) = runner {
+        runner.deliver(&run, event);
+    }
+    Some(Response::Accepted)
+}
 
 /// Lets a request arriving while the app is idle wake the event loop.
 pub fn arm(ctx: &egui::Context) {

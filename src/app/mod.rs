@@ -1818,6 +1818,7 @@ impl HelmApp {
             Request::Stop { .. } => action.stop = true,
             Request::Relaunch { .. } => action.relaunch = true,
             Request::List | Request::Logs { .. } => unreachable!("handled above"),
+            Request::WorkflowEvent { .. } => unreachable!("routed off the UI thread"),
         }
         if (action.run || action.relaunch) && target.launch_command.trim().is_empty() {
             return Response::Error {

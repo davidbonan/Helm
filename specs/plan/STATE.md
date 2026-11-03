@@ -10,7 +10,7 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **3/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **4/8**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
@@ -24,10 +24,12 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
 - ☑ **WF2 — Run state machine.** `workflow::run::WorkflowRun` (`start`, `apply` →
   `Effect`), `RunState`, `RunEvent`; duplicate `Stop` deduped by turn
   (`prompt_id`). *Tests*: 8 unit.
-- ☐ **WF3 — Hooks + runner.** Per-run settings file (`current_exe` +
-  `workflow-event`), `helm workflow-event` subcommand, `workflow_event` socket op
-  routed to the runner **off the UI thread**, step 2+ via `PaneHandle::paste` + `\r`.
-  *Tests*: unit (settings, argv/stdin) + business e2e (fake `claude` firing hooks).
+- ☑ **WF3 — Hooks + runner.** `workflow::hooks` (settings file on `current_exe`,
+  launch command, hook input parse), `workflow::runner::WorkflowRunner` (start,
+  deliver/apply off the UI thread, paste + `\r`, banners), `helm workflow-event`,
+  `workflow_event` socket op routed before the UI park (`ipc::arm_workflows`);
+  `shell_single_quote` moved to `terminal::pty`. *Tests*: 4 unit + 1 CLI unit +
+  2 business e2e (fake `claude` in a PTY).
 - ☐ **WF4 — Launch.** `Cmd+P` **Launch workflow ›** + inputs modal; new tab
   spawning `claude --settings … "<step 1>"`. *Tests*: UI e2e + app unit.
 - ☐ **WF5 — Workflow strip.** Bar on the run's tab, state + actions (Continue /
