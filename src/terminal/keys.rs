@@ -59,6 +59,8 @@ const CHORDS: &[(Mods, Key, &[u8])] = &[
     // protocol: it parses `CSI 13;2u` unconditionally and relies on the terminal
     // to emit it by default — gating on the push breaks it.
     (Mods::SHIFT, Key::Enter, b"\x1b[13;2u"),
+    // Ctrl+Enter: same convention; Claude Code sends now, bypassing the queue.
+    (Mods::CTRL, Key::Enter, b"\x1b[13;5u"),
     (Mods::ALT, Key::Enter, b"\x1b\r"), // meta+enter: Claude Code newline (/terminal-setup)
     (Mods::ALT, Key::ArrowLeft, b"\x1bb"), // previous word
     (Mods::ALT, Key::ArrowRight, b"\x1bf"), // next word
@@ -114,6 +116,14 @@ mod tests {
         assert_eq!(key_bytes(Key::Letter('C'), Mods::CTRL), Some(vec![0x03]));
         assert_eq!(key_bytes(Key::Letter('D'), Mods::CTRL), Some(vec![0x04]));
         assert_eq!(key_bytes(Key::Letter('Z'), Mods::CTRL), Some(vec![0x1a]));
+    }
+
+    #[test]
+    fn ctrl_enter_sends_csi_u_instead_of_nothing() {
+        assert_eq!(
+            key_bytes(Key::Enter, Mods::CTRL),
+            Some(b"\x1b[13;5u".to_vec())
+        );
     }
 
     #[test]

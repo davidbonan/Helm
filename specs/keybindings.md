@@ -61,6 +61,7 @@ reserved by macOS for screenshots).
 | `Shift+PageUp` / `Shift+PageDown` | Scroll through the scrollback |
 | `Tab` / `Shift+Tab` | Forwarded to the PTY (`\t` / backtab `CSI Z`) — never consumed by the egui focus navigation, like `Esc` and the arrows |
 | `Shift+Enter` | `CSI 13;2u` without negotiation (kitty/Ghostty convention) — newline in agent harnesses (Claude Code, Codex) ([`terminal.md`](terminal.md) §3) |
+| `Ctrl+Enter` | `CSI 13;5u` without negotiation — Claude Code sends the message now, bypassing the queue ([`terminal.md`](terminal.md) §3) |
 | `Option+Enter` | `Esc`+`CR` (meta+enter) — Claude Code newline ([`terminal.md`](terminal.md) §3) |
 | `Cmd+V` | Paste into the PTY |
 | `Cmd+click` | Opens the **URL** (helm's browser, new tab) / **file or folder path** (IDE) under the pointer; holding `Cmd` underlines the hovered link ([`terminal.md`](terminal.md) §12) |
@@ -197,7 +198,7 @@ fixed. The §1–§3 tables are the defaults.
   fixed, and **reserved** (refused at capture time).
 - The **command palette** `Cmd+P` (§1): fixed, and **reserved**.
 - The **PTY passthrough / shell editing** keys (§2): `Cmd+C`, `Cmd+V`,
-  `Cmd+Backspace`, `Cmd+←/→`, `Alt+…`, `Tab`, `Shift+Enter`, `Option+Enter`,
+  `Cmd+Backspace`, `Cmd+←/→`, `Alt+…`, `Tab`, `Shift+Enter`, `Ctrl+Enter`, `Option+Enter`,
   `Ctrl+*` signals — their semantics belong to the terminal, not to helm.
 - The **diff / graph navigation** keys (§3): `↑/↓`, `Cmd+F`, `Esc`.
 - The **inline editor** keys (§3): `Cmd+S`, `Cmd+Z` — fixed, they only exist

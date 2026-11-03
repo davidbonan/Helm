@@ -62,8 +62,8 @@ Three levels of nesting: **repository → tabs → split tree → panes**.
 - **Kitty keyboard protocol** (enabled in the `alacritty_terminal` config):
   mode push/pop (`CSI > flags u` / `CSI < u`) and response to the
   `CSI ? u` query (Codex/crossterm probes then pushes *disambiguate* mode).
-- **Shift+Enter / Option+Enter**: encoded as `CSI 13;2u` and `ESC CR` **without
-  negotiation** — kitty/Ghostty convention for combos without legacy encoding.
+- **Shift+Enter / Ctrl+Enter / Option+Enter**: encoded as `CSI 13;2u`,
+  `CSI 13;5u` and `ESC CR` **without negotiation** — kitty/Ghostty convention for combos without legacy encoding.
   Claude Code never pushes the kitty protocol: it parses these sequences
   unconditionally and relies on the terminal to emit them by default (the
   "natively supported" of Ghostty/kitty/WezTerm/Warp).
