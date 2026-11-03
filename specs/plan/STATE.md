@@ -189,7 +189,8 @@ footer of the workspace sidebar. Counter: **2/3**.
 Spec: [`specs/files.md`](../files.md) §2, §7; [`specs/keybindings.md`](../keybindings.md).
 Per the user: the Files tab leaves the git sidebar for its own sidebar, like the
 browser's: per-worktree toggle, folder icon in the title bar, left of the browser
-(terminals | Files | Browser | Git), shown in Graph mode too. Counter: **2/3**.
+(terminals | Files | Browser | Git), shown in Graph mode too. Then, per the user,
+a row's right-click menu: path copies, Reveal › installed apps. Counter: **3/4**.
 
 - ☑ **FS1 — Files sidebar.** `files::sidebar::FilesSidebar` (shown + tree) in
   `Prefs.files_sidebars` (reads the old `tab_states`), `files_sidebar_width`; panel
@@ -200,6 +201,12 @@ browser's: per-worktree toggle, folder icon in the title bar, left of the browse
 - ☑ **FS2 — Headless verification.** Dark + light: toggle order, sidebar shown with
   its tree, order terminals | Files | Browser | Git, per-worktree hide/show, Graph
   mode, `⌘⇧E` hides. Evidence: `verify-artifacts/20261020_151437_16525/`.
+- ☑ **FS4 — Row context menu.** Copy path / Copy relative path
+  (`file_list::copy_path_entries`), Reveal › `workspace_launcher::reveal_entry`,
+  `GitIntent::RevealEntry`; `file_tree::TreeMenu { root, openers }`.
+  *Tests*: 2 unit, 2 UI e2e (`ui_file_tree`). Headless: submenu on a folder and a
+  file. Evidence: `verify-artifacts/20261103_190704_93648/`. Not done: each app
+  actually launched from the real window.
 - ☐ **FS3 — Manual check in the real window.** Not done: resize by the edge, width
   kept across launches, with the native browser page beside it.
 

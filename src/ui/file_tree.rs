@@ -8,6 +8,8 @@ use crate::theme::Palette;
 use crate::ui::file_list;
 use crate::ui::git_panel::{self, GitIntent};
 use crate::ui::FileIcon;
+use crate::workspace_launcher::WorkspaceOpener;
+use std::path::Path;
 
 const ROW_HEIGHT: f32 = 26.0;
 const ROW_PAD_X: f32 = 10.0;
@@ -34,12 +36,21 @@ pub struct FileTreeState {
     pub reveal: Option<String>,
 }
 
+/// What a row's right-click menu needs: the worktree root for absolute paths,
+/// the installed apps for Reveal.
+#[derive(Clone, Copy)]
+pub struct TreeMenu<'a> {
+    pub root: Option<&'a Path>,
+    pub openers: &'a [WorkspaceOpener],
+}
+
 /// The whole sidebar: header with Collapse all, then the tree taking the rest of
 /// its height. Returns what this frame's clicks and keys ask for.
 pub fn files_sidebar(
     ui: &mut egui::Ui,
     palette: &Palette,
     state: &mut FileTreeState,
+    menu: TreeMenu,
 ) -> Vec<GitIntent> {
     let mut intents = Vec::new();
     let height = git_panel::remaining_height(ui);
@@ -60,12 +71,17 @@ pub fn files_sidebar(
             });
         });
         git_panel::card_divider(ui, palette);
-        intents.extend(file_tree(ui, palette, state));
+        intents.extend(file_tree(ui, palette, state, menu));
     });
     intents
 }
 
-fn file_tree(ui: &mut egui::Ui, palette: &Palette, state: &mut FileTreeState) -> Vec<GitIntent> {
+fn file_tree(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &mut FileTreeState,
+    menu: TreeMenu,
+) -> Vec<GitIntent> {
     let mut intents = Vec::new();
     let Some(rows) = state.rows.as_deref() else {
         return intents;
@@ -74,6 +90,7 @@ fn file_tree(ui: &mut egui::Ui, palette: &Palette, state: &mut FileTreeState) ->
         let painter = RowPainter {
             palette,
             selected: None,
+            menu,
         };
         painter.muted(ui, 0, NO_FILES_LABEL);
         return intents;
@@ -84,11 +101,13 @@ fn file_tree(ui: &mut egui::Ui, palette: &Palette, state: &mut FileTreeState) ->
         request_scroll(ui, &moved);
         intents.extend(move_intents(moved));
     }
-    if let Some(row) = tree_rows(ui, palette, state) {
+    let rows = tree_rows(ui, palette, state, menu);
+    if let Some(row) = rows.clicked {
         ui.memory_mut(|memory| memory.request_focus(focus_id()));
         state.nav_armed = true;
         intents.extend(click_intents(row));
     }
+    intents.extend(rows.reveal);
     if !intents.is_empty() {
         ui.ctx().request_repaint();
     }
@@ -207,12 +226,25 @@ fn click_intents(row: EntryRow) -> Vec<GitIntent> {
     vec![select, then]
 }
 
-/// The scrollable rows, only those in view painted; returns the row clicked.
-fn tree_rows(ui: &mut egui::Ui, palette: &Palette, state: &FileTreeState) -> Option<EntryRow> {
+/// What the rows on show were asked this frame.
+#[derive(Default)]
+struct RowsOutput {
+    clicked: Option<EntryRow>,
+    reveal: Option<GitIntent>,
+}
+
+/// The scrollable rows, only those in view painted.
+fn tree_rows(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    state: &FileTreeState,
+    menu: TreeMenu,
+) -> RowsOutput {
     let rows = state.rows.as_deref().unwrap_or_default();
     let painter = RowPainter {
         palette,
         selected: state.selected.as_deref(),
+        menu,
     };
     let height = ui.available_height();
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -223,11 +255,11 @@ fn tree_rows(ui: &mut egui::Ui, palette: &Palette, state: &FileTreeState) -> Opt
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
             scroll_to_requested(ui, rows, range.start);
-            let mut clicked = None;
+            let mut out = RowsOutput::default();
             for row in &rows[range] {
-                clicked = clicked.or(painter.row(ui, row));
+                painter.row(ui, row, &mut out);
             }
-            clicked
+            out
         })
         .inner
 }
@@ -263,21 +295,20 @@ enum Highlight {
 struct RowPainter<'a> {
     palette: &'a Palette,
     selected: Option<&'a str>,
+    menu: TreeMenu<'a>,
 }
 
 impl RowPainter<'_> {
-    /// Returns the entry when its row is clicked.
-    fn row(&self, ui: &mut egui::Ui, row: &TreeRow) -> Option<EntryRow> {
+    fn row(&self, ui: &mut egui::Ui, row: &TreeRow, out: &mut RowsOutput) {
         match row {
-            TreeRow::Entry(entry) => self.entry(ui, entry).then(|| entry.clone()),
+            TreeRow::Entry(entry) => self.entry(ui, entry, out),
             TreeRow::More { depth, hidden } => {
                 self.muted(ui, *depth, &format!("{hidden} more not shown"));
-                None
             }
         }
     }
 
-    fn entry(&self, ui: &mut egui::Ui, entry: &EntryRow) -> bool {
+    fn entry(&self, ui: &mut egui::Ui, entry: &EntryRow, out: &mut RowsOutput) {
         let (rect, response, hovered) =
             crate::ui::clickable(ui, egui::vec2(ui.available_width(), ROW_HEIGHT), true);
         let selected = self.selected == Some(entry.path.as_str());
@@ -294,7 +325,31 @@ impl RowPainter<'_> {
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &entry.path)
         });
-        response.clicked()
+        if response.clicked() {
+            out.clicked = Some(entry.clone());
+        }
+        self.context_menu(&response, &entry.path, out);
+    }
+
+    /// Right-click menu: the path copies, then Reveal › one row per installed app.
+    fn context_menu(&self, response: &egui::Response, path: &str, out: &mut RowsOutput) {
+        egui::Popup::context_menu(response)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                file_list::copy_path_entries(ui, path, self.menu.root);
+                ui.separator();
+                ui.menu_button("Reveal", |ui| {
+                    for &opener in self.menu.openers {
+                        if crate::ui::opener_menu_row(ui, opener).clicked() {
+                            out.reveal = Some(GitIntent::RevealEntry {
+                                path: path.to_owned(),
+                                opener,
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            });
     }
 
     fn muted(&self, ui: &mut egui::Ui, depth: usize, text: &str) {

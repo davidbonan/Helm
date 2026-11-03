@@ -48,6 +48,8 @@ pub(crate) fn git_command(intent: GitIntent) -> Option<GitCommand> {
         | GitIntent::RevealInFiles(_) => None,
         // The read-only viewer (files.md §4) is opened app-side, its read sent from there.
         GitIntent::OpenFile(_) => None,
+        // An external app launched app-side, against the active worktree's root.
+        GitIntent::RevealEntry { .. } => None,
     }
 }
 

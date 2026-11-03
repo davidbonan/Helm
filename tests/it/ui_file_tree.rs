@@ -7,8 +7,9 @@ use helm::files::tint::StatusTints;
 use helm::files::tree::{EntryKind, FolderListing, Listings, TreeEntry};
 use helm::git::status::{ChangeKind, FileEntry, RepoStatus};
 use helm::theme::Palette;
-use helm::ui::file_tree::{files_sidebar, FileTreeState};
+use helm::ui::file_tree::{files_sidebar, FileTreeState, TreeMenu};
 use helm::ui::git_panel::GitIntent;
+use helm::workspace_launcher::WorkspaceOpener;
 
 /// The sidebar as the app drives it: rows projected from the listings and the
 /// worktree's sidebar state each frame, the frame's intents applied back to it.
@@ -103,7 +104,11 @@ fn tree_harness(world: World) -> Harness<'static, World> {
             move |ui, world: &mut World| {
                 world.tree.rows = world.listings.rows(&world.sidebar.unfolded, &world.tints);
                 world.tree.selected = world.sidebar.selected.clone();
-                let intents = files_sidebar(ui, &palette, &mut world.tree);
+                let menu = TreeMenu {
+                    root: Some(std::path::Path::new("/repo")),
+                    openers: &[WorkspaceOpener::Zed, WorkspaceOpener::Finder],
+                };
+                let intents = files_sidebar(ui, &palette, &mut world.tree, menu);
                 for intent in &intents {
                     world.apply(intent);
                 }
@@ -232,6 +237,55 @@ fn a_file_click_selects_it_and_asks_the_viewer_to_open_it() {
         ),
         "Some(True)"
     );
+}
+
+#[test]
+fn a_right_click_reveals_the_entry_in_the_app_picked_from_the_reveal_submenu() {
+    let mut harness = tree_harness(sample_world(&["src"]));
+
+    harness.get_by_label("src").click_secondary();
+    harness.run();
+    harness.get_by_label("Reveal ⏵").hover();
+    harness.run();
+    assert!(harness.query_by_label("Zed").is_some());
+    harness.get_by_label("Finder").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().intents,
+        [GitIntent::RevealEntry {
+            path: "src".to_owned(),
+            opener: WorkspaceOpener::Finder,
+        }]
+    );
+    assert!(harness.query_by_label("Reveal ⏵").is_none(), "menu closed");
+}
+
+#[test]
+fn a_right_click_copies_the_entry_path_absolute_or_relative() {
+    for (entry, copied) in [
+        ("Copy path", "/repo/src/main.rs"),
+        ("Copy relative path", "src/main.rs"),
+    ] {
+        let mut harness = tree_harness(sample_world(&["src"]));
+
+        harness.get_by_label("src/main.rs").click_secondary();
+        harness.run();
+        harness.get_by_label(entry).click();
+        harness.step();
+
+        let text =
+            harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                });
+        assert_eq!(text.as_deref(), Some(copied), "{entry}");
+    }
 }
 
 #[test]

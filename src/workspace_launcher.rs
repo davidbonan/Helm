@@ -239,10 +239,59 @@ pub fn open_workspace(
     file: Option<&Path>,
 ) -> std::io::Result<()> {
     let file = file.filter(|file| file.exists());
-    let command = opener
+    spawn(workspace_command(opener, path, file))
+}
+
+/// Opens a files-sidebar entry in `opener` (files.md §3, Reveal): Finder selects
+/// it, an IDE opens the workspace with a file as its tab, a terminal starts in the
+/// entry's folder, GitKraken opens the repo.
+pub fn reveal_entry(
+    opener: WorkspaceOpener,
+    workspace: &Path,
+    entry: &Path,
+) -> std::io::Result<()> {
+    spawn(reveal_command(opener, workspace, entry))
+}
+
+fn reveal_command(opener: WorkspaceOpener, workspace: &Path, entry: &Path) -> OpenWorkspaceCommand {
+    match opener {
+        WorkspaceOpener::Finder => OpenWorkspaceCommand {
+            program: OsString::from("open"),
+            args: vec![OsString::from("-R"), entry.as_os_str().to_owned()],
+        },
+        WorkspaceOpener::Terminal | WorkspaceOpener::Ghostty => {
+            command_for(opener, folder_of(entry))
+        }
+        WorkspaceOpener::Cursor | WorkspaceOpener::Zed | WorkspaceOpener::GitKraken => {
+            workspace_command(
+                opener,
+                workspace,
+                Some(entry).filter(|entry| entry.is_file()),
+            )
+        }
+    }
+}
+
+fn folder_of(entry: &Path) -> &Path {
+    if entry.is_dir() {
+        return entry;
+    }
+    entry.parent().unwrap_or(entry)
+}
+
+/// The IDE's bundled CLI when present, else the plain `open` command.
+fn workspace_command(
+    opener: WorkspaceOpener,
+    path: &Path,
+    file: Option<&Path>,
+) -> OpenWorkspaceCommand {
+    opener
         .ide_cli_path()
         .map(|cli| ide_command(opener, cli, path, file))
-        .unwrap_or_else(|| command_for(opener, path));
+        .unwrap_or_else(|| command_for(opener, path))
+}
+
+fn spawn(command: OpenWorkspaceCommand) -> std::io::Result<()> {
     Command::new(&command.program).args(command.args).spawn()?;
     Ok(())
 }
@@ -326,6 +375,37 @@ mod tests {
 
         assert_eq!(command.program, "open");
         assert_eq!(command.args, vec![OsString::from("/tmp/project")]);
+    }
+
+    #[test]
+    fn finder_reveal_selects_the_entry_in_its_folder() {
+        let command = reveal_command(
+            WorkspaceOpener::Finder,
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/src/main.rs"),
+        );
+
+        assert_eq!(command.program, "open");
+        assert_eq!(
+            command.args,
+            vec![
+                OsString::from("-R"),
+                OsString::from("/tmp/project/src/main.rs")
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_reveal_starts_in_the_file_folder_or_the_folder_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("main.rs"), "").unwrap();
+
+        for entry in [src.join("main.rs"), src.clone()] {
+            let command = reveal_command(WorkspaceOpener::Terminal, root.path(), &entry);
+            assert_eq!(command.args.last(), Some(&src.clone().into_os_string()));
+        }
     }
 
     #[test]

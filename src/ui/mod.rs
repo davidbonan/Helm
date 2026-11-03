@@ -44,7 +44,7 @@ use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, RADIUS_MENU_ITEM, RADIUS_PILL, SHORTCUT_BADGE_SIZE};
 use crate::ui::commit_detail::commit_detail_panel;
 use crate::ui::file_list::{FileMenuOutput, FileViewMode};
-use crate::ui::file_tree::{files_sidebar, FileTreeState};
+use crate::ui::file_tree::{files_sidebar, FileTreeState, TreeMenu};
 use crate::ui::git_panel::{git_panel, GitIntent, GitPanelState};
 use crate::ui::repo_sidebar::{
     repo_sidebar, DoneAgentRow, ProjectVisibility, SidebarAction, SidebarItem,
@@ -1101,7 +1101,11 @@ pub fn root_layout(
             ui.set_min_width(ui.available_width());
             sidebar_block(ui, palette, git_block_padding, |ui| {
                 if let Some(files) = files.as_deref_mut() {
-                    intents.extend(files_sidebar(ui, palette, files.tree));
+                    let menu = TreeMenu {
+                        root: repo_root,
+                        openers: installed_openers,
+                    };
+                    intents.extend(files_sidebar(ui, palette, files.tree, menu));
                 }
             });
         });
@@ -1502,7 +1506,7 @@ fn segment_radius(segment: LauncherSegment) -> egui::CornerRadius {
     }
 }
 
-fn opener_menu_row(ui: &mut egui::Ui, opener: WorkspaceOpener) -> egui::Response {
+pub(crate) fn opener_menu_row(ui: &mut egui::Ui, opener: WorkspaceOpener) -> egui::Response {
     let (rect, response, hovered) =
         clickable(ui, egui::vec2(LAUNCHER_MENU_W, LAUNCHER_MENU_ROW_H), true);
     if hovered {

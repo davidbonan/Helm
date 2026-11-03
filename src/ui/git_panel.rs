@@ -12,6 +12,7 @@ use crate::ui::file_list::{
 };
 use crate::ui::spinner::Spinner;
 use crate::ui::SECTION_TOP_MARGIN;
+use crate::workspace_launcher::WorkspaceOpener;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitIntent {
@@ -86,6 +87,11 @@ pub enum GitIntent {
     OpenFile(String),
     /// WIP row's Reveal in Files (git.md §3): the files sidebar unfolded down to it.
     RevealInFiles(String),
+    /// Files sidebar row's Reveal › app (files.md §3): the entry opened in that app.
+    RevealEntry {
+        path: String,
+        opener: WorkspaceOpener,
+    },
 }
 
 /// Target of a discard awaiting confirmation (git.md §3: destructive action).

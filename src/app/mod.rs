@@ -68,7 +68,8 @@ use crate::ui::{central_empty_state, central_switch, root_layout, TITLEBAR_HEIGH
 use crate::update::{self, UpdateOutcome, UpdateRunner};
 use crate::workspace::{GroupSync, Repo, TabId, Workspace};
 use crate::workspace_launcher::{
-    installed_openers, open_workspace as launch_workspace, resolve_default, WorkspaceOpener,
+    installed_openers, open_workspace as launch_workspace, resolve_default, reveal_entry,
+    WorkspaceOpener,
 };
 
 const INITIAL_ROWS: u16 = 24;

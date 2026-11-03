@@ -10,7 +10,7 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 | A **files sidebar** with its own title-bar toggle and `⌘⇧E`, shown per worktree, in Terminal and Graph modes | Tree at a commit in Graph mode |
 | Lazy tree of the **active worktree**: every entry but `.git`, gitignored ones dimmed | Filter / fuzzy search in the tree |
 | Git status tint on files and their parent folders | Any write: create, rename, move, delete, drag & drop |
-| Click a file ⇒ **viewer** in the center zone (overlay, like the diff): click to edit, agent notes (§4.1, §4.2) | Context menu (Open in editor, Reveal in Finder, Copy path) |
+| Click a file ⇒ **viewer** in the center zone (overlay, like the diff): click to edit, agent notes (§4.1, §4.2) | Context menu entries beyond the path copies and **Reveal** |
 | Keyboard navigation in the tree, same arming rule as the git file list | Forge (PR) notes in the viewer, insert a path into the terminal |
 | Shown, unfolded folders and selection kept **per worktree**, persisted | FS watching (the poll stays the only refresh, [`git.md`](git.md) §7) |
 
@@ -56,6 +56,12 @@ read-only file viewer. Backend: `std::fs` + `git2` (ignore rules, status).
 - **Row**: chevron (folders) · icon · name; indent 12pt per level; hover
   `bg.surface.hover`, selected `accent.subtle`. Long names truncate at the end,
   full relative path in the tooltip.
+- **Context menu** (right-click, file or folder): **Copy path** (absolute),
+  **Copy relative path**, then **Reveal ›** one row per
+  installed app of the workspace launcher, with its icon. Finder selects the
+  entry; Cursor/Zed open the worktree with a file as a tab (a folder: the
+  worktree only); Terminal/Ghostty start in the entry's folder; GitKraken opens
+  the repo.
 - **Empty worktree** (only `.git`): *No files*.
 
 ### 3.1 File-type icons

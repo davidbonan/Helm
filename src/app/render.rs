@@ -507,6 +507,12 @@ impl HelmApp {
         }
     }
 
+    fn reveal_entry_in(&self, opener: WorkspaceOpener, rel_path: &str) {
+        if let Some(repo) = self.workspace.active_repo() {
+            let _ = reveal_entry(opener, &repo.path, &repo.path.join(rel_path));
+        }
+    }
+
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) -> FrameKeys {
         if action_pressed(ctx, &self.keymap, Action::ToggleWorkspaceSidebar) {
             self.sidebars.workspace = !self.sidebars.workspace;
@@ -2411,6 +2417,13 @@ impl HelmApp {
         if !tree_edits.is_empty() {
             self.apply_tree_edits(tree_edits);
         }
+        intents.retain(|intent| match intent {
+            GitIntent::RevealEntry { path, opener } => {
+                self.reveal_entry_in(*opener, path);
+                false
+            }
+            _ => true,
+        });
 
         let mut generate_requested = false;
         let mut continue_op_requested = false;
