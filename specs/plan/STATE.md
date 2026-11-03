@@ -10,16 +10,17 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **1/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **2/8**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
   `last_assistant_message`; `Notification` `permission_prompt`; env reaches hooks;
   positional prompt survives the trust dialog; paste + `\r` = one message.
   Spec §5, §9 amended.
-- ☐ **WF1 — Definitions domain.** `workflow::{Workflow, Input, Step}`, validation
-  (errors + `/compact` `/clear` warning), template rendering (inputs + `{branch}`
-  `{worktree}` `{repo}`), persisted in prefs. *Tests*: unit.
+- ☑ **WF1 — Definitions domain.** `workflow::{definition, template}`: `Workflow`,
+  `Input`, `Step`, `Issue` (errors + turnless `/compact` `/clear` warning),
+  `Workflow::render` (inputs + `{branch}` `{worktree}` `{repo}`, marker
+  instruction appended), `Prefs::workflows`. *Tests*: 7 unit + round trip.
 - ☐ **WF2 — Run state machine.** Pure `WorkflowRun`: Running / Awaiting reply /
   Needs you / Gate / Done / Stopped × events (stop ± marker, notification,
   Continue, Next step, Stop, process exit); one advance per step. *Tests*: unit.

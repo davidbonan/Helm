@@ -2971,6 +2971,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         },
         review: ReviewSettings::default(),
         agents: Vec::new(),
+        workflows: Vec::new(),
         bitbucket_email: String::new(),
         pr_detail_width: 460.0,
         pr_rail_collapsed: false,

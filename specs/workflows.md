@@ -8,8 +8,8 @@ Module: `workflow` (domain) + `app::workflow` (wiring) + `ui::workflow_*` (rende
 
 ## 1. Scope (v1)
 
-- **Agent**: Claude Code only. The definition carries an `agent` field (only
-  `claude` accepted) so another agent costs an adapter, not a schema change.
+- **Agent**: Claude Code only. Another agent later adds an `agent` field
+  defaulting to `claude` — existing definitions stay valid.
 - **Linear**: steps run in order, no branches, no loops. Loops (repeat until a
   marker) come later, on a real need — the end marker (§5) is their foundation.
 - **Step types**: **Prompt** and **Gate** (§4). No shell step, no compact/clear step.
@@ -22,10 +22,13 @@ edited in a **Workflows** section of Preferences ([`preferences.md`](preferences
 No file to hand-edit, no per-repo definition.
 
 ```
-Workflow { id, name, agent: claude, inputs: [Input], steps: [Step] }
-Input    { key, label, kind: Text | LongText | Select { options }, default? }
+Workflow { name, inputs: [Input], steps: [Step] }
+Input    { key, label, default?, kind: Text | LongText | Select { options } }
 Step     { title, kind: Prompt { text } | Gate { message } }
 ```
+
+An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder is
+`{key}` with that same shape — any other brace (code, JSON) is plain text.
 
 **Editor** — a structured form, never raw text:
 - List of workflows: add, rename, duplicate, delete (behind a confirmation).
@@ -34,9 +37,10 @@ Step     { title, kind: Prompt { text } | Gate { message } }
   multiline prompt field like *Commit message prompt*, or the gate's message) —
   add / remove / reorder.
 - **Validation inline**, a workflow with an error cannot be launched:
-  - an empty workflow (no step), a blank prompt, a duplicate input key;
-  - a `{placeholder}` that names neither an input nor a built-in variable;
-  - a Select with no option.
+  - a blank name, an empty workflow (no step), a blank prompt;
+  - an input key malformed, duplicated or reserved (`branch`, `worktree`, `repo`);
+  - a `{placeholder}` (prompt or gate message) naming neither an input nor a built-in;
+  - a Select with no option, or a default that is not one of its options.
 - **Warning** (not an error): a Prompt starting with `/compact` or `/clear` — those
   built-ins end no model turn, so the step would never finish (§5).
   Custom slash commands and skills (`/review`) are model turns and work.
