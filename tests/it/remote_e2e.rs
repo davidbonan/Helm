@@ -291,6 +291,29 @@ fn wait_for_within(
     found
 }
 
+type Accept<'a> = (&'a str, &'a dyn Fn(&Value) -> bool);
+
+/// Reads until each `(kind, accept)` matched once, in whatever order the pushes land:
+/// a sequence of `wait_for` drops the other kinds' messages it reads past.
+fn wait_for_each<const N: usize>(
+    ws: &mut WebSocket<TcpStream>,
+    wanted: [Accept; N],
+) -> [Option<Value>; N] {
+    let mut found = [const { None }; N];
+    wait_until_within(Duration::from_secs(5), || {
+        if let Ok(Message::Text(text)) = ws.read() {
+            let message: Value = serde_json::from_str(&text).unwrap();
+            for (slot, (kind, accept)) in found.iter_mut().zip(&wanted) {
+                if slot.is_none() && message["type"] == *kind && accept(&message) {
+                    *slot = Some(message.clone());
+                }
+            }
+        }
+        found.iter().all(Option::is_some)
+    });
+    found
+}
+
 #[test]
 fn pairing_spends_the_code_for_a_lasting_session_cookie() {
     let fixture = Fixture::new();
@@ -573,19 +596,29 @@ fn a_project_hidden_from_the_phone_leaves_its_list_and_waits_for_the_mac() {
     let cookie = fixture.pair();
     let mut ws = fixture.connect(&cookie);
 
-    let listed = wait_for(&mut ws, "agents", |m| {
-        m["agents"].as_array().is_some_and(|a| !a.is_empty())
-    });
-    let shown = wait_for(&mut ws, "projects", |m| m["projects"][0]["hidden"] == false);
+    let [listed, shown] = wait_for_each(
+        &mut ws,
+        [
+            ("agents", &|m| {
+                m["agents"].as_array().is_some_and(|a| !a.is_empty())
+            }),
+            ("projects", &|m| m["projects"][0]["hidden"] == false),
+        ],
+    );
     let project = shown.as_ref().map(|m| m["projects"][0]["id"].clone());
     ws.send(Message::text(
         json!({"type": "set_project_hidden", "project": project, "hidden": true}).to_string(),
     ))
     .unwrap();
-    let emptied = wait_for(&mut ws, "agents", |m| {
-        m["agents"].as_array().is_some_and(|a| a.is_empty())
-    });
-    let hidden = wait_for(&mut ws, "projects", |m| m["projects"][0]["hidden"] == true);
+    let [emptied, hidden] = wait_for_each(
+        &mut ws,
+        [
+            ("agents", &|m| {
+                m["agents"].as_array().is_some_and(|a| a.is_empty())
+            }),
+            ("projects", &|m| m["projects"][0]["hidden"] == true),
+        ],
+    );
     let requests = fixture.registry.take_visibility_requests();
 
     let worktree = fixture.worktree();
