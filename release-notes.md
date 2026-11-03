@@ -1,6 +1,6 @@
 # Release notes
 
-## 3.8.0
+## 3.8.1
 
 - Right-click a file or folder in the Files sidebar: **Copy path**, **Copy
   relative path**, and **Reveal ›** to open it in Finder, your editor, a
