@@ -10,7 +10,7 @@
 
 Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
 global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
-`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **7/8**.
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **8/9**.
 
 - ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
   in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
@@ -47,8 +47,15 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
   two-click Delete, `Issue::message` under each card), `workflows_changed` →
   `prefs.workflows`. *Tests*: 4 UI e2e + 1 app. *Verified*: headless
   `verify-artifacts/20261103_205107_23217/`.
-- ☐ **WF7 — Verification.** `headless-verify` (palette, modal, strip states,
-  editor) + by hand: real 3-step run with a gate, helm hidden during step 2.
+- ☑ **WF7 — Verification.** Headless: palette + modal
+  `verify-artifacts/20261103_203915_787/`, strip gate → stopped
+  `verify-artifacts/20261103_204544_16282/`, editor
+  `verify-artifacts/20261103_205107_23217/`. Live chain with **no UI thread**: real
+  Claude Code (haiku) → `Stop` hook → `helm workflow-event` → socket → runner →
+  paste, 3 steps with a gate, Done in 7.5 s, `{repo}` rendered (`verify-artifacts/wf7_live_20261103_205227/`).
+- ☐ **WF8 — Manual check in the real window.** Not done (no screen access here):
+  helm hidden/minimized during a step, untrusted folder dialog, *Needs you* and
+  *Workflow finished* banners from the `.app`.
 
 ---
 
