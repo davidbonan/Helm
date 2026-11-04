@@ -1,9 +1,14 @@
 # Release notes
 
+## 3.8.2
+
+- Phone access: reopening Safari on your phone no longer shows 'This phone
+  isn't paired' — the page and its reload stay signed in.
+
 ## 3.8.1
 
 - Right-click a file or folder in the Files sidebar: **Copy path**, **Copy
-  relative path**, and **Reveal ›** to open it in Finder, your editor, a
+  relative path**, and **Reveal âº** to open it in Finder, your editor, a
   terminal or GitKraken.
 
 ## 3.7.7
@@ -13,14 +18,14 @@
 
 ## 3.7.6
 
-- Right-click a changed file in the Git sidebar › **Reveal in Files**: the
+- Right-click a changed file in the Git sidebar âº **Reveal in Files**: the
   Files sidebar opens, unfolded down to that file and selected.
 
 ## 3.7.5
 
 - Cmd+click in a terminal now catches the links agents print:
   markdown links, long URLs and paths the agent wrapped over several lines,
-  paths inside `Update(…)` or backticks, and `file:12-30` ranges.
+  paths inside `Update(â¦)` or backticks, and `file:12-30` ranges.
 - Cmd+click on a URL opens it in a new tab of helm's browser; from the
   Agents view, helm jumps to that agent's worktree first.
 - Cmd+click on a folder opens it in your editor.
@@ -30,12 +35,12 @@
 - Agent completion notifications now arrive when helm is in the
   background or hidden, not only when its window is in front.
 - Phone: hide or show a project from the eye next to the + in the Agents
-  title — shared with the sidebar's eye on the Mac.
+  title â shared with the sidebar's eye on the Mac.
 
 ## 3.7.3
 
 - **Files** now has its own sidebar, per worktree: toggle it from the folder
-  button or `⌘⇧E`. It sits left of the browser, and shows in Graph mode too.
+  button or `ââ§E`. It sits left of the browser, and shows in Graph mode too.
 - The right sidebars are now rounded blocks floating off the window edges.
   Their toggles sit in the terminals' title row, and Git's shows the Git icon.
 - Phone, Send feedback and Preferences moved to the bottom of the left
@@ -44,12 +49,12 @@
 ## 3.7.2
 
 - Browser tabs can be reordered: drag a tab along the row to move it.
-- `⌘R` right after clicking a page now reloads it, instead of restarting the
+- `âR` right after clicking a page now reloads it, instead of restarting the
   dev server.
 
 ## 3.7.1
 
-- **Picture in Picture**: More › Picture in Picture floats the
+- **Picture in Picture**: More âº Picture in Picture floats the
   browser over the window. Drag it anywhere, resize it from any edge; hover
   it for host, reload and Dock back into the sidebar.
 - The browser sidebar now shows per worktree: toggling it in one worktree
@@ -58,25 +63,11 @@
 ## 3.7.0
 
 - New **browser** sidebar on the right, one per worktree: toggle it from the
-  globe button or `⌘⇧B`. Pages open on the worktree's dev server.
+  globe button or `ââ§B`. Pages open on the worktree's dev server.
 - Folder-style tabs tinted to the page, with a spinner while loading.
 - Favorites page with a sidebar: this project's favorites, starred, frequently
   visited, and folders imported from Chrome or Safari (favorites, history,
   cookies). Site icons on tiles and tabs.
 - More menu: find in page, zoom, tablet/mobile viewport, Web Inspector, open
   in Chrome, copy URL.
-- With the browser focused, `⌘R` reloads the page (`⌘⇧R` bypasses the cache).
-
-## 3.6.0
-
-- New **Files** tab in the right sidebar, beside Git: browse the worktree's
-  tree and open any file in a viewer over the center zone.
-- Click in the viewer's text to edit the whole file in place, like a hunk in
-  the diff.
-- Leave agent notes on viewer lines: they join the diff's notes in one batch,
-  sent to the agent together.
-- File-type icons in the Files tree and the diff and viewer headers.
-- Pull requests: right-click a PR to hide it from the Inbox (and show it
-  again from its role tab).
-- Terminal: Hebrew renders, and accents and other combining marks sit on
-  their letter instead of shifting the line.
+- With the browser focused, `âR` reloads the page (`ââ§R` bypasses the cache).
