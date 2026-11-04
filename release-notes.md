@@ -1,6 +1,6 @@
 # Release notes
 
-## 3.9.0
+## 3.9.1
 
 - **Workflows**: chain Claude Code steps into a reusable
   workflow. Define them in Preferences › Workflows, launch one
