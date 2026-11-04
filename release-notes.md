@@ -1,5 +1,15 @@
 # Release notes
 
+## 3.9.0
+
+- **Workflows**: chain Claude Code steps into a reusable
+  workflow. Define them in Preferences › Workflows, launch one
+  with `⌘P`, fill in its inputs, and follow progress in the pill
+  next to the tabs. Each step advances on its own when Claude
+  finishes — `/compact` and `/clear` steps included.
+- Markdown files get a **Code | Preview** toggle, in the file
+  viewer and in the diff.
+
 ## 3.8.2
 
 - Phone access: reopening Safari on your phone no longer shows 'This phone
@@ -59,15 +69,3 @@
   it for host, reload and Dock back into the sidebar.
 - The browser sidebar now shows per worktree: toggling it in one worktree
   leaves the others as they were.
-
-## 3.7.0
-
-- New **browser** sidebar on the right, one per worktree: toggle it from the
-  globe button or `ââ§B`. Pages open on the worktree's dev server.
-- Folder-style tabs tinted to the page, with a spinner while loading.
-- Favorites page with a sidebar: this project's favorites, starred, frequently
-  visited, and folders imported from Chrome or Safari (favorites, history,
-  cookies). Site icons on tiles and tabs.
-- More menu: find in page, zoom, tablet/mobile viewport, Web Inspector, open
-  in Chrome, copy URL.
-- With the browser focused, `âR` reloads the page (`ââ§R` bypasses the cache).
