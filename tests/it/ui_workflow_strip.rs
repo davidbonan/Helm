@@ -50,8 +50,8 @@ fn each_state_offers_only_its_actions() {
     ];
     for (state, offered) in cases {
         let mut harness = harness(state);
-        harness.run();
-        harness.get_by_label(state_label(state));
+        harness.step();
+        harness.get_by_label_contains(state_label(state));
         for label in all {
             let shown = harness.query_by_label(label).is_some();
             assert_eq!(shown, offered.contains(&label), "{state:?} / {label}");
@@ -63,9 +63,7 @@ fn each_state_offers_only_its_actions() {
 fn the_strip_names_the_step_and_shows_the_gate_message() {
     let mut harness = harness(RunState::Gate);
     harness.run();
-    harness.get_by_label("Ticket");
-    harness.get_by_label("step 2/3 — Review");
-    harness.get_by_label("Check the diff");
+    harness.get_by_label("Ticket, step 2/3 — Review, Paused: Check the diff");
 }
 
 #[test]

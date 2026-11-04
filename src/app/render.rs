@@ -1550,7 +1550,7 @@ impl HelmApp {
                             );
                             match central_mode {
                                 CentralMode::Terminal => {
-                                    tab_bar(
+                                    let bar = tab_bar(
                                         ui,
                                         &palette,
                                         &tab_titles,
@@ -1560,9 +1560,18 @@ impl HelmApp {
                                         &mut tab_action,
                                     );
                                     if let Some(view) = &workflow_strip_view {
+                                        let row = egui::Rect::from_x_y_ranges(
+                                            ui.max_rect().x_range(),
+                                            bar.y_range(),
+                                        );
+                                        let mut slot = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(row).layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                            ),
+                                        );
                                         workflow_strip_action =
                                             crate::ui::workflow_strip::workflow_strip(
-                                                ui, &palette, view,
+                                                &mut slot, &palette, view,
                                             );
                                     }
                                     central_area = ui.available_rect_before_wrap();

@@ -138,9 +138,13 @@ ever types into the pane is the next prompt of the definition.
 
 ## 7. The workflow strip
 
-A thin bar on top of the workflow tab's terminal (same family as the Run strip,
-[`design-system.md`](design-system.md)): **name · step n/N — title · state** and
-the actions that apply.
+A pill at the right end of the workflow tab's **tab bar row** — it takes no height
+from the terminal, so the PTY never resizes when a run starts or is dismissed. Left
+to right: a **step track** (one dot per step, max 10: done filled, upcoming hollow,
+the current one in the run's hue — the agent pinwheel while Running), **name**,
+step **title**, **state** (muted while Running, else in the run's hue), the Gate's
+message, then the actions as round icon buttons (Continue = filled accent). The
+pill tints in `git.modified` while it waits on the user, `git.added` once Done.
 
 | State | Meaning | Actions |
 |---|---|---|
