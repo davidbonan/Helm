@@ -5098,8 +5098,8 @@ mod browser_sidebar {
 
     fn open_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
         harness.get_by_label("Toggle browser sidebar").click();
-        harness.run();
-        harness.run();
+        harness.run_ok();
+        harness.run_ok();
     }
 
     fn browser_tabs(harness: &egui_kittest::Harness<'_, HelmApp>) -> usize {
@@ -5437,12 +5437,13 @@ mod browser_sidebar {
         );
     }
 
+    // run_ok: the dev server's PTY output keeps requesting repaints on slow runners.
     fn float_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
         harness.get_by_label("More").click();
-        harness.run();
+        harness.run_ok();
         harness.get_by_label("Picture in Picture").click();
-        harness.run();
-        harness.run();
+        harness.run_ok();
+        harness.run_ok();
     }
 
     fn browser_pip(
