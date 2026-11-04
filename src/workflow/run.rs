@@ -19,6 +19,8 @@ pub enum RunEvent {
         last_message: Option<String>,
     },
     PermissionPrompt,
+    /// `/compact` or `/clear` finished: Claude's `SessionStart` hook.
+    SessionReset,
     Continue,
     NextStep,
     StopRun,
@@ -97,9 +99,17 @@ impl WorkflowRun {
                 self.state = RunState::NeedsYou;
                 Some(Effect::NotifyNeedsYou)
             }
+            RunEvent::SessionReset
+                if self.is_in_prompt_step() && self.current_step().kind.is_session_reset() =>
+            {
+                self.advance()
+            }
             RunEvent::NextStep if self.is_waiting_on_user() => self.advance(),
             RunEvent::Continue if self.state == RunState::Gate => self.advance(),
-            RunEvent::PermissionPrompt | RunEvent::NextStep | RunEvent::Continue => None,
+            RunEvent::PermissionPrompt
+            | RunEvent::SessionReset
+            | RunEvent::NextStep
+            | RunEvent::Continue => None,
         }
     }
 
@@ -225,6 +235,22 @@ mod tests {
         run.apply(done("t1"));
         assert_eq!(run.apply(done("t1")), None);
         assert_eq!(run.step_index(), 1);
+    }
+
+    #[test]
+    fn a_session_reset_ends_only_a_compact_or_clear_step() {
+        let mut run = WorkflowRun::start(vec![prompt("dev"), prompt("/compact"), prompt("review")]);
+        assert_eq!(
+            run.apply(RunEvent::SessionReset),
+            None,
+            "an auto-compact mid-turn"
+        );
+        assert_eq!(run.step_index(), 0);
+        run.apply(done("t1"));
+        assert_eq!(
+            run.apply(RunEvent::SessionReset),
+            Some(Effect::SendPrompt("review".to_owned()))
+        );
     }
 
     #[test]

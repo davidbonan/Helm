@@ -18,6 +18,7 @@ pub const SUBCOMMAND: &str = "workflow-event";
 pub enum HookKind {
     Stop,
     Notification,
+    SessionStart,
 }
 
 impl HookKind {
@@ -25,11 +26,12 @@ impl HookKind {
         match self {
             Self::Stop => "stop",
             Self::Notification => "notification",
+            Self::SessionStart => "session-start",
         }
     }
 
     pub fn from_arg(arg: &str) -> Option<Self> {
-        [Self::Stop, Self::Notification]
+        [Self::Stop, Self::Notification, Self::SessionStart]
             .into_iter()
             .find(|kind| kind.arg() == arg)
     }
@@ -44,6 +46,8 @@ pub enum Hook {
         last_message: Option<String>,
     },
     PermissionPrompt,
+    /// `/compact` or `/clear` done: the session starts over.
+    SessionReset,
 }
 
 impl Hook {
@@ -51,6 +55,7 @@ impl Hook {
         match self {
             Self::Stop { turn, last_message } => RunEvent::TurnEnded { turn, last_message },
             Self::PermissionPrompt => RunEvent::PermissionPrompt,
+            Self::SessionReset => RunEvent::SessionReset,
         }
     }
 }
@@ -61,10 +66,11 @@ struct HookInput {
     prompt_id: String,
     last_assistant_message: Option<String>,
     notification_type: Option<String>,
+    source: Option<String>,
 }
 
 /// `None` for what the run does not track (a malformed input, a notification other
-/// than a permission prompt).
+/// than a permission prompt, a session start other than a compact or a clear).
 pub fn parse_hook_input(kind: HookKind, input: &str) -> Option<Hook> {
     let input: HookInput = serde_json::from_str(input).ok()?;
     match kind {
@@ -74,10 +80,12 @@ pub fn parse_hook_input(kind: HookKind, input: &str) -> Option<Hook> {
         }),
         HookKind::Notification => (input.notification_type.as_deref() == Some("permission_prompt"))
             .then_some(Hook::PermissionPrompt),
+        HookKind::SessionStart => matches!(input.source.as_deref(), Some("compact" | "clear"))
+            .then_some(Hook::SessionReset),
     }
 }
 
-/// The `--settings` file: helm's own binary as the command of both hooks, so no
+/// The `--settings` file: helm's own binary as the command of every hook, so no
 /// `PATH` lookup and a dev build answers to itself.
 pub fn settings_json(helm_exe: &Path) -> String {
     let command = |kind: HookKind| {
@@ -90,6 +98,7 @@ pub fn settings_json(helm_exe: &Path) -> String {
     serde_json::json!({ "hooks": {
         "Stop": command(HookKind::Stop),
         "Notification": command(HookKind::Notification),
+        "SessionStart": command(HookKind::SessionStart),
     }})
     .to_string()
 }
@@ -137,7 +146,21 @@ mod tests {
     }
 
     #[test]
-    fn settings_declare_both_hooks_on_the_quoted_helm_binary() {
+    fn only_a_compact_or_clear_session_start_is_tracked() {
+        let start = |source: &str| {
+            parse_hook_input(
+                HookKind::SessionStart,
+                &format!(r#"{{"hook_event_name":"SessionStart","source":"{source}"}}"#),
+            )
+        };
+        assert_eq!(start("compact"), Some(Hook::SessionReset));
+        assert_eq!(start("clear"), Some(Hook::SessionReset));
+        assert_eq!(start("startup"), None);
+        assert_eq!(start("resume"), None);
+    }
+
+    #[test]
+    fn settings_declare_every_hook_on_the_quoted_helm_binary() {
         let json: serde_json::Value =
             serde_json::from_str(&settings_json(Path::new("/Apps/my helm/helm"))).unwrap();
         let command = |event: &str| json["hooks"][event][0]["hooks"][0]["command"].clone();
@@ -145,6 +168,10 @@ mod tests {
         assert_eq!(
             command("Notification"),
             "'/Apps/my helm/helm' workflow-event notification"
+        );
+        assert_eq!(
+            command("SessionStart"),
+            "'/Apps/my helm/helm' workflow-event session-start"
         );
     }
 

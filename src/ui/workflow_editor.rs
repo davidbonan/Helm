@@ -98,9 +98,8 @@ fn place(issue: &Issue) -> Place {
     match issue {
         Issue::MissingName => Place::Name,
         Issue::NoStep => Place::Steps,
-        Issue::BlankPrompt { step }
-        | Issue::UnknownPlaceholder { step, .. }
-        | Issue::TurnlessCommand { step, .. } => Place::Step(*step),
+        Issue::BlankPrompt { step } | Issue::UnknownPlaceholder { step, .. } => Place::Step(*step),
+        Issue::CompactFirst => Place::Step(0),
         Issue::InvalidKey { .. }
         | Issue::ReservedKey { .. }
         | Issue::DuplicateKey { .. }

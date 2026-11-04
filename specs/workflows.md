@@ -12,7 +12,8 @@ Module: `workflow` (domain) + `app::workflow` (wiring) + `ui::workflow_*` (rende
   defaulting to `claude` — existing definitions stay valid.
 - **Linear**: steps run in order, no branches, no loops. Loops (repeat until a
   marker) come later, on a real need — the end marker (§5) is their foundation.
-- **Step types**: **Prompt** and **Gate** (§4). No shell step, no compact/clear step.
+- **Step types**: **Prompt** and **Gate** (§4). No shell step; `/compact` and
+  `/clear` are plain Prompts (§5).
 - **Not persisted across launches**: a run dies with its tab (§8).
 
 ## 2. Definitions — global, edited in Preferences
@@ -41,8 +42,8 @@ An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder i
   - an input key malformed, duplicated or reserved (`branch`, `worktree`, `repo`);
   - a `{placeholder}` (prompt or gate message) naming neither an input nor a built-in;
   - a Select with no option, or a default that is not one of its options.
-- **Warning** (not an error): a Prompt starting with `/compact` or `/clear` — those
-  built-ins end no model turn, so the step would never finish (§5).
+- **Warning** (not an error): step 1 is `/compact` — there is no conversation to
+  compact yet, Claude ends no turn and starts no session, so the run would stall.
   Custom slash commands and skills (`/review`) are model turns and work.
 
 ## 3. Launch
@@ -69,6 +70,8 @@ An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder i
 - **Prompt** — sends the rendered text to Claude, followed by helm's **end-marker
   instruction** (not editable, appended like the commit prompt's reply format):
   *"When this step is complete, end your final message with `[[STEP_DONE]]`."*
+  A **session reset** — a Prompt starting with `/compact` or `/clear` — goes alone:
+  the text after `/compact` is its summary instructions, the marker has no reader.
 - **Gate** — sends nothing. The run pauses on the gate's message; **Continue**
   moves to the next step, **Stop** ends the run. Use: read the dev step's result
   before the review step starts.
@@ -78,6 +81,11 @@ An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder i
 A Prompt step ends on Claude's **`Stop` hook** (§6) — never on the output-silence
 heuristic of [`agents.md`](agents.md), which arms mid-turn on a silent tool call
 > 6 s and would send the next step while Claude still works.
+
+A session reset ends no turn — no `Stop` fires. It ends on Claude's **`SessionStart`
+hook** with `source` = `compact` / `clear`, fired once the reset is done; the next
+step is sent then, with no user action. The same hook from an auto-compact mid-turn
+is ignored: only a session-reset step listens to it.
 
 On each `Stop` of the run's session, helm reads Claude's **last message** — the
 hook input's `last_assistant_message` (absent ⇒ treated as no marker):
@@ -104,7 +112,8 @@ its `Stop` is tested like any other.
 ## 6. Mechanics
 
 **Spawn.** helm writes a per-run settings file (support dir,
-`workflows/<run-id>.json`) declaring two hooks — `Stop` and `Notification` — whose
+`workflows/<run-id>.json`) declaring three hooks — `Stop`, `Notification` and
+`SessionStart` — whose
 command is **helm's own binary** (`std::env::current_exe()`, so no `PATH`
 dependency and a dev build talks to itself) with `workflow-event`. The tab runs,
 through the login shell (`pty::run_command`):
@@ -117,10 +126,10 @@ Step 1 travels as Claude's initial prompt: no race with the TUI's readiness.
 `--settings` scopes the hooks to this session — the user's `~/.claude` is never
 written. The file is removed when the run ends.
 
-**Events.** `helm workflow-event <stop|notification>` reads the hook's JSON on
-stdin, takes the run id from `HELM_WORKFLOW_RUN`, and sends one line on the control
-socket ([`cli.md`](cli.md) §9): `{"op":"workflow_event","run":…,"event":…,
-"session_id":…,"last_message":…}`. It always exits `0` and fast: a hook must never
+**Events.** `helm workflow-event <stop|notification|session-start>` reads the
+hook's JSON on stdin, takes the run id from `HELM_WORKFLOW_RUN`, and sends one line
+on the control socket ([`cli.md`](cli.md) §9): `{"op":"workflow_event","run":…,
+"event":…,"session_id":…,"last_message":…}`. It always exits `0` and fast: a hook must never
 block or fail Claude's turn.
 
 **Off the UI thread.** Unlike `helm run`, this op is **not** parked for a frame: a

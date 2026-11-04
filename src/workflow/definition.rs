@@ -10,8 +10,10 @@ pub const STEP_DONE_MARKER: &str = "[[STEP_DONE]]";
 const MARKER_INSTRUCTION: &str =
     "When this step is complete, end your final message with [[STEP_DONE]].";
 
-/// Built-in slash commands that end no model turn: no `Stop` hook ever closes them.
-const TURNLESS_COMMANDS: [&str; 2] = ["/compact", "/clear"];
+/// Built-in slash commands that end no model turn: no `Stop` hook closes them, the
+/// `SessionStart` they trigger does.
+const SESSION_RESETS: [&str; 2] = ["/compact", "/clear"];
+const COMPACT: &str = "/compact";
 
 // Every struct keeps its table-valued field last: TOML emits values before tables.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -60,6 +62,15 @@ impl StepKind {
             Self::Gate { message } => message,
         }
     }
+
+    /// A Prompt that is `/compact` or `/clear`: it ends on the session reset, not
+    /// on a marked turn.
+    pub fn is_session_reset(&self) -> bool {
+        match self {
+            Self::Prompt { text } => SESSION_RESETS.contains(&slash_command(text)),
+            Self::Gate { .. } => false,
+        }
+    }
 }
 
 /// The worktree a run is launched on, source of the built-in variables.
@@ -80,13 +91,13 @@ pub enum Issue {
     SelectWithoutOption { key: String },
     DefaultNotAnOption { key: String },
     UnknownPlaceholder { step: usize, name: String },
-    TurnlessCommand { step: usize, command: &'static str },
+    CompactFirst,
 }
 
 impl Issue {
-    /// Only a turnless command is a warning: the workflow still launches.
+    /// Only a `/compact` first is a warning: the workflow still launches.
     pub fn is_error(&self) -> bool {
-        !matches!(self, Self::TurnlessCommand { .. })
+        !matches!(self, Self::CompactFirst)
     }
 
     /// Steps and inputs are numbered from 1, as the editor lists them.
@@ -111,10 +122,10 @@ impl Issue {
                 "Step {}: {{{name}}} is neither an input nor a built-in",
                 step + 1
             ),
-            Self::TurnlessCommand { step, command } => format!(
-                "Step {}: {command} ends no turn, so the step would never finish",
-                step + 1
-            ),
+            Self::CompactFirst => {
+                "Step 1: /compact has no conversation to compact yet, so the run would stall"
+                    .to_owned()
+            }
         }
     }
 }
@@ -198,8 +209,8 @@ impl Workflow {
                 if text.trim().is_empty() {
                     issues.push(Issue::BlankPrompt { step });
                 }
-                if let Some(command) = turnless_command(text) {
-                    issues.push(Issue::TurnlessCommand { step, command });
+                if step == 0 && slash_command(text) == COMPACT {
+                    issues.push(Issue::CompactFirst);
                 }
             }
             for name in template::placeholders(kind.text()) {
@@ -227,6 +238,9 @@ impl Workflow {
             .map(|step| Step {
                 title: step.title.clone(),
                 kind: match &step.kind {
+                    StepKind::Prompt { text } if step.kind.is_session_reset() => StepKind::Prompt {
+                        text: template::render(text, &vars),
+                    },
                     StepKind::Prompt { text } => StepKind::Prompt {
                         text: format!("{}\n\n{MARKER_INSTRUCTION}", template::render(text, &vars)),
                     },
@@ -239,11 +253,8 @@ impl Workflow {
     }
 }
 
-fn turnless_command(prompt: &str) -> Option<&'static str> {
-    let first = prompt.split_whitespace().next()?;
-    TURNLESS_COMMANDS
-        .into_iter()
-        .find(|command| *command == first)
+fn slash_command(prompt: &str) -> &str {
+    prompt.split_whitespace().next().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -359,15 +370,14 @@ mod tests {
     }
 
     #[test]
-    fn a_turnless_command_warns_without_blocking() {
-        let workflow = with(|w| w.steps.push(prompt("/compact keep the plan")));
-        let issue = Issue::TurnlessCommand {
-            step: 3,
-            command: "/compact",
-        };
-        assert_eq!(workflow.issues(), vec![issue]);
-        assert!(workflow.is_launchable());
-        assert!(with(|w| w.steps.push(prompt("/review the diff")))
+    fn only_a_compact_first_warns_without_blocking() {
+        let first = with(|w| w.steps.insert(0, prompt("/compact keep the plan")));
+        assert_eq!(first.issues(), vec![Issue::CompactFirst]);
+        assert!(first.is_launchable());
+        for later in ["/compact keep the plan", "/clear"] {
+            assert!(with(|w| w.steps.push(prompt(later))).issues().is_empty());
+        }
+        assert!(with(|w| w.steps.insert(0, prompt("/clear")))
             .issues()
             .is_empty());
     }
@@ -418,5 +428,23 @@ mod tests {
             ]
         );
         assert!(MARKER_INSTRUCTION.contains(STEP_DONE_MARKER));
+    }
+
+    #[test]
+    fn a_session_reset_renders_without_the_marker_instruction() {
+        let workflow = with(|w| w.steps.push(prompt("/compact keep {ticket}")));
+        let values = BTreeMap::from([("ticket".to_owned(), "BAPS-12".to_owned())]);
+        let context = LaunchContext {
+            repo: "helm",
+            branch: "feat/x",
+            worktree: Path::new("/w/helm"),
+        };
+        let last = workflow.render(&values, &context).pop().unwrap().kind;
+        assert_eq!(
+            last,
+            StepKind::Prompt {
+                text: "/compact keep BAPS-12".to_owned()
+            }
+        );
     }
 }

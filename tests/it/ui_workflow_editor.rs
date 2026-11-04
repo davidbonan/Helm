@@ -152,11 +152,13 @@ fn delete_takes_a_second_click() {
 }
 
 #[test]
-fn a_turnless_command_shows_its_warning_and_an_unknown_placeholder_its_error() {
+fn a_compact_first_shows_its_warning_and_an_unknown_placeholder_its_error() {
     let mut workflow = review_cycle();
     workflow.steps[0] = prompt("Compact", "/compact");
     workflow.steps[1] = prompt("Review", "Review {ticket}");
     let harness = opened(vec![workflow], "Review cycle");
-    harness.get_by_label("Step 1: /compact ends no turn, so the step would never finish");
+    harness.get_by_label(
+        "Step 1: /compact has no conversation to compact yet, so the run would stall",
+    );
     harness.get_by_label("Step 2: {ticket} is neither an input nor a built-in");
 }

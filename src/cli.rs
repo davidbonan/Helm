@@ -214,7 +214,7 @@ fn parse_workflow_event(rest: &[OsString]) -> Args {
             Some(kind) => Args::WorkflowEvent(kind),
             None => Args::Usage(format!("unknown workflow hook “{hook}”")),
         },
-        _ => Args::Usage("workflow-event: expected stop or notification".to_owned()),
+        _ => Args::Usage("workflow-event: expected stop, notification or session-start".to_owned()),
     }
 }
 
@@ -923,6 +923,10 @@ mod tests {
         assert_eq!(
             args(&["workflow-event", "notification"]),
             Args::WorkflowEvent(HookKind::Notification)
+        );
+        assert_eq!(
+            args(&["workflow-event", "session-start"]),
+            Args::WorkflowEvent(HookKind::SessionStart)
         );
         assert!(matches!(args(&["workflow-event"]), Args::Usage(_)));
         assert!(matches!(args(&["workflow-event", "start"]), Args::Usage(_)));

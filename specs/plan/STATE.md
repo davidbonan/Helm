@@ -18,7 +18,7 @@ global definitions edited in Preferences, Prompt + Gate steps, linear, end marke
   positional prompt survives the trust dialog; paste + `\r` = one message.
   Spec §5, §9 amended.
 - ☑ **WF1 — Definitions domain.** `workflow::{definition, template}`: `Workflow`,
-  `Input`, `Step`, `Issue` (errors + turnless `/compact` `/clear` warning),
+  `Input`, `Step`, `Issue` (errors + `/compact`-first warning),
   `Workflow::render` (inputs + `{branch}` `{worktree}` `{repo}`, marker
   instruction appended), `Prefs::workflows`. *Tests*: 7 unit + round trip.
 - ☑ **WF2 — Run state machine.** `workflow::run::WorkflowRun` (`start`, `apply` →
