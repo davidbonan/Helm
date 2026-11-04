@@ -35,8 +35,7 @@ fn the_modal_shows_its_title_and_the_default_kind() {
     harness.run();
 
     harness.get_by_label("Send feedback");
-    // The closed combo exposes its selection as the a11y value, not a label.
-    harness.get_by_value("Bug");
+    harness.get_by_label("Bug");
 }
 
 #[test]
@@ -85,7 +84,7 @@ fn choosing_suggestion_from_the_combo_updates_the_page() {
     let mut harness = harness(FeedbackPage::default());
     harness.run();
 
-    harness.get_by_value("Bug").click();
+    harness.get_by_label("Bug").click();
     harness.run();
     harness.get_by_label("Suggestion").click();
     harness.run();

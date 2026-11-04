@@ -6,6 +6,7 @@
 
 use crate::git::rebase::{plan_error, RebaseAction, RebaseChoice, RebaseCommit, RebaseStep};
 use crate::theme::Palette;
+use crate::ui::picker::Dropdown;
 use crate::ui::spinner::Spinner;
 
 const TITLE_SIZE: f32 = 16.0;
@@ -186,8 +187,8 @@ pub fn rebase_view(
         .max_height(list_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (index, entry) in page.entries.iter_mut().enumerate() {
-                entry_row(ui, palette, entry, index);
+            for entry in &mut page.entries {
+                entry_row(ui, palette, entry);
             }
         });
 
@@ -237,19 +238,15 @@ fn centered_notice(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> bool 
     close
 }
 
-/// One commit row; `index` only salts the action combo's id.
-fn entry_row(ui: &mut egui::Ui, palette: &Palette, entry: &mut RebaseEntry, index: usize) {
+/// One commit row.
+fn entry_row(ui: &mut egui::Ui, palette: &Palette, entry: &mut RebaseEntry) {
     let dropped = entry.choice == RebaseChoice::Drop;
     ui.horizontal(|ui| {
         ui.add_space(PAD);
-        egui::ComboBox::from_id_salt(("rebase-action", index))
+        Dropdown::new(&CHOICES, &mut entry.choice, choice_label)
+            .compact()
             .width(ACTION_COMBO_W)
-            .selected_text(choice_label(entry.choice))
-            .show_ui(ui, |ui| {
-                for choice in CHOICES {
-                    ui.selectable_value(&mut entry.choice, choice, choice_label(choice));
-                }
-            });
+            .show(ui, palette);
         ui.label(
             egui::RichText::new(&entry.commit.short_id)
                 .monospace()

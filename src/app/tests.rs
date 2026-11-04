@@ -5743,7 +5743,9 @@ fn a_workflow_made_in_preferences_lands_in_the_prefs_the_palette_reads() {
             app,
         );
     harness.run_steps(2);
-    harness.get_by_label("+ New workflow").click();
+    harness
+        .get_by_label(crate::ui::workflow_editor::NEW_WORKFLOW_LABEL)
+        .click();
     harness.run_steps(2);
 
     let names: Vec<&str> = harness

@@ -178,12 +178,26 @@ raises one `agents_changed`.
 ### Workflows
 
 Below *Agents* in the nav (Lucide `Workflow`). The structured editor of the global
-workflow definitions ([`workflows.md`](workflows.md) §2): one folded card per
-workflow (name, inputs, steps — add / remove / reorder, Duplicate, Delete behind a
-second click), its validation messages listed under it (errors in the deleted
-color, the turnless-command warning in the modified color), and **+ New workflow**
-below the cards. Any edit raises one `workflows_changed`; the app persists
-`prefs.workflows`, which `Cmd+P › Launch workflow` reads.
+workflow definitions ([`workflows.md`](workflows.md) §2), an empty state with a
+primary **New workflow** until the first one exists:
+- **Card header** — `accent.subtle` Workflow tile, name, the chain of step titles
+  (`Dev → Review → Compact`), a status chip (`git.added` *Ready*, `git.modified`
+  *N warnings*, `git.deleted` *N issues*; hover lists them), chevron. One card open
+  at a time; open, the header adds Duplicate and Delete (second click: a
+  `git.deleted` *Confirm delete*).
+- **Inputs** — one inset row each: `{key}` (mono), label, kind dropdown
+  (Text / Long text / Choice list), ↑ ↓ trash; the default field below, or the
+  option chips + *Default* dropdown of a Choice list.
+- **Steps** — a vertical timeline: a rail of nodes (numbered `accent` for a Prompt,
+  `git.modified` hand for a Gate, `git.deleted` ring on an error) joined by a line
+  that ends on a `+` node with *Add prompt* / *Add gate*. Each step card: a
+  Prompt | Gate segmented toggle (switching keeps the text), the title, ↑ ↓ trash,
+  the multiline text, then placeholder chips — inputs in `accent`, built-ins
+  muted — that insert `{key}` at the caret. Its validation messages sit in it;
+  name, input and no-step messages sit under their own block.
+
+Any edit raises one `workflows_changed`; the app persists `prefs.workflows`, which
+`Cmd+P › Launch workflow` reads.
 
 ### Phone
 

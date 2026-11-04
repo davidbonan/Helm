@@ -15,6 +15,7 @@ use crate::browser::{url, Navigation, PageState};
 use crate::tab_drop::TabDrop;
 use crate::theme::Palette;
 use crate::ui::browser_start_page::{elided, paint_badge, Badge, FavoritesView};
+use crate::ui::picker::{Choice, Segments};
 use crate::ui::spinner::Spinner;
 use crate::ui::with_alpha;
 
@@ -74,6 +75,7 @@ const TAB_TITLE_SIZE: f32 = 12.5;
 const TAB_CLOSE_SIZE: f32 = 18.0;
 const UNTITLED_TAB: &str = "New tab";
 const MORE_MENU_WIDTH: f32 = 260.0;
+const VIEWPORT_SEGMENT: egui::Vec2 = egui::vec2(60.0, 26.0);
 const FIND_ROW_HEIGHT: f32 = 34.0;
 const FIND_FIELD_WIDTH: f32 = 240.0;
 const FIND_HINT: &str = "Find in page";
@@ -455,6 +457,7 @@ pub fn browser_panel(
         }
     }
     let more = MoreMenu {
+        palette,
         colors: &colors,
         page,
     };
@@ -683,6 +686,7 @@ fn new_tab_button(ui: &mut egui::Ui, colors: &BarColors) -> bool {
 }
 
 struct MoreMenu<'a> {
+    palette: &'a Palette,
     colors: &'a BarColors,
     page: &'a PageState,
 }
@@ -710,7 +714,7 @@ fn more_menu(
                     ui.close();
                 }
                 zoom_row(ui, &mut tab.page_view);
-                viewport_row(ui, &mut tab.page_view.viewport);
+                viewport_row(ui, more.palette, &mut tab.page_view.viewport);
                 ui.separator();
                 for (label, action) in [
                     ("Web Inspector", BrowserIntent::Inspect),
@@ -755,13 +759,19 @@ fn zoom_row(ui: &mut egui::Ui, view: &mut PageView) {
     });
 }
 
-fn viewport_row(ui: &mut egui::Ui, viewport: &mut Viewport) {
+fn viewport_row(ui: &mut egui::Ui, palette: &Palette, viewport: &mut Viewport) {
     ui.horizontal(|ui| {
         ui.add_space(ui.spacing().button_padding.x);
         ui.label("Viewport");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for choice in Viewport::ALL.into_iter().rev() {
-                ui.selectable_value(viewport, choice, choice.name());
+            let choices = Viewport::ALL.map(|choice| Choice::new(choice.name()));
+            let selected = Viewport::ALL
+                .iter()
+                .position(|v| v == viewport)
+                .unwrap_or(0);
+            let segments = Segments::new(&choices, selected).segment_size(VIEWPORT_SEGMENT);
+            if let Some(index) = segments.show(ui, palette) {
+                *viewport = Viewport::ALL[index];
             }
         });
     });

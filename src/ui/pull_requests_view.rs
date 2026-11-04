@@ -26,6 +26,7 @@ use crate::ui::diff_view::{
     EDITOR_BAR_HEIGHT, REPLY_LABELS,
 };
 use crate::ui::file_list::{self, file_row, row_separator, FileRow, FileViewMode};
+use crate::ui::picker::{Choice, PickMany, PickOne, Toggle};
 use crate::ui::spinner::Spinner;
 use crate::ui::{clickable, paint_icon, with_alpha, SECTION_TOP_MARGIN, TITLEBAR_HEIGHT};
 
@@ -5578,15 +5579,12 @@ fn sort_menu(ui: &mut egui::Ui, palette: &Palette, rect: egui::Rect, state: &mut
             outlined: true,
         },
     );
-    egui::Popup::menu(&response)
-        .style(crate::theme::menu_style)
-        .show(|ui| {
-            for option in [ListSort::Priority, ListSort::Recent] {
-                if ui.radio(state.sort == option, option.label()).clicked() {
-                    state.sort = option;
-                }
-            }
-        });
+    let options = [ListSort::Priority, ListSort::Recent];
+    let choices = options.map(|option| Choice::new(option.label()));
+    let selected = options.iter().position(|option| *option == state.sort);
+    if let Some(index) = PickOne::new(&choices, selected).show(&response, palette) {
+        state.sort = options[index];
+    }
 }
 
 /// **Filters** (pull-requests.md §5): one checkbox per workspace project in the
@@ -5616,23 +5614,20 @@ fn filter_menu(
     let mut projects: Vec<&str> = prs.iter().map(|p| p.repo_label.as_str()).collect();
     projects.sort_unstable();
     projects.dedup();
-    egui::Popup::menu(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .style(crate::theme::menu_style)
-        .show(|ui| {
-            ui.set_min_width(200.0);
-            ui.label(muted(palette, "Projects"));
-            for project in projects {
-                let mut shown = !state.hidden_projects.contains(project);
-                if ui.checkbox(&mut shown, project).changed() {
-                    if shown {
-                        state.hidden_projects.remove(project);
-                    } else {
-                        state.hidden_projects.insert(project.to_owned());
-                    }
-                }
-            }
-        });
+    let toggles: Vec<Toggle> = projects
+        .iter()
+        .map(|project| Toggle {
+            label: project,
+            on: !state.hidden_projects.contains(*project),
+        })
+        .collect();
+    let Some(index) = PickMany::new(&toggles).show(&response, palette) else {
+        return;
+    };
+    let project = projects[index];
+    if !state.hidden_projects.remove(project) {
+        state.hidden_projects.insert(project.to_owned());
+    }
 }
 
 /// The header's search field (pull-requests.md §5) — matches title, number, author,

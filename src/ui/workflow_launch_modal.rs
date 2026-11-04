@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::theme::Palette;
+use crate::ui::picker::{Choice, PickOne, Trigger};
 use crate::workflow::definition::{InputKind, Workflow};
 
 const MODAL_WIDTH: f32 = 460.0;
@@ -103,15 +104,16 @@ fn fields(ui: &mut egui::Ui, palette: &Palette, form: &mut LaunchForm) -> bool {
                     .desired_width(f32::INFINITY),
             ),
             InputKind::Select { options } => {
-                egui::ComboBox::from_id_salt(("workflow_input", index))
+                let response = Trigger::new(value)
+                    .compact()
                     .width(ui.available_width())
-                    .selected_text(value.as_str())
-                    .show_ui(ui, |ui| {
-                        for option in options {
-                            ui.selectable_value(value, option.clone(), option);
-                        }
-                    })
-                    .response
+                    .show(ui, palette);
+                let choices: Vec<Choice> = options.iter().map(|o| Choice::new(o)).collect();
+                let selected = options.iter().position(|o| o == value);
+                if let Some(picked) = PickOne::new(&choices, selected).show(&response, palette) {
+                    value.clone_from(&options[picked]);
+                }
+                response
             }
         };
         if focus_first && index == 0 {

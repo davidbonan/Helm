@@ -76,7 +76,7 @@ fn one_field_per_input_under_the_workflow_name() {
     harness.get_by_label("Ticket number");
     harness.get_by_label("Context");
     harness.get_by_label("Review depth");
-    harness.get_by_value("light");
+    harness.get_by_label("light");
 }
 
 #[test]
