@@ -393,9 +393,18 @@ pub enum PrReviewRequest {
     /// a review: the same asset can be linked from any PR, and the cache is the URL's.
     Image {
         url: String,
-        forge_kind: ForgeKind,
+        /// The forge whose credentials may travel with the fetch; `None` outside a
+        /// review (a worktree file's preview, files.md §4.3).
+        forge_kind: Option<ForgeKind>,
         /// Bitbucket identity for the Basic header, empty on GitHub.
         bitbucket_email: String,
+    },
+    /// An image a worktree file's markdown preview embeds (files.md §4.3), read from
+    /// disk; answered by `PrReviewReply::Image` under `url`.
+    LocalImage {
+        url: String,
+        root: PathBuf,
+        relative: String,
     },
 }
 
@@ -601,6 +610,14 @@ fn run_review(request: PrReviewRequest) -> PrReviewReply {
             let result = fetch_image(&url, forge_kind, &bitbucket_email);
             PrReviewReply::Image { url, result }
         }
+        PrReviewRequest::LocalImage {
+            url,
+            root,
+            relative,
+        } => PrReviewReply::Image {
+            url,
+            result: crate::files::content::image_bytes(&root, &relative),
+        },
     }
 }
 
@@ -612,7 +629,11 @@ const MAX_IMAGE_BYTES: u64 = 8_000_000;
 /// to the **forge's own hosts** (`image_auth`) — an image body can name any host on
 /// the internet, and a Basic header handed to one of them is a leaked credential.
 /// curl drops the header itself if a redirect leaves that host.
-fn fetch_image(url: &str, forge_kind: ForgeKind, bitbucket_email: &str) -> Result<Vec<u8>, String> {
+fn fetch_image(
+    url: &str,
+    forge_kind: Option<ForgeKind>,
+    bitbucket_email: &str,
+) -> Result<Vec<u8>, String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("unsupported image URL".to_owned());
     }
@@ -696,7 +717,8 @@ fn bitbucket_download_api_url(url: &str) -> Option<String> {
 
 /// The `Authorization` value to send with an image request, or `None` when the URL
 /// is not on a host the forge credentials belong to.
-fn image_auth(url: &str, forge_kind: ForgeKind, bitbucket_email: &str) -> Option<String> {
+fn image_auth(url: &str, forge_kind: Option<ForgeKind>, bitbucket_email: &str) -> Option<String> {
+    let forge_kind = forge_kind?;
     let authority = url.split_once("://")?.1.split(['/', '?', '#']).next()?;
     let host = authority
         .rsplit_once('@')

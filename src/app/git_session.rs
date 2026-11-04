@@ -19,6 +19,10 @@ impl RepoKey {
     pub(crate) fn of(path: &Path) -> RepoKey {
         RepoKey(canonical_path(path))
     }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
 }
 
 /// Live terminal sessions are keyed by **(repo, tab)** identity: each tab of a repo

@@ -6,6 +6,26 @@
 
 ---
 
+## ☑ Milestone — M-MdPreview · Markdown preview in the file viewer
+
+Spec: [`specs/files.md`](../files.md) §4.3. Per the user: a `.md` opens on its code,
+a switch shows the rendered preview; local + remote images, relative links open in
+the viewer, back to Code on another file; then Preview in the WIP diff with the
+changed blocks marked. Counter: **2/2**.
+
+- ☑ **MP1 — Code | Preview.** `ui::markdown` (renderer out of `pull_requests_view`,
+  `worktree_markdown`, `LOCAL_SCHEME`), `ui::segmented` (shared with the PR order
+  toggle), `files::referenced_path`, `file_type::is_markdown`,
+  `content::image_bytes`, `PrReviewRequest::LocalImage`, `Image.forge_kind: Option`.
+  *Tests*: 3 unit, 5 UI e2e (`ui_file_viewer`); headless dark + light
+  `verify-artifacts/20261104_114211_54146/`.
+- ☑ **MP2 — Preview in the diff.** `ui::markdown_preview` (shared pane, `MarkdownView`,
+  `change_marks`), `MdBlock` from the renderer (offset iter), `FileDiff::new_side_changes`,
+  `DiffReview.worktree`. *Tests*: 5 unit, 3 UI e2e (`ui_diff_view`); headless dark +
+  light `verify-artifacts/20261104_123305_98759/`.
+
+---
+
 ## ☑ Milestone — M-AgentLinks · Cmd+click links in agent output
 
 Spec: [`specs/terminal.md`](../terminal.md) §12, [`specs/browser.md`](../browser.md) §3.

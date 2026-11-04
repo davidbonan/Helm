@@ -228,6 +228,15 @@ pub fn file_type(path: &str) -> Option<FileType> {
     by_name.or_else(by_extension).map(|(_, kind)| *kind)
 }
 
+/// Whether `path` is written in markdown, whatever icon its whole name earns
+/// (`README.md` is a Readme): its extension decides.
+pub fn is_markdown(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    BY_EXTENSION
+        .iter()
+        .any(|(extension, kind)| *kind == FileType::Markdown && has_extension(name, extension))
+}
+
 /// `name` ends with `.extension` after a non-empty stem — `.rs` alone has none.
 fn has_extension(name: &str, extension: &str) -> bool {
     let Some(stem_len) = name.len().checked_sub(extension.len() + 1) else {
@@ -313,6 +322,14 @@ mod tests {
         assert_eq!(file_type("README.md"), Some(FileType::Readme));
         assert_eq!(file_type("notes.md"), Some(FileType::Markdown));
         assert_eq!(file_type("Dockerfile"), Some(FileType::Docker));
+    }
+
+    #[test]
+    fn markdown_is_told_by_the_extension_not_by_the_icon() {
+        assert!(is_markdown("docs/README.md"));
+        assert!(is_markdown("LICENSE.MD"));
+        assert!(!is_markdown("README"));
+        assert!(!is_markdown("notes.txt"));
     }
 
     #[test]

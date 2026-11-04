@@ -1196,6 +1196,7 @@ fn drive_review_full(
                 existing: &threads_in_ui,
                 agent: "claude",
                 intents: &mut review_sink.borrow_mut(),
+                worktree: None,
             }),
         );
     });
@@ -1389,6 +1390,7 @@ fn drive_pr_review_with(
                 existing: &threads,
                 agent: "claude",
                 intents: &mut review_sink.borrow_mut(),
+                worktree: None,
             }),
         );
     });
@@ -1515,6 +1517,7 @@ fn existing_pr_thread_renders_anchored_read_only() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents,
+                worktree: None,
             }),
         );
     });
@@ -1601,6 +1604,7 @@ fn new_side_thread_on_a_modified_line_renders_once_not_on_the_deleted_row() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents,
+                worktree: None,
             }),
         );
     });
@@ -1653,6 +1657,7 @@ fn ask_agent_pill_on_a_thread_emits_the_intent() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents_in_ui.borrow_mut(),
+                worktree: None,
             }),
         );
     });
@@ -1712,6 +1717,7 @@ fn reply_pill_on_a_thread_emits_reply_to_thread() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents_in_ui.borrow_mut(),
+                worktree: None,
             }),
         );
     });
@@ -1784,6 +1790,7 @@ fn a_thread_renders_as_one_block_with_a_single_action_bar() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents,
+                worktree: None,
             }),
         );
     });
@@ -1887,6 +1894,7 @@ fn a_thread_over_an_overflowing_diff_keeps_its_controls_on_screen() {
                     existing: &existing,
                     agent: "claude",
                     intents: &mut intents,
+                    worktree: None,
                 }),
             );
         });
@@ -1946,6 +1954,7 @@ fn a_resolved_thread_folds_to_one_row_until_it_is_opened() {
                 existing: &existing,
                 agent: "claude",
                 intents: &mut intents,
+                worktree: None,
             }),
         );
     });
@@ -2942,4 +2951,124 @@ fn a_hunk_past_the_line_cap_takes_no_caret() {
     });
 
     assert!(state.borrow().inline_edit().is_none());
+}
+
+fn numbered(origin: LineOrigin, content: &str, old: Option<u32>, new: Option<u32>) -> DiffLine {
+    DiffLine {
+        origin,
+        content: format!("{content}\n"),
+        old_lineno: old,
+        new_lineno: new,
+    }
+}
+
+/// `docs/notes.md`: a kept paragraph, a rewritten one, a brand new one.
+fn markdown_diff() -> FileDiff {
+    use LineOrigin::*;
+    FileDiff {
+        path: "docs/notes.md".into(),
+        binary: false,
+        oversize: false,
+        hunks: vec![Hunk {
+            header: "@@ -3,3 +3,5 @@".into(),
+            old_start: 3,
+            old_lines: 3,
+            new_start: 3,
+            new_lines: 5,
+            lines: vec![
+                numbered(Context, "Kept paragraph.", Some(3), Some(3)),
+                numbered(Context, "", Some(4), Some(4)),
+                numbered(Deletion, "Old paragraph.", Some(5), None),
+                numbered(Addition, "Rewritten paragraph.", None, Some(5)),
+                numbered(Context, "", Some(6), Some(6)),
+                numbered(Addition, "Brand new paragraph.", None, Some(7)),
+            ],
+        }],
+        source_lines: [
+            "# Title",
+            "",
+            "Kept paragraph.",
+            "",
+            "Rewritten paragraph.",
+            "",
+            "Brand new paragraph.",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        image: None,
+        editable: false,
+    }
+}
+
+struct MarkdownDiff {
+    diff: FileDiff,
+    worktree: Option<std::path::PathBuf>,
+    state: DiffViewState,
+    intents: Vec<GitIntent>,
+}
+
+fn markdown_harness(worktree: Option<&str>) -> Harness<'static, MarkdownDiff> {
+    let palette = Palette::dark();
+    let comments = FileComments::new();
+    let threads = ForgeThreads::new();
+    let mut harness = Harness::new_ui_state(
+        move |ui, md: &mut MarkdownDiff| {
+            let mut review = Vec::new();
+            diff_view(
+                ui,
+                &palette,
+                &md.diff,
+                DiffSurface::WorkingTree { staged: false },
+                &mut md.state,
+                &mut md.intents,
+                Some(&mut DiffReview {
+                    comments: &comments,
+                    forge: None,
+                    existing: &threads,
+                    agent: "claude",
+                    intents: &mut review,
+                    worktree: md.worktree.as_deref(),
+                }),
+            );
+        },
+        MarkdownDiff {
+            diff: markdown_diff(),
+            worktree: worktree.map(std::path::PathBuf::from),
+            state: DiffViewState::default(),
+            intents: Vec::new(),
+        },
+    );
+    harness.run();
+    harness
+}
+
+#[test]
+fn a_markdown_diff_previews_the_whole_file_marking_the_blocks_it_touches() {
+    let mut harness = markdown_harness(Some("/repo"));
+    harness.get_by_label("Preview").click();
+    harness.run();
+
+    harness.get_by_label("Title");
+    harness.get_by_label("Kept paragraph.");
+    assert_eq!(harness.query_all_by_label("Modified").count(), 1);
+    assert_eq!(harness.query_all_by_label("Added").count(), 1);
+}
+
+#[test]
+fn another_file_opens_on_its_code() {
+    let mut harness = markdown_harness(Some("/repo"));
+    harness.get_by_label("Preview").click();
+    harness.run();
+
+    harness.state_mut().diff.path = "docs/other.md".into();
+    harness.run();
+
+    assert!(harness.query_by_label("Added").is_none());
+    harness.get_by_label_contains("Brand new paragraph.");
+}
+
+#[test]
+fn without_a_worktree_to_resolve_in_there_is_no_preview() {
+    let harness = markdown_harness(None);
+    assert!(harness.query_by_label("Preview").is_none());
 }

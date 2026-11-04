@@ -47,6 +47,7 @@ fn harness_with_notes(
         move |ui, viewer: &mut Viewer| {
             let file = ViewedFile {
                 palette: &palette,
+                root: std::path::Path::new("/repo"),
                 snapshot: &viewer.snapshot,
                 change: viewer.change,
                 batch: NoteBatch {
@@ -770,4 +771,82 @@ fn below_a_note_far_down_a_click_still_lands_on_its_line() {
 
     let buffer = buffer(&harness).expect("editor open");
     assert_eq!(buffer.lines().nth(151), Some("liXne 151"));
+}
+
+const README: [&str; 3] = ["# Title", "", "See [the guide](guide.md#setup)."];
+
+fn readme() -> Harness<'static, Viewer> {
+    viewer("docs/README.md", 40, text(&README), None)
+}
+
+fn show_preview(harness: &mut Harness<'_, Viewer>) {
+    harness.get_by_label("Preview").click();
+    harness.run();
+}
+
+#[test]
+fn a_markdown_file_opens_on_its_code_and_the_switch_renders_it() {
+    let mut harness = readme();
+    harness.get_by_label("1 # Title");
+
+    show_preview(&mut harness);
+
+    harness.get_by_label("Title");
+    assert!(harness.query_by_label("1 # Title").is_none());
+}
+
+#[test]
+fn only_a_markdown_file_offers_the_preview() {
+    let harness = main_rs();
+    assert!(harness.query_by_label("Preview").is_none());
+}
+
+#[test]
+fn a_link_into_the_worktree_opens_that_file_in_the_viewer() {
+    let mut harness = readme();
+    show_preview(&mut harness);
+
+    harness.get_by_label("file:///repo/docs/guide.md").click();
+    harness.run();
+
+    assert!(harness
+        .state()
+        .out
+        .git
+        .contains(&GitIntent::OpenFile("docs/guide.md".to_owned())));
+}
+
+#[test]
+fn a_re_read_keeps_the_preview_another_file_opens_on_its_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let readme = tmp.path().join("README.md");
+    std::fs::write(&readme, "# Title\n").unwrap();
+    let read = |path: &str| match content::read(tmp.path(), path, None) {
+        content::ReadOutcome::Read(snapshot) => snapshot,
+        content::ReadOutcome::Unchanged => unreachable!("no stamp was known"),
+    };
+    let mut harness = harness_on(read("README.md"), None);
+    show_preview(&mut harness);
+
+    std::fs::write(&readme, "# Retitled, longer\n").unwrap();
+    harness.state_mut().snapshot = read("README.md");
+    harness.run();
+    harness.get_by_label("Retitled, longer");
+
+    harness.state_mut().snapshot = snapshot("guide.md", 8, text(&["# Guide"]));
+    harness.run();
+    harness.get_by_label("1 # Guide");
+}
+
+#[test]
+fn switching_to_the_preview_writes_the_open_editor() {
+    let mut harness = readme();
+    let pos = text_cell(&mut harness, "1 # Title", 0);
+    click_at(&mut harness, pos);
+    type_text(&mut harness, "X");
+
+    show_preview(&mut harness);
+
+    assert_eq!(writes(&harness).len(), 1);
+    assert!(buffer(&harness).is_none());
 }

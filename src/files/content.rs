@@ -81,6 +81,20 @@ pub fn read(root: &Path, relative: &str, known: Option<Stamp>) -> ReadOutcome {
     })
 }
 
+/// The bytes of the image `relative` inside the worktree `root`, as a markdown
+/// preview embeds it (files.md §4.3), under the viewer's image cap.
+pub fn image_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
+    let ReadOutcome::Read(snapshot) = read(root, relative, None) else {
+        unreachable!("a read with no known stamp always reads");
+    };
+    match snapshot.content {
+        Content::Image(blob) => Ok(blob.bytes),
+        Content::Missing => Err("not found".to_owned()),
+        Content::TooLarge => Err("too large".to_owned()),
+        _ => Err("not an image".to_owned()),
+    }
+}
+
 /// What the viewer shows for `bytes`, the content of `relative`: the diff's caps
 /// (git.md §8) apply, an image previews up to the diff's image cap.
 pub fn classify(relative: &str, bytes: Vec<u8>) -> Content {

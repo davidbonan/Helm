@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::path::Path;
 
-use crate::files::file_type::file_type;
+use crate::files::file_type::{file_type, is_markdown};
 use crate::git::diff::{DiffFingerprint, DiffLine, FileDiff, Hunk, ImageBlob, LineOrigin};
 use crate::git::edit::EditRequest;
 use crate::git::intraline::{Columns, IntralineChanges};
@@ -13,9 +14,12 @@ use crate::ui::inline_editor::{
     divergence_notice, inline_editor, save_requested, EditSession, EditTarget, EditorColumns,
     EditorLook, InlineEdit,
 };
+use crate::ui::markdown::WorktreeDoc;
+use crate::ui::markdown_preview::{preview_pane, MarkdownView, PreviewPane, VIEW_SEGMENTS};
 use crate::ui::review_notes::{
     note_at, note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
 };
+use crate::ui::segmented::segmented;
 use crate::ui::syntax_highlight::{display_text, HighlightedDiffCache, HighlightedSpan};
 use crate::ui::text_selection::{
     clicked_selection, copy_requested, dragged_selection, paint_text_selection,
@@ -81,6 +85,8 @@ pub struct DiffViewState {
     /// The inline editor (git.md §4), anchored on a hunk index. None open ⇒ the diff
     /// renders its rows as usual.
     editing: EditSession<usize>,
+    /// The markdown file shown rendered (files.md §4.3): another path opens on its code.
+    preview: Option<String>,
 }
 
 /// Character width of the widest displayed line, with what it was measured on:
@@ -120,6 +126,14 @@ impl DiffViewState {
         self.conversation_add_buffer.clear();
         self.expanded_resolved.clear();
         self.editing = EditSession::default();
+    }
+
+    /// Shows `path` as `view`; leaving the code writes an open editor first (git.md §4).
+    fn show_as(&mut self, view: MarkdownView, path: &str, intents: &mut Vec<GitIntent>) {
+        self.editing.leave(intents);
+        self.text_selection = None;
+        self.notes.cancel();
+        self.preview = (view == MarkdownView::Preview).then(|| path.to_owned());
     }
 
     /// Whether some editor of this file is open — the diff owns `Esc` while one is,
@@ -736,6 +750,9 @@ pub struct DiffReview<'a> {
     pub existing: &'a ForgeThreads,
     pub agent: &'a str,
     pub intents: &'a mut Vec<ReviewIntent>,
+    /// The worktree a markdown file's Preview resolves its links and images in
+    /// (files.md §4.3); `None` offers no Preview.
+    pub worktree: Option<&'a Path>,
 }
 
 /// Which surface the diff is shown on — selects the available affordances.
@@ -926,6 +943,11 @@ fn diff_render(
         None => &empty_threads,
     };
     let review_agent = review.as_ref().map(|r| r.agent).unwrap_or_default();
+    let worktree = review
+        .as_ref()
+        .and_then(|r| r.worktree)
+        .filter(|_| !chrome.band() && is_previewable(diff));
+    let previewing = worktree.is_some() && state.preview.as_deref() == Some(diff.path.as_str());
     let review_forge = surface.forge_review();
     let mut review_out: Vec<ReviewIntent> = Vec::new();
 
@@ -1027,6 +1049,16 @@ fn diff_render(
                         };
                         review_recap(ui, &mut notes, &batch);
                     }
+                    let shown = if previewing {
+                        MarkdownView::Preview
+                    } else {
+                        MarkdownView::Code
+                    };
+                    if let Some(view) =
+                        worktree.and_then(|_| segmented(ui, palette, &VIEW_SEGMENTS, shown))
+                    {
+                        state.show_as(view, &diff.path, intents);
+                    }
                 });
             });
         });
@@ -1094,6 +1126,29 @@ fn diff_render(
                         .size(LINE_SIZE)
                         .color(palette.text_muted),
                 );
+                return;
+            }
+            if let Some(root) =
+                worktree.filter(|_| state.preview.as_deref() == Some(diff.path.as_str()))
+            {
+                let text = diff.source_lines.join("\n");
+                let changes = diff.new_side_changes();
+                let pane = PreviewPane {
+                    doc: WorktreeDoc {
+                        text: &text,
+                        root,
+                        dir: crate::files::parent_of(&diff.path),
+                    },
+                    scroll_salt: egui::Id::new((
+                        surface.scroll_key(),
+                        diff.path.as_str(),
+                        "preview",
+                    )),
+                    changes: Some(&changes),
+                };
+                for relative in preview_pane(ui, palette, pane) {
+                    intents.push(GitIntent::OpenFile(relative));
+                }
                 return;
             }
             if diff.hunks.is_empty() {
@@ -2156,7 +2211,7 @@ fn thread_member(
                 crate::ui::detail::code_snippet(ui, palette, path, snip);
             }
             ui.add_space(3.0);
-            crate::ui::pull_requests_view::markdown(ui, palette, &comment.body);
+            crate::ui::markdown::markdown(ui, palette, &comment.body);
         });
     });
 }
@@ -2331,6 +2386,11 @@ fn extension_line(
 }
 
 /// Frame of an overlay over the center zone: the diff's card, the file viewer's.
+/// A markdown file whose new side has lines to render (files.md §4.3).
+fn is_previewable(diff: &FileDiff) -> bool {
+    is_markdown(&diff.path) && !diff.binary && !diff.oversize && !diff.source_lines.is_empty()
+}
+
 pub(crate) fn overlay_card(palette: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.bg_canvas)

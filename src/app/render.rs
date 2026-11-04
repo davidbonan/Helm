@@ -905,6 +905,7 @@ impl HelmApp {
             .and_then(|open| open.loaded.as_ref())
             .zip(self.git.as_ref())
             .and_then(|(snapshot, git)| git.status.change_of(&snapshot.path));
+        let viewer_root = self.git.as_ref().map(|git| git.key.path().to_owned());
         let viewer = &mut self.viewer;
         // Any git command running greys the page's Start button out — same
         // rule as the toolbar (computed from the same `busy` state).
@@ -1499,17 +1500,22 @@ impl HelmApp {
                                     existing: &no_threads,
                                     agent: &review_agent,
                                     intents: &mut review_intents,
+                                    worktree: viewer_root.as_deref(),
                                 }),
                             );
-                        } else if let Some(FileViewer {
-                            loaded: Some(snapshot),
-                            view,
-                            ..
-                        }) = viewer.as_mut()
+                        } else if let (
+                            Some(FileViewer {
+                                loaded: Some(snapshot),
+                                view,
+                                ..
+                            }),
+                            Some(root),
+                        ) = (viewer.as_mut(), viewer_root.as_deref())
                         {
                             ui.add_space(f32::from(TITLEBAR_HEIGHT));
                             let file = ViewedFile {
                                 palette: &palette,
+                                root,
                                 snapshot,
                                 change: viewed_change,
                                 batch: NoteBatch {
@@ -1608,6 +1614,7 @@ impl HelmApp {
                                                 existing: &no_threads,
                                                 agent: &review_agent,
                                                 intents: &mut review_intents,
+                                                worktree: viewer_root.as_deref(),
                                             }),
                                         );
                                     } else {

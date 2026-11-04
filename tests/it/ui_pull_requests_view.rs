@@ -1695,7 +1695,7 @@ fn markdown_image_stands_in_until_it_loads() {
     // The alt text is the image's, not a paragraph run: the surrounding prose stands.
     harness.get_by_label("Before:");
     let wanted: Vec<String> = harness.ctx.data(|d| {
-        d.get_temp(helm::ui::pull_requests_view::md_image_wanted_id())
+        d.get_temp(helm::ui::markdown::md_image_wanted_id())
             .unwrap_or_default()
     });
     assert_eq!(
@@ -1827,7 +1827,7 @@ fn markdown_image_in_a_table_cell_is_fetched_like_any_other() {
     );
     harness.get_by_label("step-06 — loading image…");
     let wanted: Vec<String> = harness.ctx.data(|d| {
-        d.get_temp(helm::ui::pull_requests_view::md_image_wanted_id())
+        d.get_temp(helm::ui::markdown::md_image_wanted_id())
             .unwrap_or_default()
     });
     assert_eq!(
@@ -1841,7 +1841,7 @@ fn markdown_image_in_a_table_cell_is_fetched_like_any_other() {
 /// press being the viewer's, not the review's (§11).
 #[test]
 fn a_loaded_image_opens_in_the_viewer_and_esc_closes_it() {
-    use helm::ui::pull_requests_view::{md_image_cache_id, md_viewer_open, MdImage};
+    use helm::ui::markdown::{md_image_cache_id, md_viewer_open, MdImage};
     let url = "https://example.test/step-1.png";
     let mut harness = body_harness("![Step 1](https://example.test/step-1.png)\n");
     // Stand in for the fetch: the app writes the decoded texture into this cache.
@@ -1880,7 +1880,7 @@ fn markdown_link_click_hands_the_url_to_the_app() {
         .click();
     harness.run();
     let clicked: Vec<String> = harness.ctx.data(|d| {
-        d.get_temp(helm::ui::pull_requests_view::md_link_clicked_id())
+        d.get_temp(helm::ui::markdown::md_link_clicked_id())
             .unwrap_or_default()
     });
     assert_eq!(clicked, vec!["https://jira.test/browse/BNG-1".to_owned()]);

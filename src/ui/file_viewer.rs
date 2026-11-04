@@ -1,10 +1,12 @@
 //! The file viewer over the center zone (specs/files.md §4): the diff view's card,
 //! highlighter and image preview over a worktree file, its inline editor over the
-//! whole file (§4.1) and its agent notes (§4.2).
+//! whole file (§4.1), its agent notes (§4.2) and a markdown file's preview (§4.3).
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use crate::files::content::{Content, FileSnapshot, Stamp};
+use crate::files::file_type::is_markdown;
 use crate::git::edit::EditRequest;
 use crate::git::status::ChangeKind;
 use crate::review::{ReviewIntent, ReviewPool};
@@ -20,9 +22,12 @@ use crate::ui::inline_editor::{
     divergence_notice, editor_spans, inline_editor, save_requested, EditSession, EditTarget,
     EditorColumns, EditorLook, InlineEdit,
 };
+use crate::ui::markdown::{md_image_viewer, md_viewer_open, WorktreeDoc};
+use crate::ui::markdown_preview::{preview_pane, MarkdownView, PreviewPane, VIEW_SEGMENTS};
 use crate::ui::review_notes::{
     note_block, review_recap, NoteAnchor, NoteBatch, NoteCtx, NoteLine, NoteSession,
 };
+use crate::ui::segmented::segmented;
 use crate::ui::syntax_highlight::HighlightedFileCache;
 use crate::ui::text_selection::{
     clicked_selection, copy_requested, dragged_selection, paint_text_selection,
@@ -57,6 +62,8 @@ pub struct FileViewerState {
     /// Height of the note block under each line, as last drawn: the lines below it sit
     /// that much lower.
     note_heights: HashMap<usize, f32>,
+    /// Back to `Code` on another file; kept across a re-read of the same one.
+    mode: MarkdownView,
 }
 
 #[derive(Debug)]
@@ -152,6 +159,7 @@ impl FileViewerState {
         if !same_file {
             self.notes.cancel();
             self.note_heights.clear();
+            self.mode = MarkdownView::Code;
         }
         let landed = self
             .written
@@ -166,6 +174,21 @@ impl FileViewerState {
             .selection
             .filter(|_| same_file)
             .and_then(|selection| selection.clamped_to(&lines));
+    }
+
+    /// Switches to `mode`; leaving the code writes an open editor first (§4.1).
+    fn switch_mode(
+        &mut self,
+        mode: MarkdownView,
+        syntax_theme: &'static str,
+        intents: &mut Vec<GitIntent>,
+    ) {
+        if self.is_editing() {
+            self.leave_editor(syntax_theme, intents);
+        }
+        self.selection = None;
+        self.notes.cancel();
+        self.mode = mode;
     }
 
     fn lines<'a>(&'a self, snapshot: &'a FileSnapshot) -> Option<&'a [String]> {
@@ -384,10 +407,12 @@ impl FileViewerState {
     }
 }
 
-/// The file as last read, its change in the polled status (`None` if clean), and the
-/// worktree's batch of agent notes.
+/// The file as last read, the worktree it sits in, its change in the polled status
+/// (`None` if clean), and the worktree's batch of agent notes.
 pub struct ViewedFile<'a> {
     pub palette: &'a Palette,
+    /// The worktree, absolute: a markdown preview's relative links lead into it.
+    pub root: &'a Path,
     pub snapshot: &'a FileSnapshot,
     pub change: Option<ChangeKind>,
     pub batch: NoteBatch<'a>,
@@ -408,7 +433,10 @@ pub fn file_viewer(
     out: &mut ViewerIntents,
 ) -> bool {
     state.follow(file.snapshot);
-    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let screen = ui.max_rect();
+    // The image viewer over the preview owns `Esc` while it is up.
+    let escape =
+        !md_viewer_open(ui.ctx()) && ui.input(|input| input.key_pressed(egui::Key::Escape));
     let close_on_escape = escape && !state.is_editing() && !state.notes.is_open();
     if escape {
         state.escape();
@@ -428,7 +456,10 @@ pub fn file_viewer(
                 session: &mut state.notes,
                 out: &mut out.review,
             };
-            let closed = header(ui, file, &mut notes);
+            let action = header(ui, file, &mut notes, state.mode);
+            if let Some(mode) = action.mode {
+                state.switch_mode(mode, file.palette.syntax, &mut out.git);
+            }
             ui.add_space(8.0);
             let notice = divergence_notice(ui, file.palette, &mut state.editing, &mut out.git);
             if let Some(request) = notice {
@@ -436,14 +467,27 @@ pub fn file_viewer(
                 out.git.push(GitIntent::OpenFile(request.path));
             }
             body(ui, file, state, out);
-            closed
+            action.close
         })
         .inner;
+    md_image_viewer(ui, file.palette, screen);
     close_on_escape || closed
 }
 
-/// Path, size, git change and the notes' recap; `true` when Close was clicked.
-fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>, notes: &mut NoteCtx<'_>) -> bool {
+/// What the header asks for: closing, or showing the file another way.
+struct HeaderAction {
+    close: bool,
+    mode: Option<MarkdownView>,
+}
+
+/// Path, size, git change, the notes' recap and, on a markdown file, the Code |
+/// Preview switch showing `mode`.
+fn header(
+    ui: &mut egui::Ui,
+    file: &ViewedFile<'_>,
+    notes: &mut NoteCtx<'_>,
+    mode: MarkdownView,
+) -> HeaderAction {
     let palette = file.palette;
     let snapshot = file.snapshot;
     ui.horizontal(|ui| {
@@ -464,9 +508,12 @@ fn header(ui: &mut egui::Ui, file: &ViewedFile<'_>, notes: &mut NoteCtx<'_>) -> 
             change_chip(ui, palette, kind);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let closed = close_button(ui, palette);
+            let close = close_button(ui, palette);
             review_recap(ui, notes, &file.batch);
-            closed
+            let mode = is_previewable(file.snapshot)
+                .then(|| segmented(ui, palette, &VIEW_SEGMENTS, mode))
+                .flatten();
+            HeaderAction { close, mode }
         })
         .inner
     })
@@ -514,6 +561,10 @@ fn body(
         state.show_editor(ui, file, &mut out.git);
         return;
     }
+    if state.mode == MarkdownView::Preview && is_previewable(file.snapshot) {
+        show_preview(ui, file, &mut out.git);
+        return;
+    }
     // Lent out for the frame: the rows read the lines while the state takes their clicks.
     let written = state.written.take();
     match shown_lines(written.as_ref(), file.snapshot) {
@@ -528,6 +579,34 @@ fn body(
         None => placeholder_body(ui, file, &mut state.image),
     }
     state.written = written;
+}
+
+/// A markdown file rendered (files.md §4.3): a click on a link into the worktree
+/// opens that file here, a bare anchor goes nowhere, any other URL is the app's.
+fn show_preview(ui: &mut egui::Ui, file: &ViewedFile<'_>, intents: &mut Vec<GitIntent>) {
+    let Content::Text(lines) = &file.snapshot.content else {
+        return;
+    };
+    let text = lines.join("\n");
+    let doc = WorktreeDoc {
+        text: &text,
+        root: file.root,
+        dir: crate::files::parent_of(&file.snapshot.path),
+    };
+    let pane = PreviewPane {
+        doc,
+        scroll_salt: egui::Id::new((scroll_salt(file), "preview")),
+        changes: None,
+    };
+    for relative in preview_pane(ui, file.palette, pane) {
+        intents.push(GitIntent::OpenFile(relative));
+    }
+}
+
+/// A markdown file with lines to render: an empty one keeps its placeholder.
+fn is_previewable(snapshot: &FileSnapshot) -> bool {
+    is_markdown(&snapshot.path)
+        && matches!(&snapshot.content, Content::Text(lines) if !lines.is_empty())
 }
 
 /// Everything the viewer shows for a file it has no lines of.

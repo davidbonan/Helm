@@ -272,11 +272,11 @@ impl PrReview {
 }
 
 /// Writes one embedded image's state into the cache the markdown renderer reads
-/// (`pull_requests_view::md_image_cache_id`).
-fn set_md_image(ctx: &egui::Context, url: &str, slot: crate::ui::pull_requests_view::MdImage) {
+/// (`markdown::md_image_cache_id`).
+fn set_md_image(ctx: &egui::Context, url: &str, slot: crate::ui::markdown::MdImage) {
     ctx.data_mut(|d| {
-        let images: &mut HashMap<String, crate::ui::pull_requests_view::MdImage> =
-            d.get_temp_mut_or_default(crate::ui::pull_requests_view::md_image_cache_id());
+        let images: &mut HashMap<String, crate::ui::markdown::MdImage> =
+            d.get_temp_mut_or_default(crate::ui::markdown::md_image_cache_id());
         images.insert(url.to_owned(), slot);
     });
 }
@@ -2653,9 +2653,9 @@ impl HelmApp {
     /// names the URL, the app is what reaches outside (pull-requests.md §11).
     fn open_markdown_links(&mut self, ctx: &egui::Context) {
         let clicked: Vec<String> = ctx.data_mut(|d| {
-            std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(
-                crate::ui::pull_requests_view::md_link_clicked_id(),
-            ))
+            std::mem::take(
+                d.get_temp_mut_or_default::<Vec<String>>(crate::ui::markdown::md_link_clicked_id()),
+            )
         });
         let now = ctx.input(|i| i.time);
         for url in clicked {
@@ -2668,37 +2668,60 @@ impl HelmApp {
         }
     }
 
-    /// Fire the fetches the markdown renderer asked for on the last frame: an embedded
-    /// image is requested once per URL, whichever body or comment referenced it
-    /// (pull-requests.md §11).
+    /// Fire the reads the markdown renderer asked for on the last frame: an embedded
+    /// image is requested once per URL, whichever body, comment or worktree file
+    /// referenced it (pull-requests.md §11, files.md §4.3).
     fn ensure_markdown_images(&mut self, ctx: &egui::Context) {
-        // The forge decides which credentials the fetch may carry, so the queue is
-        // only drained while a review — the only surface that renders bodies — is open.
-        let Some(review) = self.active_review() else {
-            return;
-        };
-        let forge_kind = review.pr.forge_kind;
+        use crate::pull_requests::runner::PrReviewRequest;
+        use crate::ui::markdown::{MdImage, LOCAL_SCHEME};
         let wanted: Vec<String> = ctx.data_mut(|d| {
-            std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(
-                crate::ui::pull_requests_view::md_image_wanted_id(),
-            ))
+            std::mem::take(
+                d.get_temp_mut_or_default::<Vec<String>>(crate::ui::markdown::md_image_wanted_id()),
+            )
         });
         if wanted.is_empty() {
             return;
         }
+        // The forge decides which credentials a fetch may carry: only a review's
+        // bodies are its own; a worktree file's preview fetches with none.
+        let forge_kind = self
+            .active_review()
+            .filter(|_| self.central_mode == CentralMode::PullRequests)
+            .map(|review| review.pr.forge_kind);
+        let root = self.git.as_ref().map(|git| git.key.path().to_owned());
         let bitbucket_email = self.prefs.bitbucket_email.clone();
         for url in wanted {
             if !self.md_image_requests.insert(url.clone()) {
                 continue;
             }
-            set_md_image(ctx, &url, crate::ui::pull_requests_view::MdImage::Loading);
-            self.pr_review_runner(ctx).request(
-                crate::pull_requests::runner::PrReviewRequest::Image {
-                    url,
+            let request = match url.strip_prefix(LOCAL_SCHEME) {
+                Some(path) => {
+                    let relative = root.as_deref().and_then(|root| {
+                        let relative = Path::new(path).strip_prefix(root).ok()?;
+                        Some((root.to_owned(), relative.to_str()?.to_owned()))
+                    });
+                    let Some((root, relative)) = relative else {
+                        set_md_image(
+                            ctx,
+                            &url,
+                            MdImage::Failed("outside the worktree".to_owned()),
+                        );
+                        continue;
+                    };
+                    PrReviewRequest::LocalImage {
+                        url: url.clone(),
+                        root,
+                        relative,
+                    }
+                }
+                None => PrReviewRequest::Image {
+                    url: url.clone(),
                     forge_kind,
                     bitbucket_email: bitbucket_email.clone(),
                 },
-            );
+            };
+            set_md_image(ctx, &url, MdImage::Loading);
+            self.pr_review_runner(ctx).request(request);
         }
     }
 
@@ -2710,7 +2733,7 @@ impl HelmApp {
         url: String,
         result: Result<Vec<u8>, String>,
     ) {
-        use crate::ui::pull_requests_view::MdImage;
+        use crate::ui::markdown::MdImage;
         let slot = match result.and_then(|bytes| decode_md_image(&bytes)) {
             Ok(image) => MdImage::Ready(ctx.load_texture(
                 format!("md-image:{url}"),

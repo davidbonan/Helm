@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -87,6 +88,50 @@ impl FileDiff {
             }
         }
         DiffFingerprint(hasher.finish())
+    }
+}
+
+/// Where the new side of a diff differs from the old, in new-side line numbers: what
+/// a rendered markdown preview marks in its margin (files.md §4.3).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NewSideChanges {
+    pub added: BTreeSet<u32>,
+    /// Old lines went away just before each of these new lines — one past the last
+    /// line when the removal ends the file.
+    pub removed_before: BTreeSet<u32>,
+}
+
+impl FileDiff {
+    pub fn new_side_changes(&self) -> NewSideChanges {
+        let mut changes = NewSideChanges::default();
+        for hunk in &self.hunks {
+            let mut removing = false;
+            for line in &hunk.lines {
+                match (line.origin, line.new_lineno) {
+                    (LineOrigin::Deletion, _) => removing = true,
+                    (origin, Some(new)) => {
+                        if removing {
+                            changes.removed_before.insert(new);
+                            removing = false;
+                        }
+                        if origin == LineOrigin::Addition {
+                            changes.added.insert(new);
+                        }
+                    }
+                    (_, None) => {}
+                }
+            }
+            // A hunk with no new line names the line *before* the removal (`+2,0`).
+            if removing {
+                let after = if hunk.new_lines == 0 {
+                    hunk.new_start + 1
+                } else {
+                    hunk.new_start + hunk.new_lines
+                };
+                changes.removed_before.insert(after);
+            }
+        }
+        changes
     }
 }
 
@@ -668,6 +713,66 @@ fn line_origin(value: git2::DiffLineType) -> Option<LineOrigin> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn line(origin: LineOrigin, old: Option<u32>, new: Option<u32>) -> DiffLine {
+        DiffLine {
+            origin,
+            content: String::new(),
+            old_lineno: old,
+            new_lineno: new,
+        }
+    }
+
+    fn diff_of(hunks: Vec<Hunk>) -> FileDiff {
+        FileDiff {
+            path: "a.md".to_owned(),
+            binary: false,
+            oversize: false,
+            hunks,
+            source_lines: Vec::new(),
+            image: None,
+            editable: false,
+        }
+    }
+
+    #[test]
+    fn a_replaced_line_is_added_where_the_old_one_went_away() {
+        use LineOrigin::*;
+        let hunk = Hunk {
+            header: String::new(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                line(Context, Some(1), Some(1)),
+                line(Deletion, Some(2), None),
+                line(Addition, None, Some(2)),
+            ],
+        };
+        let changes = diff_of(vec![hunk]).new_side_changes();
+        assert_eq!(changes.added, BTreeSet::from([2]));
+        assert_eq!(changes.removed_before, BTreeSet::from([2]));
+    }
+
+    #[test]
+    fn a_removal_ending_the_file_sits_one_past_its_last_line() {
+        use LineOrigin::*;
+        let hunk = Hunk {
+            header: String::new(),
+            old_start: 3,
+            old_lines: 2,
+            new_start: 3,
+            new_lines: 1,
+            lines: vec![
+                line(Context, Some(3), Some(3)),
+                line(Deletion, Some(4), None),
+            ],
+        };
+        let changes = diff_of(vec![hunk]).new_side_changes();
+        assert!(changes.added.is_empty());
+        assert_eq!(changes.removed_before, BTreeSet::from([4]));
+    }
 
     #[test]
     fn line_origin_drops_eofnl_markers() {

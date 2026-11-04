@@ -1822,6 +1822,7 @@ fn gen_pr_review_comments() {
                             existing: &threads,
                             agent: "claude",
                             intents: &mut ri,
+                            worktree: None,
                         }),
                     );
                 });

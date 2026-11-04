@@ -138,6 +138,34 @@ only):
   after an edit (same limit as the diff).
 - `Esc` cascade in the viewer: editor → note editor → close.
 
+### 4.3 Markdown preview
+
+- A markdown file (`.md`, `.markdown`, `.mdx`, whatever icon its name earns) with
+  lines shows a **Code | Preview** segmented control in the header, left of the
+  notes recap. It opens on **Code**; another file opens on Code again, a live
+  re-read of the same file keeps the mode.
+- **Preview** renders the file with the PR bodies' markdown renderer
+  ([`pull-requests.md`](pull-requests.md) §11): headings, emphasis, lists, quotes,
+  GFM tables and task lists, code blocks, images (click ⇒ zoomable viewer, which
+  owns `Esc` while up). Vertical scroll of its own; no editor, no notes.
+- **Relative targets** resolve from the file's folder, a leading `/` from the
+  worktree root; one climbing out of the worktree stays as written.
+  - Link into the worktree ⇒ that file opens in the viewer (Code). Bare `#anchor`
+    ⇒ nothing. Any other URL ⇒ the browser, as in a PR.
+  - Image in the worktree ⇒ read from disk (viewer image cap); remote image ⇒
+    fetched **without** forge credentials; SVG unsupported (placeholder).
+- Switching to Preview writes an open editor buffer first (§4.1).
+- **In the diff view** ([`git.md`](git.md) §4, WIP and commit diffs, not the PR
+  bands): the same switch on a markdown file with a new side. Preview renders the
+  **whole new side** (`source_lines`), no hunk controls, and marks the margin:
+  a `git.modified` bar beside a block with a new line or a removal inside (or a
+  rewrite right before it), a `git.added` bar beside a block every line of which
+  is new, a `git.deleted` notch on the seam where lines went away between two
+  untouched blocks; hovering a mark names it. Blocks are the layout's leaves
+  (paragraph, heading, list item, table, code block), so the marks follow git's
+  line diff as Code shows it. Another file opens on Code; a reload keeps Preview.
+  Images still come from the worktree on disk (a staged or commit side may differ).
+
 ## 5. Keyboard
 
 Armed by a click on a tree row, **disarmed** when a terminal regains focus — same
@@ -183,4 +211,4 @@ was on Files starts hidden.
 |-------|--------|
 | Unit | Sort (folders first, natural, case-insensitive); status → folder dot priority; `.git` and non-UTF-8 skipped; 2,000 cap |
 | Business e2e | Real repo: ignored entry flagged, untracked/modified tints, symlink not followed, re-list picks up a new file |
-| UI e2e (kittest) | Toggle and `⌘⇧E` show/hide per worktree; Graph mode keeps it, Agents mode hides it; header Collapse all; unfold + click opens viewer with content; `↑/↓/←/→` navigation; binary/too-large placeholders |
+| UI e2e (kittest) | Toggle and `⌘⇧E` show/hide per worktree; Graph mode keeps it, Agents mode hides it; header Collapse all; unfold + click opens viewer with content; `↑/↓/←/→` navigation; binary/too-large placeholders; markdown Code ⇄ Preview, worktree link opens the file |

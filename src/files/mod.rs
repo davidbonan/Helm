@@ -108,6 +108,43 @@ pub fn is_ignored(repo: &git2::Repository, relative: &Path) -> bool {
     repo.is_path_ignored(relative).unwrap_or(false)
 }
 
+/// The worktree path a relative reference written in a file of `dir` names — a
+/// markdown link or image; `None`
+/// for a URL with a scheme, a bare anchor, or a path climbing out of the worktree. A
+/// leading `/` is the worktree root, as on the forges.
+pub fn referenced_path(dir: &str, url: &str) -> Option<String> {
+    let path = url.split(['#', '?']).next().unwrap_or_default();
+    if path.is_empty() || has_scheme(path) {
+        return None;
+    }
+    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    let (start, rest) = match decoded.strip_prefix('/') {
+        Some(rest) => ("", rest),
+        None => (dir, decoded.as_ref()),
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in start.split('/').chain(rest.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// `scheme:` per RFC 3986 — a letter, then letters, digits, `+`, `-` or `.`.
+fn has_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
 /// `a/b/c.rs` ⇒ `a/b`; a top-level entry ⇒ `""`, the root.
 pub(crate) fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
@@ -178,6 +215,43 @@ fn chunk_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reference_resolves_from_the_folder_of_the_file_writing_it() {
+        assert_eq!(
+            referenced_path("docs", "img/shot.png").as_deref(),
+            Some("docs/img/shot.png")
+        );
+        assert_eq!(
+            referenced_path("docs", "./a.md#usage").as_deref(),
+            Some("docs/a.md")
+        );
+        assert_eq!(
+            referenced_path("docs/guide", "../README.md").as_deref(),
+            Some("docs/README.md")
+        );
+        assert_eq!(
+            referenced_path("docs", "/specs/files.md").as_deref(),
+            Some("specs/files.md")
+        );
+        assert_eq!(
+            referenced_path("", "my%20shot.png?raw=1").as_deref(),
+            Some("my shot.png")
+        );
+    }
+
+    #[test]
+    fn a_url_an_anchor_or_a_climb_out_of_the_worktree_names_no_file() {
+        for reference in [
+            "https://x.test/a.png",
+            "mailto:me@x.test",
+            "#usage",
+            "../../etc/passwd",
+            "",
+        ] {
+            assert_eq!(referenced_path("docs", reference), None, "{reference}");
+        }
+    }
 
     fn tree_names(dir: &Path) -> Vec<String> {
         let listing = list_tree(dir).unwrap();

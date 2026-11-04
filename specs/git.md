@@ -202,6 +202,8 @@ placeholder launches verbatim.
 
 ## 4. Diff view & granular staging
 
+- **Markdown files**: a Code | Preview switch renders the new side with its
+  changed blocks marked in the margin ([`files.md`](files.md) §4.3).
 - **Location**: the diff view opens in the **center zone**, as an overlay above
   the repo's terminal workspace. The diff's close action returns to the
   terminal (shortcut in [`keybindings.md`](keybindings.md)). A repo switch
