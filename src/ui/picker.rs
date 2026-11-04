@@ -490,7 +490,12 @@ impl Menu<'_> {
                 self.body(ui, palette, id)
             });
         match shown {
-            Some(inner) => inner.inner,
+            Some(inner) => {
+                if inner.inner.is_some() && self.mark != Mark::Eye {
+                    trigger.request_focus();
+                }
+                inner.inner
+            }
             None => {
                 trigger.ctx.data_mut(|data| data.remove::<MenuState>(id));
                 None

@@ -5639,6 +5639,112 @@ fn launching_opens_a_named_tab_running_claude_on_the_rendered_first_step() {
         .contains("Fix BAPS-1 on api")));
 }
 
+/// The full page over a live `cat` pane, with `workflow`'s inputs modal open.
+fn launch_modal_page(
+    tmp: &Path,
+    workflow: crate::workflow::definition::Workflow,
+) -> egui_kittest::Harness<'static, HelmApp> {
+    let mut app = app_with_workflows(tmp, "exec cat");
+    let key = key_of(&app.workspace, 0, 0);
+    let pane = Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
+    let mut panes = Panes::new();
+    panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
+    app.caches.panes.insert(key, panes);
+    app.modal = Some(Modal::LaunchWorkflow(LaunchForm::new(workflow)));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                app.render_modals(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run();
+    harness.run();
+    harness
+}
+
+fn type_into_focus(harness: &mut egui_kittest::Harness<'_, HelmApp>, text: &str) {
+    harness.event(egui::Event::Text(text.to_owned()));
+    harness.run();
+}
+
+/// `step`, not `run`: once launched, the strip's pinwheel repaints for ever.
+fn press(harness: &mut egui_kittest::Harness<'_, HelmApp>, key: egui::Key) {
+    harness.key_press(key);
+    harness.step();
+    harness.step();
+}
+
+fn launched_with(tmp: &Path, prompt: &str) -> bool {
+    let log = tmp.join("argv.log");
+    eventually(|| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(prompt)
+    })
+}
+
+#[test]
+fn the_launch_modal_completes_from_the_keyboard_over_a_live_terminal() {
+    use crate::workflow::definition::{Input, InputKind, Step, StepKind, Workflow};
+    let tmp = tempfile::tempdir().unwrap();
+    let input = |key: &str, kind| Input {
+        key: key.to_owned(),
+        label: key.to_owned(),
+        default: String::new(),
+        kind,
+    };
+    let workflow = Workflow {
+        name: "Ship".to_owned(),
+        inputs: vec![
+            input("ticket", InputKind::Text),
+            input("note", InputKind::Text),
+            input(
+                "env",
+                InputKind::Select {
+                    options: vec!["dev".to_owned(), "prod".to_owned()],
+                },
+            ),
+        ],
+        steps: vec![Step {
+            title: "Dev".to_owned(),
+            kind: StepKind::Prompt {
+                text: "{ticket} {note} {env}".to_owned(),
+            },
+        }],
+    };
+    let mut harness = launch_modal_page(tmp.path(), workflow);
+    type_into_focus(&mut harness, "BAPS-1");
+    press(&mut harness, egui::Key::Enter);
+    type_into_focus(&mut harness, "urgent");
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::ArrowDown);
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Enter);
+
+    assert!(harness.state().modal.is_none(), "launched");
+    assert!(launched_with(tmp.path(), "BAPS-1 urgent prod"));
+}
+
+#[test]
+fn a_field_letting_go_of_the_focus_leaves_the_terminal_behind_the_modal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = launch_modal_page(tmp.path(), ticket_workflow());
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::Tab);
+    type_into_focus(&mut harness, "BAPS-1");
+    press(&mut harness, egui::Key::Enter);
+
+    assert!(harness.state().modal.is_none(), "launched");
+    assert!(launched_with(tmp.path(), "Fix BAPS-1 on api"));
+}
+
 #[test]
 fn an_exited_claude_stops_its_run_and_closing_the_tab_forgets_it() {
     use crate::workflow::run::RunState;

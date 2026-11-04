@@ -74,9 +74,11 @@ pub fn workflow_launch_modal(
     action
 }
 
-/// Returns whether `Enter` was pressed in a single-line field.
+/// Returns whether `Enter` was pressed in a single-line field; it also moves the
+/// focus to the next field, so an unfinished form carries on from the keyboard.
 fn fields(ui: &mut egui::Ui, palette: &Palette, form: &mut LaunchForm) -> bool {
     let mut submitted = false;
+    let mut focus_next = false;
     let focus_first = !std::mem::replace(&mut form.focused, true);
     for (index, input) in form.workflow.inputs.iter().enumerate() {
         let label = if input.label.trim().is_empty() {
@@ -93,10 +95,7 @@ fn fields(ui: &mut egui::Ui, palette: &Palette, form: &mut LaunchForm) -> bool {
         let value = form.values.entry(input.key.clone()).or_default();
         let response = match &input.kind {
             InputKind::Text => {
-                let response =
-                    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
-                submitted |= response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                response
+                ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
             }
             InputKind::LongText => ui.add(
                 egui::TextEdit::multiline(value)
@@ -116,8 +115,15 @@ fn fields(ui: &mut egui::Ui, palette: &Palette, form: &mut LaunchForm) -> bool {
                 response
             }
         };
-        if focus_first && index == 0 {
+        if (focus_first && index == 0) || std::mem::take(&mut focus_next) {
             response.request_focus();
+        }
+        if input.kind == InputKind::Text
+            && response.lost_focus()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        {
+            submitted = true;
+            focus_next = true;
         }
         ui.add_space(8.0);
     }

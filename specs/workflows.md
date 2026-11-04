@@ -52,7 +52,10 @@ An input `key` is `[a-z0-9_]+`, unique, and not a built-in name. A placeholder i
   (name + step count); an invalid one stays in Preferences until fixed.
 - `Enter` opens the **inputs modal**: one field per input, in order, defaults
   pre-filled; every input is required. `Enter` in a single-line field / `Cmd+Enter`
-  anywhere launches; `Esc` cancels. A workflow with no input skips the modal.
+  anywhere launches once every input is filled — until then `Enter` moves to the next
+  field; `Esc` cancels. The whole form works from the keyboard (`Tab`, a select opens
+  on `Enter`/`Space`), and the terminal behind never takes the focus back while the
+  modal is open. A workflow with no input skips the modal.
 - **Templating**: `{key}` is replaced by the input's value; built-ins `{branch}`,
   `{worktree}` (absolute path), `{repo}` (project name) come from the active
   worktree. Single braces, like `{changes}` in the commit prompt. Rendering happens

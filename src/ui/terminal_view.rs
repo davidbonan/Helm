@@ -1114,10 +1114,11 @@ pub fn terminal_view(
     if response.drag_started() || clicked {
         response.request_focus();
     } else if focused && !response.has_focus() {
-        // Only claim focus if no widget holds it: otherwise the active pane would
-        // steal it from the commit fields the moment they're clicked. The outgoing
-        // pane surrenders it below, letting keyboard navigation switch focus.
-        if ui.memory(|m| m.focused()).is_none() {
+        // Only claim focus if no widget holds it and no modal sits above: otherwise
+        // the active pane would steal it from the commit fields or a modal's form.
+        // The outgoing pane surrenders it below, letting keyboard navigation switch focus.
+        let layer = ui.layer_id();
+        if ui.memory(|m| m.focused().is_none() && m.allows_interaction(layer)) {
             response.request_focus();
         }
     } else if !focused && response.has_focus() {

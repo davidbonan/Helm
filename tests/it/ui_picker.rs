@@ -76,6 +76,10 @@ fn arrows_and_enter_pick_from_the_keyboard() {
     harness.run();
 
     assert_eq!(harness.state().picks, [1]);
+    assert!(
+        harness.get_by_label("Banana").is_focused(),
+        "the trigger keeps the keyboard"
+    );
 }
 
 #[test]
