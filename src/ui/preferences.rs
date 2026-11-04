@@ -4,20 +4,15 @@ use crate::keybindings::{Action, Group, Keymap, Shortcut};
 use crate::pull_requests::runner::SourceStatus;
 use crate::terminal::links::Editor;
 use crate::theme::{self, Palette, ThemeMode, RADIUS_PILL};
+use crate::ui::picker::{Choice, Dropdown, PickOne, Segments, Trigger};
 use crate::ui::spinner::Spinner;
 use crate::ui::{clickable, paint_icon, MACOS_TITLEBAR_INSET};
 use crate::update::UpdateState;
 
 const SEGMENT_SIZE: egui::Vec2 = egui::vec2(88.0, 36.0);
 const SEGMENT_LABEL_SIZE: f32 = 13.0;
-const SEGMENT_ICON_SIZE: f32 = 15.0;
-const SEGMENT_ICON_GAP: f32 = 6.0;
 
 const DROPDOWN_PAD_X: f32 = 12.0;
-const DROPDOWN_GAP: f32 = 6.0;
-const DROPDOWN_ICON_SIZE: f32 = 13.0;
-const DROPDOWN_MIN_WIDTH: f32 = 150.0;
-const DROPDOWN_POPUP_GAP: f32 = 4.0;
 
 const CARD_RADIUS: u8 = 12;
 const CARD_PAD_X: f32 = 16.0;
@@ -57,18 +52,20 @@ pub enum PreferencesSection {
     Keyboard,
     Terminal,
     Agents,
+    Workflows,
     Phone,
     PullRequests,
     Project,
     Updates,
 }
 
-const SECTIONS: [PreferencesSection; 9] = [
+const SECTIONS: [PreferencesSection; 10] = [
     PreferencesSection::Appearance,
     PreferencesSection::Git,
     PreferencesSection::Keyboard,
     PreferencesSection::Terminal,
     PreferencesSection::Agents,
+    PreferencesSection::Workflows,
     PreferencesSection::Phone,
     PreferencesSection::PullRequests,
     PreferencesSection::Project,
@@ -83,6 +80,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => "Keyboard",
             PreferencesSection::Terminal => "Terminal",
             PreferencesSection::Agents => "Agents",
+            PreferencesSection::Workflows => "Workflows",
             PreferencesSection::Phone => "Phone",
             PreferencesSection::PullRequests => "Pull Requests",
             PreferencesSection::Project => "Project",
@@ -97,6 +95,7 @@ impl PreferencesSection {
             PreferencesSection::Keyboard => lucide_icons::Icon::Keyboard,
             PreferencesSection::Terminal => lucide_icons::Icon::SquareTerminal,
             PreferencesSection::Agents => lucide_icons::Icon::Bot,
+            PreferencesSection::Workflows => lucide_icons::Icon::Workflow,
             PreferencesSection::Phone => lucide_icons::Icon::Smartphone,
             PreferencesSection::PullRequests => lucide_icons::Icon::GitPullRequest,
             PreferencesSection::Project => lucide_icons::Icon::FolderGit2,
@@ -184,6 +183,9 @@ pub struct PreferencesAction {
     /// The agents table, the commit message or the review agent was edited
     /// (preferences.md §4 *Agents*).
     pub agents_changed: bool,
+    /// A workflow definition was edited, added, duplicated or deleted
+    /// (workflows.md §2).
+    pub workflows_changed: bool,
     /// The *Start at launch* toggle flipped — the app persists it (remote.md §3.4).
     pub phone_at_launch_changed: bool,
     /// Revoke the paired device at this index of `PhoneView::devices`.
@@ -234,6 +236,7 @@ pub fn preferences_page(
     pr_sources: &PrSourcesView,
     notify_on_agent_completion: &mut bool,
     mut agents: AgentsView<'_>,
+    workflows: &mut Vec<crate::workflow::definition::Workflow>,
     phone: PhoneView<'_>,
     keymap: &mut Keymap,
     keyboard: &mut KeyboardState,
@@ -433,6 +436,10 @@ pub fn preferences_page(
                             );
                         });
                     }
+                    PreferencesSection::Workflows => {
+                        action.workflows_changed =
+                            crate::ui::workflow_editor::workflows_section(ui, palette, workflows);
+                    }
                     PreferencesSection::Phone => phone_section(ui, palette, phone, &mut action),
                     PreferencesSection::PullRequests => {
                         pull_requests_section(
@@ -564,20 +571,10 @@ fn project_title_dropdown(
             palette.text_secondary
         },
     );
-    let mut picked = None;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for (index, name) in projects.iter().enumerate() {
-                if ui.radio(index == selected, name).clicked() && index != selected {
-                    picked = Some(index);
-                }
-            }
-        });
     let info = label.to_owned();
     response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &info));
-    picked
+    let choices: Vec<Choice> = projects.iter().map(|name| Choice::new(name)).collect();
+    PickOne::new(&choices, Some(selected)).show(&response, palette)
 }
 
 /// Page nav row: Lucide icon + label, active `accent.subtle` + `accent`
@@ -629,145 +626,28 @@ fn nav_row(
 
 /// Segmented Auto/Light/Dark control (M7-4, design-system §6). Mutates `mode` on
 /// click and returns `true` if the selection changed, so the caller applies and
-/// persists the palette immediately (components re-read the tokens). The group
-/// carries a single border with thin inner separators; the selected segment
-/// detaches on top (`theme_segment`). The group is allocated as one block then
-/// laid out left-to-right: `ui.horizontal` would inherit the right-to-left of
-/// `setting_row`'s slot and reverse the order.
+/// persists the palette immediately (components re-read the tokens).
 fn theme_segments(ui: &mut egui::Ui, palette: &Palette, mode: &mut ThemeMode) -> bool {
-    let mut changed = false;
-    let group = egui::vec2(SEGMENT_SIZE.x * MODES.len() as f32, SEGMENT_SIZE.y);
-    let (rect, _) = ui.allocate_exact_size(group, egui::Sense::hover());
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_PILL),
-        palette.bg_surface,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    for index in 1..MODES.len() {
-        ui.painter().vline(
-            rect.left() + SEGMENT_SIZE.x * index as f32,
-            egui::Rangef::new(rect.top() + 1.0, rect.bottom() - 1.0),
-            egui::Stroke::new(1.0_f32, palette.border_subtle),
-        );
-    }
-    let mut segments = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    segments.spacing_mut().item_spacing.x = 0.0;
-    for (index, (candidate, label, icon)) in MODES.iter().enumerate() {
-        let position = SegmentPosition::at(index, MODES.len());
-        if theme_segment(
-            &mut segments,
-            palette,
-            label,
-            *icon,
-            *mode == *candidate,
-            position,
-        )
-        .clicked()
-            && *mode != *candidate
-        {
-            *mode = *candidate;
-            changed = true;
-        }
-    }
-    changed
-}
-
-/// Dropdown button of the setting rows: current value label + chevron, sized to
-/// the text.
-fn dropdown_button(ui: &mut egui::Ui, palette: &Palette, label: &str) -> egui::Response {
-    let font = egui::FontId::proportional(SEGMENT_LABEL_SIZE);
-    let text_width = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), palette.text_primary)
-        .size()
-        .x;
-    let size = egui::vec2(
-        (DROPDOWN_PAD_X + text_width + DROPDOWN_GAP + DROPDOWN_ICON_SIZE + DROPDOWN_PAD_X)
-            .max(DROPDOWN_MIN_WIDTH),
-        SEGMENT_SIZE.y,
-    );
-    let (rect, response, hovered) = clickable(ui, size, true);
-    let fill = if hovered {
-        palette.bg_surface_hover
-    } else {
-        palette.bg_surface
+    let choices = MODES.map(|(_, label, icon)| Choice::new(label).icon(icon));
+    let selected = MODES.iter().position(|(m, _, _)| m == mode).unwrap_or(0);
+    let Some(index) = Segments::new(&choices, selected).show(ui, palette) else {
+        return false;
     };
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(RADIUS_PILL),
-        fill,
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + DROPDOWN_PAD_X, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        palette.text_primary,
-    );
-    paint_icon(
-        ui.painter(),
-        egui::pos2(
-            rect.right() - DROPDOWN_PAD_X - DROPDOWN_ICON_SIZE / 2.0,
-            rect.center().y,
-        ),
-        DROPDOWN_ICON_SIZE,
-        lucide_icons::Icon::ChevronDown,
-        palette.text_secondary,
-    );
-    let label = label.to_owned();
-    response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-    response
+    *mode = MODES[index].0;
+    true
 }
 
-/// Pull-default dropdown (preferences.md §4): button labeled with the current
-/// default + chevron, radio menu of the 4 operations (same domain labels as the
-/// toolbar split-button, M12-6). Mutates `current` on selection and returns
-/// `true` if the default changed — **never executes**.
+/// Pull-default dropdown (preferences.md §4): the 4 operations, same domain
+/// labels as the toolbar split-button (M12-6). Returns `true` if the default
+/// changed — **never executes**.
 fn pull_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut PullDefault) -> bool {
-    let response = dropdown_button(ui, palette, current.menu_label());
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for option in PullDefault::ALL {
-                if ui.radio(*current == option, option.menu_label()).clicked() && *current != option
-                {
-                    *current = option;
-                    changed = true;
-                }
-            }
-        });
-    changed
+    Dropdown::new(&PullDefault::ALL, current, PullDefault::menu_label).show(ui, palette)
 }
 
-/// Editor dropdown (terminal.md §12, preferences.md §4 Terminal): button labeled
-/// with the current IDE + chevron, radio menu of the 3 supported IDEs
-/// (`links::Editor`). Mutates `current` on selection and returns `true` if the IDE
-/// changed — never opens anything.
+/// Editor dropdown (terminal.md §12, preferences.md §4 Terminal): the 3 supported
+/// IDEs (`links::Editor`). Returns `true` if the IDE changed — never opens anything.
 fn editor_dropdown(ui: &mut egui::Ui, palette: &Palette, current: &mut Editor) -> bool {
-    let response = dropdown_button(ui, palette, current.label());
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for option in Editor::ALL {
-                if ui.radio(*current == option, option.label()).clicked() && *current != option {
-                    *current = option;
-                    changed = true;
-                }
-            }
-        });
-    changed
+    Dropdown::new(&Editor::ALL, current, Editor::label).show(ui, palette)
 }
 
 /// Full-width Worktrees-base row (worktrees.md §6): label + description, then a
@@ -969,23 +849,20 @@ const EMPTY_AGENT_LABEL: &str = "Empty agent";
 /// "Add agent" dropdown: a known agent, its three commands pre-filled, or an
 /// empty block.
 fn add_agent_menu(ui: &mut egui::Ui, palette: &Palette) -> Option<Agent> {
-    let response = dropdown_button(ui, palette, ADD_AGENT_LABEL);
-    let mut added = None;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for preset in Preset::ALL {
-                if ui.button(preset.name()).clicked() {
-                    added = Some(preset.agent());
-                }
-            }
-            ui.separator();
-            if ui.button(EMPTY_AGENT_LABEL).clicked() {
-                added = Some(Agent::new("", ""));
-            }
-        });
-    added
+    let response = Trigger::new(ADD_AGENT_LABEL)
+        .icon(Some(lucide_icons::Icon::Plus))
+        .show(ui, palette);
+    let mut choices: Vec<Choice> = Preset::ALL
+        .iter()
+        .map(|preset| Choice::new(preset.name()))
+        .collect();
+    choices.push(Choice::new(EMPTY_AGENT_LABEL));
+    let index = PickOne::new(&choices, None).show(&response, palette)?;
+    Some(
+        Preset::ALL
+            .get(index)
+            .map_or_else(|| Agent::new("", ""), |preset| preset.agent()),
+    )
 }
 
 const TALL_FIELD_PAD_X: i8 = 10;
@@ -1100,25 +977,17 @@ fn agent_dropdown<'a>(
     } else {
         NO_AGENT_LABEL
     };
-    let response = dropdown_button(ui, palette, label);
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            // A menu first sized empty keeps that width: its choices must not wrap into it.
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            if able.is_empty() {
-                ui.label(egui::RichText::new(NO_ABLE_AGENT).color(palette.text_muted));
-            }
-            for name in able {
-                if ui.radio(chosen.as_str() == name, name).clicked() && chosen.as_str() != name {
-                    *chosen = name.to_owned();
-                    changed = true;
-                }
-            }
-        });
-    changed
+    let response = Trigger::new(label).show(ui, palette);
+    let choices: Vec<Choice> = able.iter().map(|name| Choice::new(name)).collect();
+    let selected = able.iter().position(|name| *name == chosen.as_str());
+    let picked = PickOne::new(&choices, selected)
+        .empty_note(NO_ABLE_AGENT)
+        .show(&response, palette);
+    let Some(index) = picked else {
+        return false;
+    };
+    *chosen = able[index].to_owned();
+    true
 }
 
 struct PromptField<'a> {
@@ -2184,22 +2053,15 @@ fn preset_dropdown(
     current_id: &mut String,
 ) -> bool {
     let current = theme::preset(current_id, dark);
-    let response = dropdown_button(ui, palette, current.name);
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .gap(DROPDOWN_POPUP_GAP)
-        .style(theme::menu_style)
-        .show(|ui| {
-            for preset in theme::PRESETS.iter().filter(|p| p.dark == dark) {
-                if ui.radio(preset.id == current.id, preset.name).clicked()
-                    && preset.id != current.id
-                {
-                    *current_id = preset.id.to_owned();
-                    changed = true;
-                }
-            }
-        });
-    changed
+    let response = Trigger::new(current.name).show(ui, palette);
+    let presets: Vec<_> = theme::PRESETS.iter().filter(|p| p.dark == dark).collect();
+    let choices: Vec<Choice> = presets.iter().map(|p| Choice::new(p.name)).collect();
+    let selected = presets.iter().position(|p| p.id == current.id);
+    let Some(index) = PickOne::new(&choices, selected).show(&response, palette) else {
+        return false;
+    };
+    *current_id = presets[index].id.to_owned();
+    true
 }
 
 /// Settings card (design-system §4, preferences.md §3): rounded bordered
@@ -2330,113 +2192,9 @@ pub fn toggle_switch(ui: &mut egui::Ui, palette: &Palette, on: &mut bool) -> boo
     toggled
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SegmentPosition {
-    First,
-    Middle,
-    Last,
-}
-
-impl SegmentPosition {
-    fn at(index: usize, count: usize) -> Self {
-        if index == 0 {
-            SegmentPosition::First
-        } else if index + 1 == count {
-            SegmentPosition::Last
-        } else {
-            SegmentPosition::Middle
-        }
-    }
-
-    fn radius(self) -> egui::CornerRadius {
-        match self {
-            SegmentPosition::First => egui::CornerRadius {
-                nw: RADIUS_PILL,
-                ne: 0,
-                sw: RADIUS_PILL,
-                se: 0,
-            },
-            SegmentPosition::Middle => egui::CornerRadius::ZERO,
-            SegmentPosition::Last => egui::CornerRadius {
-                nw: 0,
-                ne: RADIUS_PILL,
-                sw: 0,
-                se: RADIUS_PILL,
-            },
-        }
-    }
-}
-
-/// Segment of the Theme control: centered icon + label. The selected segment
-/// detaches from the group — fully rounded corners, `accent.subtle` fill,
-/// `accent` border — and covers the adjacent separators; hover fills the inside
-/// without covering the group's border.
-fn theme_segment(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    label: &str,
-    icon: lucide_icons::Icon,
-    selected: bool,
-    position: SegmentPosition,
-) -> egui::Response {
-    let (rect, response, hovered) = clickable(ui, SEGMENT_SIZE, true);
-    if selected {
-        ui.painter().rect(
-            rect,
-            egui::CornerRadius::same(RADIUS_PILL),
-            palette.accent_subtle,
-            egui::Stroke::new(1.0_f32, palette.accent),
-            egui::StrokeKind::Inside,
-        );
-    } else if hovered {
-        ui.painter().rect_filled(
-            rect.shrink(1.0),
-            position.radius(),
-            palette.bg_surface_hover,
-        );
-    }
-    let color = if selected {
-        palette.accent
-    } else {
-        palette.text_secondary
-    };
-    let font = egui::FontId::proportional(SEGMENT_LABEL_SIZE);
-    let text_width = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), color)
-        .size()
-        .x;
-    let left = rect.center().x - (SEGMENT_ICON_SIZE + SEGMENT_ICON_GAP + text_width) / 2.0;
-    paint_icon(
-        ui.painter(),
-        egui::pos2(left + SEGMENT_ICON_SIZE / 2.0, rect.center().y),
-        SEGMENT_ICON_SIZE,
-        icon,
-        color,
-    );
-    ui.painter().text(
-        egui::pos2(left + SEGMENT_ICON_SIZE + SEGMENT_ICON_GAP, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        color,
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
-    });
-    response
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn segment_position_rounds_only_the_outer_corners() {
-        assert_eq!(SegmentPosition::at(0, 3), SegmentPosition::First);
-        assert_eq!(SegmentPosition::at(1, 3), SegmentPosition::Middle);
-        assert_eq!(SegmentPosition::at(2, 3), SegmentPosition::Last);
-    }
 
     #[test]
     fn the_nav_opens_on_appearance_and_lists_the_sections_in_order() {
@@ -2453,6 +2211,7 @@ mod tests {
                 "Keyboard",
                 "Terminal",
                 "Agents",
+                "Workflows",
                 "Phone",
                 "Pull Requests",
                 "Project",

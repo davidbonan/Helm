@@ -24,6 +24,57 @@ changed blocks marked. Counter: **2/2**.
   `DiffReview.worktree`. *Tests*: 5 unit, 3 UI e2e (`ui_diff_view`); headless dark +
   light `verify-artifacts/20261104_123305_98759/`.
 
+## ◐ Milestone — M-Workflows · Chained Claude Code steps
+
+Spec: [`specs/workflows.md`](../workflows.md). Per the user: Claude Code only,
+global definitions edited in Preferences, Prompt + Gate steps, linear, end marker
+`[[STEP_DONE]]`, no permission override, run dies with its tab. Counter: **8/9**.
+
+- ☑ **WF0 — Spike: hooks and injection on real Claude Code.** Claude Code 2.1.317
+  in a PTY: `--settings` hooks + user's hooks both fire; `Stop` carries
+  `last_assistant_message`; `Notification` `permission_prompt`; env reaches hooks;
+  positional prompt survives the trust dialog; paste + `\r` = one message.
+  Spec §5, §9 amended.
+- ☑ **WF1 — Definitions domain.** `workflow::{definition, template}`: `Workflow`,
+  `Input`, `Step`, `Issue` (errors + `/compact`-first warning),
+  `Workflow::render` (inputs + `{branch}` `{worktree}` `{repo}`, marker
+  instruction appended), `Prefs::workflows`. *Tests*: 7 unit + round trip.
+- ☑ **WF2 — Run state machine.** `workflow::run::WorkflowRun` (`start`, `apply` →
+  `Effect`), `RunState`, `RunEvent`; duplicate `Stop` deduped by turn
+  (`prompt_id`). *Tests*: 8 unit.
+- ☑ **WF3 — Hooks + runner.** `workflow::hooks` (settings file on `current_exe`,
+  launch command, hook input parse), `workflow::runner::WorkflowRunner` (start,
+  deliver/apply off the UI thread, paste + `\r`, banners), `helm workflow-event`,
+  `workflow_event` socket op routed before the UI park (`ipc::arm_workflows`);
+  `shell_single_quote` moved to `terminal::pty`. *Tests*: 4 unit + 1 CLI unit +
+  2 business e2e (fake `claude` in a PTY).
+- ☑ **WF4 — Launch.** `Command::LaunchWorkflow` + `Screen::Workflows` (valid
+  workflows only), `ui::workflow_launch_modal` (`LaunchForm`), `app::workflow`
+  (`launch_workflow` → named tab, `claude` via `run_command` + `RUN_ENV`;
+  `reconcile_workflow_runs`: closed tab forgets, exited Claude stops; rekey on
+  rename), windowed runner armed on the socket. *Tests*: 1 unit + 3 UI e2e +
+  3 app. *Verified*: headless `verify-artifacts/20261103_203915_787/`.
+- ☑ **WF5 — Workflow strip.** `ui::workflow_strip` (state, step, gate message,
+  Continue / Next step / Stop / Dismiss) above the run's terminal;
+  `Continue workflow` · `Next workflow step` · `Stop workflow` in `Cmd+P`;
+  `HelmApp::active_pane_key`. *Tests*: 3 UI e2e + 2 app. *Verified*: headless
+  `verify-artifacts/20261103_204544_16282/` (gate → stopped, real Claude, no prompt).
+- ☑ **WF6 — Preferences editor.** `PreferencesSection::Workflows`,
+  `ui::workflow_editor::workflows_section` (folded card per workflow: name,
+  inputs incl. options + default, steps Prompt/Gate, ↑ ↓ Remove, Duplicate,
+  two-click Delete, `Issue::message` under each card), `workflows_changed` →
+  `prefs.workflows`. *Tests*: 4 UI e2e + 1 app. *Verified*: headless
+  `verify-artifacts/20261103_205107_23217/`.
+- ☑ **WF7 — Verification.** Headless: palette + modal
+  `verify-artifacts/20261103_203915_787/`, strip gate → stopped
+  `verify-artifacts/20261103_204544_16282/`, editor
+  `verify-artifacts/20261103_205107_23217/`. Live chain with **no UI thread**: real
+  Claude Code (haiku) → `Stop` hook → `helm workflow-event` → socket → runner →
+  paste, 3 steps with a gate, Done in 7.5 s, `{repo}` rendered (`verify-artifacts/wf7_live_20261103_205227/`).
+- ☐ **WF8 — Manual check in the real window.** Not done (no screen access here):
+  helm hidden/minimized during a step, untrusted folder dialog, *Needs you* and
+  *Workflow finished* banners from the `.app`.
+
 ---
 
 ## ☑ Milestone — M-AgentLinks · Cmd+click links in agent output

@@ -154,6 +154,7 @@ fn page_harness_full(
                 commit_message: &mut commit_message.borrow_mut(),
                 review: &mut review.borrow_mut(),
             },
+            &mut Vec::new(),
             PhoneView {
                 start_at_launch: &mut false,
                 devices: &[],
@@ -1014,6 +1015,7 @@ fn project_harness(
                     commit_message: &mut CommitMessageSettings::default(),
                     review: &mut ReviewSettings::default(),
                 },
+                &mut Vec::new(),
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1137,6 +1139,7 @@ fn pr_harness(github: SourceStatus, bitbucket: SourceStatus) -> (Harness<'static
                     commit_message: &mut CommitMessageSettings::default(),
                     review: &mut ReviewSettings::default(),
                 },
+                &mut Vec::new(),
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1616,6 +1619,7 @@ fn updates_section_harness(bundled: bool) -> Harness<'static> {
                     commit_message: &mut CommitMessageSettings::default(),
                     review: &mut ReviewSettings::default(),
                 },
+                &mut Vec::new(),
                 PhoneView {
                     start_at_launch: &mut false,
                     devices: &[],
@@ -1697,6 +1701,7 @@ fn phone_harness(devices: &[&str]) -> (Harness<'static>, Rc<RefCell<PhoneProbe>>
                     commit_message: &mut CommitMessageSettings::default(),
                     review: &mut ReviewSettings::default(),
                 },
+                &mut Vec::new(),
                 PhoneView {
                     start_at_launch: &mut start_at_launch,
                     devices: &devices,

@@ -236,6 +236,7 @@ impl HelmApp {
                 commit_message: &mut self.commit_message,
                 review: &mut self.review_agent,
             },
+            &mut self.workflow_definitions,
             PhoneView {
                 start_at_launch: &mut self.phone_access_at_launch,
                 devices: &device_rows,
@@ -296,6 +297,10 @@ impl HelmApp {
                 review,
                 ..prefs
             });
+        }
+        if action.workflows_changed {
+            let workflows = self.workflow_definitions.clone();
+            self.persist(move |prefs| Prefs { workflows, ..prefs });
         }
         if action.phone_at_launch_changed {
             let phone_access_at_launch = self.phone_access_at_launch;
@@ -1156,6 +1161,12 @@ impl HelmApp {
                 // command and live status are computed here, before the `caches.panes`
                 // borrows below take over `self`.
                 let run_key = pane_key.0.clone();
+                let workflow_strip_view = super::workflow::workflow_strip_view(
+                    &self.workflow_tabs,
+                    &self.workflows,
+                    &pane_key,
+                );
+                let mut workflow_strip_action = None;
                 let run_root = active_project_root.clone().unwrap_or_else(|| cwd.clone());
                 let run_command_resolved =
                     HelmApp::resolved_run_command(&self.prefs, &run_root, &cwd);
@@ -1545,7 +1556,7 @@ impl HelmApp {
                             );
                             match central_mode {
                                 CentralMode::Terminal => {
-                                    tab_bar(
+                                    let bar = tab_bar(
                                         ui,
                                         &palette,
                                         &tab_titles,
@@ -1554,6 +1565,21 @@ impl HelmApp {
                                         keymap,
                                         &mut tab_action,
                                     );
+                                    if let Some(view) = &workflow_strip_view {
+                                        let row = egui::Rect::from_x_y_ranges(
+                                            ui.max_rect().x_range(),
+                                            bar.y_range(),
+                                        );
+                                        let mut slot = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(row).layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                            ),
+                                        );
+                                        workflow_strip_action =
+                                            crate::ui::workflow_strip::workflow_strip(
+                                                &mut slot, &palette, view,
+                                            );
+                                    }
                                     central_area = ui.available_rect_before_wrap();
                                     let panes = panes_all.entry(pane_key.clone()).or_default();
                                     let mut pane_link = None;
@@ -2238,6 +2264,9 @@ impl HelmApp {
                 // rename the targeted tab before the reindexing.
                 if let Some((tab, name)) = tab_action.rename {
                     self.workspace.rename_tab(tab, &name);
+                }
+                if let Some(action) = workflow_strip_action {
+                    self.apply_workflow_strip(&pane_key, action);
                 }
                 if let Some(tab) = tab_action.close {
                     self.close_active_tab(tab);
@@ -2927,6 +2956,20 @@ impl HelmApp {
             return;
         }
 
+        if let Some(Modal::LaunchWorkflow(form)) = self.modal.as_mut() {
+            let action =
+                crate::ui::workflow_launch_modal::workflow_launch_modal(ui, &palette, form);
+            if action.launch {
+                if let Some(Modal::LaunchWorkflow(form)) = self.modal.take() {
+                    self.launch_workflow(&form.workflow, &form.values, ctx);
+                }
+                ctx.request_repaint();
+            } else if action.dismiss {
+                self.modal = None;
+            }
+            return;
+        }
+
         // Feedback (specs/feedback.md): Submit opens the GitHub "new issue" form
         // pre-filled in the browser (synchronous, instant) and closes the modal.
         if let Some(Modal::Feedback(page)) = self.modal.as_mut() {
@@ -3017,6 +3060,7 @@ impl HelmApp {
                 | Modal::Feedback(_)
                 | Modal::CommandPalette(_)
                 | Modal::PhoneAccess
+                | Modal::LaunchWorkflow(_)
                 | Modal::WhatsNew => {
                     unreachable!("handled above")
                 }
@@ -3157,6 +3201,7 @@ impl HelmApp {
                         | Modal::Feedback(_)
                         | Modal::CommandPalette(_)
                         | Modal::PhoneAccess
+                        | Modal::LaunchWorkflow(_)
                         | Modal::WhatsNew,
                     )
                     | None => {}

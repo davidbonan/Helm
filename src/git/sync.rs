@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::cli::{self, CliError, CliOutput};
 use crate::git::rebase::{self, RebaseAction, RebaseStep};
+use crate::terminal::pty::shell_single_quote;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullMode {
@@ -441,13 +442,6 @@ fn build_todo(steps: &[RebaseStep], dir: &Path) -> std::io::Result<String> {
         let _ = writeln!(todo, "{line}");
     }
     Ok(todo)
-}
-
-/// `'…'` with embedded single quotes escaped (`'\''`): the value crosses one
-/// shell evaluation (`GIT_SEQUENCE_EDITOR` and the todo's `exec` lines run via
-/// `sh -c`) — a `TMPDIR` with spaces or quotes must not split the command.
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Aborts the operation in progress (banner button, git.md §10): the abort
@@ -1044,13 +1038,6 @@ mod tests {
             std::fs::read_to_string(message_path).unwrap(),
             "new subject\n\nbody with 'quotes'"
         );
-    }
-
-    #[test]
-    fn shell_single_quote_survives_embedded_quotes_and_spaces() {
-        assert_eq!(shell_single_quote("/tmp/plain"), "'/tmp/plain'");
-        assert_eq!(shell_single_quote("/tmp/with space"), "'/tmp/with space'");
-        assert_eq!(shell_single_quote("/tmp/o'brien"), r"'/tmp/o'\''brien'");
     }
 
     #[test]

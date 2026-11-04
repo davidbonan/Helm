@@ -8,9 +8,11 @@
 
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::workflow::hooks::{self, HookKind};
 
 /// Scheme registered by the bundle's `CFBundleURLTypes` (scripts/bundle.sh).
 const URL_SCHEME: &str = "helm";
@@ -67,6 +69,8 @@ pub enum Args {
     Run(RunArgs),
     /// `helm init <agent>`: install helm's instructions for a coding agent (§10).
     Init(InitTarget),
+    /// `helm workflow-event <hook>`: a workflow run's Claude hook (workflows.md §6).
+    WorkflowEvent(HookKind),
     Help,
     Version,
     /// Misuse: the message to print on stderr.
@@ -109,6 +113,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Args {
     }
     if first.as_deref() == Some("init") {
         return parse_init(&args[1..]);
+    }
+    if first.as_deref() == Some(hooks::SUBCOMMAND) {
+        return parse_workflow_event(&args[1..]);
     }
     match (args.len(), first.as_deref()) {
         (0, _) => Args::Gui { open_url: None },
@@ -197,6 +204,20 @@ fn parse_init(rest: &[OsString]) -> Args {
     }
 }
 
+fn parse_workflow_event(rest: &[OsString]) -> Args {
+    let words: Vec<String> = rest
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    match words.as_slice() {
+        [hook] => match HookKind::from_arg(hook) {
+            Some(kind) => Args::WorkflowEvent(kind),
+            None => Args::Usage(format!("unknown workflow hook “{hook}”")),
+        },
+        _ => Args::Usage("workflow-event: expected stop, notification or session-start".to_owned()),
+    }
+}
+
 /// Runs everything but `Args::Gui` and returns the process exit code.
 pub fn execute(args: Args) -> i32 {
     match args {
@@ -222,7 +243,22 @@ pub fn execute(args: Args) -> i32 {
         },
         Args::Run(run) => execute_run(run),
         Args::Init(InitTarget::Claude) => execute_init_claude(),
+        Args::WorkflowEvent(kind) => execute_workflow_event(kind),
     }
+}
+
+/// Always `0`, and never blocks on a missing helm: a hook must not fail or stall
+/// Claude's turn.
+fn execute_workflow_event(kind: HookKind) -> i32 {
+    let Ok(run) = std::env::var(hooks::RUN_ENV) else {
+        return 0;
+    };
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    if let Some(event) = hooks::parse_hook_input(kind, &input) {
+        let _ = crate::ipc::request(&crate::ipc::Request::WorkflowEvent { run, event });
+    }
+    0
 }
 
 /// Instructions file helm owns inside the Claude config dir — its own file, so a
@@ -369,6 +405,10 @@ fn execute_run(args: RunArgs) -> i32 {
         }
         Ok(crate::ipc::Response::Error { message }) => {
             eprintln!("helm: {message}");
+            1
+        }
+        Ok(crate::ipc::Response::Accepted) => {
+            eprintln!("helm: unexpected answer from helm");
             1
         }
         Err(crate::ipc::ClientError::NotRunning) => {
@@ -872,6 +912,24 @@ mod tests {
         assert!(matches!(args(&["init"]), Args::Usage(_)));
         assert!(matches!(args(&["init", "codex"]), Args::Usage(_)));
         assert!(matches!(args(&["init", "claude", "x"]), Args::Usage(_)));
+    }
+
+    #[test]
+    fn workflow_event_takes_one_known_hook() {
+        assert_eq!(
+            args(&["workflow-event", "stop"]),
+            Args::WorkflowEvent(HookKind::Stop)
+        );
+        assert_eq!(
+            args(&["workflow-event", "notification"]),
+            Args::WorkflowEvent(HookKind::Notification)
+        );
+        assert_eq!(
+            args(&["workflow-event", "session-start"]),
+            Args::WorkflowEvent(HookKind::SessionStart)
+        );
+        assert!(matches!(args(&["workflow-event"]), Args::Usage(_)));
+        assert!(matches!(args(&["workflow-event", "start"]), Args::Usage(_)));
     }
 
     #[test]

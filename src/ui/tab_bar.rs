@@ -79,7 +79,7 @@ pub fn tab_bar(
     rename: &mut Option<TabRename>,
     keymap: &Keymap,
     out: &mut TabBarAction,
-) {
+) -> egui::Rect {
     // Tab close/reindex: an edit state pointing past the list is abandoned.
     if rename.as_ref().is_some_and(|r| r.index >= titles.len()) {
         *rename = None;
@@ -173,7 +173,9 @@ pub fn tab_bar(
                 );
             }
         },
-    );
+    )
+    .response
+    .rect
 }
 
 /// Thin vertical separator drawn between chips and before the `+` (design mock).

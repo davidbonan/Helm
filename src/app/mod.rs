@@ -64,6 +64,7 @@ use crate::ui::terminal_view::{
     cell_metrics, phone_sized_banner, terminal_tree, terminal_view, terminal_view_readonly,
 };
 use crate::ui::toast::{toast_overlay, ToastAction, Toasts};
+use crate::ui::workflow_launch_modal::LaunchForm;
 use crate::ui::{central_empty_state, central_switch, root_layout, TITLEBAR_HEIGHT};
 use crate::update::{self, UpdateOutcome, UpdateRunner};
 use crate::workspace::{GroupSync, Repo, TabId, Workspace};
@@ -173,6 +174,7 @@ mod command_palette;
 mod phone_access;
 mod render;
 mod site_icons;
+mod workflow;
 
 pub mod url_scheme;
 
@@ -456,6 +458,8 @@ enum Modal {
     /// Pairing QR code of phone access (specs/remote.md §2); the server it shows
     /// lives in `HelmApp::phone`.
     PhoneAccess,
+    /// Inputs of a workflow about to launch on the active worktree (workflows.md §3).
+    LaunchWorkflow(LaunchForm),
 }
 
 impl Modal {
@@ -472,7 +476,8 @@ impl Modal {
             | Modal::ResetHard { .. }
             | Modal::AbortOp
             | Modal::ForcePush { .. }
-            | Modal::DiscardHunk { .. } => true,
+            | Modal::DiscardHunk { .. }
+            | Modal::LaunchWorkflow(_) => true,
             Modal::DeleteWorktree(_)
             | Modal::RenameWorktree(_)
             | Modal::CreateWorktree(_)
@@ -645,6 +650,13 @@ pub struct HelmApp {
     phone_access_at_launch: bool,
     /// Agents helm can start (preferences.md §4), edited in Preferences.
     agents: Vec<Agent>,
+    /// Workflow definitions edited in Preferences (workflows.md §2); persisted into
+    /// `prefs.workflows`, which the palette reads.
+    workflow_definitions: Vec<crate::workflow::definition::Workflow>,
+    /// Live workflow runs (workflows.md §6), shared with the control-socket thread.
+    workflows: crate::workflow::runner::WorkflowRunner,
+    /// The run each workflow tab carries, and the pane Claude runs in.
+    workflow_tabs: HashMap<PaneKey, workflow::WorkflowTab>,
     /// Branch editor (M12-6): opened by the toolbar button, rendered by `graph_view`
     /// on the HEAD row; stays open while waiting for the worker, which writes the
     /// inline error into it or closes it on success.
@@ -873,6 +885,7 @@ impl HelmApp {
             notify_on_agent_completion: prefs.notify_on_agent_completion,
             phone_access_at_launch: prefs.phone_access_at_launch,
             agents: prefs.agents,
+            workflow_definitions: prefs.workflows.clone(),
             branch_editor: BranchEditor::default(),
             graph_search: GraphSearch::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
@@ -908,6 +921,8 @@ impl HelmApp {
             keymap: snapshot.keymap(),
             prefs: snapshot,
             prefs_dirty_at: None,
+            workflows: workflow::default_runner(),
+            workflow_tabs: HashMap::new(),
             update_runner: None,
             group_refresh: None,
             titlebar_fullscreen: None,
@@ -1180,6 +1195,12 @@ impl HelmApp {
         }
     }
 
+    /// The active worktree's active tab.
+    pub(super) fn active_pane_key(&self) -> Option<PaneKey> {
+        let (index, tab) = self.workspace.active().zip(self.workspace.active_tab())?;
+        self.caches.pane_key(&self.workspace, index, tab)
+    }
+
     /// Seeing a pane acknowledges its green — but only on the terminal view: the
     /// dashboard lists completions, so reading it must not auto-ack them.
     fn focused_pane_uids(&self, ctx: &egui::Context) -> HashSet<PaneUid> {
@@ -1192,10 +1213,7 @@ impl HelmApp {
         if !on_terminal_view {
             return HashSet::new();
         }
-        self.workspace
-            .active()
-            .zip(self.workspace.active_tab())
-            .and_then(|(index, tab)| self.caches.pane_key(&self.workspace, index, tab))
+        self.active_pane_key()
             .and_then(|key| self.caches.panes.get(&key))
             .into_iter()
             .flat_map(|panes| panes.values())
@@ -1818,6 +1836,7 @@ impl HelmApp {
             Request::Stop { .. } => action.stop = true,
             Request::Relaunch { .. } => action.relaunch = true,
             Request::List | Request::Logs { .. } => unreachable!("handled above"),
+            Request::WorkflowEvent { .. } => unreachable!("routed off the UI thread"),
         }
         if (action.run || action.relaunch) && target.launch_command.trim().is_empty() {
             return Response::Error {
@@ -3470,6 +3489,13 @@ impl HelmApp {
     /// key: the caches (panes, git, agent state) plus the app-side maps.
     fn rekey_repo(&mut self, from: &RepoKey, to: &RepoKey) {
         self.caches.rekey(from, to);
+        self.workflow_tabs = std::mem::take(&mut self.workflow_tabs)
+            .into_iter()
+            .map(|((repo, tab), run)| {
+                let repo = if &repo == from { to.clone() } else { repo };
+                ((repo, tab), run)
+            })
+            .collect();
         if let Some(collapsed) = self.run_collapsed.remove(from) {
             self.run_collapsed.insert(to.clone(), collapsed);
         }
@@ -4445,6 +4471,7 @@ impl eframe::App for HelmApp {
             let response = self.handle_ipc(request, &ctx);
             let _ = reply.send(response);
         }
+        self.reconcile_workflow_runs();
 
         // Sync triggers on focus regain (M11-6) and on a periodic tick while focused
         // (worktrees.md §4): active even with the Preferences page open — the app keeps
@@ -4887,6 +4914,8 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             app.phone_devices = crate::remote::devices::PairedDevices::load();
             app.browser_library = crate::browser::library::LibraryStore::load();
             app.site_icons = site_icons::SiteIcons::load(&cc.egui_ctx);
+            app.workflows = workflow::windowed_runner(&cc.egui_ctx);
+            crate::ipc::arm_workflows(&app.workflows);
             app.run_group_sync(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

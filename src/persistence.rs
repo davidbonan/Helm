@@ -14,6 +14,7 @@ use crate::pull_requests::model::InboxHidden;
 use crate::terminal::links::Editor;
 use crate::theme::ThemeMode;
 use crate::ui::file_list::FileViewMode;
+use crate::workflow::definition::Workflow;
 use crate::workspace_launcher::WorkspaceOpener;
 
 const PREFS_FILE: &str = "prefs.toml";
@@ -179,6 +180,9 @@ pub struct Prefs {
     /// Agents helm can start (preferences.md §4). Absent ⇒ the defaults;
     /// present, even empty ⇒ verbatim.
     pub agents: Vec<Agent>,
+    /// Workflows launched from `Cmd+P` (workflows.md §2); global, array-of-tables.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<Workflow>,
     pub projects: Vec<Project>,
     /// Per-project settings (worktrees.md §6); array-of-tables like `projects`,
     /// so it stays after every scalar field.
@@ -220,6 +224,7 @@ impl Default for Prefs {
             review: ReviewSettings::default(),
             files_sidebars: BTreeMap::new(),
             agents: Agent::defaults(),
+            workflows: Vec::new(),
             projects: Vec::new(),
             project_settings: Vec::new(),
         }
@@ -630,6 +635,7 @@ pub fn support_file(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::command_palette::Command;
+    use crate::workflow::definition::{Input, InputKind, Step, StepKind};
 
     fn project(root: &str, worktrees: &[&str]) -> Project {
         Project {
@@ -767,6 +773,45 @@ mod tests {
             agents: vec![Agent {
                 headless_command: "cc -p \"$HELM_PROMPT\"".to_owned(),
                 ..Agent::from_legacy("Opus", "claude --model opus")
+            }],
+            workflows: vec![Workflow {
+                name: "Ticket".to_owned(),
+                inputs: vec![
+                    Input {
+                        key: "ticket".to_owned(),
+                        label: "Ticket".to_owned(),
+                        default: String::new(),
+                        kind: InputKind::Text,
+                    },
+                    Input {
+                        key: "context".to_owned(),
+                        label: "Context".to_owned(),
+                        default: "none".to_owned(),
+                        kind: InputKind::LongText,
+                    },
+                    Input {
+                        key: "depth".to_owned(),
+                        label: "Depth".to_owned(),
+                        default: String::new(),
+                        kind: InputKind::Select {
+                            options: vec!["light".to_owned(), "deep".to_owned()],
+                        },
+                    },
+                ],
+                steps: vec![
+                    Step {
+                        title: "Dev".to_owned(),
+                        kind: StepKind::Prompt {
+                            text: "Implement {ticket}.\n{context}\n".to_owned(),
+                        },
+                    },
+                    Step {
+                        title: "Read".to_owned(),
+                        kind: StepKind::Gate {
+                            message: "Check it".to_owned(),
+                        },
+                    },
+                ],
             }],
             projects: vec![
                 project("/Users/dev/alpha", &["/Users/dev/alpha.worktrees/feat"]),

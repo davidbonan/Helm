@@ -2971,6 +2971,7 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
         },
         review: ReviewSettings::default(),
         agents: Vec::new(),
+        workflows: Vec::new(),
         bitbucket_email: String::new(),
         pr_detail_width: 460.0,
         pr_rail_collapsed: false,
@@ -5513,4 +5514,352 @@ mod browser_sidebar {
         let after = browser_pip(&harness).frame.unwrap();
         assert_eq!((after.x, after.y), (before.x - 100.0, before.y - 50.0));
     }
+}
+
+fn ticket_workflow() -> crate::workflow::definition::Workflow {
+    use crate::workflow::definition::{Input, InputKind, Step, StepKind, Workflow};
+    Workflow {
+        name: "Ticket".to_owned(),
+        inputs: vec![Input {
+            key: "ticket".to_owned(),
+            label: "Ticket number".to_owned(),
+            default: String::new(),
+            kind: InputKind::Text,
+        }],
+        steps: vec![Step {
+            title: "Dev".to_owned(),
+            kind: StepKind::Prompt {
+                text: "Fix {ticket} on {repo}".to_owned(),
+            },
+        }],
+    }
+}
+
+/// One real worktree `api`, workflows `Ticket` (launchable) and `Broken` (no step),
+/// and a runner whose `claude` is `script`, logging its argv to `argv.log`.
+fn app_with_workflows(tmp: &Path, script: &str) -> HelmApp {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = tmp.join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut ws = Workspace::new();
+    ws.add(Repo::new(repo));
+    let mut app = HelmApp::with_workspace(ws);
+    let broken = crate::workflow::definition::Workflow {
+        name: "Broken".to_owned(),
+        ..Default::default()
+    };
+    app.prefs.workflows = vec![ticket_workflow(), broken];
+    let claude = tmp.join("claude");
+    let log = tmp.join("argv.log");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n{script}\n",
+        log.display()
+    );
+    std::fs::write(&claude, body).unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.workflows = crate::workflow::runner::WorkflowRunner::new(
+        crate::workflow::runner::RunnerConfig {
+            dir: tmp.join("settings"),
+            helm_exe: PathBuf::from("/Apps/helm"),
+            claude: claude.display().to_string(),
+        },
+        || {},
+    );
+    app
+}
+
+fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+fn the_palette_offers_only_launchable_workflows() {
+    use crate::command_palette::Screen;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = palette_harness(app_with_workflows(tmp.path(), "exec cat"), Screen::Commands);
+    harness.run();
+    harness.get_by_label("Launch workflow").click();
+    harness.run();
+    harness.get_by_label("Ticket");
+    assert!(
+        harness.query_by_label("Broken").is_none(),
+        "an invalid workflow waits in Preferences"
+    );
+
+    let mut harness = palette_harness(app_with(&["a"]), Screen::Commands);
+    harness.run();
+    assert!(
+        harness.query_by_label("Launch workflow").is_none(),
+        "no workflow, no command"
+    );
+}
+
+#[test]
+fn launching_opens_a_named_tab_running_claude_on_the_rendered_first_step() {
+    use crate::command_palette::Screen;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = palette_harness(
+        app_with_workflows(tmp.path(), "exec cat"),
+        Screen::Workflows,
+    );
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(matches!(
+        harness.state().modal,
+        Some(Modal::LaunchWorkflow(_))
+    ));
+    harness.run();
+    harness
+        .get_by(|n| format!("{:?}", n.role()) == "TextInput")
+        .type_text("BAPS-1");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let app = harness.state();
+    assert!(app.modal.is_none());
+    assert_eq!(
+        app.workspace.tab_titles(),
+        Some(vec!["Tab 1".to_owned(), "Ticket".to_owned()])
+    );
+    assert_eq!(app.workflow_tabs.len(), 1);
+    let log = tmp.path().join("argv.log");
+    assert!(eventually(|| std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("Fix BAPS-1 on api")));
+}
+
+/// The full page over a live `cat` pane, with `workflow`'s inputs modal open.
+fn launch_modal_page(
+    tmp: &Path,
+    workflow: crate::workflow::definition::Workflow,
+) -> egui_kittest::Harness<'static, HelmApp> {
+    let mut app = app_with_workflows(tmp, "exec cat");
+    let key = key_of(&app.workspace, 0, 0);
+    let pane = Pane::from_command(portable_pty::CommandBuilder::new("cat"), 24, 80, || {}).unwrap();
+    let mut panes = Panes::new();
+    panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
+    app.caches.panes.insert(key, panes);
+    app.modal = Some(Modal::LaunchWorkflow(LaunchForm::new(workflow)));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_page(ui, theme::Palette::dark(), TermPalette::dark(), &ctx, false);
+                app.render_modals(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run();
+    harness.run();
+    harness
+}
+
+fn type_into_focus(harness: &mut egui_kittest::Harness<'_, HelmApp>, text: &str) {
+    harness.event(egui::Event::Text(text.to_owned()));
+    harness.run();
+}
+
+/// `step`, not `run`: once launched, the strip's pinwheel repaints for ever.
+fn press(harness: &mut egui_kittest::Harness<'_, HelmApp>, key: egui::Key) {
+    harness.key_press(key);
+    harness.step();
+    harness.step();
+}
+
+fn launched_with(tmp: &Path, prompt: &str) -> bool {
+    let log = tmp.join("argv.log");
+    eventually(|| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(prompt)
+    })
+}
+
+#[test]
+fn the_launch_modal_completes_from_the_keyboard_over_a_live_terminal() {
+    use crate::workflow::definition::{Input, InputKind, Step, StepKind, Workflow};
+    let tmp = tempfile::tempdir().unwrap();
+    let input = |key: &str, kind| Input {
+        key: key.to_owned(),
+        label: key.to_owned(),
+        default: String::new(),
+        kind,
+    };
+    let workflow = Workflow {
+        name: "Ship".to_owned(),
+        inputs: vec![
+            input("ticket", InputKind::Text),
+            input("note", InputKind::Text),
+            input(
+                "env",
+                InputKind::Select {
+                    options: vec!["dev".to_owned(), "prod".to_owned()],
+                },
+            ),
+        ],
+        steps: vec![Step {
+            title: "Dev".to_owned(),
+            kind: StepKind::Prompt {
+                text: "{ticket} {note} {env}".to_owned(),
+            },
+        }],
+    };
+    let mut harness = launch_modal_page(tmp.path(), workflow);
+    type_into_focus(&mut harness, "BAPS-1");
+    press(&mut harness, egui::Key::Enter);
+    type_into_focus(&mut harness, "urgent");
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::ArrowDown);
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Tab);
+    press(&mut harness, egui::Key::Enter);
+
+    assert!(harness.state().modal.is_none(), "launched");
+    assert!(launched_with(tmp.path(), "BAPS-1 urgent prod"));
+}
+
+#[test]
+fn a_field_letting_go_of_the_focus_leaves_the_terminal_behind_the_modal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut harness = launch_modal_page(tmp.path(), ticket_workflow());
+    press(&mut harness, egui::Key::Enter);
+    press(&mut harness, egui::Key::Tab);
+    type_into_focus(&mut harness, "BAPS-1");
+    press(&mut harness, egui::Key::Enter);
+
+    assert!(harness.state().modal.is_none(), "launched");
+    assert!(launched_with(tmp.path(), "Fix BAPS-1 on api"));
+}
+
+#[test]
+fn an_exited_claude_stops_its_run_and_closing_the_tab_forgets_it() {
+    use crate::workflow::run::RunState;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = app_with_workflows(tmp.path(), "exit 0");
+    let ctx = egui::Context::default();
+    let values = std::collections::BTreeMap::from([("ticket".to_owned(), "BAPS-1".to_owned())]);
+    app.launch_workflow(&ticket_workflow(), &values, &ctx);
+    let run = app.workflow_tabs.values().next().unwrap().run.clone();
+
+    assert!(eventually(|| {
+        app.reconcile_workflow_runs();
+        app.workflows.snapshot(&run).unwrap().state() == RunState::Stopped
+    }));
+    assert!(app.close_active_tab(1));
+    app.reconcile_workflow_runs();
+    assert!(app.workflow_tabs.is_empty());
+    assert!(app.workflows.snapshot(&run).is_none());
+}
+
+/// A launched `Ticket` run (one prompt step) on `api`, its id returned.
+fn launched_ticket(tmp: &Path) -> (HelmApp, String) {
+    let mut app = app_with_workflows(tmp, "exec cat");
+    let values = std::collections::BTreeMap::from([("ticket".to_owned(), "BAPS-1".to_owned())]);
+    app.launch_workflow(&ticket_workflow(), &values, &egui::Context::default());
+    let run = app.workflow_tabs.values().next().unwrap().run.clone();
+    (app, run)
+}
+
+#[test]
+fn the_palette_offers_the_workflow_command_the_run_state_allows() {
+    use crate::command_palette::Screen;
+    use crate::workflow::hooks::Hook;
+    use crate::workflow::run::RunState;
+    use egui_kittest::kittest::Queryable;
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, run) = launched_ticket(tmp.path());
+    let mut harness = palette_harness(app, Screen::Commands);
+    let offered = |harness: &egui_kittest::Harness<'static, HelmApp>| {
+        ["Continue workflow", "Next workflow step", "Stop workflow"]
+            .into_iter()
+            .filter(|label| harness.query_by_label(label).is_some())
+            .collect::<Vec<_>>()
+    };
+    harness.run();
+    assert_eq!(offered(&harness), vec!["Stop workflow"]);
+
+    let unmarked = Hook::Stop {
+        turn: "t1".to_owned(),
+        last_message: Some("Which ticket?".to_owned()),
+    };
+    harness.state().workflows.deliver(&run, unmarked);
+    harness.run();
+    assert_eq!(
+        offered(&harness),
+        vec!["Next workflow step", "Stop workflow"]
+    );
+
+    harness.get_by_label("Next workflow step").click();
+    harness.run();
+    let app = harness.state();
+    assert_eq!(
+        app.workflows.snapshot(&run).unwrap().state(),
+        RunState::Done
+    );
+}
+
+#[test]
+fn dismissing_a_finished_run_drops_its_strip_but_keeps_the_tab() {
+    use crate::ui::workflow_strip::StripAction;
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut app, run) = launched_ticket(tmp.path());
+    let key = app.active_pane_key().unwrap();
+    app.apply_workflow_strip(&key, StripAction::Stop);
+    assert!(
+        super::workflow::workflow_strip_view(&app.workflow_tabs, &app.workflows, &key).is_some()
+    );
+
+    app.apply_workflow_strip(&key, StripAction::Dismiss);
+    assert!(
+        super::workflow::workflow_strip_view(&app.workflow_tabs, &app.workflows, &key).is_none()
+    );
+    assert!(app.workflows.snapshot(&run).is_none());
+    assert!(
+        app.caches.panes.contains_key(&key),
+        "Claude stays open in its tab"
+    );
+}
+
+#[test]
+fn a_workflow_made_in_preferences_lands_in_the_prefs_the_palette_reads() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with(&["a"]);
+    app.preferences_section = PreferencesSection::Workflows;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut HelmApp| {
+                let ctx = ui.ctx().clone();
+                app.render_preferences(ui, theme::Palette::dark(), &ctx);
+            },
+            app,
+        );
+    harness.run_steps(2);
+    harness
+        .get_by_label(crate::ui::workflow_editor::NEW_WORKFLOW_LABEL)
+        .click();
+    harness.run_steps(2);
+
+    let names: Vec<&str> = harness
+        .state()
+        .prefs
+        .workflows
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert_eq!(names, ["New workflow"]);
 }

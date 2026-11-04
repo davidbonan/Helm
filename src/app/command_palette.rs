@@ -12,6 +12,9 @@ use crate::git::stash::StashEntry;
 use crate::ui::command_palette::{command_palette_modal, Leading, PaletteRow, PaletteView};
 use crate::ui::graph_view::StashTarget;
 use crate::ui::run_panel::{RunPanelAction, RunStatus};
+use crate::ui::workflow_strip::StripAction;
+use crate::workflow::definition::Workflow;
+use crate::workflow::run::RunState;
 
 const STOP_SERVER_LABEL: &str = "Stop server";
 const DROP_STASH_LABEL: &str = "Drop stash";
@@ -26,6 +29,7 @@ enum PaletteItem {
     Opener(WorkspaceOpener),
     PullRequest(usize),
     Agent(usize),
+    Workflow(usize),
 }
 
 impl HelmApp {
@@ -97,6 +101,7 @@ impl HelmApp {
             Screen::Editors => self.opener_entries(),
             Screen::PullRequests => self.pull_request_entries(),
             Screen::Agents => self.agent_entries(),
+            Screen::Workflows => self.workflow_entries(),
         };
         Some(entries)
     }
@@ -182,6 +187,17 @@ impl HelmApp {
             }
             Command::PullRequests => self.pr_cache.loaded && !self.workspace.is_empty(),
             Command::Agents => !self.caches.agents.is_empty(),
+            Command::LaunchWorkflow => {
+                active.is_some() && self.prefs.workflows.iter().any(Workflow::is_launchable)
+            }
+            Command::ContinueWorkflow => self.active_workflow_state() == Some(RunState::Gate),
+            Command::NextWorkflowStep => matches!(
+                self.active_workflow_state(),
+                Some(RunState::AwaitingReply | RunState::NeedsYou)
+            ),
+            Command::StopWorkflow => self
+                .active_workflow_state()
+                .is_some_and(|state| !matches!(state, RunState::Done | RunState::Stopped)),
         }
     }
 
@@ -382,6 +398,24 @@ impl HelmApp {
             .collect()
     }
 
+    /// Only the workflows that can launch (workflows.md §2); an invalid one waits in
+    /// Preferences.
+    fn workflow_entries(&self) -> Vec<(PaletteItem, PaletteRow)> {
+        self.prefs
+            .workflows
+            .iter()
+            .enumerate()
+            .filter(|(_, workflow)| workflow.is_launchable())
+            .map(|(index, workflow)| {
+                let steps = workflow.steps.len();
+                let mut row = PaletteRow::command(Icon::Workflow, &workflow.name, false);
+                row.detail = Some(format!("{steps} step{}", if steps == 1 { "" } else { "s" }));
+                row.enter_label = "Launch";
+                (PaletteItem::Workflow(index), row)
+            })
+            .collect()
+    }
+
     fn activate_palette_item(
         &mut self,
         item: PaletteItem,
@@ -417,6 +451,7 @@ impl HelmApp {
                 self.open_pr_review(index, ctx);
             }
             PaletteItem::Agent(index) => self.focus_agent(index, ctx),
+            PaletteItem::Workflow(index) => self.open_workflow_launch(index, ctx),
         }
         ctx.request_repaint();
     }
@@ -508,6 +543,9 @@ impl HelmApp {
             }
             Command::WhatsNew => self.modal = Some(Modal::WhatsNew),
             Command::OpenOnPhone => self.open_on_phone(ctx, now),
+            Command::ContinueWorkflow => self.apply_active_workflow(StripAction::Continue),
+            Command::NextWorkflowStep => self.apply_active_workflow(StripAction::NextStep),
+            Command::StopWorkflow => self.apply_active_workflow(StripAction::Stop),
             Command::StopPhoneAccess => self.stop_phone_access(),
             Command::SwitchTo
             | Command::RunningServers
@@ -515,7 +553,8 @@ impl HelmApp {
             | Command::CheckoutBranch
             | Command::OpenInEditor
             | Command::PullRequests
-            | Command::Agents => {}
+            | Command::Agents
+            | Command::LaunchWorkflow => {}
         }
     }
 
@@ -605,6 +644,10 @@ fn command_icon(command: Command) -> Icon {
         Command::CopyPath => Icon::Copy,
         Command::PullRequests => Icon::GitPullRequest,
         Command::Agents => Icon::Bot,
+        Command::LaunchWorkflow => Icon::Workflow,
+        Command::ContinueWorkflow => Icon::Play,
+        Command::NextWorkflowStep => Icon::SkipForward,
+        Command::StopWorkflow => Icon::Square,
         Command::OpenOnPhone => Icon::QrCode,
         Command::StopPhoneAccess => Icon::PhoneOff,
         Command::ToggleTheme => Icon::SunMoon,

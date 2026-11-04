@@ -43,6 +43,13 @@ pub fn run_command(program: impl Into<OsString>, cwd: &Path, command: &str) -> C
     cmd
 }
 
+/// `'…'` with embedded single quotes escaped (`'\''`): the value crosses one
+/// shell evaluation — a path with spaces or a prompt with quotes must not split
+/// the command.
+pub fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// `tcgetpgrp` on a duplicate of a PTY master fd (agent watcher thread).
 pub struct PgidProbe {
     fd: OwnedFd,
@@ -186,6 +193,13 @@ impl Drop for Pty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_single_quote_survives_embedded_quotes_and_spaces() {
+        assert_eq!(shell_single_quote("/tmp/plain"), "'/tmp/plain'");
+        assert_eq!(shell_single_quote("/tmp/with space"), "'/tmp/with space'");
+        assert_eq!(shell_single_quote("/tmp/o'brien"), r"'/tmp/o'\''brien'");
+    }
 
     #[test]
     fn shell_program_uses_env_then_falls_back_to_zsh() {

@@ -15,6 +15,7 @@
 | [`worktrees.md`](worktrees.md) | Worktrees grouped in the sidebar: root resolution, discovery/purge, Delete worktree |
 | [`agents.md`](agents.md) | AI agent detection in terminals: sidebar activity badge (states, heuristic, limits) |
 | [`pull-requests.md`](pull-requests.md) | Workspace PR cockpit: sidebar entry below Agents, GitHub (`gh`) + Bitbucket Cloud sources, list/detail/checkout |
+| [`workflows.md`](workflows.md) | Chained Claude Code steps: global definitions edited in Preferences, `Cmd+P` launch + inputs modal, Stop-hook + end-marker completion, workflow strip |
 | [`preferences.md`](preferences.md) | Full-window Preferences page: left nav + settings cards, Appearance/Git sections |
 | [`update.md`](update.md) | Distribution (.app bundle, GitHub releases) + built-in update: check, download, replace, relaunch |
 | [`cli.md`](cli.md) | `helm <path>` and the `helm://` scheme: opening a project/worktree from a terminal or another app, single instance |

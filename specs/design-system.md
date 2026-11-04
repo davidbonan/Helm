@@ -122,8 +122,8 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   **PROJECTS** header carries a **`+` action** aligned right (`text.muted`) that
   triggers **Open Folder** (same action as the shortcut defined in
   [`keybindings.md`](keybindings.md)), preceded by an **eye action** opening a
-  dropdown that lists **every** project (hidden ones included) with a checkbox to
-  **show/hide** it ([`worktrees.md`](worktrees.md) §1).
+  picker (§ Picker, *pick many*) that lists **every** project (hidden ones
+  included), an eye per row to **show/hide** it ([`worktrees.md`](worktrees.md) §1).
 - **Project header** ([`worktrees.md`](worktrees.md) §1) — **non-selectable** row
   above each project's worktrees: the **project name** (`text.secondary`, elided
   `…`) left-aligned at the shared sidebar indent, and a **right-edge cluster** —
@@ -164,6 +164,16 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   `text.secondary` label + `text.muted` chevron. Bare **tag** variant (PR labels,
   conversation **Author/Reviewer** role tags) drops the chevron — stays monochrome so
   the `accent.ai` hue is reserved for AI/agent surfaces.
+- **Picker** (`ui::picker`) — the one selector of the app. **Trigger**: field
+  background, `border.subtle` (hover `border.input`), optional leading icon of the
+  current value, label, up-down chevron; open ⇒ `accent.subtle` + `accent` border.
+  Regular 36pt (setting rows) or compact 28pt (inline forms, modals). **Pick one**:
+  menu rows with optional icon; the current row `accent.subtle` + `accent` medium
+  label; opens focused on it, `↑`/`↓` + `Enter` pick; 8+ choices grow
+  a **filter** field (`Enter` takes the first match). **Pick many**: eye /
+  eye-off per row, off rows `text.muted`, stays open while rows flip.
+  **Segments**: bordered group, the chosen segment detached in `accent`. Right-click
+  context menus and popovers stay outside it.
 - **Detail card** (PR review detail body + conversation comments — pull-requests.md
   §11) — `bg.surface` fill + `border.subtle` 1px + radius ~10pt + ~12–14pt padding,
   raised over the `bg.canvas` detail (distinct from the `bg.canvas` Settings card,

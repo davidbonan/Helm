@@ -250,8 +250,7 @@ fn choosing_squash_from_the_combo_updates_the_plan_live() {
     let mut harness = harness(loaded_page(&["only commit"]), false);
     harness.run();
 
-    // The closed combo exposes its selection as the a11y value, not a label.
-    harness.get_by_value("Pick").click();
+    harness.get_by_label("Pick").click();
     harness.run();
     harness.get_by_label("Squash").click();
     harness.run();

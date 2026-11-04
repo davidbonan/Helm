@@ -5,6 +5,7 @@ use crate::agent_watch::AgentBadge;
 use crate::git::worktree::{path_for_branch, rename_destination, BranchCleanup, WorktreeSource};
 use crate::keybindings::{Action, Keymap};
 use crate::theme::{Palette, SHORTCUT_BADGE_SIZE};
+use crate::ui::picker::{PickMany, Toggle};
 use crate::ui::spinner::{paint_done_dot, paint_pinwheel, Spinner};
 use crate::ui::{arrow_nav_pressed, ArrowNav, MAX_SHORTCUT, SECTION_TOP_MARGIN};
 
@@ -1027,17 +1028,16 @@ fn sidebar_header(
                         "Show or hide projects",
                     )
                 });
-                egui::Popup::menu(&eye)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .style(crate::theme::menu_style)
-                    .show(|ui| {
-                        for project in projects {
-                            let mut visible = !project.hidden;
-                            if ui.checkbox(&mut visible, project.name).changed() {
-                                out.toggle_hidden = Some(project.root);
-                            }
-                        }
-                    });
+                let toggles: Vec<Toggle> = projects
+                    .iter()
+                    .map(|project| Toggle {
+                        label: project.name,
+                        on: !project.hidden,
+                    })
+                    .collect();
+                if let Some(index) = PickMany::new(&toggles).show(&eye, palette) {
+                    out.toggle_hidden = Some(projects[index].root);
+                }
             }
         });
     });

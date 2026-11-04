@@ -19,6 +19,7 @@ pub mod inline_editor;
 pub mod markdown;
 pub mod markdown_preview;
 pub mod phone_access_modal;
+pub mod picker;
 pub mod preferences;
 pub mod pull_requests_view;
 pub mod rebase_view;
@@ -35,6 +36,9 @@ pub mod tab_bar;
 pub mod terminal_view;
 pub mod text_selection;
 pub mod toast;
+pub mod workflow_editor;
+pub mod workflow_launch_modal;
+pub mod workflow_strip;
 
 use std::path::Path;
 

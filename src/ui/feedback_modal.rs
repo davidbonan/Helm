@@ -5,6 +5,7 @@
 
 use crate::feedback::FeedbackKind;
 use crate::theme::Palette;
+use crate::ui::picker::Dropdown;
 
 const MODAL_WIDTH: f32 = 420.0;
 const TITLE_SIZE: f32 = 14.0;
@@ -79,14 +80,10 @@ pub fn feedback_modal(
                         .size(TEXT_SIZE)
                         .color(palette.text_primary),
                 );
-                egui::ComboBox::from_id_salt("feedback_kind")
+                Dropdown::new(&FeedbackKind::ALL, &mut page.kind, FeedbackKind::label)
+                    .compact()
                     .width(KIND_COMBO_W)
-                    .selected_text(page.kind.label())
-                    .show_ui(ui, |ui| {
-                        for kind in FeedbackKind::ALL {
-                            ui.selectable_value(&mut page.kind, kind, kind.label());
-                        }
-                    });
+                    .show(ui, palette);
             });
             ui.add_space(10.0);
 
