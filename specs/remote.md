@@ -89,8 +89,9 @@ phone was paired on, only *Open on phone* binds.
   **5 min**; minted each time the pairing modal opens or the shown one is spent.
 - **Pairing URL** (QR): `http://<ip>:<port>/pair?t=<code>`. A valid code becomes a
   **paired device** and its cookie `helm_session=<device token>; HttpOnly;
-  SameSite=Strict; Path=/; Max-Age=2592000`, then a `303` to `/` — the code leaves
-  the address bar and the history.
+  SameSite=Lax; Path=/; Max-Age=2592000`, then a `303` to `/` — the code leaves
+  the address bar and the history. **Lax**, not Strict: Safari withholds a Strict
+  cookie from a tab it restores on relaunch, and its reload too.
 - **Device token**: 256 random bits, hex. helm stores only its **SHA-256**, in
   `phone_devices.toml` (support directory, beside `prefs.toml`) with the device's
   name (from its `User-Agent`: *iPhone*, *iPad*, *Android phone*, else *Browser*),

@@ -330,7 +330,7 @@ fn pairing_spends_the_code_for_a_lasting_session_cookie() {
         "the code leaves the address bar"
     );
     assert!(response.contains("Set-Cookie: helm_session="));
-    assert!(response.contains("HttpOnly; SameSite=Strict; Path=/; Max-Age="));
+    assert!(response.contains("HttpOnly; SameSite=Lax; Path=/; Max-Age="));
     assert!(
         replayed.starts_with("HTTP/1.1 401"),
         "the code is single use"

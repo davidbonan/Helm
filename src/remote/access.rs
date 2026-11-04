@@ -107,7 +107,7 @@ impl Access {
 /// `Set-Cookie` value carrying a device's session token.
 pub fn session_cookie(token: &Token) -> String {
     format!(
-        "{SESSION_COOKIE}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}",
+        "{SESSION_COOKIE}={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}",
         token.as_str()
     )
 }
@@ -212,7 +212,7 @@ mod tests {
     fn the_session_cookie_outlives_the_browser_session() {
         let cookie = session_cookie(&Token::mint());
 
-        assert!(cookie.contains("HttpOnly; SameSite=Strict; Path=/"));
+        assert!(cookie.contains("HttpOnly; SameSite=Lax; Path=/"));
         assert!(cookie.ends_with(&format!("Max-Age={COOKIE_MAX_AGE_SECS}")));
     }
 
