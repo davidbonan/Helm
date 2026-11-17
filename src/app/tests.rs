@@ -5437,6 +5437,35 @@ mod browser_sidebar {
         );
     }
 
+    #[test]
+    fn the_whole_gap_left_of_the_browser_grabs_its_resize() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(app_in_repo(dir.path()));
+        open_browser(&mut harness);
+        let panel_id = egui::Id::new(crate::ui::BROWSER_SIDEBAR_ID);
+        let panel = |harness: &egui_kittest::Harness<'_, HelmApp>| {
+            egui::containers::panel::PanelState::load(&harness.ctx, panel_id)
+                .unwrap()
+                .rect
+        };
+        let before = panel(&harness);
+        let grab = egui::pos2(before.left() - 6.0, before.center().y);
+        let to = grab - egui::vec2(40.0, 0.0);
+        harness.hover_at(grab);
+        harness.drag_at(grab);
+        harness.run();
+        harness.hover_at(to);
+        harness.run();
+        harness.drop_at(to);
+        harness.run();
+        let edge = panel(&harness).left();
+        assert!(
+            (edge - to.x).abs() < 1.0,
+            "edge at {edge}, pointer at {}",
+            to.x
+        );
+    }
+
     // run_ok: the dev server's PTY output keeps requesting repaints on slow runners.
     fn float_browser(harness: &mut egui_kittest::Harness<'static, HelmApp>) {
         harness.get_by_label("More").click();

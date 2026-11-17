@@ -64,7 +64,7 @@ use crate::workspace_launcher::WorkspaceOpener;
 const LEFT_SIDEBAR_ID: &str = "repos";
 const LEFT_SIDEBAR_FOOTER_ID: &str = "repos_footer";
 const RIGHT_SIDEBAR_ID: &str = "git";
-const BROWSER_SIDEBAR_ID: &str = "browser";
+pub(crate) const BROWSER_SIDEBAR_ID: &str = "browser";
 const BROWSER_SIDEBAR_MIN_WIDTH: f32 = 320.0;
 const FILES_SIDEBAR_ID: &str = "files";
 const FILES_SIDEBAR_MIN_WIDTH: f32 = 200.0;
@@ -1084,6 +1084,9 @@ pub fn root_layout(
 
     let room_after_browser = SIDEBAR_CENTRAL_RESERVE + files_min;
     let browser_max = (ui.available_width() - room_after_browser).max(BROWSER_SIDEBAR_MIN_WIDTH);
+    // The native page swallows the inner half of the grab zone: the outer half spans the whole gap.
+    let grab_radius = ui.style().interaction.resize_grab_radius_side;
+    ui.style_mut().interaction.resize_grab_radius_side = f32::from(BLOCK_GAP);
     egui::Panel::right(BROWSER_SIDEBAR_ID)
         .resizable(true)
         .default_size(browser_sidebar_width)
@@ -1095,6 +1098,7 @@ pub fn root_layout(
             ui.set_min_width(ui.available_width());
             sidebar_block(ui, palette, egui::Margin::ZERO, browser_panel);
         });
+    ui.style_mut().interaction.resize_grab_radius_side = grab_radius;
 
     let files_max = (ui.available_width() - SIDEBAR_CENTRAL_RESERVE).max(FILES_SIDEBAR_MIN_WIDTH);
     egui::Panel::right(FILES_SIDEBAR_ID)
