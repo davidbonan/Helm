@@ -9,3 +9,7 @@
 tests/headless_verify_scratch_*.rs
 # Dépôt(s) git de test générés par scripts/seed-test-repo.sh, jamais versionnés.
 /.repositories
+# Promo skills (promo-video, promo-tweet), their output and API keys — local only, never versioned.
+/.claude/skills/promo-*/
+/promo/
+/.env
