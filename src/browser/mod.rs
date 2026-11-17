@@ -4,6 +4,7 @@ pub mod favicons;
 pub mod fold;
 pub mod freeze;
 pub mod import;
+pub mod keyboard;
 pub mod library;
 pub mod page_view;
 pub mod pip;

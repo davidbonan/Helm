@@ -156,8 +156,10 @@ terminals, to preview the worktree's dev server next to them.
 
 - While the page has focus, a key with `Cmd` goes to **Helm** (tabs, palette,
   sidebars, Run…) — except the text-editing chords, which stay the page's:
-  `Cmd+C`, `Cmd+V`, `Cmd+X`, `Cmd+A`, `Cmd+Z`, `Cmd+Shift+Z`, and the app menu's
-  `Cmd+Q`, `Cmd+H`, `Cmd+M`.
+  `Cmd+C`, `Cmd+V`, `Cmd+X`, `Cmd+A`, `Cmd+Z`, `Cmd+Shift+Z`, `Cmd+Delete`,
+  `Cmd+Fn+Delete`, `Cmd+arrows` (`Shift` or not), and the app menu's `Cmd+Q`,
+  `Cmd+H`, `Cmd+M`. An Edit menu (Undo, Redo, Cut, Copy, Paste, Select All)
+  carries the clipboard chords to the page.
 - Every other key goes to the page. The terminal shortcuts (`Cmd+D`,
   `Cmd+Alt+arrows`…) are inert meanwhile: no terminal has focus.
 - While the browser has the keyboard (its page, its URL or find field), **New

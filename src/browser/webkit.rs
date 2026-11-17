@@ -18,8 +18,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSColorSpace, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventType, NSImage, NSResponder, NSView,
+    NSApplication, NSAutoresizingMaskOptions, NSColorSpace, NSDeleteCharacter, NSDeleteFunctionKey,
+    NSDownArrowFunctionKey, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage,
+    NSLeftArrowFunctionKey, NSMenu, NSMenuItem, NSResponder, NSRightArrowFunctionKey,
+    NSUpArrowFunctionKey, NSView,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSDate, NSDictionary, NSError, NSHTTPCookie, NSHTTPCookieDomain,
@@ -34,11 +36,8 @@ use objc2_web_kit::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use super::keyboard::{self, CmdChord, CmdKey};
 use super::{favicons, Cookie, Navigation, PageSnapshot, PageState, ViewRect, WebEngine, WebView};
-
-/// Chords the page keeps while it has focus (browser.md §6); the system ones
-/// (`Cmd+Q`, `Cmd+H`, `Cmd+M`) go on to the app menu.
-const PAGE_CHORDS: [&str; 8] = ["c", "v", "x", "a", "z", "q", "h", "m"];
 
 const ICON_HANDLER: &str = "helmIcon";
 /// Posts the page's URL and its largest raster icon, else `/favicon.ico`, one
@@ -87,6 +86,7 @@ impl WebKitEngine {
         let host: Retained<NSView> =
             unsafe { Retained::retain(appkit.ns_view.cast::<NSView>().as_ptr())? };
         let monitor = route_helm_chords(host.clone())?;
+        add_edit_menu(mtm);
         Some(Self { host, monitor, mtm })
     }
 }
@@ -578,14 +578,65 @@ fn is_helm_chord(event: &NSEvent) -> bool {
     if !flags.contains(NSEventModifierFlags::NSEventModifierFlagCommand) {
         return false;
     }
-    let shift = flags.contains(NSEventModifierFlags::NSEventModifierFlagShift);
-    let key = unsafe { event.charactersIgnoringModifiers() }
-        .map(|chars| chars.to_string().to_lowercase())
-        .unwrap_or_default();
-    if key == "z" && shift {
-        return false;
+    let typed = unsafe { event.charactersIgnoringModifiers() }
+        .and_then(|chars| chars.to_string().chars().next());
+    let Some(typed) = typed else {
+        return true;
+    };
+    !keyboard::page_keeps(CmdChord {
+        key: cmd_key(typed),
+        alt: flags.contains(NSEventModifierFlags::NSEventModifierFlagOption),
+        ctrl: flags.contains(NSEventModifierFlags::NSEventModifierFlagControl),
+    })
+}
+
+fn cmd_key(typed: char) -> CmdKey {
+    let arrows = [
+        NSUpArrowFunctionKey,
+        NSDownArrowFunctionKey,
+        NSLeftArrowFunctionKey,
+        NSRightArrowFunctionKey,
+    ];
+    match u32::from(typed) {
+        code if code == NSDeleteCharacter => CmdKey::Backspace,
+        code if code == NSDeleteFunctionKey => CmdKey::ForwardDelete,
+        code if arrows.contains(&code) => CmdKey::Arrow,
+        _ => CmdKey::Char(typed),
     }
-    !PAGE_CHORDS.contains(&key.as_str())
+}
+
+/// The Edit menu winit leaves out: a page copies and pastes only through its key equivalents.
+fn add_edit_menu(mtm: MainThreadMarker) {
+    let Some(menu_bar) = (unsafe { NSApplication::sharedApplication(mtm).mainMenu() }) else {
+        return;
+    };
+    let title = ns_string!("Edit");
+    if unsafe { menu_bar.itemWithTitle(title) }.is_some() {
+        return;
+    }
+    let menu = unsafe { NSMenu::initWithTitle(mtm.alloc(), title) };
+    let entries = [
+        (ns_string!("Undo"), sel!(undo:), ns_string!("z")),
+        (ns_string!("Redo"), sel!(redo:), ns_string!("Z")),
+        (ns_string!("Cut"), sel!(cut:), ns_string!("x")),
+        (ns_string!("Copy"), sel!(copy:), ns_string!("c")),
+        (ns_string!("Paste"), sel!(paste:), ns_string!("v")),
+        (ns_string!("Select All"), sel!(selectAll:), ns_string!("a")),
+    ];
+    for (item_title, action, key) in entries {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                mtm.alloc(),
+                item_title,
+                Some(action),
+                key,
+            )
+        };
+        menu.addItem(&item);
+    }
+    let edit_item = NSMenuItem::new(mtm);
+    edit_item.setSubmenu(Some(&menu));
+    menu_bar.addItem(&edit_item);
 }
 
 /// Sends helm's `Cmd` chords typed in a page to the egui view instead
