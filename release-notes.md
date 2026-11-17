@@ -1,5 +1,12 @@
 # Release notes
 
+## 3.10.0
+
+- Browser: copy, cut, paste, select all and undo (`⌘C` `⌘X` `⌘V` `⌘A` `⌘Z`)
+  now work in web pages, and `⌘⌫`, `⌘←` / `⌘→` delete and move by line. The
+  menu bar gains an Edit menu.
+- Browser sidebar: easier to resize — the whole gap along its left edge grabs it.
+
 ## 3.9.1
 
 - **Workflows**: chain Claude Code steps into a reusable
@@ -61,11 +68,3 @@
 - Browser tabs can be reordered: drag a tab along the row to move it.
 - `âR` right after clicking a page now reloads it, instead of restarting the
   dev server.
-
-## 3.7.1
-
-- **Picture in Picture**: More âº Picture in Picture floats the
-  browser over the window. Drag it anywhere, resize it from any edge; hover
-  it for host, reload and Dock back into the sidebar.
-- The browser sidebar now shows per worktree: toggling it in one worktree
-  leaves the others as they were.
