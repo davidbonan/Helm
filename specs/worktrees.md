@@ -88,7 +88,7 @@ below it.
   stays visible in the git panel indicator, [`git.md`](git.md) §6.)
 - **Icon**: the **main** worktree bears a **folder** icon; a linked worktree
   bears a **worktree** (folder-with-git) icon, centred under the header monogram,
-  lit in the project hue while hovered or active.
+  in the project hue.
 - **Collapse**: every header bears a disclosure **chevron** at its **right edge**
   (in the action cluster, after `+`); clicking the header
   collapses the group, hiding its rows (main + linked). The state is
