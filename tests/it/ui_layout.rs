@@ -37,6 +37,8 @@ fn renders_three_zones() {
                 deleting: false,
                 agent: AgentBadge::None,
                 stats: None,
+                agents: Vec::new(),
+                agents_open: false,
             }),
         ];
         let child_flags = [false];
@@ -137,6 +139,8 @@ fn workspace_launcher_shows_only_installed_openers_and_main_button_tracks_the_la
                 deleting: false,
                 agent: AgentBadge::None,
                 stats: None,
+                agents: Vec::new(),
+                agents_open: false,
             }),
         ];
         let child_flags = [false];
@@ -554,6 +558,8 @@ fn repo_sidebar_lists_repo_names() {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
         SidebarItem::Header(ProjectHeader {
             root: 1,
@@ -574,6 +580,8 @@ fn repo_sidebar_lists_repo_names() {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
     ];
     let child_flags = [false, false];

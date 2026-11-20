@@ -13,7 +13,7 @@ use helm::ui::repo_sidebar::{
     create_worktree_modal, delete_worktree_modal, rename_worktree_modal, repo_sidebar,
     CreateSelection, CreateWorktreeModalAction, CreateWorktreePrompt, CreateWorktreeState,
     DeleteModalAction, DeletePrompt, DoneAgentRow, ProjectHeader, ProjectVisibility,
-    RenameModalAction, RenameWorktreePrompt, RenameWorktreeState, RepoRow, SidebarAction,
+    RenameModalAction, RenameWorktreePrompt, RenameWorktreeState, RepoRow, RowAgent, SidebarAction,
     SidebarItem,
 };
 
@@ -41,6 +41,8 @@ fn two_projects() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
         SidebarItem::Header(ProjectHeader {
             root: 1,
@@ -61,6 +63,8 @@ fn two_projects() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
     ];
     (items, vec![false, false])
@@ -90,6 +94,8 @@ fn grouped_items() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
         SidebarItem::Row(RepoRow {
             index: 1,
@@ -101,6 +107,8 @@ fn grouped_items() -> (Vec<SidebarItem<'static>>, Vec<bool>) {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
     ];
     (items, vec![false, true])
@@ -427,23 +435,21 @@ fn done_agents_listed_under_the_agents_entry_and_clickable() {
     let rows = vec![
         DoneAgentRow {
             index: 3,
-            branch: Some("feat/login".to_owned()),
-            tab: "claude".to_owned(),
+            recap: "Fix login redirect".to_owned(),
         },
         DoneAgentRow {
             index: 7,
-            branch: None,
-            tab: "shell".to_owned(),
+            recap: "Codex".to_owned(),
         },
     ];
     let mut harness = done_agents_harness(rows);
     harness.run();
 
-    // A branch carries `branch · tab`; a detached pane falls back to the tab name.
-    harness.get_by_label("feat/login · claude");
-    harness.get_by_label("shell");
+    // Each row names what its agent did (specs/agents.md §6).
+    harness.get_by_label("Fix login redirect");
+    harness.get_by_label("Codex");
 
-    harness.get_by_label("feat/login · claude").click();
+    harness.get_by_label("Fix login redirect").click();
     harness.run();
     assert_eq!(
         harness.state().focus_agent,
@@ -457,13 +463,11 @@ fn holding_cmd_badges_only_the_first_done_row_with_the_jump_shortcut() {
     let rows = vec![
         DoneAgentRow {
             index: 3,
-            branch: Some("feat/login".to_owned()),
-            tab: "claude".to_owned(),
+            recap: "Fix login redirect".to_owned(),
         },
         DoneAgentRow {
             index: 7,
-            branch: None,
-            tab: "shell".to_owned(),
+            recap: "Codex".to_owned(),
         },
     ];
     let mut harness = done_agents_harness(rows);
@@ -488,9 +492,92 @@ fn no_done_child_rows_when_the_list_is_empty() {
 
     harness.get_by_label("Agents");
     assert!(
-        harness.query_by_label("feat/login · claude").is_none(),
+        harness.query_by_label("Fix login redirect").is_none(),
         "no child rows render when no agent is in the Done state"
     );
+}
+
+/// `grouped_items` with two agents in the linked worktree `feature-x`, its agent list
+/// unfolded or not (specs/agents.md §6). No `Working` agent: its spinner never settles.
+fn agents_harness(agents_open: bool) -> Harness<'static, SidebarAction> {
+    Harness::new_ui_state(
+        move |ui, state| {
+            let palette = palette(Theme::Light);
+            let (mut items, child_flags) = grouped_items();
+            if let SidebarItem::Row(row) = &mut items[2] {
+                row.agent = AgentBadge::Done;
+                row.agents_open = agents_open;
+                row.agents = vec![
+                    RowAgent {
+                        index: 4,
+                        badge: AgentBadge::Idle,
+                        recap: "Fix login redirect",
+                    },
+                    RowAgent {
+                        index: 5,
+                        badge: AgentBadge::Done,
+                        recap: "Codex",
+                    },
+                ];
+            }
+            repo_sidebar(
+                ui,
+                &palette,
+                &items,
+                &child_flags,
+                &[],
+                Some(0),
+                AgentBadge::None,
+                false,
+                &[],
+                0,
+                false,
+                &Keymap::default(),
+                state,
+            );
+        },
+        SidebarAction::default(),
+    )
+}
+
+#[test]
+fn folded_agent_list_shows_only_the_chevron() {
+    let mut harness = agents_harness(false);
+    harness.run();
+
+    assert!(harness
+        .query_by_label("Fix login redirect · agent idle")
+        .is_none());
+    harness.get_by_label("Show agents").click();
+    harness.run();
+    assert_eq!(harness.state().toggle_agents, Some(1));
+    assert_eq!(
+        harness.state().select,
+        None,
+        "the chevron folds the list without selecting the row"
+    );
+}
+
+#[test]
+fn unfolded_agent_list_rows_focus_their_pane() {
+    let mut harness = agents_harness(true);
+    harness.run();
+
+    harness.get_by_label("Hide agents");
+    harness.get_by_label("Codex · agent done");
+    harness
+        .get_by_label("Fix login redirect · agent idle")
+        .click();
+    harness.run();
+    assert_eq!(harness.state().focus_agent, Some(4));
+}
+
+#[test]
+fn rows_without_agents_have_no_chevron() {
+    let mut harness = grouped_harness();
+    harness.run();
+
+    assert!(harness.query_by_label("Show agents").is_none());
 }
 
 /// Press on `from`, drag through the threshold onto `to`, release. Each leg is a
@@ -633,6 +720,8 @@ fn a_linked_worktree_row_stacks_its_folder_name_over_its_branch() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
                 SidebarItem::Row(RepoRow {
                     index: 1,
@@ -644,6 +733,8 @@ fn a_linked_worktree_row_stacks_its_folder_name_over_its_branch() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false, true];
@@ -710,6 +801,8 @@ fn a_collapsed_group_hides_its_rows_and_renumbers_shortcuts() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             // child_flags mirrors every entry, the folded `feature-x` (index 1)
@@ -991,6 +1084,8 @@ fn header_context_menu_offers_reveal_copy_and_remove() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false];
@@ -1119,6 +1214,8 @@ fn a_deleting_row_is_inert_clicks_and_menu_ignored() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
                 SidebarItem::Row(RepoRow {
                     index: 1,
@@ -1130,6 +1227,8 @@ fn a_deleting_row_is_inert_clicks_and_menu_ignored() {
                     deleting: true,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false, true];
@@ -1354,6 +1453,8 @@ fn bare_root_row_is_not_selectable_but_its_children_are() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false, true];
@@ -1418,6 +1519,8 @@ fn agent_badges_expose_their_state_through_the_row_label() {
                         deleting: false,
                         agent,
                         stats: None,
+                        agents: Vec::new(),
+                        agents_open: false,
                     }),
                 ]
             };
@@ -1537,6 +1640,8 @@ fn eye_dropdown_lists_every_project_and_toggles_hidden() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false];
@@ -1611,6 +1716,8 @@ fn header_context_menu_offers_hide_project() {
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false];

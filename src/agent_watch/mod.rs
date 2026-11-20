@@ -149,6 +149,32 @@ pub fn display_name(agent: &str) -> String {
     }
 }
 
+/// What an agent is doing, for its sidebar row (specs/agents.md §6): the pane's OSC
+/// title minus a leading status glyph (`✳ Fix login` → `Fix login`), else the
+/// agent's display name.
+pub fn recap(osc_title: Option<&str>, agent: &str) -> String {
+    let title = osc_title.map(strip_status_glyph).unwrap_or_default();
+    if title.is_empty() {
+        display_name(agent)
+    } else {
+        title.to_owned()
+    }
+}
+
+fn strip_status_glyph(title: &str) -> &str {
+    let title = title.trim();
+    let mut chars = title.chars();
+    let Some(glyph) = chars.next() else {
+        return title;
+    };
+    let rest = chars.as_str();
+    if !glyph.is_alphanumeric() && (rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        rest.trim_start()
+    } else {
+        title
+    }
+}
+
 /// A pane's state machine, ticked at a fixed cadence (1 s). Pure: time and
 /// probes are injected, testable without a PTY or real clock.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -404,6 +430,30 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn recap_drops_claude_status_glyph_from_its_title() {
+        assert_eq!(
+            recap(Some("✳ Fix login redirect"), "claude"),
+            "Fix login redirect"
+        );
+        assert_eq!(
+            recap(Some("⠂ Fix login redirect"), "claude"),
+            "Fix login redirect"
+        );
+    }
+
+    #[test]
+    fn recap_keeps_a_title_without_status_glyph() {
+        assert_eq!(recap(Some("#42 triage"), "codex"), "#42 triage");
+        assert_eq!(recap(Some("Fix login"), "codex"), "Fix login");
+    }
+
+    #[test]
+    fn recap_falls_back_to_agent_name_without_title() {
+        assert_eq!(recap(None, "codex"), "Codex");
+        assert_eq!(recap(Some("  ✳  "), "claude"), "Claude");
     }
 
     #[test]

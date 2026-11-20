@@ -923,6 +923,7 @@ fn agent_entry(
         pane_name: format!("Tab {}", pane + 1),
         pane_id: PaneId(pane),
         agent,
+        recap: format!("Task {}", pane + 1),
         badge,
         last_output_ms: 0,
         done_at_ms: (badge == AgentBadge::Done).then_some(0),
@@ -1428,12 +1429,14 @@ fn restart_gives_each_repo_exactly_one_fresh_tab() {
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
             Project {
                 root: PathBuf::from("/tmp/helm-restart-b"),
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
         ],
         active: Some(PathBuf::from("/tmp/helm-restart-b")),
@@ -2459,12 +2462,14 @@ fn from_prefs_restores_groups_and_activates_the_saved_path() {
                 worktrees: vec![PathBuf::from("/tmp/feat"), PathBuf::from("/tmp/alpha")],
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
             Project {
                 root: PathBuf::from("/tmp/solo"),
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
         ],
         active: Some(PathBuf::from("/tmp/feat")),
@@ -2496,12 +2501,14 @@ fn from_prefs_restores_a_collapsed_group_and_round_trips_the_flag() {
                 worktrees: vec![PathBuf::from("/tmp/feat")],
                 collapsed: true,
                 hidden: false,
+                agents_open: Vec::new(),
             },
             Project {
                 root: PathBuf::from("/tmp/solo"),
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
         ],
         active: Some(PathBuf::from("/tmp/proj")),
@@ -2531,6 +2538,35 @@ fn from_prefs_restores_a_collapsed_group_and_round_trips_the_flag() {
 }
 
 #[test]
+fn from_prefs_restores_unfolded_agent_lists_and_round_trips_them() {
+    let prefs = Prefs {
+        projects: vec![Project {
+            root: PathBuf::from("/tmp/proj"),
+            worktrees: vec![PathBuf::from("/tmp/feat"), PathBuf::from("/tmp/other")],
+            collapsed: false,
+            hidden: false,
+            agents_open: vec![PathBuf::from("/tmp/feat")],
+        }],
+        ..Prefs::default()
+    };
+
+    let mut app = HelmApp::from_prefs(prefs);
+    assert!(!app.workspace.is_agents_open(0));
+    assert!(
+        app.workspace.is_agents_open(1),
+        "the saved unfolded list is restored"
+    );
+    assert!(!app.workspace.is_agents_open(2));
+
+    app.workspace.toggle_agents_open(0);
+    let saved = prefs_from_workspace(Prefs::default(), &app.workspace);
+    assert_eq!(
+        saved.projects[0].agents_open,
+        vec![PathBuf::from("/tmp/proj"), PathBuf::from("/tmp/feat")]
+    );
+}
+
+#[test]
 fn prefs_from_workspace_nests_worktrees_under_their_root() {
     let mut ws = Workspace::new();
     ws.add_group(
@@ -2550,12 +2586,14 @@ fn prefs_from_workspace_nests_worktrees_under_their_root() {
                 worktrees: vec![PathBuf::from("/tmp/feat")],
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
             Project {
                 root: PathBuf::from("/tmp/solo"),
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
         ]
     );
@@ -2587,6 +2625,7 @@ fn persist_is_a_no_op_without_an_injected_prefs_path_and_targets_it_otherwise() 
             worktrees: Vec::new(),
             collapsed: false,
             hidden: false,
+            agents_open: Vec::new(),
         }]
     );
     assert_eq!(saved.active, Some(PathBuf::from("/tmp/a")));
@@ -2933,12 +2972,14 @@ fn from_prefs_restores_repos_active_theme_and_sidebar_state() {
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
             Project {
                 root: PathBuf::from("/tmp/helm-from-prefs-b"),
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             },
         ],
         active: Some(PathBuf::from("/tmp/helm-from-prefs-b")),
@@ -3024,6 +3065,7 @@ fn from_prefs_ignores_unknown_active_path_and_keeps_the_first_repo() {
             worktrees: Vec::new(),
             collapsed: false,
             hidden: false,
+            agents_open: Vec::new(),
         }],
         active: Some(PathBuf::from("/tmp/helm-not-in-the-list")),
         ..Prefs::default()

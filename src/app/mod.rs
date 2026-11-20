@@ -805,6 +805,7 @@ impl HelmApp {
         for project in prefs.projects {
             let collapsed = project.collapsed;
             let hidden = project.hidden;
+            let agents_open = project.agents_open;
             let root = Repo::new(project.root.clone());
             let root_index = if project.worktrees.is_empty() {
                 workspace.add(root)
@@ -815,6 +816,9 @@ impl HelmApp {
                 root_index
             };
             workspace.set_user_hidden(root_index, hidden);
+            for path in &agents_open {
+                workspace.open_agents_at(path);
+            }
         }
         if let Some(active) = prefs.active {
             let index = workspace.repos().position(|r| r.path == active);
@@ -1291,6 +1295,7 @@ impl HelmApp {
                         .unwrap_or_else(|| "Terminal".to_owned()),
                     pane_id: *pane_id,
                     agent,
+                    recap: crate::agent_watch::recap(pane.osc_title().as_deref(), agent),
                     badge,
                     last_output_ms: snapshot.last_spont_output_ms,
                     done_at_ms,

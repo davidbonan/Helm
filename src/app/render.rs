@@ -809,6 +809,11 @@ impl HelmApp {
                             deleting: deleting[i],
                             agent: badges[i],
                             stats: stats[i],
+                            agents: super::git_session::row_agents(
+                                &self.caches.agents,
+                                self.caches.keys.get(i),
+                            ),
+                            agents_open: self.workspace.is_agents_open(i),
                         })
                     });
                 header.into_iter().chain(row)
@@ -960,8 +965,7 @@ impl HelmApp {
             .filter(|(_, e)| e.badge == crate::agent_watch::AgentBadge::Done)
             .map(|(index, e)| crate::ui::repo_sidebar::DoneAgentRow {
                 index,
-                branch: e.branch.clone(),
-                tab: e.pane_name.clone(),
+                recap: e.recap.clone(),
             })
             .collect();
         // Dashboard rows borrow `self.caches.agents` (disjoint from `panes`, mutably
@@ -2873,6 +2877,11 @@ impl HelmApp {
         }
         if let Some(index) = sidebar.toggle_collapse {
             self.workspace.toggle_collapsed(index);
+            let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+            self.persist(move |_| next);
+        }
+        if let Some(index) = sidebar.toggle_agents {
+            self.workspace.toggle_agents_open(index);
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
         }

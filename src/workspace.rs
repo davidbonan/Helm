@@ -57,6 +57,8 @@ struct Entry {
     /// Project hidden from the sidebar by the user (root + its worktrees). Only
     /// meaningful on a root; persisted.
     hidden: bool,
+    /// The row's agent list is unfolded (agents.md §6); persisted.
+    agents_open: bool,
     tabs: Vec<Tab>,
     active_tab: usize,
 }
@@ -98,6 +100,7 @@ impl Workspace {
             parent: None,
             collapsed: false,
             hidden: false,
+            agents_open: false,
             tabs: vec![self.mint_tab()],
             active_tab: 0,
         }
@@ -462,6 +465,24 @@ impl Workspace {
         }
     }
 
+    /// The sidebar row's agent list is unfolded (agents.md §6).
+    pub fn is_agents_open(&self, index: usize) -> bool {
+        self.entries.get(index).is_some_and(|e| e.agents_open)
+    }
+
+    pub fn toggle_agents_open(&mut self, index: usize) {
+        if let Some(e) = self.entries.get_mut(index) {
+            e.agents_open = !e.agents_open;
+        }
+    }
+
+    /// Unfolds the agent list of the entry at `path`, if the workspace holds it.
+    pub fn open_agents_at(&mut self, path: &Path) {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.repo.path == path) {
+            e.agents_open = true;
+        }
+    }
+
     /// Index of the project whose root is at `root`; `None` for a linked worktree's path.
     pub fn project_root_index(&self, root: &Path) -> Option<usize> {
         self.entries
@@ -564,17 +585,27 @@ impl Workspace {
     pub fn to_projects(&self) -> Vec<Project> {
         let mut projects: Vec<Project> = Vec::new();
         for (i, repo) in self.repos().enumerate() {
-            match self
+            let project = match self
                 .parent_root(i)
-                .and_then(|root| projects.iter_mut().find(|p| p.root == root))
+                .and_then(|root| projects.iter().position(|p| p.root == root))
             {
-                Some(project) => project.worktrees.push(repo.path.clone()),
-                None => projects.push(Project {
-                    root: repo.path.clone(),
-                    worktrees: Vec::new(),
-                    collapsed: self.entries[i].collapsed,
-                    hidden: self.entries[i].hidden,
-                }),
+                Some(at) => {
+                    projects[at].worktrees.push(repo.path.clone());
+                    &mut projects[at]
+                }
+                None => {
+                    projects.push(Project {
+                        root: repo.path.clone(),
+                        worktrees: Vec::new(),
+                        collapsed: self.entries[i].collapsed,
+                        hidden: self.entries[i].hidden,
+                        agents_open: Vec::new(),
+                    });
+                    projects.last_mut().expect("just pushed")
+                }
+            };
+            if self.entries[i].agents_open {
+                project.agents_open.push(repo.path.clone());
             }
         }
         projects
@@ -789,12 +820,14 @@ mod tests {
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
                 Project {
                     root: PathBuf::from("/tmp/proj"),
                     worktrees: vec![PathBuf::from("/tmp/wt-b"), PathBuf::from("/tmp/wt-a")],
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
             ]
         );
@@ -959,12 +992,14 @@ mod tests {
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
                 Project {
                     root: PathBuf::from("/tmp/wt"),
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
             ]
         );

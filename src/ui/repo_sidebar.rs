@@ -60,6 +60,18 @@ pub struct RepoRow<'a> {
     /// `⌃⌘N` shortcut can take that column. `Some((0, 0))` (dirty with no countable
     /// lines) falls back to a small dot; `None` is a clean worktree.
     pub stats: Option<(usize, usize)>,
+    /// Agents running in the worktree, in workspace order (specs/agents.md §6): a
+    /// gutter chevron folds/unfolds them as child rows under this one.
+    pub agents: Vec<RowAgent<'a>>,
+    pub agents_open: bool,
+}
+
+/// One agent pane listed under its worktree row (specs/agents.md §6). `index` is its
+/// position in `caches.agents`, consumed by `HelmApp::focus_agent`.
+pub struct RowAgent<'a> {
+    pub index: usize,
+    pub badge: AgentBadge,
+    pub recap: &'a str,
 }
 
 /// An indented child row under the Agents entry: one agent pane currently in the
@@ -67,9 +79,8 @@ pub struct RepoRow<'a> {
 /// consumed by `HelmApp::focus_agent` to jump to that pane.
 pub struct DoneAgentRow {
     pub index: usize,
-    /// Worktree branch (the row's locator), or `None` when detached/unreadable.
-    pub branch: Option<String>,
-    pub tab: String,
+    /// What the agent did (specs/agents.md §6).
+    pub recap: String,
 }
 
 /// One project (group root) in the "Projects" eye dropdown that toggles sidebar
@@ -97,6 +108,9 @@ pub struct SidebarAction {
     pub create_worktree: Option<usize>,
     /// Disclosure chevron clicked on a group root: fold/unfold its worktrees.
     pub toggle_collapse: Option<usize>,
+    /// Gutter chevron clicked on a worktree row: fold/unfold its agent list
+    /// (specs/agents.md §6).
+    pub toggle_agents: Option<usize>,
     /// Show/hide a project: the eye-dropdown checkbox or the header's "Hide
     /// project" menu, carrying the group root's index.
     pub toggle_hidden: Option<usize>,
@@ -279,6 +293,15 @@ const EYE_SIZE: f32 = 14.0;
 /// badge column — mutually exclusive: ⌃⌘N only appears while Cmd is held.
 const AGENT_DOT_RADIUS: f32 = 3.5;
 const AGENT_SPINNER_SIZE: f32 = 11.0;
+/// Agent list under a worktree row (specs/agents.md §6): one compact line per agent.
+const AGENT_ROW_HEIGHT: f32 = 24.0;
+const AGENT_RECAP_SIZE: f32 = 12.5;
+const AGENT_BADGE_W: f32 = 11.0;
+const AGENT_RECAP_GAP: f32 = 9.0;
+/// Fold chevron of the agent list, centred in the guide gutter left of the row icon.
+const AGENT_CHEVRON_SIZE: f32 = 10.0;
+const AGENT_CHEVRON_INSET: f32 = 7.5;
+const AGENT_CHEVRON_HIT: egui::Vec2 = egui::vec2(14.0, 20.0);
 /// Uncommitted indicator at the row's right edge: a fixed-width green/red ratio bar
 /// with a tiny `+N −M` caption beneath it, so an over-long worktree name stays
 /// readable. Shares the ⌃⌘N badge column and yields it while Cmd is held; a dirty
@@ -433,6 +456,13 @@ pub fn repo_sidebar(
                                 )
                             })
                             .inner;
+                        if row.agents_open {
+                            for agent in &row.agents {
+                                ui.push_id(("row_agent", agent.index), |ui| {
+                                    worktree_agent_row(ui, palette, agent, out);
+                                });
+                            }
+                        }
                         if active == Some(row.index) && prev != cur {
                             response.scroll_to_me(Some(egui::Align::Center));
                         }
@@ -879,10 +909,7 @@ fn agent_child_row(
         0.0
     };
     let label_avail = (rect.right() - ROW_PAD_X - badge_w - label_left).max(0.0);
-    let text = match &row.branch {
-        Some(branch) => format!("{branch} · {}", row.tab),
-        None => row.tab.clone(),
-    };
+    let text = row.recap.clone();
     let label = text.clone();
     response.widget_info(move || {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
@@ -1393,14 +1420,18 @@ fn repo_row(
         paint_row_highlight(ui, palette, rect, is_active);
     }
 
-    if response.clicked() && !row.deleting {
-        out.select = Some(row.index);
-    }
-
     // Rows sit a touch further in than the project header (ROW_INDENT) so they read
     // as nested under it. A plain folder marks the main worktree; a git-folder glyph
     // marks a linked worktree (worktrees.md §3).
     let icon_left = rect.left() + ROW_PAD_X + ROW_INDENT;
+    let agents_toggled = !row.deleting
+        && !row.agents.is_empty()
+        && agents_chevron(ui, palette, row, egui::pos2(icon_left, rect.center().y));
+    if agents_toggled {
+        out.toggle_agents = Some(row.index);
+    } else if response.clicked() && !row.deleting {
+        out.select = Some(row.index);
+    }
     let icon_center = egui::pos2(icon_left + ICON_SIZE / 2.0, rect.center().y);
     if row.deleting {
         let spinner_rect =
@@ -1563,6 +1594,97 @@ fn repo_row(
             });
     }
     response
+}
+
+/// Fold chevron of the row's agent list, in the guide gutter just left of the row
+/// icon (`icon_left_center`): it costs the row no width. `true` when clicked.
+fn agents_chevron(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    row: &RepoRow,
+    icon_left_center: egui::Pos2,
+) -> bool {
+    let center = icon_left_center - egui::vec2(AGENT_CHEVRON_INSET, 0.0);
+    let label = if row.agents_open {
+        "Hide agents"
+    } else {
+        "Show agents"
+    };
+    let response = ui
+        .interact(
+            egui::Rect::from_center_size(center, AGENT_CHEVRON_HIT),
+            ui.id().with(("agents_chevron", row.index)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let icon = if row.agents_open {
+        lucide_icons::Icon::ChevronDown
+    } else {
+        lucide_icons::Icon::ChevronRight
+    };
+    let color = if response.hovered() {
+        palette.text_secondary
+    } else {
+        palette.text_muted
+    };
+    crate::ui::paint_icon(ui.painter(), center, AGENT_CHEVRON_SIZE, icon, color);
+    response.clicked()
+}
+
+/// One agent under its worktree row (specs/agents.md §6): state indicator + recap,
+/// aligned on the worktree's label column. Clicking focuses that pane.
+fn worktree_agent_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    agent: &RowAgent,
+    out: &mut SidebarAction,
+) {
+    let width = ui.available_width();
+    let (rect, response, hovered) =
+        crate::ui::clickable(ui, egui::vec2(width, AGENT_ROW_HEIGHT), true);
+    if hovered {
+        paint_row_highlight(ui, palette, rect, false);
+    }
+    let badge_left = rect.left() + ROW_PAD_X + ROW_INDENT + ICON_SIZE + ICON_GAP;
+    paint_agent_dot(
+        ui,
+        palette,
+        egui::pos2(badge_left + AGENT_BADGE_W / 2.0, rect.center().y),
+        agent.badge,
+    );
+    let text_left = badge_left + AGENT_BADGE_W + AGENT_RECAP_GAP;
+    let mut job = egui::text::LayoutJob::single_section(
+        agent.recap.to_owned(),
+        egui::text::TextFormat::simple(
+            egui::FontId::proportional(AGENT_RECAP_SIZE),
+            palette.text_secondary,
+        ),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(
+        (rect.right() - ROW_PAD_X - text_left).max(0.0),
+    );
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        palette.text_secondary,
+    );
+    let label = agent_row_label(agent);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    if response.on_hover_text(agent.recap).clicked() {
+        out.focus_agent = Some(agent.index);
+    }
+}
+
+/// Accessibility label of an agent row: its recap and state (assertable in e2e UI).
+pub fn agent_row_label(agent: &RowAgent) -> String {
+    let state = match agent.badge {
+        AgentBadge::Working => "working",
+        AgentBadge::Done => "done",
+        AgentBadge::Idle | AgentBadge::None => "idle",
+    };
+    format!("{} · agent {state}", agent.recap)
 }
 
 const CREATE_MODAL_WIDTH: f32 = 420.0;
@@ -2111,6 +2233,8 @@ mod tests {
             deleting: false,
             agent: AgentBadge::None,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }
     }
 
