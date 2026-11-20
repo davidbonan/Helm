@@ -8,19 +8,28 @@ below it.
 ## 1. Principle
 
 ```
-   helm                + ▾  ← project header (non-selectable): name (left) · + · chevron (right)
-   🗀 main                   ← main worktree: folder icon, branch label, single line, pinned first
-   ⑃ feature-x              ← linked worktree: worktree icon, folder name (title)
-       feature-x                + branch (caption) on two lines, manual order
-   ⑃ fix-bug
-       fix/bug
-  ──────────────────────── ← 1px border.subtle separator, full sidebar width, between projects
-   other-project        + ▾ ← header always present, even with just a main row
-   🗀 main
+  ╭───────────────────────╮ ← one card per project, in the project's hue
+  │ [HE] helm         + ▾ │ ← project header (non-selectable): monogram · name · + · chevron
+  │  🗀 main               │ ← main worktree: folder icon, branch label, single line, pinned first
+  │  ⑃ feature-x           │ ← linked worktree: worktree icon, folder name (title)
+  │    feature-x           │    + branch (caption) on two lines, manual order
+  │  ⑃ fix-bug             │
+  │    fix/bug             │
+  ╰───────────────────────╯
+  ╭───────────────────────╮
+  │ [OP] other-project + ▾│ ← header always present, even with just a main row
+  │  🗀 main               │
+  ╰───────────────────────╯
 ```
 
-- **The project header is not selectable**: it carries the project identity (the
-  root folder name, left-aligned at the shared sidebar indent) and, clustered at
+- **Each project is a card** holding its header and its rows, apart from the next
+  card by a small gap. The project wears a **hue** derived from its **root folder
+  name** (a stable hash into the lane palette, so it never shifts with the list
+  order), the same one its agents carry in the Agents view ([`agents.md`](agents.md)
+  §5): it tints the header monogram, the worktree row icons and the active row.
+- **The project header is not selectable**: it carries the project identity — a
+  **monogram** (the initials of the name's first two words, else its first two
+  letters) on a tile washed in the project hue, then the root folder name — and, clustered at
   the **right edge**, a **`+`** button (Create worktree, §6) and the **collapse
   chevron**. *Reveal in Finder · Copy path · Hide project · Remove from sidebar*
   (§6) live on the header's **right-click** context menu. An
@@ -41,16 +50,13 @@ below it.
   set of tabs/splits ([`terminal.md`](terminal.md) §1), its own git session
   (status / diff / graph). The **main** worktree is pinned **first** with a
   **folder** icon; linked worktrees follow in manual order with a **worktree**
-  (folder-with-git) icon. Row icons share the **same indent** as the header name
-  and the section labels.
+  (folder-with-git) icon. Row icons are centred under the header monogram.
 - **Row content**: the **main** row is a single line — its **branch** as the
   label (folder name on hover). A **linked worktree** row is **two lines** — the
   **folder name** as the title, the **branch** as a dimmer caption beneath it
   (the branch indicator also stays in the git panel, [`git.md`](git.md) §6).
 - **Agents** running in a worktree are listed under its row, as a fold-out list
   ([`agents.md`](agents.md) §6).
-- A **1px `border.subtle` separator** spanning the **full sidebar width** sits
-  between one project and the next.
 - Projects mix in the import / manual order of the list ([`overview.md`](overview.md) §3.1, §9).
 
 ## 2. Resolution at import (Open Folder)
@@ -81,12 +87,13 @@ below it.
   name as the title, the branch as a dimmer caption beneath. (The branch also
   stays visible in the git panel indicator, [`git.md`](git.md) §6.)
 - **Icon**: the **main** worktree bears a **folder** icon; a linked worktree
-  bears a **worktree** (folder-with-git) icon, at the shared sidebar indent.
+  bears a **worktree** (folder-with-git) icon, centred under the header monogram,
+  in the project hue.
 - **Collapse**: every header bears a disclosure **chevron** at its **right edge**
   (in the action cluster, after `+`); clicking the header
   collapses the group, hiding its rows (main + linked). The state is
   **persisted** (§5).
-- **Separator**: a 1px `border.subtle` line between one project and the next.
+- **Cards**: one per project, a small gap between two (§1).
 
 ## 4. Synchronization (discovery & purge)
 

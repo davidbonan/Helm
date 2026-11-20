@@ -125,31 +125,40 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   picker (§ Picker, *pick many*) that lists **every** project (hidden ones
   included), an eye per row to **show/hide** it ([`worktrees.md`](worktrees.md) §1).
 - **Project header** ([`worktrees.md`](worktrees.md) §1) — **non-selectable** row
-  above each project's worktrees: the **project name** (`text.secondary`, elided
-  `…`) left-aligned at the shared sidebar indent, and a **right-edge cluster** —
+  at the top of each project card: a **monogram** tile (24pt, radius ~7pt, two
+  medium letters ~10pt in the project hue on the hue washed 16% over the card),
+  then the **project name** (medium, title ink, elided `…`), and a **right-edge cluster** —
   a **`+`** create-worktree button and the **collapse chevron** (`text.muted` →
   `text.primary` on hover), plus the **aggregate agent dot** (below) when
   collapsed. *Reveal in Finder · Copy path · Hide project · Remove from sidebar*
   live on the header's **right-click** menu. Clicking the header toggles
   collapse; it never takes the active `accent.subtle` selection (it is not
   selectable).
-- **Project separator** — a 1px `border.subtle` rule between one project block and
-  the next, bleeding into the sidebar's horizontal padding so it spans the panel
-  **edge to edge**.
+- **Project card** — one per project around its header and rows: fill raised
+  halfway from `bg.sidebar` toward `bg.canvas`, 1px border between that fill and
+  `border.subtle`, radius ~12pt, ~4pt inner margin reaching into the sidebar's
+  padding, ~8pt between two cards. The project **hue** is a lane-palette color hashed
+  from the project name.
 - **Repository row** (worktree) — a **folder** icon for the **main** worktree / a
   **worktree** (folder-with-git) icon for a **linked** worktree, at the shared
   sidebar indent. The **main** row is **single line** — the **branch** as the label
   (`text.secondary`, elided `…`), folder name on hover. A **linked worktree** row
   is **two lines** — the **folder name** as the title (`text.secondary`), the
-  **branch** as a dimmer `text.muted` **monospace** caption beneath. The
+  **branch** as a dimmer `text.muted` **monospace** caption beneath. The icon,
+  centred under the monogram, wears the **project hue**. Hover = the card fill
+  nudged 6% toward `text.primary`, radius ~8pt; **active** = the project hue washed
+  16% over the card + `text.primary`. **Uncommitted changes**: a `+N −M` pill
+  (green / red halves) at the right edge, its fill the card tinted by the change —
+  `git.added` for additions only, `git.deleted` for deletions only, `text.muted` for
+  both; a dirty change with no countable lines shows a `git.modified` dot. The
   **shortcut badge** (`⌘1`–`⌘9`, counting rows only — headers skipped) only
   appears while **holding `Cmd`**, aligned right in `text.muted`, as an overlay
   without pushing the layout (see [`keybindings.md`](keybindings.md) §5).
-  `text.muted` icon + explanatory tooltip for a **vanished path**. Active row =
-  `accent.subtle` + `accent` text.
+  `text.muted` icon + explanatory tooltip for a **vanished path**.
 - **Agent activity dot** (repository row + project-header aggregate —
-  [`agents.md`](agents.md)) — at the **right edge of the row**, in the `⌘N` badge
-  column (mutually exclusive: the badge only exists while Cmd is held): `Working`
+  [`agents.md`](agents.md)) — on a repository row, a small badge (r ~2.5pt) on the
+  **bottom-right corner of the row icon**, cut out of the row fill; on the project
+  header, at the right edge of the cluster: `Working`
   = **accent arc spinner** ~11pt `accent`; `Done` = solid dot r 3.5pt `git.added`
   (green, existing token) wrapped in a **fading pulse halo**; `Idle` = **hollow
   ring** r 3.5pt `text.muted`; `None` = nothing. The project **header** carries

@@ -173,7 +173,7 @@ nothing but the wall's **pager** (below), clear of the traffic lights: a
 terminals of the ones picked from it.
 
 The strip is grouped into **one cluster per project**: a **title line** — the project's
-name behind the same hue-tinted folder box the sidebar's project header wears, so the two
+name behind a box tinted in the project's hue — the hue its sidebar card wears — so the two
 read as one project — **over the row of chips** it heads, one per agent running in it.
 Clusters follow workspace order, so a project and its worktrees stay adjacent, and they
 read apart by **proximity**: chips of one project sit tight, projects sit a hairline apart.
@@ -282,13 +282,13 @@ of every tab whose badge is not `None` — listed as **child rows**, one per age
 in workspace order (tab, then pane: stable, so rows never jump on a state change).
 
 **Disclosure.** A worktree row with at least one agent reveals a small **chevron**
-while it is **hovered**, in the tree-guide gutter between the guide's tick and the row
-icon — it costs the row no width; a row without agents has none. Clicking it folds/unfolds the list without
+while it is **hovered**, in the gutter left of the row icon — it costs the row no width; a row without agents has none. Clicking it folds/unfolds the list without
 selecting the row. **Folded by default**; the open state is **per worktree** and
 **persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
-max badge in place of its icon (§1) and its `+N −M` diffstat at the right edge.
+max badge on its icon's corner (§1) and its `+N −M` diffstat at the right edge.
 
-**Agent row.** One line, **24 pt**, aligned on the worktree's label column: the
+**Agent row.** The open list sits in a **tray** under the row (`bg.sidebar` sunk in the
+card, radius ~8pt, starting just left of the label column). One line, **24 pt**, aligned on the worktree's label column: the
 agent's **state indicator** (§1: spinner / green dot / grey ring) then its **recap**,
 truncated, the full text on hover. Nothing else — no agent name, no terminal name, no
 elapsed time: the space is the sidebar's scarcest. Clicking it **focuses** that pane

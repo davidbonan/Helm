@@ -496,12 +496,30 @@ impl Palette {
     /// read as thin lines on the graph, too bright to sit under white text as a disc.
     pub fn avatar_fill(&self, name: &str) -> Color32 {
         const DARKEN: f32 = 0.68;
-        let hash = name.bytes().fold(0usize, |acc, byte| {
-            acc.wrapping_mul(31).wrapping_add(usize::from(byte))
-        });
-        let [r, g, b, _] = self.lane_color(hash).to_array();
+        let [r, g, b, _] = self.lane_color(name_lane(name)).to_array();
         let dim = |c: u8| (f32::from(c) * DARKEN).round() as u8;
         Color32::from_rgb(dim(r), dim(g), dim(b))
+    }
+
+    /// Project card of the workspace sidebar (design-system §4): raised from the
+    /// sidebar toward the canvas, so it lifts in both modes.
+    pub fn card_fill(&self) -> Color32 {
+        blend(self.bg_sidebar, self.bg_canvas, CARD_RAISE)
+    }
+
+    pub fn card_border(&self) -> Color32 {
+        blend(self.card_fill(), self.border_subtle, CARD_BORDER)
+    }
+
+    /// Hovered row inside a project card.
+    pub fn card_hover(&self) -> Color32 {
+        blend(self.card_fill(), self.text_primary, CARD_HOVER)
+    }
+
+    /// `hue` washed over a project card: the project's on its monogram tile and
+    /// active row, a git color on a diffstat pill.
+    pub fn card_tint(&self, hue: Color32) -> Color32 {
+        blend(self.card_fill(), hue, CARD_TINT)
     }
 
     /// Fill of the solid primary button (Commit, Open Folder…): `accent`
@@ -646,6 +664,19 @@ impl FileTypeHues {
 
 /// How far a dark-mode title slides from primary toward secondary ink.
 const TITLE_SOFTEN_DARK: f32 = 0.4;
+
+const CARD_RAISE: f32 = 0.5;
+const CARD_BORDER: f32 = 0.6;
+const CARD_HOVER: f32 = 0.06;
+const CARD_TINT: f32 = 0.16;
+
+/// Lane (`Palette::lane_color`) a name always wears — a project, an author, a site:
+/// hashed from the name alone, so it never shifts with list order.
+pub fn name_lane(name: &str) -> usize {
+    name.bytes().fold(0usize, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(usize::from(byte))
+    })
+}
 
 const PRIMARY_BUTTON_DARKEN_LIGHT: f32 = 0.85;
 const PRIMARY_BUTTON_DARKEN_DARK: f32 = 0.70;

@@ -6,6 +6,20 @@
 
 ---
 
+## ◐ Milestone — M-ProjectCards · Project cards in the sidebar
+
+Spec: [`specs/worktrees.md`](../worktrees.md) §1, §3, [`design-system.md`](../design-system.md) §4,
+[`agents.md`](../agents.md) §6. Per the user: mockup E (one card per project), no worktree
+count, hue derived from the project name, monogram left to the implementation.
+Counter: **1/2**.
+
+- ☑ **PC1 — Cards.** `theme::name_lane` (project, author and site hues share it),
+  `Palette::card_*`, cards + monogram + hue-tinted icons and active row, agent badge on
+  the icon corner, agents tray, diffstat pill in `ui::repo_sidebar`. *Tests*: 1 unit
+  reworked; headless capture (dark + light).
+- ☐ **PC2 — Manual check.** In the real app: cards, hues stable across reorders and
+  launches, drag-and-drop drop line, hover / active fills, tray, Cmd badges.
+
 ## ◐ Milestone — M-AgentList · Agents under each worktree row
 
 Spec: [`specs/agents.md`](../agents.md) §6, [`worktrees.md`](../worktrees.md) §1, §5.

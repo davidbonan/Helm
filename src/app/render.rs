@@ -717,19 +717,17 @@ impl HelmApp {
         let child_flags: Vec<bool> = (0..repo_paths.len())
             .map(|i| self.workspace.parent_root(i).is_some())
             .collect();
-        // Each root project gets a stable color index — its rank among roots, with
-        // worktrees inheriting their root's. Shared with the Agents columns view so a
+        // Each root project wears the hue of its name, worktrees inheriting their
+        // root's (they follow it in entry order). Shared with the Agents view so a
         // project reads with one color across both surfaces.
         let lane_of_repo: Vec<usize> = {
             let mut lane = 0usize;
-            let mut seen_root = false;
-            (0..repo_paths.len())
-                .map(|i| {
+            self.workspace
+                .repos()
+                .enumerate()
+                .map(|(i, r)| {
                     if !child_flags[i] {
-                        if seen_root {
-                            lane += 1;
-                        }
-                        seen_root = true;
+                        lane = crate::theme::name_lane(&r.name);
                     }
                     lane
                 })

@@ -804,7 +804,11 @@ pub(crate) fn paint_badge(painter: &egui::Painter, palette: &Palette, badge: &Ba
         paint_site_icon(painter, palette, badge, icon);
         return;
     }
-    painter.rect_filled(rect, radius, site_hue(palette, badge.site));
+    painter.rect_filled(
+        rect,
+        radius,
+        palette.lane_color(crate::theme::name_lane(badge.site)),
+    );
     let initial = badge
         .name
         .trim_start_matches("www.")
@@ -845,13 +849,6 @@ fn paint_site_icon(
     );
     let glyph = rect.shrink(badge.size * SITE_ICON_INSET);
     painter.image(icon, glyph, uv, egui::Color32::WHITE);
-}
-
-fn site_hue(palette: &Palette, site: &str) -> egui::Color32 {
-    let hash = site.bytes().fold(0usize, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(usize::from(byte))
-    });
-    palette.lane_colors[hash % palette.lane_colors.len()]
 }
 
 /// The title over at most two lines, elided after.

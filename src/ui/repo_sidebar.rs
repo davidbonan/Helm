@@ -250,26 +250,34 @@ const ROW_HEIGHT: f32 = 31.0;
 /// the title, the branch as a caption beneath it — so it stands taller than the
 /// single-line root row.
 const ROW_HEIGHT_TWO_LINE: f32 = 44.0;
-/// Project header band (worktrees.md §1): a touch shorter than a row so the
-/// header reads as a heading, not a selectable line.
-const HEADER_HEIGHT: f32 = 28.0;
-/// Breathing room above every project header but the first, separating one
-/// project block from the previous one (worktrees.md §1).
+const HEADER_HEIGHT: f32 = 32.0;
+/// Space between two project cards (worktrees.md §1).
 const PROJECT_GAP: f32 = 8.0;
-/// Width of the primary bar marking the active row, drawn at the panel's left edge.
+/// Project card (design-system §4): its margin around the header and rows, reaching
+/// into the sidebar padding, and its corners.
+const CARD_PAD: f32 = 4.0;
+const CARD_RADIUS: u8 = 12;
+/// Selection / hover fill of a row inside its card.
+const ROW_RADIUS: u8 = 8;
+/// Width of the primary bar marking the active Helm entry, drawn at the panel's left edge.
 const ROW_ACCENT_BAR: f32 = 2.0;
 const ROW_PAD_X: f32 = 8.0;
-/// Inset for worktree rows so their icon lines up with the project header's name
-/// column — one icon plus its gap past the header icon (worktrees.md §1).
-const ROW_INDENT: f32 = ICON_SIZE + ICON_GAP;
+/// Worktree row icons sit centred under the project monogram.
+const ROW_INDENT: f32 = (MONOGRAM_BOX - ICON_SIZE) / 2.0;
+/// Left edge of a worktree row's label, shared by the agent rows listed under it.
+const LABEL_COL: f32 = ROW_PAD_X + ROW_INDENT + ICON_SIZE + ICON_GAP;
 const CHEVRON_SIZE: f32 = 12.0;
 const ICON_SIZE: f32 = 13.0;
 const ICON_RING_WIDTH: f32 = 1.5;
 const ICON_GAP: f32 = 10.0;
-/// Bordered frame around the project-header icon (worktrees.md §1): a small box
-/// setting the project identity apart from the nested worktree row icons below.
-const HEADER_ICON_BOX: f32 = 22.0;
-const HEADER_ICON_BOX_RADIUS: u8 = 6;
+/// Project monogram (worktrees.md §1): two letters on a tile washed in the project hue.
+const MONOGRAM_BOX: f32 = 24.0;
+const MONOGRAM_RADIUS: u8 = 7;
+const MONOGRAM_SIZE: f32 = 10.0;
+/// Agent state worn on the bottom-right corner of a worktree row icon, cut out of the
+/// row fill.
+const ICON_BADGE_RADIUS: f32 = 2.5;
+const ICON_BADGE_CUTOUT: f32 = 4.5;
 const NAME_SIZE: f32 = 15.0;
 /// Worktree row folder name: a touch smaller than the shared nav-entry size so the
 /// nested worktrees read as lighter than the Agents/Pull Requests/Open Folder rows.
@@ -295,30 +303,29 @@ const EYE_SIZE: f32 = 14.0;
 /// badge column — mutually exclusive: ⌃⌘N only appears while Cmd is held.
 const AGENT_DOT_RADIUS: f32 = 3.5;
 const AGENT_SPINNER_SIZE: f32 = 11.0;
-/// Agent list under a worktree row (specs/agents.md §6): one compact line per agent.
+/// Agent list under a worktree row (specs/agents.md §6): one compact line per agent,
+/// sunk in a tray starting a little left of the row's label column.
 const AGENT_ROW_HEIGHT: f32 = 24.0;
 const AGENT_RECAP_SIZE: f32 = 12.5;
 const AGENT_BADGE_W: f32 = 11.0;
 const AGENT_RECAP_GAP: f32 = 9.0;
-/// Fold chevron of the agent list, centred in the guide gutter left of the row icon.
+const TRAY_INSET: f32 = 8.0;
+const TRAY_PAD: f32 = 3.0;
+const TRAY_RADIUS: u8 = 8;
+const TRAY_ROW_RADIUS: u8 = 6;
+/// Fold chevron of the agent list, in the gutter left of the row icon.
 const AGENT_CHEVRON_SIZE: f32 = 10.0;
 const AGENT_CHEVRON_INSET: f32 = 7.5;
 const AGENT_CHEVRON_HIT: egui::Vec2 = egui::vec2(14.0, 20.0);
-/// Uncommitted indicator at the row's right edge: a fixed-width green/red ratio bar
-/// with a tiny `+N −M` caption beneath it, so an over-long worktree name stays
-/// readable. Shares the ⌃⌘N badge column and yields it while Cmd is held; a dirty
+/// Uncommitted indicator at the row's right edge: a `+N −M` pill tinted by the side
+/// of the change. Shares the ⌃⌘N badge column and yields it while Cmd is held; a dirty
 /// change with no countable lines falls back to a dot.
 const DIRTY_DOT_RADIUS: f32 = 3.0;
-const STAT_BAR_W: f32 = 22.0;
-const STAT_BAR_H: f32 = 3.0;
-/// Min width of each non-zero half of the bar so a lopsided diff still shows both.
-const STAT_BAR_MIN: f32 = 3.0;
-const STAT_BAR_GAP: f32 = 1.5;
-const STAT_BAR_TEXT_GAP: f32 = 2.0;
-/// Very small caption under the bar.
-const STAT_SIZE: f32 = 9.0;
-/// Gap between the `+N` and `−M` halves of the caption.
+const STAT_SIZE: f32 = 10.0;
+/// Gap between the `+N` and `−M` halves of the pill.
 const STAT_GAP: f32 = 4.0;
+const STAT_PILL_PAD: egui::Vec2 = egui::vec2(6.0, 2.0);
+const STAT_PILL_RADIUS: u8 = 5;
 
 #[allow(clippy::too_many_arguments)]
 pub fn repo_sidebar(
@@ -424,22 +431,28 @@ pub fn repo_sidebar(
             // The `⌘1..9` numbering counts rows only — project headers are skipped
             // (worktrees.md §7).
             let mut visible_pos = 0usize;
-            let mut seen_header = false;
+            let mut card: Option<Card> = None;
+            let mut lane = 0usize;
+            let mut bottom = 0.0_f32;
+            ui.add_space(CARD_PAD);
             for item in items.iter() {
                 // A stable id_salt per item: without it, the ⌃⌘N badge's `new_child`
                 // (created only while Cmd is held) shifts the auto-ids of the following
                 // items, which egui flags in debug with a red box + a relayout pass.
                 let (anchor, response) = match item {
                     SidebarItem::Header(header) => {
-                        if seen_header {
-                            ui.add_space(PROJECT_GAP);
+                        if let Some(card) = card.take() {
+                            card.close(ui, palette, bottom);
+                            ui.add_space(PROJECT_GAP + 2.0 * CARD_PAD);
                         }
-                        seen_header = true;
+                        lane = header.lane;
+                        card = Some(Card::open(ui));
                         let response = ui
                             .push_id(("header", header.root), |ui| {
                                 project_header(ui, palette, header, out)
                             })
                             .inner;
+                        bottom = response.rect.bottom();
                         (header.root, response)
                     }
                     SidebarItem::Row(row) => {
@@ -451,6 +464,7 @@ pub fn repo_sidebar(
                                     ui,
                                     palette,
                                     row,
+                                    lane,
                                     active == Some(row.index),
                                     cmd_digits,
                                     shortcut,
@@ -458,12 +472,9 @@ pub fn repo_sidebar(
                                 )
                             })
                             .inner;
-                        if row.agents_open {
-                            for agent in &row.agents {
-                                ui.push_id(("row_agent", agent.index), |ui| {
-                                    worktree_agent_row(ui, palette, agent, out);
-                                });
-                            }
+                        bottom = response.rect.bottom();
+                        if row.agents_open && !row.agents.is_empty() {
+                            bottom = agent_tray(ui, palette, &row.agents, out);
                         }
                         if active == Some(row.index) && prev != cur {
                             response.scroll_to_me(Some(egui::Align::Center));
@@ -480,7 +491,10 @@ pub fn repo_sidebar(
                 }
                 placed.push((anchor, response.rect));
             }
-            draw_project_guides(ui, palette, items, &placed);
+            if let Some(card) = card {
+                card.close(ui, palette, bottom);
+            }
+            ui.add_space(CARD_PAD);
             if let Some((from, anchor, after)) = released {
                 if crate::workspace::resolve_reorder(child_flags, from, anchor, after).is_some() {
                     out.reorder = Some(Reorder {
@@ -500,55 +514,70 @@ pub fn repo_sidebar(
     ui.data_mut(|d| d.insert_temp(scroll_id, cur));
 }
 
-/// Light tree guide tying each project header to its nested worktree rows: a faint
-/// vertical spine in the indent gutter, dropping from below the header icon with a
-/// short square tick branching to each row, ending at the last row — so the
-/// grouping reads as a tree rather than a bare indent. Drawn in one pass after the
-/// loop from the laid-out rects (`placed` mirrors `items`).
-fn draw_project_guides(
-    ui: &egui::Ui,
-    palette: &Palette,
-    items: &[SidebarItem],
-    placed: &[(usize, egui::Rect)],
-) {
-    // Gap left between the guide tick and the row icon it points at: a short tick
-    // branching off the spine, stopping well before the icon.
-    const GUIDE_ICON_GAP: f32 = 15.0;
-    // Breathing room below the header icon box before the spine starts.
-    const GUIDE_SPINE_GAP: f32 = 9.0;
-    let stroke = egui::Stroke::new(1.0_f32, palette.border_subtle);
-    let painter = ui.painter();
-    let mut i = 0;
-    while i < items.len() {
-        if !matches!(items[i], SidebarItem::Header(_)) {
-            i += 1;
-            continue;
+/// A project card being laid out (worktrees.md §1): its fill slot is reserved under
+/// the header before the rows exist, and painted once the block's bottom is known.
+struct Card {
+    slot: egui::layers::ShapeIdx,
+    top: f32,
+}
+
+impl Card {
+    fn open(ui: &egui::Ui) -> Self {
+        Self {
+            slot: ui.painter().add(egui::Shape::Noop),
+            top: ui.cursor().top() - CARD_PAD,
         }
-        let header_rect = placed[i].1;
-        // Spine sits at the header icon's left edge so it reads as a bracket beside
-        // the icon column, not a line through it; the tick stops short of the row
-        // icon so the guide stays clearly detached from it.
-        let guide_x = header_rect.left() + ROW_PAD_X;
-        let tick_x = header_rect.left() + ROW_PAD_X + ROW_INDENT - GUIDE_ICON_GAP;
-        let mut centers = Vec::new();
-        let mut j = i + 1;
-        while j < items.len() && matches!(items[j], SidebarItem::Row(_)) {
-            centers.push(placed[j].1.center().y);
-            j += 1;
-        }
-        if let Some(&last) = centers.last() {
-            let spine_top = header_rect.center().y + HEADER_ICON_BOX / 2.0 + GUIDE_SPINE_GAP;
-            painter.vline(guide_x, spine_top..=last, stroke);
-            for &cy in &centers {
-                painter.hline(guide_x..=tick_x, cy, stroke);
-            }
-        }
-        i = j;
+    }
+
+    fn close(self, ui: &egui::Ui, palette: &Palette, bottom: f32) {
+        let content = ui.max_rect();
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(content.left() - CARD_PAD, self.top),
+            egui::pos2(content.right() + CARD_PAD, bottom + CARD_PAD),
+        );
+        bleed_painter(ui, CARD_PAD).set(
+            self.slot,
+            egui::epaint::RectShape::new(
+                rect,
+                CARD_RADIUS,
+                palette.card_fill(),
+                egui::Stroke::new(1.0_f32, palette.card_border()),
+                egui::StrokeKind::Inside,
+            ),
+        );
     }
 }
 
-/// Non-selectable project header (worktrees.md §1): the project name at the shared
-/// sidebar indent, then a right-edge cluster — a `+` create-worktree button and the
+/// The ui's painter widened past its sides by `bleed`, for fills reaching into the
+/// sidebar padding — kept tight vertically so a scrolled-out shape stays clipped.
+fn bleed_painter(ui: &egui::Ui, bleed: f32) -> egui::Painter {
+    let clip = ui.clip_rect();
+    ui.painter().with_clip_rect(egui::Rect::from_min_max(
+        egui::pos2(clip.left() - bleed, clip.top()),
+        egui::pos2(clip.right() + bleed, clip.bottom()),
+    ))
+}
+
+/// Two letters standing for a project: the initials of its first two words
+/// (`monorepo-baps-tmp` → `MB`), else the first two letters of its only word.
+fn monogram(name: &str) -> String {
+    let mut words = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty());
+    let letters: String = match (words.next(), words.next()) {
+        (Some(first), Some(second)) => first
+            .chars()
+            .take(1)
+            .chain(second.chars().take(1))
+            .collect(),
+        (Some(only), None) => only.chars().take(2).collect(),
+        _ => name.chars().take(2).collect(),
+    };
+    letters.to_uppercase()
+}
+
+/// Non-selectable project header (worktrees.md §1): the project monogram and name,
+/// then a right-edge cluster — a `+` create-worktree button and the
 /// collapse chevron in the slot the ⋯ overflow menu used to hold — with the
 /// aggregate agent dot at the very edge when collapsed. Reveal/Copy and Remove from
 /// sidebar live on the band's right-click menu. The whole band is the block drag
@@ -607,30 +636,24 @@ fn project_header(
         response
     });
 
-    // The project icon shares the row icons' column (the shared sidebar indent), so
-    // header and worktree icons line up; the name follows in the label column.
-    let icon_left = rect.left() + ROW_PAD_X;
-    let icon_center = egui::pos2(icon_left + ICON_SIZE / 2.0, cy);
-    let icon_box = egui::Rect::from_center_size(icon_center, egui::Vec2::splat(HEADER_ICON_BOX));
-    ui.painter().rect_filled(
-        icon_box,
-        egui::CornerRadius::same(HEADER_ICON_BOX_RADIUS),
-        crate::ui::agents_view::project_header_tint(palette, header.lane),
+    // The monogram tile heads the column the worktree row icons are centred in; the
+    // name follows it.
+    let tile = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + ROW_PAD_X, cy - MONOGRAM_BOX / 2.0),
+        egui::Vec2::splat(MONOGRAM_BOX),
     );
-    ui.painter().rect_stroke(
-        icon_box,
-        egui::CornerRadius::same(HEADER_ICON_BOX_RADIUS),
-        egui::Stroke::new(1.0_f32, palette.border_subtle),
-        egui::StrokeKind::Inside,
+    let hue = palette.lane_color(header.lane);
+    ui.painter()
+        .rect_filled(tile, MONOGRAM_RADIUS, palette.card_tint(hue));
+    let medium = crate::theme::medium_family(ui.ctx());
+    let letters = ui.painter().layout_no_wrap(
+        monogram(header.name),
+        egui::FontId::new(MONOGRAM_SIZE, medium.clone()),
+        hue,
     );
-    crate::ui::paint_icon(
-        ui.painter(),
-        icon_center,
-        ICON_SIZE,
-        lucide_icons::Icon::Folders,
-        palette.text_secondary,
-    );
-    let name_left = icon_left + ICON_SIZE + ICON_GAP;
+    ui.painter()
+        .galley(tile.center() - letters.size() / 2.0, letters, hue);
+    let name_left = tile.right() + ICON_GAP;
     // Reserve room after the name for the trailing chevron, plus the right-edge `+`
     // and aggregate-dot columns, so a long name truncates instead of colliding.
     let name_avail =
@@ -639,8 +662,8 @@ fn project_header(
     let mut job = egui::text::LayoutJob::single_section(
         header.name.to_owned(),
         egui::text::TextFormat::simple(
-            egui::FontId::proportional(HEADER_NAME_SIZE),
-            palette.text_secondary,
+            egui::FontId::new(HEADER_NAME_SIZE, medium),
+            palette.text_title(),
         ),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(name_avail);
@@ -649,7 +672,7 @@ fn project_header(
     ui.painter().galley(
         egui::pos2(name_left, cy - galley.size().y / 2.0),
         galley,
-        palette.text_secondary,
+        palette.text_title(),
     );
 
     if hovered {
@@ -690,6 +713,7 @@ fn project_header(
             palette,
             egui::pos2(rect.right() - ROW_PAD_X - AGENT_DOT_RADIUS - 2.0, cy),
             header.agent,
+            AGENT_DOT_RADIUS,
         );
     }
 
@@ -1146,13 +1170,12 @@ pub fn row_text_color(palette: &Palette, is_active: bool, missing: bool) -> egui
     }
 }
 
-pub fn repo_icon_color(palette: &Palette, is_active: bool, missing: bool) -> egui::Color32 {
-    if is_active && !missing {
-        palette.accent
-    } else if !is_active && missing {
+/// A worktree row icon wears its project's hue; a vanished path greys it out.
+pub fn repo_icon_color(palette: &Palette, lane: usize, missing: bool) -> egui::Color32 {
+    if missing {
         palette.text_muted
     } else {
-        palette.text_secondary
+        palette.lane_color(lane)
     }
 }
 
@@ -1272,67 +1295,57 @@ fn stat_caption(
     Some(ui.painter().layout_job(job))
 }
 
-/// Paints the fixed-width green/red ratio bar with its right edge at `right` and its
-/// top at `top` (mirrors the git panel's `ratio_bar`, scaled down for the sidebar).
-fn paint_stat_bar(
+/// The `+N −M` caption in a pill with its right edge at `right`, centred on `cy`,
+/// tinted by the side of the change: green for additions only, red for deletions
+/// only, neutral for both.
+fn paint_stat_pill(
     ui: &egui::Ui,
     palette: &Palette,
-    right: f32,
-    top: f32,
-    additions: usize,
-    deletions: usize,
+    caption: std::sync::Arc<egui::Galley>,
+    (additions, deletions): (usize, usize),
+    (right, cy): (f32, f32),
 ) {
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(right - STAT_BAR_W, top),
-        egui::vec2(STAT_BAR_W, STAT_BAR_H),
-    );
-    let radius = egui::CornerRadius::same((STAT_BAR_H / 2.0) as u8);
-    let (green_w, red_w) = crate::ui::git_panel::ratio_bar_widths(
-        additions,
-        deletions,
-        STAT_BAR_W,
-        STAT_BAR_GAP,
-        STAT_BAR_MIN,
-    );
-    let painter = ui.painter();
-    if green_w > 0.0 {
-        painter.rect_filled(
-            egui::Rect::from_min_size(rect.min, egui::vec2(green_w, STAT_BAR_H)),
-            radius,
-            palette.git_added,
-        );
-    }
-    if red_w > 0.0 {
-        painter.rect_filled(
-            egui::Rect::from_min_max(egui::pos2(rect.right() - red_w, rect.top()), rect.max),
-            radius,
-            palette.git_deleted,
-        );
-    }
+    let hue = match (additions > 0, deletions > 0) {
+        (true, false) => palette.git_added,
+        (false, true) => palette.git_deleted,
+        _ => palette.text_muted,
+    };
+    let size = caption.size() + 2.0 * STAT_PILL_PAD;
+    let pill = egui::Rect::from_min_size(egui::pos2(right - size.x, cy - size.y / 2.0), size);
+    ui.painter()
+        .rect_filled(pill, STAT_PILL_RADIUS, palette.card_tint(hue));
+    ui.painter()
+        .galley(pill.min + STAT_PILL_PAD, caption, palette.text_primary);
 }
 
-/// Agent activity indicator at `center` (specs/agents.md): a colored pinwheel
-/// while working, a pulsing green dot when finished, a hollow muted ring when
-/// idle. Drawn over the row icon slot, or at the project-header aggregate edge.
-fn paint_agent_dot(ui: &mut egui::Ui, palette: &Palette, center: egui::Pos2, badge: AgentBadge) {
+/// Agent activity indicator at `center` (specs/agents.md), sized by `radius`: a
+/// colored pinwheel while working, a pulsing green dot when finished, a hollow muted
+/// ring when idle.
+fn paint_agent_dot(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    center: egui::Pos2,
+    badge: AgentBadge,
+    radius: f32,
+) {
     match badge {
         AgentBadge::Working => {
             paint_pinwheel(
                 ui,
                 center,
-                AGENT_SPINNER_SIZE,
+                AGENT_SPINNER_SIZE * radius / AGENT_DOT_RADIUS,
                 3,
                 &palette.lane_colors,
                 Some(palette.accent),
             );
         }
         AgentBadge::Done => {
-            paint_done_dot(ui, center, AGENT_DOT_RADIUS, palette.git_added);
+            paint_done_dot(ui, center, radius, palette.git_added);
         }
         AgentBadge::Idle => {
             ui.painter().circle_stroke(
                 center,
-                AGENT_DOT_RADIUS,
+                radius,
                 egui::Stroke::new(ICON_RING_WIDTH, palette.text_muted),
             );
         }
@@ -1340,23 +1353,16 @@ fn paint_agent_dot(ui: &mut egui::Ui, palette: &Palette, center: egui::Pos2, bad
     }
 }
 
-/// Full-bleed row highlight (workspace sidebar): the fill spans the whole panel
-/// width — bleeding into the horizontal padding, square corners — and the active
-/// row carries a primary bar down its left edge. The painter clip is widened by the
-/// sidebar pad so the fill reaches the panel edges (kept tight vertically so a
-/// scrolled-out row stays clipped).
+/// Full-bleed row highlight of a Helm entry: the fill spans the whole panel width —
+/// bleeding into the horizontal padding, square corners — and the active entry
+/// carries a primary bar down its left edge.
 fn paint_row_highlight(ui: &egui::Ui, palette: &Palette, rect: egui::Rect, active: bool) {
     let bleed = f32::from(super::SIDEBAR_PAD_X);
-    let clip = ui.clip_rect();
-    let wide = egui::Rect::from_min_max(
-        egui::pos2(clip.left() - bleed, clip.top()),
-        egui::pos2(clip.right() + bleed, clip.bottom()),
-    );
     let full = egui::Rect::from_min_max(
         egui::pos2(rect.left() - bleed, rect.top()),
         egui::pos2(rect.right() + bleed, rect.bottom()),
     );
-    let painter = ui.painter().with_clip_rect(wide);
+    let painter = bleed_painter(ui, bleed);
     painter.rect_filled(full, egui::CornerRadius::ZERO, palette.bg_surface);
     if active {
         painter.vline(
@@ -1367,10 +1373,13 @@ fn paint_row_highlight(ui: &egui::Ui, palette: &Palette, rect: egui::Rect, activ
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repo_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     row: &RepoRow,
+    // The project's hue (its header's), worn by the icon and the active fill.
+    lane: usize,
     is_active: bool,
     cmd_digits: bool,
     // Visible-order position for the `⌃⌘N` badge (None past the 9th slot); the row
@@ -1416,15 +1425,25 @@ fn repo_row(
     } else {
         row_text_color(palette, is_active, row.missing)
     };
-    let icon_color = repo_icon_color(palette, is_active, row.missing);
+    let icon_color = if row.deleting {
+        palette.text_muted
+    } else {
+        repo_icon_color(palette, lane, row.missing)
+    };
 
-    if is_active || hovered || dragged {
-        paint_row_highlight(ui, palette, rect, is_active);
+    let fill = if is_active {
+        Some(palette.card_tint(palette.lane_color(lane)))
+    } else if hovered || dragged {
+        Some(palette.card_hover())
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(rect, ROW_RADIUS, fill);
     }
 
-    // Rows sit a touch further in than the project header (ROW_INDENT) so they read
-    // as nested under it. A plain folder marks the main worktree; a git-folder glyph
-    // marks a linked worktree (worktrees.md §3).
+    // A plain folder marks the main worktree; a git-folder glyph marks a linked
+    // worktree (worktrees.md §3).
     let icon_left = rect.left() + ROW_PAD_X + ROW_INDENT;
     let agents_toggled = !row.deleting
         && !row.agents.is_empty()
@@ -1443,8 +1462,6 @@ fn repo_row(
             spinner_rect,
             Spinner::new().size(ICON_SIZE).color(icon_color),
         );
-    } else if row.agent != AgentBadge::None {
-        paint_agent_dot(ui, palette, icon_center, row.agent);
     } else {
         let icon = if row.main {
             lucide_icons::Icon::Folder
@@ -1452,18 +1469,27 @@ fn repo_row(
             lucide_icons::Icon::FolderGit2
         };
         crate::ui::paint_icon(ui.painter(), icon_center, ICON_SIZE, icon, icon_color);
+        if row.agent != AgentBadge::None {
+            let corner = icon_center + egui::Vec2::splat(ICON_SIZE / 2.0 - 1.0);
+            ui.painter().circle_filled(
+                corner,
+                ICON_BADGE_CUTOUT,
+                fill.unwrap_or_else(|| palette.card_fill()),
+            );
+            paint_agent_dot(ui, palette, corner, row.agent, ICON_BADGE_RADIUS);
+        }
     }
 
-    let label_left = icon_left + ICON_SIZE + ICON_GAP;
-    // The bar/caption can be wider than the ⌃⌘N badge; reserve the widest of the
-    // three (a per-row constant) so the label truncation — and the row's right edge —
-    // holds still when Cmd toggles between the indicator and the shortcut badge.
+    let label_left = rect.left() + LABEL_COL;
+    // The pill can be wider than the ⌃⌘N badge; reserve the wider of the two (a
+    // per-row constant) so the label truncation — and the row's right edge — holds
+    // still when Cmd toggles between the indicator and the shortcut badge.
     let caption = row
         .stats
         .filter(|_| !row.deleting)
         .and_then(|(additions, deletions)| stat_caption(ui, palette, additions, deletions));
     let badge_col = match &caption {
-        Some(g) => g.size().x.max(STAT_BAR_W).max(BADGE_COL_W),
+        Some(g) => (g.size().x + 2.0 * STAT_PILL_PAD.x).max(BADGE_COL_W),
         None => BADGE_COL_W,
     };
     let label_avail = (rect.right() - ROW_PAD_X - badge_col - label_left).max(0.0);
@@ -1530,20 +1556,13 @@ fn repo_row(
                 .color(palette.text_muted),
         );
     } else if !cmd_digits && !row.deleting {
-        if let (Some(galley), Some((additions, deletions))) = (caption, row.stats) {
-            // Bar stacked over the tiny caption, the pair right-aligned and vertically
-            // centered in the row.
-            let right = rect.right() - ROW_PAD_X;
-            let block_h = STAT_BAR_H + STAT_BAR_TEXT_GAP + galley.size().y;
-            let top = rect.center().y - block_h / 2.0;
-            paint_stat_bar(ui, palette, right, top, additions, deletions);
-            ui.painter().galley(
-                egui::pos2(
-                    right - galley.size().x,
-                    top + STAT_BAR_H + STAT_BAR_TEXT_GAP,
-                ),
+        if let (Some(galley), Some(stats)) = (caption, row.stats) {
+            paint_stat_pill(
+                ui,
+                palette,
                 galley,
-                palette.text_primary,
+                stats,
+                (rect.right() - ROW_PAD_X, rect.center().y),
             );
         } else if row.stats.is_some() {
             ui.painter().circle_filled(
@@ -1636,26 +1655,63 @@ fn agents_chevron(
     response.clicked()
 }
 
-/// One agent under its worktree row (specs/agents.md §6): state indicator + recap,
+/// A worktree row's open agent list (specs/agents.md §6), sunk in a tray under the
+/// row. Returns the tray's bottom.
+fn agent_tray(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    agents: &[RowAgent],
+    out: &mut SidebarAction,
+) -> f32 {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    ui.add_space(TRAY_PAD);
+    let mut rows = egui::Rect::NOTHING;
+    for agent in agents {
+        let rect = ui
+            .push_id(("row_agent", agent.index), |ui| {
+                worktree_agent_row(ui, palette, agent, out)
+            })
+            .inner;
+        rows = rows.union(rect);
+    }
+    ui.add_space(TRAY_PAD);
+    let tray = egui::Rect::from_min_max(
+        egui::pos2(rows.left() + LABEL_COL - TRAY_INSET, rows.top() - TRAY_PAD),
+        egui::pos2(rows.right(), rows.bottom() + TRAY_PAD),
+    );
+    ui.painter().set(
+        slot,
+        egui::epaint::RectShape::filled(tray, TRAY_RADIUS, palette.bg_sidebar),
+    );
+    tray.bottom()
+}
+
+/// One agent in its worktree's tray (specs/agents.md §6): state indicator + recap,
 /// aligned on the worktree's label column. Clicking focuses that pane.
 fn worktree_agent_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     agent: &RowAgent,
     out: &mut SidebarAction,
-) {
+) -> egui::Rect {
     let width = ui.available_width();
     let (rect, response, hovered) =
         crate::ui::clickable(ui, egui::vec2(width, AGENT_ROW_HEIGHT), true);
     if hovered {
-        paint_row_highlight(ui, palette, rect, false);
+        let highlight = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + LABEL_COL - TRAY_INSET + TRAY_PAD, rect.top()),
+            egui::pos2(rect.right() - TRAY_PAD, rect.bottom()),
+        );
+        ui.painter()
+            .rect_filled(highlight, TRAY_ROW_RADIUS, palette.bg_surface);
     }
-    let badge_left = rect.left() + ROW_PAD_X + ROW_INDENT + ICON_SIZE + ICON_GAP;
+    let badge_left = rect.left() + LABEL_COL;
     paint_agent_dot(
         ui,
         palette,
         egui::pos2(badge_left + AGENT_BADGE_W / 2.0, rect.center().y),
         agent.badge,
+        AGENT_DOT_RADIUS,
     );
     let text_left = badge_left + AGENT_BADGE_W + AGENT_RECAP_GAP;
     let mut job = egui::text::LayoutJob::single_section(
@@ -1683,6 +1739,7 @@ fn worktree_agent_row(
     if response.on_hover_text(hover).clicked() {
         out.focus_agent = Some(agent.index);
     }
+    rect
 }
 
 /// Accessibility label of an agent row: its recap and state (assertable in e2e UI).
@@ -2215,19 +2272,14 @@ mod tests {
     }
 
     #[test]
-    fn icon_color_distinguishes_active_and_missing_from_a_plain_repo() {
+    fn icon_wears_its_project_hue_unless_its_folder_is_missing() {
         let p = Palette::light();
+        assert_eq!(repo_icon_color(&p, 3, false), p.lane_color(3));
         assert_eq!(
-            repo_icon_color(&p, true, false),
-            p.accent,
-            "an active repo icon takes the accent"
-        );
-        assert_eq!(
-            repo_icon_color(&p, false, true),
+            repo_icon_color(&p, 3, true),
             p.text_muted,
             "a missing repo icon is de-emphasised"
         );
-        assert_eq!(repo_icon_color(&p, false, false), p.text_secondary);
     }
 
     fn plain_row(name: &str) -> RepoRow<'_> {
