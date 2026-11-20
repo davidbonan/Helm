@@ -47,6 +47,8 @@ below it.
   label (folder name on hover). A **linked worktree** row is **two lines** — the
   **folder name** as the title, the **branch** as a dimmer caption beneath it
   (the branch indicator also stays in the git panel, [`git.md`](git.md) §6).
+- **Agents** running in a worktree are listed under its row, as a fold-out list
+  ([`agents.md`](agents.md) §6).
 - A **1px `border.subtle` separator** spanning the **full sidebar width** sits
   between one project and the next.
 - Projects mix in the import / manual order of the list ([`overview.md`](overview.md) §3.1, §9).
@@ -127,6 +129,9 @@ worktrees = ["/Users/dev/helm-studio.worktrees/feature-x"]
   the key is omitted when the group is expanded (the default).
 - A **hidden** project records `hidden = true` on its `[[projects]]` entry; the
   key is omitted when the project is visible (the default).
+- The worktrees whose **agent list** is unfolded ([`agents.md`](agents.md) §6) are
+  listed in `agents_open = [paths]` on their project's entry (root and linked
+  worktrees alike); the key is omitted when every list is folded (the default).
 - **Migration**: the old flat format (`repos` + `active` index) is converted on
   first load — each path resolved to its group (§2), the active index
   remapped to a path — then the TOML is rewritten in the new format.

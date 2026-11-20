@@ -6,6 +6,21 @@
 
 ---
 
+## ◐ Milestone — M-AgentList · Agents under each worktree row
+
+Spec: [`specs/agents.md`](../agents.md) §6, [`worktrees.md`](../worktrees.md) §1, §5.
+Per the user: fold-out list per worktree (folded by default, persisted), one line per
+agent (state + recap), click focuses the pane; Done rows under Agents show the recap.
+Counter: **0/3**.
+
+- ☐ **AL1 — Recap + fold-out list.** `agent_watch::recap`, `AgentEntry.recap`,
+  `Workspace` agents-open state + `Project.agents_open`, gutter chevron + agent rows in
+  `ui::repo_sidebar`, Done rows show the recap.
+- ☐ **AL2 — Last prompt on hover.** Claude transcript link (cwd + process start +
+  `ai-title`), tail read off the UI thread, prompt line in the agent row's hover.
+- ☐ **AL3 — Manual check.** In the real app: chevron in the gutter, list folds and
+  persists across launches, recap follows Claude's topic, click focuses the pane.
+
 ## ◐ Milestone — M-BrowserLayout · Full window and split
 
 Spec: [`specs/browser.md`](../browser.md) §15–16, [`keybindings.md`](../keybindings.md).

@@ -275,7 +275,46 @@ terminal holds keyboard focus, where `Esc` reaches the agent as an interrupt
 keeps the watch live; viewing the dashboard does **not** acknowledge greens (focus
 gating excludes `CentralMode::Agents`).
 
-## 6. Out of scope for v1
+## 6. Per-worktree agent list (sidebar accordion)
+
+Under each sidebar **worktree row**, the agents running in that worktree — every pane
+of every tab whose badge is not `None` — listed as **child rows**, one per agent pane,
+in workspace order (tab, then pane: stable, so rows never jump on a state change).
+
+**Disclosure.** A worktree row with at least one agent carries a small **chevron** in
+the tree-guide gutter, between the guide's tick and the row icon — it costs the row no
+width; a row without agents has none. Clicking it folds/unfolds the list without
+selecting the row. **Folded by default**; the open state is **per worktree** and
+**persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
+max badge in place of its icon (§1) and its `+N −M` diffstat at the right edge.
+
+**Agent row.** One line, **24 pt**, aligned on the worktree's label column: the
+agent's **state indicator** (§1: spinner / green dot / grey ring) then its **recap**,
+truncated, the full text on hover. Nothing else — no agent name, no terminal name, no
+elapsed time: the space is the sidebar's scarcest. Clicking it **focuses** that pane
+(activates the worktree, its tab and pane, back to the terminal view), which
+acknowledges a green like any tab focus (§1).
+
+**Recap** — what the agent is doing, resolved per pane at the 1 s tick:
+1. the pane's **OSC title** — Claude Code titles its terminal with the session topic
+   (`✳ Fix login redirect`; a braille spinner glyph replaces `✳` while it works): a
+   leading status glyph and its space are dropped;
+2. otherwise the agent's **display name** (`Codex`).
+
+The **Done** child rows under the Agents entry (§5) carry the same recap instead of
+`branch · tab`.
+
+**Last prompt (hover).** For a Claude Code pane, the agent row's hover text adds the
+session's last prompt, read from its transcript
+(`~/.claude/projects/<cwd, non-alphanumerics → '-'>/<session>.jsonl`, `last-prompt`
+entries; the tail only, re-read when the file's mtime moves, off the UI thread). The
+pane is linked to a transcript by the Claude process's cwd: among the transcripts of
+that directory modified since the process started, the one whose last `ai-title`
+equals the pane's recap — else the only one, when a single Claude runs in that cwd.
+Anything ambiguous or unreadable ⇒ no prompt line (fail-safe: the transcript format is
+Claude Code's internal one).
+
+## 7. Out of scope for v1
 
 Configurable watchlist in Preferences; agents under tmux; in-app
-notification-center history.
+notification-center history; a *needs input* / *failed* agent state.
