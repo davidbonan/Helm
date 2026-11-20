@@ -586,6 +586,8 @@ fn render_hero(out: &str) {
                     deleting: false,
                     agent: AgentBadge::Working,
                     stats: Some((96, 21)),
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
                 SidebarItem::Row(RepoRow {
                     index: 1,
@@ -597,6 +599,8 @@ fn render_hero(out: &str) {
                     deleting: false,
                     agent: AgentBadge::Done,
                     stats: Some((57, 9)),
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
                 SidebarItem::Header(ProjectHeader {
                     root: 2,
@@ -617,6 +621,8 @@ fn render_hero(out: &str) {
                     deleting: false,
                     agent: AgentBadge::Idle,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let child_flags = [false, true, false];
@@ -774,6 +780,8 @@ fn demo_items() -> Vec<SidebarItem<'static>> {
             deleting: false,
             agent: AgentBadge::Working,
             stats: Some((96, 21)),
+            agents: Vec::new(),
+            agents_open: false,
         }),
         SidebarItem::Row(RepoRow {
             index: 1,
@@ -785,6 +793,8 @@ fn demo_items() -> Vec<SidebarItem<'static>> {
             deleting: false,
             agent: AgentBadge::Done,
             stats: Some((57, 9)),
+            agents: Vec::new(),
+            agents_open: false,
         }),
         SidebarItem::Header(ProjectHeader {
             root: 2,
@@ -805,6 +815,8 @@ fn demo_items() -> Vec<SidebarItem<'static>> {
             deleting: false,
             agent: AgentBadge::Idle,
             stats: None,
+            agents: Vec::new(),
+            agents_open: false,
         }),
     ]
 }
