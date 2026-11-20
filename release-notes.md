@@ -1,5 +1,18 @@
 # Release notes
 
+## 3.11.0
+
+- **Project cards** in the sidebar: each project sits on its own card, with a
+  monogram and a colour derived from its name, worn by its worktree icons and
+  its active row. Diff stats show as a small pill.
+- **Agents under each worktree**: a chevron (on hover) unfolds the worktree's
+  agent sessions, hung on a thread in the project colour — each with its state
+  and recap; hover shows Claude's last prompt, click focuses its terminal.
+- **Browser**: full window (`⌘⇧↩`) and split view with two tabs side by side.
+  Page dialogs, file pickers, downloads (with a shelf), links opening a new
+  tab, and a failure page offering to start the dev server.
+- Browser sidebar: its resize edge now grabs at any height.
+
 ## 3.10.0
 
 - Browser: copy, cut, paste, select all and undo (`⌘C` `⌘X` `⌘V` `⌘A` `⌘Z`)
@@ -62,9 +75,3 @@
   Their toggles sit in the terminals' title row, and Git's shows the Git icon.
 - Phone, Send feedback and Preferences moved to the bottom of the left
   sidebar.
-
-## 3.7.2
-
-- Browser tabs can be reordered: drag a tab along the row to move it.
-- `âR` right after clicking a page now reloads it, instead of restarting the
-  dev server.
