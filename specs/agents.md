@@ -285,7 +285,7 @@ in workspace order (tab, then pane: stable, so rows never jump on a state change
 while it is **hovered**, in the gutter left of the row icon — it costs the row no width; a row without agents has none. Clicking it folds/unfolds the list without
 selecting the row. **Folded by default**; the open state is **per worktree** and
 **persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
-max badge on its icon's corner (§1) and its `+N −M` diffstat at the right edge.
+max badge in place of its icon (§1) and its `+N −M` diffstat at the right edge.
 
 **Agent row.** The open list hangs on a **thread**: a thin line in the project hue
 dropping from under the worktree icon, with a rounded branch to each agent ending just

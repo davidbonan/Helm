@@ -274,10 +274,6 @@ const ICON_GAP: f32 = 10.0;
 const MONOGRAM_BOX: f32 = 24.0;
 const MONOGRAM_RADIUS: u8 = 7;
 const MONOGRAM_SIZE: f32 = 10.0;
-/// Agent state worn on the bottom-right corner of a worktree row icon, cut out of the
-/// row fill.
-const ICON_BADGE_RADIUS: f32 = 2.5;
-const ICON_BADGE_CUTOUT: f32 = 4.5;
 const NAME_SIZE: f32 = 15.0;
 /// Worktree row folder name: a touch smaller than the shared nav-entry size so the
 /// nested worktrees read as lighter than the Agents/Pull Requests/Open Folder rows.
@@ -726,7 +722,6 @@ fn project_header(
             palette,
             egui::pos2(rect.right() - ROW_PAD_X - AGENT_DOT_RADIUS - 2.0, cy),
             header.agent,
-            AGENT_DOT_RADIUS,
         );
     }
 
@@ -1331,34 +1326,28 @@ fn paint_stat_pill(
         .galley(pill.min + STAT_PILL_PAD, caption, palette.text_primary);
 }
 
-/// Agent activity indicator at `center` (specs/agents.md), sized by `radius`: a
-/// colored pinwheel while working, a pulsing green dot when finished, a hollow muted
-/// ring when idle.
-fn paint_agent_dot(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    center: egui::Pos2,
-    badge: AgentBadge,
-    radius: f32,
-) {
+/// Agent activity indicator at `center` (specs/agents.md): a colored pinwheel while
+/// working, a pulsing green dot when finished, a hollow muted ring when idle. Drawn
+/// in place of the row icon, or at the project-header aggregate edge.
+fn paint_agent_dot(ui: &mut egui::Ui, palette: &Palette, center: egui::Pos2, badge: AgentBadge) {
     match badge {
         AgentBadge::Working => {
             paint_pinwheel(
                 ui,
                 center,
-                AGENT_SPINNER_SIZE * radius / AGENT_DOT_RADIUS,
+                AGENT_SPINNER_SIZE,
                 3,
                 &palette.lane_colors,
                 Some(palette.accent),
             );
         }
         AgentBadge::Done => {
-            paint_done_dot(ui, center, radius, palette.git_added);
+            paint_done_dot(ui, center, AGENT_DOT_RADIUS, palette.git_added);
         }
         AgentBadge::Idle => {
             ui.painter().circle_stroke(
                 center,
-                radius,
+                AGENT_DOT_RADIUS,
                 egui::Stroke::new(ICON_RING_WIDTH, palette.text_muted),
             );
         }
@@ -1475,6 +1464,8 @@ fn repo_row(
             spinner_rect,
             Spinner::new().size(ICON_SIZE).color(icon_color),
         );
+    } else if row.agent != AgentBadge::None {
+        paint_agent_dot(ui, palette, icon_center, row.agent);
     } else {
         let icon = if row.main {
             lucide_icons::Icon::Folder
@@ -1482,15 +1473,6 @@ fn repo_row(
             lucide_icons::Icon::FolderGit2
         };
         crate::ui::paint_icon(ui.painter(), icon_center, ICON_SIZE, icon, icon_color);
-        if row.agent != AgentBadge::None {
-            let corner = icon_center + egui::Vec2::splat(ICON_SIZE / 2.0 - 1.0);
-            ui.painter().circle_filled(
-                corner,
-                ICON_BADGE_CUTOUT,
-                fill.unwrap_or_else(|| palette.card_fill()),
-            );
-            paint_agent_dot(ui, palette, corner, row.agent, ICON_BADGE_RADIUS);
-        }
     }
 
     let label_left = rect.left() + LABEL_COL;
@@ -1755,7 +1737,6 @@ fn worktree_agent_row(
         palette,
         egui::pos2(badge_left + AGENT_BADGE_W / 2.0, rect.center().y),
         agent.badge,
-        AGENT_DOT_RADIUS,
     );
     let text_left = badge_left + AGENT_BADGE_W + AGENT_RECAP_GAP;
     let mut job = egui::text::LayoutJob::single_section(

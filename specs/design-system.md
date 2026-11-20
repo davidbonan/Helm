@@ -156,9 +156,8 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   without pushing the layout (see [`keybindings.md`](keybindings.md) §5).
   `text.muted` icon + explanatory tooltip for a **vanished path**.
 - **Agent activity dot** (repository row + project-header aggregate —
-  [`agents.md`](agents.md)) — on a repository row, a small badge (r ~2.5pt) on the
-  **bottom-right corner of the row icon**, cut out of the row fill; on the project
-  header, at the right edge of the cluster: `Working`
+  [`agents.md`](agents.md)) — on a repository row, **in place of the row icon**; on
+  the project header, at the right edge of the cluster: `Working`
   = **accent arc spinner** ~11pt `accent`; `Done` = solid dot r 3.5pt `git.added`
   (green, existing token) wrapped in a **fading pulse halo**; `Idle` = **hollow
   ring** r 3.5pt `text.muted`; `None` = nothing. The project **header** carries
