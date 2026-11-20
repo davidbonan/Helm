@@ -145,7 +145,8 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   (`text.secondary`, elided `…`), folder name on hover. A **linked worktree** row
   is **two lines** — the **folder name** as the title (`text.secondary`), the
   **branch** as a dimmer `text.muted` **monospace** caption beneath. The icon,
-  centred under the monogram, wears the **project hue**. Hover = the card fill
+  centred under the monogram, is `text.secondary` at rest and lights up in the
+  **project hue** while hovered or active. Hover = the card fill
   nudged 6% toward `text.primary`, radius ~8pt; **active** = the project hue washed
   16% over the card + `text.primary`. **Uncommitted changes**: a `+N −M` pill
   (green / red halves) at the right edge, its fill the card tinted by the change —

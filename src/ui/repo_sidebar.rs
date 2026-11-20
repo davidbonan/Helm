@@ -1178,15 +1178,6 @@ pub fn row_text_color(palette: &Palette, is_active: bool, missing: bool) -> egui
     }
 }
 
-/// A worktree row icon wears its project's hue; a vanished path greys it out.
-pub fn repo_icon_color(palette: &Palette, lane: usize, missing: bool) -> egui::Color32 {
-    if missing {
-        palette.text_muted
-    } else {
-        palette.lane_color(lane)
-    }
-}
-
 fn hover_text(row: &RepoRow) -> String {
     let location = match row.branch {
         Some(branch) => format!("{branch}\n{}", row.path),
@@ -1427,10 +1418,14 @@ fn repo_row(
     } else {
         row_text_color(palette, is_active, row.missing)
     };
-    let icon_color = if row.deleting {
+    // The icon lights up in the project hue only under the pointer or when active, so
+    // the hue marks where you are rather than painting every row.
+    let icon_color = if row.deleting || row.missing {
         palette.text_muted
+    } else if is_active || hovered || dragged {
+        palette.lane_color(lane)
     } else {
-        repo_icon_color(palette, lane, row.missing)
+        palette.text_secondary
     };
 
     let fill = if is_active {
@@ -2291,17 +2286,6 @@ mod tests {
     fn present_inactive_row_uses_secondary_text() {
         let p = Palette::light();
         assert_eq!(row_text_color(&p, false, false), p.text_secondary);
-    }
-
-    #[test]
-    fn icon_wears_its_project_hue_unless_its_folder_is_missing() {
-        let p = Palette::light();
-        assert_eq!(repo_icon_color(&p, 3, false), p.lane_color(3));
-        assert_eq!(
-            repo_icon_color(&p, 3, true),
-            p.text_muted,
-            "a missing repo icon is de-emphasised"
-        );
     }
 
     fn plain_row(name: &str) -> RepoRow<'_> {

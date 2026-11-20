@@ -14,8 +14,8 @@ count, hue derived from the project name, monogram left to the implementation.
 Counter: **1/2**.
 
 - ☑ **PC1 — Cards.** `theme::name_lane` (project, author and site hues share it),
-  `Palette::card_*`, cards + monogram + hue-tinted icons and active row, agents hung on a thread in the project hue, diffstat pill in `ui::repo_sidebar`. *Tests*: 1 unit
-  reworked; headless capture (dark + light).
+  `Palette::card_*`, cards + monogram + icons lit in the project hue when hovered or active, hue-tinted active row, agents hung on a thread in the project hue, diffstat pill in `ui::repo_sidebar`. *Tests*: 1 unit
+  (project lanes skip red); headless capture (dark + light).
 - ☐ **PC2 — Manual check.** In the real app: cards, hues stable across reorders and
   launches, drag-and-drop drop line, hover / active fills, agent thread, Cmd badges.
 
