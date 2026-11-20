@@ -304,15 +304,21 @@ const EYE_SIZE: f32 = 14.0;
 const AGENT_DOT_RADIUS: f32 = 3.5;
 const AGENT_SPINNER_SIZE: f32 = 11.0;
 /// Agent list under a worktree row (specs/agents.md §6): one compact line per agent,
-/// sunk in a tray starting a little left of the row's label column.
+/// hung on a thread that drops from the row icon and branches to each agent.
 const AGENT_ROW_HEIGHT: f32 = 24.0;
 const AGENT_RECAP_SIZE: f32 = 12.5;
 const AGENT_BADGE_W: f32 = 11.0;
 const AGENT_RECAP_GAP: f32 = 9.0;
-const TRAY_INSET: f32 = 8.0;
-const TRAY_PAD: f32 = 3.0;
-const TRAY_RADIUS: u8 = 8;
-const TRAY_ROW_RADIUS: u8 = 6;
+const AGENT_HOVER_INSET: f32 = 6.0;
+const AGENT_HOVER_RADIUS: u8 = 6;
+const THREAD_WIDTH: f32 = 1.5;
+const THREAD_RADIUS: f32 = 6.0;
+const THREAD_ARC_STEPS: usize = 6;
+/// Gap between the row icon's bottom and the top of the thread.
+const THREAD_ICON_GAP: f32 = 3.0;
+/// A branch stops this far left of the agent's label column, short of its state dot.
+const THREAD_END_GAP: f32 = 1.0;
+const THREAD_PAD_BOTTOM: f32 = 4.0;
 /// Fold chevron of the agent list, in the gutter left of the row icon.
 const AGENT_CHEVRON_SIZE: f32 = 10.0;
 const AGENT_CHEVRON_INSET: f32 = 7.5;
@@ -474,7 +480,14 @@ pub fn repo_sidebar(
                             .inner;
                         bottom = response.rect.bottom();
                         if row.agents_open && !row.agents.is_empty() {
-                            bottom = agent_tray(ui, palette, &row.agents, out);
+                            let thread = Thread {
+                                top: egui::pos2(
+                                    response.rect.left() + ROW_PAD_X + ROW_INDENT + ICON_SIZE / 2.0,
+                                    response.rect.center().y + ICON_SIZE / 2.0 + THREAD_ICON_GAP,
+                                ),
+                                color: palette.card_line(palette.lane_color(lane)),
+                            };
+                            bottom = agent_thread(ui, palette, &row.agents, &thread, out);
                         }
                         if active == Some(row.index) && prev != cur {
                             response.scroll_to_me(Some(egui::Align::Center));
@@ -1655,39 +1668,65 @@ fn agents_chevron(
     response.clicked()
 }
 
-/// A worktree row's open agent list (specs/agents.md §6), sunk in a tray under the
-/// row. Returns the tray's bottom.
-fn agent_tray(
+/// The thread an open agent list hangs on (specs/agents.md §6): it drops from `top`,
+/// under the worktree row icon, in the project hue.
+struct Thread {
+    top: egui::Pos2,
+    color: egui::Color32,
+}
+
+/// A worktree row's open agent list, hung on its thread. Returns the list's bottom.
+fn agent_thread(
     ui: &mut egui::Ui,
     palette: &Palette,
     agents: &[RowAgent],
+    thread: &Thread,
     out: &mut SidebarAction,
 ) -> f32 {
-    let slot = ui.painter().add(egui::Shape::Noop);
-    ui.add_space(TRAY_PAD);
-    let mut rows = egui::Rect::NOTHING;
+    let mut centers = Vec::with_capacity(agents.len());
+    let mut bottom = thread.top.y;
     for agent in agents {
         let rect = ui
             .push_id(("row_agent", agent.index), |ui| {
                 worktree_agent_row(ui, palette, agent, out)
             })
             .inner;
-        rows = rows.union(rect);
+        centers.push(rect.center().y);
+        bottom = rect.bottom();
     }
-    ui.add_space(TRAY_PAD);
-    let tray = egui::Rect::from_min_max(
-        egui::pos2(rows.left() + LABEL_COL - TRAY_INSET, rows.top() - TRAY_PAD),
-        egui::pos2(rows.right(), rows.bottom() + TRAY_PAD),
-    );
-    ui.painter().set(
-        slot,
-        egui::epaint::RectShape::filled(tray, TRAY_RADIUS, palette.bg_sidebar),
-    );
-    tray.bottom()
+    ui.add_space(THREAD_PAD_BOTTOM);
+    let end_x = ui.max_rect().left() + LABEL_COL - THREAD_END_GAP;
+    paint_thread(ui.painter(), thread, &centers, end_x);
+    bottom + THREAD_PAD_BOTTOM
 }
 
-/// One agent in its worktree's tray (specs/agents.md §6): state indicator + recap,
-/// aligned on the worktree's label column. Clicking focuses that pane.
+/// The thread's trunk down from its top, and one rounded branch per agent row centre
+/// running right to `end_x`.
+fn paint_thread(painter: &egui::Painter, thread: &Thread, centers: &[f32], end_x: f32) {
+    let Some(&last) = centers.last() else {
+        return;
+    };
+    let stroke = egui::Stroke::new(THREAD_WIDTH, thread.color);
+    let x = thread.top.x;
+    painter.vline(x, thread.top.y..=last - THREAD_RADIUS, stroke);
+    for &cy in centers {
+        // Quarter turn around (x + r, cy − r): from straight down the trunk to heading right.
+        let corner = egui::pos2(x + THREAD_RADIUS, cy - THREAD_RADIUS);
+        let mut points: Vec<egui::Pos2> = (0..=THREAD_ARC_STEPS)
+            .map(|step| {
+                let angle = std::f32::consts::PI
+                    - std::f32::consts::FRAC_PI_2 * step as f32 / THREAD_ARC_STEPS as f32;
+                corner + THREAD_RADIUS * egui::vec2(angle.cos(), angle.sin())
+            })
+            .collect();
+        points.push(egui::pos2(end_x, cy));
+        painter.add(egui::Shape::line(points, stroke));
+    }
+}
+
+/// One agent on its worktree's thread (specs/agents.md §6): state indicator + recap,
+/// aligned on the worktree's label column, the recap brighter the busier the agent.
+/// Clicking focuses that pane.
 fn worktree_agent_row(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -1699,12 +1738,17 @@ fn worktree_agent_row(
         crate::ui::clickable(ui, egui::vec2(width, AGENT_ROW_HEIGHT), true);
     if hovered {
         let highlight = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + LABEL_COL - TRAY_INSET + TRAY_PAD, rect.top()),
-            egui::pos2(rect.right() - TRAY_PAD, rect.bottom()),
+            egui::pos2(rect.left() + LABEL_COL - AGENT_HOVER_INSET, rect.top()),
+            rect.max,
         );
         ui.painter()
-            .rect_filled(highlight, TRAY_ROW_RADIUS, palette.bg_surface);
+            .rect_filled(highlight, AGENT_HOVER_RADIUS, palette.card_hover());
     }
+    let recap_color = match agent.badge {
+        AgentBadge::Working => palette.text_primary,
+        AgentBadge::Done => palette.text_secondary,
+        AgentBadge::Idle | AgentBadge::None => palette.text_muted,
+    };
     let badge_left = rect.left() + LABEL_COL;
     paint_agent_dot(
         ui,
@@ -1716,10 +1760,7 @@ fn worktree_agent_row(
     let text_left = badge_left + AGENT_BADGE_W + AGENT_RECAP_GAP;
     let mut job = egui::text::LayoutJob::single_section(
         agent.recap.to_owned(),
-        egui::text::TextFormat::simple(
-            egui::FontId::proportional(AGENT_RECAP_SIZE),
-            palette.text_secondary,
-        ),
+        egui::text::TextFormat::simple(egui::FontId::proportional(AGENT_RECAP_SIZE), recap_color),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(
         (rect.right() - ROW_PAD_X - text_left).max(0.0),
@@ -1728,7 +1769,7 @@ fn worktree_agent_row(
     ui.painter().galley(
         egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
         galley,
-        palette.text_secondary,
+        recap_color,
     );
     let label = agent_row_label(agent);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));

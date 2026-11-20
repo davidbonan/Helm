@@ -287,10 +287,13 @@ selecting the row. **Folded by default**; the open state is **per worktree** and
 **persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
 max badge on its icon's corner (§1) and its `+N −M` diffstat at the right edge.
 
-**Agent row.** The open list sits in a **tray** under the row (`bg.sidebar` sunk in the
-card, radius ~8pt, starting just left of the label column). One line, **24 pt**, aligned on the worktree's label column: the
+**Agent row.** The open list hangs on a **thread**: a thin line in the project hue
+dropping from under the worktree icon, with a rounded branch to each agent ending just
+short of its state indicator — no background, the line alone ties the agents to their
+worktree. One line, **24 pt**, aligned on the worktree's label column: the
 agent's **state indicator** (§1: spinner / green dot / grey ring) then its **recap**,
-truncated, the full text on hover. Nothing else — no agent name, no terminal name, no
+truncated, the full text on hover; the recap is `text.primary` while the agent works,
+`text.secondary` once done, `text.muted` at rest. Nothing else — no agent name, no terminal name, no
 elapsed time: the space is the sidebar's scarcest. Clicking it **focuses** that pane
 (activates the worktree, its tab and pane, back to the terminal view), which
 acknowledges a green like any tab focus (§1).

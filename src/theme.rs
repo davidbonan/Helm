@@ -522,6 +522,11 @@ impl Palette {
         blend(self.card_fill(), hue, CARD_TINT)
     }
 
+    /// A thin line in `hue` drawn on a project card (the agent list's thread).
+    pub fn card_line(&self, hue: Color32) -> Color32 {
+        blend(self.card_fill(), hue, CARD_LINE)
+    }
+
     /// Fill of the solid primary button (Commit, Open Folder…): `accent`
     /// darkened one notch — the token stays full color for its other consumers
     /// (links, active tabs, lanes). Dark presets' accents are brighter to begin
@@ -669,6 +674,7 @@ const CARD_RAISE: f32 = 0.5;
 const CARD_BORDER: f32 = 0.6;
 const CARD_HOVER: f32 = 0.06;
 const CARD_TINT: f32 = 0.16;
+const CARD_LINE: f32 = 0.45;
 
 /// Lane (`Palette::lane_color`) a name always wears — a project, an author, a site:
 /// hashed from the name alone, so it never shifts with list order.
