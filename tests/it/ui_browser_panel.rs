@@ -7,14 +7,19 @@ use std::rc::Rc;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
+use helm::browser::dialog::{DialogAnswer, DialogKind, PageDialog};
+use helm::browser::download::{Download, DownloadStatus};
 use helm::browser::import::{ImportSource, ImportStatus};
 use helm::browser::library::{Favorite, Library, Visit};
+use helm::browser::load_failure::{FailureReason, LoadFailure};
+use helm::browser::split::Side;
 use helm::browser::{Navigation, PageState};
 use helm::theme::Palette;
 use helm::ui::browser_panel::{
     browser_panel, BrowserChrome, BrowserIntent, BrowserPanelView, BrowserTabState, TabStrip,
     TabSummary,
 };
+use helm::ui::browser_split::SplitPartner;
 
 /// What the pane reported on its last frame.
 #[derive(Default)]
@@ -22,8 +27,12 @@ struct Shown {
     intents: Vec<BrowserIntent>,
     page_rect: Option<egui::Rect>,
     overlaid: bool,
+    blocked: bool,
     /// A frame reported a press in the toolbar.
     toolbar_pressed: bool,
+    /// The split partner's page area.
+    partner_rect: Option<egui::Rect>,
+    partner_intents: Vec<BrowserIntent>,
 }
 
 type Seen = Rc<RefCell<Shown>>;
@@ -37,6 +46,11 @@ struct Fixture {
     /// The other tabs, after the shown one.
     others: Vec<TabSummary>,
     width: f32,
+    /// The worktree's server, and whether its Run strip runs it.
+    server: Option<String>,
+    server_running: bool,
+    /// The split partner, second in the row, shown on the right.
+    partner: Option<PageState>,
 }
 
 impl Fixture {
@@ -47,6 +61,9 @@ impl Fixture {
             palette: Palette::dark(),
             others: Vec::new(),
             width: 800.0,
+            server: None,
+            server_running: false,
+            partner: None,
         }
     }
 }
@@ -60,8 +77,12 @@ fn mount(fixture: Fixture) -> (Harness<'static, ()>, Seen) {
         palette,
         others,
         width,
+        server,
+        server_running,
+        partner,
     } = fixture;
     let mut tab = BrowserTabState::default();
+    let mut partner_tab = BrowserTabState::default();
     let import = ImportStatus::Idle;
     let icons = HashMap::new();
     let mut harness = Harness::builder()
@@ -69,30 +90,47 @@ fn mount(fixture: Fixture) -> (Harness<'static, ()>, Seen) {
         .build_ui(move |ui| {
             let chrome = BrowserChrome {
                 palette: &palette,
-                server: None,
+                server: server.as_deref(),
+                server_running,
+                full_window: false,
                 project: PROJECT,
                 library: &library,
                 import: &import,
                 icons: &icons,
             };
             let page = page.borrow();
+            let partner_summary = partner
+                .as_ref()
+                .map(|partner| tab_summary(&partner.title, &partner.url));
             let strip = TabStrip {
                 tabs: std::iter::once(tab_summary(&page.title, &page.url))
+                    .chain(partner_summary)
                     .chain(others.iter().cloned())
                     .collect(),
                 active: 0,
+                pair: partner.as_ref().map(|_| (0, 1)),
             };
             let view = BrowserPanelView {
                 page: &page,
                 tab: &mut tab,
                 strip: &strip,
+                partner: partner.as_ref().map(|partner| SplitPartner {
+                    page: partner,
+                    tab: &mut partner_tab,
+                    side: Side::Right,
+                    share: 0.5,
+                }),
             };
             let out = browser_panel(ui, &chrome, view);
             let mut seen = sink.borrow_mut();
             seen.intents.extend(out.intents);
             seen.page_rect = out.page_rect;
             seen.overlaid = out.page_overlaid;
+            seen.blocked = out.page_blocked;
             seen.toolbar_pressed |= out.clicked;
+            seen.partner_rect = out.partner.as_ref().and_then(|half| half.page_rect);
+            seen.partner_intents
+                .extend(out.partner.into_iter().flat_map(|half| half.intents));
         });
     harness.run();
     (harness, seen)
@@ -548,4 +586,203 @@ fn a_narrow_pane_picks_its_section_from_a_menu() {
         seen.borrow().intents,
         vec![BrowserIntent::Open("https://jira.dev/docs".into())]
     );
+}
+
+fn asking(kind: DialogKind) -> PageState {
+    PageState {
+        dialog: Some(PageDialog {
+            kind,
+            message: "Delete this invoice?".to_owned(),
+            site: "localhost:3000".to_owned(),
+        }),
+        ..page_at("http://localhost:3000/invoices")
+    }
+}
+
+#[test]
+fn a_confirm_freezes_the_page_under_its_card_and_cancel_answers_it() {
+    let (mut harness, seen) = pane(asking(DialogKind::Confirm), Library::default());
+    harness.get_by_label("localhost:3000 says");
+    harness.get_by_label("Delete this invoice?");
+    assert!(seen.borrow().blocked, "the native page would hide the card");
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(
+        seen.borrow().intents,
+        vec![BrowserIntent::AnswerDialog(DialogAnswer::Cancel)]
+    );
+}
+
+#[test]
+fn enter_accepts_a_prompt_with_what_was_typed() {
+    let kind = DialogKind::Prompt {
+        default: "INV-".to_owned(),
+    };
+    let (mut harness, seen) = pane(asking(kind), Library::default());
+    harness
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .last()
+        .expect("prompt field")
+        .type_text("42");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        seen.borrow().intents,
+        vec![BrowserIntent::AnswerDialog(DialogAnswer::Accept(
+            "INV-42".into()
+        ))]
+    );
+}
+
+fn refused(url: &str) -> PageState {
+    PageState {
+        failure: Some(LoadFailure {
+            url: url.to_owned(),
+            reason: FailureReason::Refused,
+        }),
+        ..page_at(url)
+    }
+}
+
+#[test]
+fn the_stopped_dev_server_s_failure_page_offers_to_run_it() {
+    let fixture = Fixture {
+        server: Some("http://localhost:3000/".to_owned()),
+        ..Fixture::new(
+            refused("http://localhost:3000/invoices"),
+            Library::default(),
+        )
+    };
+    let (mut harness, seen) = mount(fixture);
+    harness.get_by_label("Can't reach localhost:3000");
+    assert_eq!(seen.borrow().page_rect, None, "the page view must hide");
+    harness.get_by_label("Run server").click();
+    harness.run();
+    assert_eq!(seen.borrow().intents, vec![BrowserIntent::RunServer]);
+}
+
+#[test]
+fn another_site_s_failure_page_only_tries_again() {
+    let fixture = Fixture {
+        server: Some("http://localhost:3000/".to_owned()),
+        ..Fixture::new(refused("http://localhost:6006/"), Library::default())
+    };
+    let (mut harness, seen) = mount(fixture);
+    assert!(harness.query_by_label("Run server").is_none());
+    harness.get_by_label("Try again").click();
+    harness.run();
+    assert_eq!(
+        seen.borrow().intents,
+        vec![BrowserIntent::Navigate(Navigation::Reload)]
+    );
+}
+
+#[test]
+fn a_finished_download_reveals_its_file_then_its_row_closes() {
+    let path = std::path::PathBuf::from("/Users/me/Downloads/invoices.csv");
+    let page = PageState {
+        downloads: vec![Download {
+            id: 0,
+            file_name: "invoices.csv".to_owned(),
+            path: Some(path.clone()),
+            status: DownloadStatus::Done,
+        }],
+        ..page_at("http://localhost:3000/invoices")
+    };
+    let (mut harness, seen) = pane(page, Library::default());
+    harness.get_by_label("Show in Finder").click();
+    harness.run();
+    assert_eq!(
+        seen.borrow().intents,
+        vec![BrowserIntent::RevealDownload(path)]
+    );
+    harness.get_by_label("Dismiss").click();
+    harness.run();
+    assert!(harness.query_by_label("invoices.csv").is_none());
+}
+
+fn split_with(partner: PageState, width: f32) -> Fixture {
+    Fixture {
+        partner: Some(partner),
+        width,
+        ..Fixture::new(page_at("http://localhost:3000/admin"), Library::default())
+    }
+}
+
+#[test]
+fn a_split_shows_the_partner_on_the_right_of_the_shown_page() {
+    let (_harness, seen) = mount(split_with(page_at("https://docs.rs/"), 900.0));
+    let seen = seen.borrow();
+    let (shown, partner) = (seen.page_rect.unwrap(), seen.partner_rect.unwrap());
+    assert!(shown.right() < partner.left(), "{shown:?} then {partner:?}");
+    assert!(shown.width() >= 320.0 && partner.width() >= 320.0);
+}
+
+#[test]
+fn a_panel_too_narrow_for_two_halves_shows_the_shown_page_alone() {
+    let (_harness, seen) = mount(split_with(page_at("https://docs.rs/"), 600.0));
+    assert!(seen.borrow().page_rect.is_some());
+    assert_eq!(seen.borrow().partner_rect, None);
+}
+
+#[test]
+fn the_partner_s_start_page_answers_for_the_partner() {
+    let fixture = Fixture {
+        library: library_with_docs(),
+        ..split_with(PageState::default(), 900.0)
+    };
+    let (mut harness, seen) = mount(fixture);
+    harness.get_by_label("Docs").click();
+    harness.run();
+    let seen = seen.borrow();
+    assert_eq!(
+        seen.partner_intents,
+        vec![BrowserIntent::Open("https://docs.rs/".to_owned())]
+    );
+    assert!(seen.intents.contains(&BrowserIntent::ShowPartner));
+}
+
+#[test]
+fn a_tab_s_menu_splits_it_with_the_shown_tab() {
+    let (mut harness, seen) = mount(five_tabs(900.0));
+    harness.get_by_label("Docs").click_secondary();
+    harness.run();
+    harness.get_by_label("Split with Current Tab").click();
+    harness.run();
+    assert_eq!(seen.borrow().intents, vec![BrowserIntent::SplitWith(1)]);
+}
+
+#[test]
+fn a_tab_dropped_on_the_page_s_right_side_joins_the_shown_tab_there() {
+    let (mut harness, seen) = mount(five_tabs(900.0));
+    let docs = harness.get_by_label("Docs").rect().center();
+    let page = seen.borrow().page_rect.unwrap();
+    let right_side = egui::pos2(page.right() - 80.0, page.center().y);
+    harness.event(egui::Event::PointerMoved(docs));
+    harness.event(egui::Event::PointerButton {
+        pos: docs,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+    for step in 1..=8 {
+        harness.event(egui::Event::PointerMoved(
+            docs.lerp(right_side, step as f32 / 8.0),
+        ));
+        harness.run();
+    }
+    assert!(
+        harness.query_by_label("Open on the right").is_none(),
+        "painted, not a widget"
+    );
+    harness.event(egui::Event::PointerButton {
+        pos: right_side,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+    assert_eq!(seen.borrow().intents, vec![BrowserIntent::SplitWith(1)]);
 }

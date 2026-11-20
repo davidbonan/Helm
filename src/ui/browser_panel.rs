@@ -3,9 +3,11 @@
 //! page's last snapshot, else the start page).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use lucide_icons::Icon;
 
+use crate::browser::dialog::DialogAnswer;
 use crate::browser::favicons;
 use crate::browser::fold::ToolbarFold;
 use crate::browser::import::{ImportSource, ImportStatus};
@@ -14,6 +16,11 @@ use crate::browser::page_view::{PageView, Viewport, ZoomChange};
 use crate::browser::{url, Navigation, PageState};
 use crate::tab_drop::TabDrop;
 use crate::theme::Palette;
+use crate::ui::browser_downloads::{download_shelf, shelf_height, shelved, Shelf};
+use crate::ui::browser_split::{
+    fits, right_drop_zone, split_halves, Halves, PartnerOutput, SplitArea, SplitPartner,
+    CARD_RADIUS,
+};
 use crate::ui::browser_start_page::{elided, paint_badge, Badge, FavoritesView};
 use crate::ui::picker::{Choice, Segments};
 use crate::ui::spinner::Spinner;
@@ -79,6 +86,10 @@ const VIEWPORT_SEGMENT: egui::Vec2 = egui::vec2(60.0, 26.0);
 const FIND_ROW_HEIGHT: f32 = 34.0;
 const FIND_FIELD_WIDTH: f32 = 240.0;
 const FIND_HINT: &str = "Find in page";
+pub const FULL_WINDOW_LABEL: &str = "Full window";
+pub const SPLIT_WITH_CURRENT_LABEL: &str = "Split with Current Tab";
+pub const UNSPLIT_LABEL: &str = "Unsplit";
+pub const CLOSE_TAB_LABEL: &str = "Close Tab";
 
 /// The URL field of one tab.
 #[derive(Debug, Default)]
@@ -104,6 +115,10 @@ pub struct BrowserTabState {
     /// The page's last snapshot, drawn under the native view: what shows while
     /// egui draws over the page (browser.md §4).
     pub backdrop: Option<egui::TextureHandle>,
+    /// The text typed in the page's prompt while it waits (browser.md §12).
+    pub dialog_field: Option<String>,
+    /// The downloads whose shelf row was closed (browser.md §13).
+    pub dismissed_downloads: Vec<u64>,
 }
 
 impl BrowserTabState {
@@ -148,6 +163,8 @@ impl TabSummary {
 pub struct TabStrip {
     pub tabs: Vec<TabSummary>,
     pub active: usize,
+    /// The split's two tabs (browser.md §16).
+    pub pair: Option<(usize, usize)>,
 }
 
 /// What the browser panel draws: the shown tab's page and state, and its tabs.
@@ -155,6 +172,8 @@ pub struct BrowserPanelView<'a> {
     pub page: &'a PageState,
     pub tab: &'a mut BrowserTabState,
     pub strip: &'a TabStrip,
+    /// The shown tab's split partner (browser.md §16).
+    pub partner: Option<SplitPartner<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -197,8 +216,22 @@ pub enum BrowserIntent {
     MoveTab(TabDrop),
     /// Out of the sidebar, onto the floating panel (browser.md §11).
     Float,
+    /// What the page's dialog gets back (browser.md §12).
+    AnswerDialog(DialogAnswer),
+    /// The failure page's Run server: the worktree's Run strip (browser.md §14).
+    RunServer,
+    RevealDownload(PathBuf),
     /// Off the floating panel, back into the sidebar.
     Dock,
+    /// Over the whole window, or back (browser.md §15).
+    ToggleFullWindow,
+    /// Tab `index` joins the shown one, on its right (browser.md §16).
+    SplitWith(usize),
+    Unsplit,
+    /// The split's divider dragged: the left half's new share.
+    ResizeSplit(f32),
+    /// A press in the partner's half: it becomes the shown tab.
+    ShowPartner,
 }
 
 #[derive(Debug)]
@@ -208,14 +241,26 @@ pub struct BrowserPanelOutput {
     /// stands in its place.
     pub page_rect: Option<egui::Rect>,
     /// Rounding of the page's bottom corners, those of the block it sits in.
-    pub page_bottom_radius: f32,
+    pub page_corners: PageCorners,
     /// The suggestions fall over the page: it shows frozen beneath them.
     pub page_overlaid: bool,
+    /// The page waits on its dialog, drawn over it (browser.md §12).
+    pub page_blocked: bool,
     /// A press in the toolbar off its fields (the page's own clicks are the
     /// engine's).
     pub clicked: bool,
     /// The URL or find field holds the keyboard.
     pub field_focused: bool,
+    /// The partner's half, when the split shows.
+    pub partner: Option<PartnerOutput>,
+}
+
+/// How the page view's corners round: the bottom ones with the block it ends,
+/// all of them on a split half's card (browser.md §16).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PageCorners {
+    pub radius: f32,
+    pub rounds_top: bool,
 }
 
 /// What the browser panel reads from the app this frame.
@@ -223,6 +268,10 @@ pub struct BrowserChrome<'a> {
     pub palette: &'a Palette,
     /// The worktree's server URL (browser.md §5), if known.
     pub server: Option<&'a str>,
+    /// The worktree's Run strip runs its server.
+    pub server_running: bool,
+    /// The browser covers the whole window (browser.md §15).
+    pub full_window: bool,
     /// The project (group root) local favorites belong to (browser.md §7).
     pub project: &'a str,
     pub library: &'a Library,
@@ -242,11 +291,11 @@ impl BrowserChrome<'_> {
 /// else the palette's own (browser.md §4).
 pub(super) struct BarColors {
     pub(super) fill: egui::Color32,
-    ink: egui::Color32,
-    secondary: egui::Color32,
-    muted: egui::Color32,
+    pub(super) ink: egui::Color32,
+    pub(super) secondary: egui::Color32,
+    pub(super) muted: egui::Color32,
     disabled: egui::Color32,
-    button_hover: egui::Color32,
+    pub(super) button_hover: egui::Color32,
     pill: RaisedPill,
     accent: egui::Color32,
     accent_subtle: egui::Color32,
@@ -380,10 +429,15 @@ pub fn browser_panel(
     chrome: &BrowserChrome<'_>,
     view: BrowserPanelView<'_>,
 ) -> BrowserPanelOutput {
-    let BrowserPanelView { page, tab, strip } = view;
+    let BrowserPanelView {
+        page,
+        tab,
+        strip,
+        partner,
+    } = view;
     let palette = chrome.palette;
     let panel = ui.available_rect_before_wrap();
-    let shows_page = !(tab.start_page || page.url.is_empty());
+    let shows_page = shows_live_page(page, tab);
     let folded = shows_page && toolbar_folded(ui, page, tab, panel);
     let fold =
         ui.ctx()
@@ -392,8 +446,7 @@ pub fn browser_panel(
     let find_height = if finding { FIND_ROW_HEIGHT } else { 0.0 };
     let full_height = BAR_HEIGHT + TAB_ROW_HEIGHT + find_height;
     let bar_height = egui::lerp(full_height..=FOLDED_BAR_HEIGHT, fold);
-    let (bar_rect, page_area) = panel.split_top_bottom_at_y(panel.top() + bar_height);
-    let viewport = viewport_rect(page_area, tab.page_view.viewport);
+    let (bar_rect, below_bar) = panel.split_top_bottom_at_y(panel.top() + bar_height);
     let colors = BarColors::new(ui, palette, page.tint.filter(|_| shows_page));
     ui.painter().rect_filled(bar_rect, 0.0, colors.fill);
     let page_fill = if colors.tinted {
@@ -401,27 +454,32 @@ pub fn browser_panel(
     } else {
         palette.bg_surface
     };
-    ui.painter().rect_filled(page_area, 0.0, page_fill);
-    if shows_page {
-        if viewport != page_area {
-            ui.painter().rect_filled(page_area, 0.0, palette.bg_sidebar);
-            ui.painter().rect_filled(viewport, 0.0, page_fill);
-        }
-        paint_backdrop(ui, tab.backdrop.as_ref(), viewport);
-    }
     if folded {
         if folded_toolbar(ui, &colors, bar_rect, &page.url) {
             tab.fold.unfold();
             tab.address.focus_requested = true;
         }
+        let area = PageArea {
+            page,
+            tab,
+            fill: page_fill,
+            with_shelf: true,
+            split: partner.map(|partner| SplitArea {
+                partner,
+                backing: colors.fill,
+            }),
+        };
+        let content = page_content(&mut child_at(ui, below_bar), chrome, area);
         ui.advance_cursor_after_rect(panel);
         return BrowserPanelOutput {
-            intents: Vec::new(),
-            page_rect: Some(viewport),
-            page_bottom_radius: SIDEBAR_PAGE_RADIUS,
+            page_corners: content.corners(),
+            intents: content.intents,
+            page_rect: content.page_rect,
             page_overlaid: false,
+            page_blocked: content.blocked,
             clicked: false,
-            field_focused: false,
+            field_focused: content.field_focused,
+            partner: content.partner,
         };
     }
     let mut bar_ui_rect = bar_rect;
@@ -462,17 +520,20 @@ pub fn browser_panel(
         page,
     };
     intents.extend(more_menu(&mut bar_ui, &more, tab));
-    let page_rect = if shows_page {
-        Some(viewport)
-    } else {
-        intents.extend(crate::ui::browser_start_page::start_page(
-            ui,
-            chrome,
-            &mut tab.favorites,
-            page_area,
-        ));
-        None
+    let area = PageArea {
+        page,
+        tab: &mut *tab,
+        fill: page_fill,
+        with_shelf: true,
+        split: partner.map(|partner| SplitArea {
+            partner,
+            backing: colors.fill,
+        }),
     };
+    let mut content = page_content(&mut child_at(ui, below_bar), chrome, area);
+    intents.extend(std::mem::take(&mut content.intents));
+    let page_area = content.page_area;
+    intents.extend(right_drop_zone(ui, chrome, page_area, strip.active));
     let find_top = bar_rect.top() + BAR_HEIGHT;
     let find_area = bar_band(bar_rect, find_top, find_height);
     let mut find_focused = false;
@@ -493,8 +554,8 @@ pub fn browser_panel(
         };
         intents.extend(tab_row(ui, &row, row_area));
     }
-    let page_overlaid = !address.suggestions.is_empty();
-    if page_overlaid {
+    let suggesting = !address.suggestions.is_empty();
+    if suggesting {
         let list = SuggestionList {
             suggestions: &address.suggestions,
             selected: tab.address.selected,
@@ -506,12 +567,179 @@ pub fn browser_panel(
     ui.advance_cursor_after_rect(panel);
     BrowserPanelOutput {
         intents,
-        page_rect,
-        page_bottom_radius: SIDEBAR_PAGE_RADIUS,
-        page_overlaid,
+        page_rect: content.page_rect,
+        page_corners: content.corners(),
+        page_overlaid: suggesting,
+        page_blocked: content.blocked,
         clicked: pressed_in(ui, bar_rect) && !(address.pressed || find_pressed),
-        field_focused: address.has_focus || find_focused,
+        field_focused: address.has_focus || find_focused || content.field_focused,
+        partner: content.partner,
     }
+}
+
+/// The tab shows its page: not the start page, nor the failure page.
+pub(super) fn shows_live_page(page: &PageState, tab: &BrowserTabState) -> bool {
+    !(tab.start_page || page.url.is_empty()) && page.failure.is_none()
+}
+
+pub(super) fn child_at(ui: &mut egui::Ui, rect: egui::Rect) -> egui::Ui {
+    ui.new_child(egui::UiBuilder::new().max_rect(rect))
+}
+
+/// The page area: the tab's page and state, and the fill behind the page.
+pub(super) struct PageArea<'a> {
+    pub(super) page: &'a PageState,
+    pub(super) tab: &'a mut BrowserTabState,
+    pub(super) fill: egui::Color32,
+    /// The sidebar's downloads shelf at its foot (browser.md §13).
+    pub(super) with_shelf: bool,
+    /// The shown tab's split partner beside it (browser.md §16).
+    pub(super) split: Option<SplitArea<'a>>,
+}
+
+/// What fills the page area this frame.
+pub(super) struct PageContent {
+    pub(super) intents: Vec<BrowserIntent>,
+    /// What the page itself got, the shelf left out.
+    pub(super) page_area: egui::Rect,
+    pub(super) shelf_shown: bool,
+    /// Where the page view goes; `None` while egui draws a page of its own.
+    pub(super) page_rect: Option<egui::Rect>,
+    /// The page's dialog lies over it.
+    pub(super) blocked: bool,
+    pub(super) field_focused: bool,
+    /// The partner's half, when the split shows.
+    pub(super) partner: Option<PartnerOutput>,
+}
+
+impl PageContent {
+    /// The page's bottom corners round with the sidebar block's, unless the
+    /// shelf ends it.
+    fn corners(&self) -> PageCorners {
+        if self.partner.is_some() {
+            return PageCorners {
+                radius: CARD_RADIUS,
+                rounds_top: true,
+            };
+        }
+        let radius = if self.shelf_shown {
+            0.0
+        } else {
+            SIDEBAR_PAGE_RADIUS
+        };
+        PageCorners {
+            radius,
+            rounds_top: false,
+        }
+    }
+}
+
+/// Fills `ui`'s rect: the start page, the failure page (browser.md §14), or the
+/// page's place on its last snapshot, under the dialog it waits on (§12); then
+/// the downloads shelf.
+pub(super) fn page_content(
+    ui: &mut egui::Ui,
+    chrome: &BrowserChrome<'_>,
+    area: PageArea<'_>,
+) -> PageContent {
+    let PageArea {
+        page,
+        tab,
+        fill,
+        with_shelf,
+        split,
+    } = area;
+    let mut shelf = Vec::new();
+    if with_shelf {
+        shelf = shelved(&page.downloads, &tab.dismissed_downloads);
+    }
+    let whole = ui.max_rect();
+    let (area, shelf_area) =
+        whole.split_top_bottom_at_y(whole.bottom() - shelf_height(shelf.len()));
+    let shown = PageArea {
+        page,
+        tab: &mut *tab,
+        fill,
+        with_shelf: false,
+        split: None,
+    };
+    let mut content = match split {
+        Some(split) if fits(area, split.partner.share) => {
+            split_halves(&mut child_at(ui, area), chrome, Halves { shown, split })
+        }
+        _ => page_view_content(&mut child_at(ui, area), chrome, shown),
+    };
+    if !shelf.is_empty() {
+        let shelf = Shelf {
+            rows: &shelf,
+            dismissed: &mut tab.dismissed_downloads,
+            bottom_radius: crate::ui::sidebar_block::BLOCK_RADIUS,
+        };
+        let palette = chrome.palette;
+        content.intents.extend(download_shelf(
+            &mut child_at(ui, shelf_area),
+            palette,
+            shelf,
+        ));
+        content.shelf_shown = true;
+    }
+    content
+}
+
+pub(super) fn page_view_content(
+    ui: &mut egui::Ui,
+    chrome: &BrowserChrome<'_>,
+    view: PageArea<'_>,
+) -> PageContent {
+    let PageArea {
+        page,
+        tab,
+        fill: page_fill,
+        ..
+    } = view;
+    let area = ui.max_rect();
+    let mut content = PageContent {
+        intents: Vec::new(),
+        page_area: area,
+        shelf_shown: false,
+        page_rect: None,
+        blocked: false,
+        field_focused: false,
+        partner: None,
+    };
+    ui.painter().rect_filled(area, 0.0, page_fill);
+    if tab.start_page || page.url.is_empty() {
+        content.intents =
+            crate::ui::browser_start_page::start_page(ui, chrome, &mut tab.favorites, area);
+        return content;
+    }
+    if let Some(failure) = &page.failure {
+        content.intents = crate::ui::browser_failure_page::failure_page(ui, chrome, failure);
+        return content;
+    }
+    let viewport = viewport_rect(area, tab.page_view.viewport);
+    if viewport != area {
+        ui.painter()
+            .rect_filled(area, 0.0, chrome.palette.bg_sidebar);
+        ui.painter().rect_filled(viewport, 0.0, page_fill);
+    }
+    paint_backdrop(ui, tab.backdrop.as_ref(), viewport);
+    content.page_rect = Some(viewport);
+    let Some(dialog) = &page.dialog else {
+        return content;
+    };
+    let card = crate::ui::browser_dialog::DialogCard {
+        dialog,
+        field: &mut tab.dialog_field,
+        area,
+    };
+    let outcome = crate::ui::browser_dialog::page_dialog(ui, chrome.palette, card);
+    content
+        .intents
+        .extend(outcome.answer.map(BrowserIntent::AnswerDialog));
+    content.blocked = true;
+    content.field_focused = outcome.field_focused;
+    content
 }
 
 /// The band of the bar from `top`, `height` high, clipped to the bar while it
@@ -522,7 +750,7 @@ fn bar_band(bar: egui::Rect, top: f32, height: f32) -> egui::Rect {
 
 /// Where the page goes in `area` (browser.md §4 *Viewport*): all of it, or the
 /// viewport's width centered.
-pub(super) fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect {
+fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect {
     match viewport.width() {
         Some(width) if width < area.width() => {
             egui::Rect::from_center_size(area.center(), egui::vec2(width, area.height()))
@@ -531,11 +759,7 @@ pub(super) fn viewport_rect(area: egui::Rect, viewport: Viewport) -> egui::Rect 
     }
 }
 
-pub(super) fn paint_backdrop(
-    ui: &egui::Ui,
-    backdrop: Option<&egui::TextureHandle>,
-    area: egui::Rect,
-) {
+fn paint_backdrop(ui: &egui::Ui, backdrop: Option<&egui::TextureHandle>, area: egui::Rect) {
     let Some(texture) = backdrop else {
         return;
     };
@@ -648,7 +872,7 @@ struct PageAction {
 }
 
 /// The toolbar's trailing actions: dev server, favorites.
-fn page_actions(chrome: &BrowserChrome<'_>, page: &PageState, start_page: bool) -> [PageAction; 2] {
+fn page_actions(chrome: &BrowserChrome<'_>, page: &PageState, start_page: bool) -> [PageAction; 3] {
     let server_label = match chrome.server {
         Some(server) => {
             let (host, path) = url::display_parts(server);
@@ -668,6 +892,18 @@ fn page_actions(chrome: &BrowserChrome<'_>, page: &PageState, start_page: bool) 
         BrowserIntent::ToggleStartPage,
     );
     favorites.button.active = has_page && start_page;
+    let (full_icon, full_label) = if chrome.full_window {
+        (Icon::Minimize2, crate::ui::browser_full_window::EXIT_LABEL)
+    } else {
+        (Icon::Maximize2, FULL_WINDOW_LABEL)
+    };
+    let mut full_window = action(
+        full_icon,
+        full_label.to_owned(),
+        true,
+        BrowserIntent::ToggleFullWindow,
+    );
+    full_window.button.active = chrome.full_window;
     [
         action(
             Icon::Server,
@@ -676,6 +912,7 @@ fn page_actions(chrome: &BrowserChrome<'_>, page: &PageState, start_page: bool) 
             BrowserIntent::LoadServer,
         ),
         favorites,
+        full_window,
     ]
 }
 
@@ -1515,17 +1752,26 @@ fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<Brow
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut row_ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(TAB_GAP, 0.0);
+            let pair = TabPair::of(strip);
+            let shows = |index: usize| index == strip.active || pair.shows(index);
+            let rects = tab_rects(ui.cursor().min, strip.tabs.len(), |index| {
+                if shows(index) {
+                    widths.shown
+                } else {
+                    widths.other
+                }
+            });
+            paint_tab_pair(ui, row, &pair, &rects);
             let mut intent = None;
             for (index, summary) in strip.tabs.iter().enumerate() {
-                let shown = index == strip.active;
-                let width = if shown { widths.shown } else { widths.other };
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(width, TAB_HEIGHT), egui::Sense::hover());
-                if shown && newly_shown {
+                let shown = shows(index);
+                let (rect, _) = ui.allocate_exact_size(rects[index].size(), egui::Sense::hover());
+                if index == strip.active && newly_shown {
                     ui.scroll_to_rect(rect, None);
                 }
-                let next_shown = index + 1 == strip.active;
-                if !shown && !next_shown && index + 1 < strip.tabs.len() {
+                let next_shown = shows(index + 1);
+                let inside_pair = pair.joins(index, index + 1);
+                if !shown && !next_shown && !inside_pair && index + 1 < strip.tabs.len() {
                     let middle = lit_rect(rect).center().y;
                     ui.painter().vline(
                         rect.right() + TAB_GAP / 2.0,
@@ -1538,6 +1784,9 @@ fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<Brow
                     summary,
                     rect,
                     shown,
+                    active: index == strip.active,
+                    paired: pair.holds(index),
+                    folded_in: pair.adjacent && pair.shown && pair.holds(index),
                 };
                 intent = intent.or_else(|| tab_chip(ui, row, &tab));
             }
@@ -1550,13 +1799,99 @@ fn tab_row(ui: &mut egui::Ui, row: &TabRow<'_>, area: egui::Rect) -> Option<Brow
 }
 
 /// Drag payload of a tab being moved: its index in the row.
-struct DraggedTab(usize);
+pub(super) struct DraggedTab(pub(super) usize);
 
 struct Tab<'a> {
     index: usize,
     summary: &'a TabSummary,
     rect: egui::Rect,
+    /// Its page shows: the shown tab, or its split partner.
     shown: bool,
+    /// The toolbar's: the shown tab.
+    active: bool,
+    /// One of the split's two.
+    paired: bool,
+    /// Drawn inside the pair's one folder tab.
+    folded_in: bool,
+}
+
+/// The split's two tabs in the row (browser.md §16).
+struct TabPair {
+    tabs: Option<(usize, usize)>,
+    /// The shown tab is one of them: both show.
+    shown: bool,
+    /// Next to each other in the row.
+    adjacent: bool,
+}
+
+impl TabPair {
+    fn of(strip: &TabStrip) -> Self {
+        let tabs = strip
+            .pair
+            .map(|(first, second)| (first.min(second), first.max(second)));
+        Self {
+            tabs,
+            shown: tabs
+                .is_some_and(|(first, second)| strip.active == first || strip.active == second),
+            adjacent: tabs.is_some_and(|(first, second)| second == first + 1),
+        }
+    }
+
+    fn holds(&self, index: usize) -> bool {
+        self.tabs
+            .is_some_and(|(first, second)| index == first || index == second)
+    }
+
+    fn shows(&self, index: usize) -> bool {
+        self.shown && self.holds(index)
+    }
+
+    /// `first` and `second` are the pair, side by side.
+    fn joins(&self, first: usize, second: usize) -> bool {
+        self.adjacent && self.tabs == Some((first, second))
+    }
+}
+
+/// Each tab's rect, laid left to right from `origin` as the row allocates them.
+fn tab_rects(origin: egui::Pos2, count: usize, width: impl Fn(usize) -> f32) -> Vec<egui::Rect> {
+    let mut left = origin.x;
+    (0..count)
+        .map(|index| {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(left, origin.y),
+                egui::vec2(width(index), TAB_HEIGHT),
+            );
+            left = rect.right() + TAB_GAP;
+            rect
+        })
+        .collect()
+}
+
+/// Shown and side by side, the pair makes one folder tab of two compartments, a
+/// hairline between them; unshown, a faint capsule groups them.
+fn paint_tab_pair(ui: &egui::Ui, row: &TabRow<'_>, pair: &TabPair, rects: &[egui::Rect]) {
+    let Some((first, second)) = pair.tabs.filter(|_| pair.adjacent) else {
+        return;
+    };
+    let (Some(first), Some(second)) = (rects.get(first), rects.get(second)) else {
+        return;
+    };
+    let union = first.union(*second);
+    if pair.shown {
+        paint_folder_tab(ui, union, &row.fills);
+        let middle = lit_rect(union).center().y;
+        ui.painter().vline(
+            first.right() + TAB_GAP / 2.0,
+            (middle - 7.0)..=(middle + 7.0),
+            egui::Stroke::new(1.0_f32, row.fills.divider),
+        );
+        return;
+    }
+    ui.painter().rect_filled(
+        lit_rect(union),
+        egui::CornerRadius::same(TAB_LIT_RADIUS),
+        with_alpha(row.fills.lit, 150),
+    );
 }
 
 /// One tab of the row: a click shows it, a drag moves it; its `×` (titled: on
@@ -1578,9 +1913,9 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     }
     let hovered = ui.rect_contains_pointer(rect);
-    if tab.shown {
+    if tab.shown && !tab.folded_in {
         paint_folder_tab(ui, rect, &row.fills);
-    } else if hovered {
+    } else if hovered && !tab.shown {
         ui.painter().rect_filled(
             lit_rect(rect),
             egui::CornerRadius::same(TAB_LIT_RADIUS),
@@ -1588,8 +1923,9 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         );
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, tab.shown, label)
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, tab.active, label)
     });
+    let menu = tab_menu(&response, tab);
     let middle = lit_rect(rect).center().y;
     let badge_x = if titled {
         rect.left() + 10.0 + TAB_BADGE_SIZE / 2.0
@@ -1616,10 +1952,10 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
         return Some(BrowserIntent::MoveTab(drop));
     }
     if titled {
-        let crossed = hovered || tab.shown;
+        let crossed = hovered || tab.active;
         let close_room = if crossed { TAB_CLOSE_SIZE } else { 0.0 };
         let text_left = badge_x + TAB_BADGE_SIZE / 2.0 + 7.0;
-        let ink = if tab.shown || hovered {
+        let ink = if tab.active || hovered {
             colors.ink
         } else {
             colors.secondary
@@ -1647,7 +1983,32 @@ fn tab_chip(ui: &mut egui::Ui, row: &TabRow<'_>, tab: &Tab<'_>) -> Option<Browse
     if response.middle_clicked() {
         return Some(BrowserIntent::CloseTab(tab.index));
     }
-    (response.clicked() && !tab.shown).then_some(BrowserIntent::SelectTab(tab.index))
+    if menu.is_some() {
+        return menu;
+    }
+    (response.clicked() && !tab.active).then_some(BrowserIntent::SelectTab(tab.index))
+}
+
+/// A tab's right-click menu: split it with the shown tab, unsplit, close.
+fn tab_menu(response: &egui::Response, tab: &Tab<'_>) -> Option<BrowserIntent> {
+    let mut picked = None;
+    egui::Popup::context_menu(response)
+        .style(crate::theme::menu_style)
+        .show(|ui| {
+            if !tab.active && ui.button(SPLIT_WITH_CURRENT_LABEL).clicked() {
+                picked = Some(BrowserIntent::SplitWith(tab.index));
+            }
+            if tab.paired && ui.button(UNSPLIT_LABEL).clicked() {
+                picked = Some(BrowserIntent::Unsplit);
+            }
+            if ui.button(CLOSE_TAB_LABEL).clicked() {
+                picked = Some(BrowserIntent::CloseTab(tab.index));
+            }
+            if picked.is_some() {
+                ui.close();
+            }
+        });
+    picked
 }
 
 /// A tab dragged over this one: a line marks where it would land, on the side of

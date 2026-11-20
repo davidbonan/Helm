@@ -15,6 +15,8 @@ pub enum Cover {
     Overlay,
     /// No page to show: the start page, a background tab, or the pane not drawn.
     Away,
+    /// The page waits on its dialog: its engine takes no snapshot meanwhile.
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +58,11 @@ impl PageFreeze {
                 }
             }
             Cover::Overlay => self.overlay(snapshot_in, now),
+            Cover::Blocked => {
+                self.asked_at = None;
+                let pictured = std::mem::replace(&mut self.hidden, true);
+                FreezeStep::Hide { pictured }
+            }
         }
     }
 
@@ -122,6 +129,23 @@ mod tests {
         assert_eq!(
             freeze.step(Cover::Overlay, true, start + 2 * FRAME),
             FreezeStep::Snapshot
+        );
+    }
+
+    #[test]
+    fn a_blocked_page_hides_at_once_bare_unless_already_pictured() {
+        let start = Instant::now();
+        let mut shown = PageFreeze::default();
+        assert_eq!(
+            shown.step(Cover::Blocked, false, start),
+            FreezeStep::Hide { pictured: false }
+        );
+        let mut frozen = PageFreeze::default();
+        frozen.step(Cover::Overlay, false, start);
+        frozen.step(Cover::Overlay, true, start + FRAME);
+        assert_eq!(
+            frozen.step(Cover::Blocked, false, start + 2 * FRAME),
+            FreezeStep::Hide { pictured: true }
         );
     }
 

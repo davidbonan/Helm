@@ -28,6 +28,7 @@ is customizable from the Preferences page (§6).
 | `Cmd+B` | Show / hide the **workspace sidebar** (left), with animation. Visible by default |
 | `Cmd+G` | Show / hide the **git sidebar** (right), with animation. Hidden by default; also drivable via its title-row icon |
 | `Cmd+Shift+B` | Show / hide the **browser sidebar** (between the terminals and the git sidebar), its page taking the keyboard; also the title-row globe ([`browser.md`](browser.md) §3). Hidden by default |
+| `Cmd+Shift+Enter` | Enter / leave the browser's **full window** ([`browser.md`](browser.md) §15); shows the browser first if hidden. Without an active repo: no-op |
 | `Cmd+Shift+E` | Show / hide the active worktree's **files sidebar** (between the terminals and the browser sidebar); also the title-row folder ([`files.md`](files.md) §2). Hidden by default. Without an active repo: no-op |
 | `Cmd+Shift+G` | Toggle the center zone **Terminal ⇄ Git** (equivalent to the header switch, [`git.md`](git.md) §9; entering Graph reveals the git sidebar). Without an active repo: no-op |
 | `Cmd+R` | **Run / Relaunch** the active project's server in the Run strip ([`git.md`](git.md) §3): starts it, or relaunches it if already running. Reveals the git sidebar and expands the strip; with no command resolved, opens the inline editor. Without an active repo: no-op |
@@ -181,6 +182,7 @@ fixed. The §1–§3 tables are the defaults.
 | Global | `toggle-workspace-sidebar` | `Cmd+B` |
 | Global | `toggle-git-sidebar` | `Cmd+G` |
 | Global | `toggle-browser-sidebar` | `Cmd+Shift+B` |
+| Global | `toggle-browser-full-window` | `Cmd+Shift+Enter` |
 | Global | `toggle-graph` | `Cmd+Shift+G` |
 | Global | `toggle-files-sidebar` | `Cmd+Shift+E` |
 | Global | `next-repo` / `prev-repo` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |

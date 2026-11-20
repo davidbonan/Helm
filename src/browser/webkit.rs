@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use block2::RcBlock;
+use block2::{Block, RcBlock};
 use core_graphics::base::kCGImageAlphaPremultipliedLast;
 use core_graphics::color_space::{kCGColorSpaceSRGB, CGColorSpace};
 use core_graphics::context::CGContext;
@@ -15,28 +15,34 @@ use core_graphics::image::CGImageRef;
 use foreign_types::ForeignTypeRef;
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSColorSpace, NSDeleteCharacter, NSDeleteFunctionKey,
     NSDownArrowFunctionKey, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage,
-    NSLeftArrowFunctionKey, NSMenu, NSMenuItem, NSResponder, NSRightArrowFunctionKey,
-    NSUpArrowFunctionKey, NSView,
+    NSLeftArrowFunctionKey, NSMenu, NSMenuItem, NSModalResponse, NSModalResponseOK, NSOpenPanel,
+    NSResponder, NSRightArrowFunctionKey, NSUpArrowFunctionKey, NSView,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSDate, NSDictionary, NSError, NSHTTPCookie, NSHTTPCookieDomain,
-    NSHTTPCookieExpires, NSHTTPCookieName, NSHTTPCookiePath, NSHTTPCookieSecure, NSHTTPCookieValue,
-    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURLRequest, NSURL,
+    ns_string, MainThreadMarker, NSArray, NSData, NSDate, NSDictionary, NSError, NSHTTPCookie,
+    NSHTTPCookieDomain, NSHTTPCookieExpires, NSHTTPCookieName, NSHTTPCookiePath,
+    NSHTTPCookieSecure, NSHTTPCookieValue, NSHTTPURLResponse, NSNumber, NSObject, NSPoint,
+    NSProgressReporting, NSRect, NSSize, NSString, NSURLRequest, NSURLResponse, NSURL,
 };
 use objc2_web_kit::{
-    WKFindConfiguration, WKFindResult, WKNavigationAction, WKScriptMessage, WKScriptMessageHandler,
+    WKDownload, WKDownloadDelegate, WKFindConfiguration, WKFindResult, WKFrameInfo, WKNavigation,
+    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKNavigationResponse,
+    WKNavigationResponsePolicy, WKOpenPanelParameters, WKScriptMessage, WKScriptMessageHandler,
     WKSnapshotConfiguration, WKUIDelegate, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
     WKWindowFeatures,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use super::dialog::{DialogAnswer, DialogKind, PageDialog};
+use super::download::{self, Download, DownloadStatus};
 use super::keyboard::{self, CmdChord, CmdKey};
+use super::load_failure::{FailureReason, LoadFailure};
 use super::{favicons, Cookie, Navigation, PageSnapshot, PageState, ViewRect, WebEngine, WebView};
 
 const ICON_HANDLER: &str = "helmIcon";
@@ -69,16 +75,20 @@ const POINTER_REPORTER_JS: &str = "(() => {\
   document.addEventListener('mouseout', (event) => { if (!event.relatedTarget) report(false); }, { passive: true });\
 })();";
 
+/// Asks the UI for a frame: what a page tells of itself arrives off egui's input.
+type Wake = Rc<dyn Fn()>;
+
 pub struct WebKitEngine {
     host: Retained<NSView>,
     monitor: Retained<AnyObject>,
+    wake: Wake,
     mtm: MainThreadMarker,
 }
 
 impl WebKitEngine {
-    /// The engine of the window behind `window`; `None` off the main thread or
-    /// without an AppKit window.
-    pub fn attach(window: &impl HasWindowHandle) -> Option<Self> {
+    /// The engine of the window behind `window`, calling `wake` when a page
+    /// changes on its own; `None` off the main thread or without an AppKit window.
+    pub fn attach(window: &impl HasWindowHandle, wake: impl Fn() + 'static) -> Option<Self> {
         let mtm = MainThreadMarker::new()?;
         let RawWindowHandle::AppKit(appkit) = window.window_handle().ok()?.as_raw() else {
             return None;
@@ -87,7 +97,12 @@ impl WebKitEngine {
             unsafe { Retained::retain(appkit.ns_view.cast::<NSView>().as_ptr())? };
         let monitor = route_helm_chords(host.clone())?;
         add_edit_menu(mtm);
-        Some(Self { host, monitor, mtm })
+        Some(Self {
+            host,
+            monitor,
+            wake: Rc::new(wake),
+            mtm,
+        })
     }
 }
 
@@ -99,7 +114,7 @@ impl Drop for WebKitEngine {
 
 impl WebEngine for WebKitEngine {
     fn open(&self) -> Box<dyn WebView> {
-        Box::new(WebKitView::new(&self.host, self.mtm))
+        Box::new(WebKitView::new(&self.host, self.wake.clone(), self.mtm))
     }
 
     fn import_cookies(&self, cookies: &[Cookie]) -> usize {
@@ -143,10 +158,13 @@ fn ns_cookie(cookie: &Cookie) -> Option<Retained<NSHTTPCookie>> {
 struct WebKitView {
     /// The pane's page area. WebKit docks the inspector inside the web view's
     /// superview, so each page gets its own instead of the whole window.
-    frame: Retained<NSView>,
+    frame: Retained<PageFrame>,
     view: Retained<WKWebView>,
     host: Retained<NSView>,
-    _popups: Retained<OpenInPlace>,
+    /// Its dialogs, file pickers, popups.
+    ui: Retained<PageUi>,
+    /// Its failures and downloads.
+    navigation: Retained<PageNavigation>,
     /// What the page's scroll reporter last posted.
     scroll_y: Rc<Cell<f64>>,
     /// What the page's pointer reporter last posted: 1 while over the page.
@@ -155,8 +173,8 @@ struct WebKitView {
     icon: Rc<RefCell<Option<(String, String)>>>,
     /// Hidden while it had focus: focus comes back with it.
     refocus_on_show: bool,
-    /// The bottom corners' rounding last given to the frame's layer.
-    bottom_radius: f64,
+    /// The corners last given to the frame's layer.
+    corners: (f64, bool),
     /// The snapshot asked last, once WebKit hands it.
     snapshot: Rc<RefCell<Option<PageSnapshot>>>,
     /// Counts the snapshots asked: an answer to an older one is dropped.
@@ -166,12 +184,9 @@ struct WebKitView {
 }
 
 impl WebKitView {
-    fn new(host: &Retained<NSView>, mtm: MainThreadMarker) -> Self {
-        let scroll_y = Rc::new(Cell::new(0.0));
-        let pointer = Rc::new(Cell::new(0.0));
-        let icon = Rc::default();
-        let view = unsafe {
-            let config = WKWebViewConfiguration::new();
+    fn new(host: &Retained<NSView>, wake: Wake, mtm: MainThreadMarker) -> Self {
+        let config = unsafe { WKWebViewConfiguration::new() };
+        unsafe {
             config.setWebsiteDataStore(&WKWebsiteDataStore::defaultDataStore());
             // Private KVC key behind the "Inspect Element" context menu entry.
             let _: () = msg_send![
@@ -179,15 +194,35 @@ impl WebKitView {
                 setValue: &*NSNumber::numberWithBool(true),
                 forKey: ns_string!("developerExtrasEnabled")
             ];
-            report_number(&config, &NumberReport::SCROLL, &scroll_y, mtm);
-            report_number(&config, &NumberReport::POINTER, &pointer, mtm);
-            report_icon(&config, &icon, mtm);
-            WKWebView::initWithFrame_configuration(mtm.alloc(), NSRect::ZERO, &config)
+        }
+        Self::with_configuration(host, &config, wake, mtm)
+    }
+
+    /// A view on `config`: helm's own, or the one WebKit hands a popup, which
+    /// must be the popup's for its opener to reach it.
+    fn with_configuration(
+        host: &Retained<NSView>,
+        config: &WKWebViewConfiguration,
+        wake: Wake,
+        mtm: MainThreadMarker,
+    ) -> Self {
+        let scroll_y = Rc::new(Cell::new(0.0));
+        let pointer = Rc::new(Cell::new(0.0));
+        let icon = Rc::default();
+        let view = unsafe {
+            // A popup's configuration carries its opener's reporters: its own replace them.
+            config.setUserContentController(&WKUserContentController::new());
+            report_number(config, &NumberReport::SCROLL, &scroll_y, mtm);
+            report_number(config, &NumberReport::POINTER, &pointer, mtm);
+            report_icon(config, &icon, mtm);
+            WKWebView::initWithFrame_configuration(mtm.alloc(), NSRect::ZERO, config)
         };
-        let popups = OpenInPlace::new(mtm);
-        let frame = unsafe { NSView::initWithFrame(mtm.alloc(), NSRect::ZERO) };
+        let ui = PageUi::new(host.clone(), wake.clone(), mtm);
+        let navigation = PageNavigation::new(wake, mtm);
+        let frame = PageFrame::new(mtm);
         unsafe {
-            view.setUIDelegate(Some(ProtocolObject::from_ref(&*popups)));
+            view.setUIDelegate(Some(ProtocolObject::from_ref(&*ui)));
+            view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*navigation)));
             view.setAllowsBackForwardNavigationGestures(true);
             if view.respondsToSelector(sel!(setInspectable:)) {
                 view.setInspectable(true);
@@ -205,12 +240,13 @@ impl WebKitView {
             frame,
             view,
             host: host.clone(),
-            _popups: popups,
+            ui,
+            navigation,
             scroll_y,
             pointer,
             icon,
             refocus_on_show: false,
-            bottom_radius: 0.0,
+            corners: (0.0, false),
             snapshot: Rc::default(),
             snapshot_asks: Rc::default(),
             find_result: Rc::default(),
@@ -220,6 +256,8 @@ impl WebKitView {
 
 impl Drop for WebKitView {
     fn drop(&mut self) {
+        // WebKit raises if a dialog's completion handler dies uncalled.
+        self.answer_dialog(DialogAnswer::Cancel);
         if self.is_focused() {
             self.release_focus();
         }
@@ -239,19 +277,60 @@ impl WebKitView {
     }
 }
 
+declare_class!(
+    /// A page's area; clicks on its left edge strip, its ivar's width in points,
+    /// fall through to helm.
+    struct PageFrame;
+
+    unsafe impl ClassType for PageFrame {
+        #[inherits(NSResponder, NSObject)]
+        type Super = NSView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "HelmBrowserPageFrame";
+    }
+
+    impl DeclaredClass for PageFrame {
+        type Ivars = Cell<f64>;
+    }
+
+    unsafe impl PageFrame {
+        #[method_id(hitTest:)]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            if point.x - self.frame().origin.x < self.ivars().get() {
+                None
+            } else {
+                unsafe { msg_send_id![super(self), hitTest: point] }
+            }
+        }
+    }
+);
+
+impl PageFrame {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(Cell::new(0.0));
+        unsafe { msg_send_id![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
 /// `kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner`: the bottom corners of an
 /// unflipped view's layer.
 const BOTTOM_CORNERS: usize = 1 | 2;
+const ALL_CORNERS: usize = 1 | 2 | 4 | 8;
 
-/// Clips the page to the rounded bottom corners of the block it sits in.
-fn round_bottom_corners(frame: &NSView, radius: f64) {
+/// Clips the page to the rounded corners of the block it sits in.
+fn round_corners(frame: &NSView, radius: f64, rounds_top: bool) {
+    let corners = if rounds_top {
+        ALL_CORNERS
+    } else {
+        BOTTOM_CORNERS
+    };
     let layer: Option<Retained<AnyObject>> = unsafe { msg_send_id![frame, layer] };
     let Some(layer) = layer else {
         return;
     };
     unsafe {
         let _: () = msg_send![&*layer, setCornerRadius: radius];
-        let _: () = msg_send![&*layer, setMaskedCorners: BOTTOM_CORNERS];
+        let _: () = msg_send![&*layer, setMaskedCorners: corners];
         let _: () = msg_send![&*layer, setMasksToBounds: radius > 0.0];
     }
 }
@@ -277,9 +356,11 @@ impl WebView for WebKitView {
                 self.frame.setFrame(area);
             }
         }
-        if self.bottom_radius != rect.bottom_radius {
-            round_bottom_corners(&self.frame, rect.bottom_radius);
-            self.bottom_radius = rect.bottom_radius;
+        self.frame.ivars().set(rect.pass_through_left);
+        let corners = (rect.radius, rect.rounds_top);
+        if self.corners != corners {
+            round_corners(&self.frame, rect.radius, rect.rounds_top);
+            self.corners = corners;
         }
         if self.is_hidden() {
             self.frame.setHidden(false);
@@ -297,6 +378,13 @@ impl WebView for WebKitView {
     }
 
     fn navigate(&mut self, navigation: Navigation) {
+        let failed = self.navigation.ivars().failure.borrow().clone();
+        if let (Some(failure), Navigation::Reload | Navigation::ReloadFromOrigin) =
+            (failed, navigation)
+        {
+            self.load(&failure.url);
+            return;
+        }
         unsafe {
             match navigation {
                 Navigation::Back => drop(self.view.goBack()),
@@ -319,9 +407,11 @@ impl WebView for WebKitView {
         let icon_url = self.icon.borrow().as_ref().and_then(|(site, icon)| {
             (favicons::site_of(&url) == Some(site.as_str())).then(|| icon.clone())
         });
+        let failure = self.navigation.ivars().failure.borrow().clone();
+        let ui = self.ui.ivars();
         unsafe {
             PageState {
-                url,
+                url: failure.as_ref().map_or(url, |failure| failure.url.clone()),
                 title: self
                     .view
                     .title()
@@ -335,6 +425,14 @@ impl WebView for WebKitView {
                 scroll_y: self.scroll_y.get(),
                 pointer_over: self.pointer.get() > 0.0,
                 icon_url,
+                failure,
+                dialog: ui
+                    .dialog
+                    .borrow()
+                    .as_ref()
+                    .map(|asked| asked.dialog.clone()),
+                downloads: self.navigation.ivars().downloads.downloads(),
+                closed: ui.closed.get(),
             }
         }
     }
@@ -416,6 +514,21 @@ impl WebView for WebKitView {
 
     fn take_find_result(&mut self) -> Option<bool> {
         self.find_result.take()
+    }
+
+    fn answer_dialog(&mut self, answer: DialogAnswer) {
+        let asked = self.ui.ivars().dialog.borrow_mut().take();
+        if let Some(asked) = asked {
+            asked.reply.send(&answer);
+        }
+    }
+
+    fn take_opened(&mut self) -> Option<Box<dyn WebView>> {
+        let mut opened = self.ui.ivars().opened.borrow_mut();
+        if opened.is_empty() {
+            return None;
+        }
+        Some(Box::new(opened.remove(0)))
     }
 }
 
@@ -669,39 +782,468 @@ fn route_helm_chords(host: Retained<NSView>) -> Option<Retained<AnyObject>> {
     unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) }
 }
 
-declare_class!(
-    /// `target="_blank"` and `window.open` load in the same pane (browser.md §2).
-    struct OpenInPlace;
+/// The dialog a page waits on, and how to answer it.
+struct AskedDialog {
+    dialog: PageDialog,
+    reply: DialogReply,
+}
 
-    unsafe impl ClassType for OpenInPlace {
+/// The completion handler WebKit waits on: called once, always.
+enum DialogReply {
+    Alert(RcBlock<dyn Fn()>),
+    Confirm(RcBlock<dyn Fn(Bool)>),
+    Prompt(RcBlock<dyn Fn(*mut NSString)>),
+}
+
+impl DialogReply {
+    fn send(self, answer: &DialogAnswer) {
+        let accepted = matches!(answer, DialogAnswer::Accept(_));
+        match (self, answer) {
+            (Self::Alert(reply), _) => reply.call(()),
+            (Self::Confirm(reply), _) => reply.call((Bool::new(accepted),)),
+            (Self::Prompt(reply), DialogAnswer::Accept(text)) => {
+                let text = NSString::from_str(text);
+                reply.call((Retained::as_ptr(&text).cast_mut(),));
+            }
+            (Self::Prompt(reply), DialogAnswer::Cancel) => reply.call((std::ptr::null_mut(),)),
+        }
+    }
+}
+
+struct PageUiIvars {
+    host: Retained<NSView>,
+    wake: Wake,
+    /// Popups WebKit opened, not yet taken by a tab.
+    opened: RefCell<Vec<WebKitView>>,
+    dialog: RefCell<Option<AskedDialog>>,
+    /// The page called `window.close()`.
+    closed: Cell<bool>,
+}
+
+declare_class!(
+    /// A page's popups, dialogs and file pickers (browser.md §2, §12).
+    struct PageUi;
+
+    unsafe impl ClassType for PageUi {
         type Super = NSObject;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "HelmBrowserOpenInPlace";
+        const NAME: &'static str = "HelmBrowserPageUi";
     }
 
-    impl DeclaredClass for OpenInPlace {}
+    impl DeclaredClass for PageUi {
+        type Ivars = PageUiIvars;
+    }
 
-    unsafe impl NSObjectProtocol for OpenInPlace {}
+    unsafe impl NSObjectProtocol for PageUi {}
 
-    unsafe impl WKUIDelegate for OpenInPlace {
+    unsafe impl WKUIDelegate for PageUi {
         #[method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:)]
         fn create_web_view(
             &self,
-            web_view: &WKWebView,
-            _configuration: &WKWebViewConfiguration,
-            action: &WKNavigationAction,
+            _web_view: &WKWebView,
+            configuration: &WKWebViewConfiguration,
+            _action: &WKNavigationAction,
             _features: &WKWindowFeatures,
         ) -> Option<Retained<WKWebView>> {
-            unsafe { web_view.loadRequest(&action.request()) };
-            None
+            let ivars = self.ivars();
+            let popup = WebKitView::with_configuration(
+                &ivars.host,
+                configuration,
+                ivars.wake.clone(),
+                MainThreadMarker::from(self),
+            );
+            let view = popup.view.clone();
+            ivars.opened.borrow_mut().push(popup);
+            (ivars.wake)();
+            Some(view)
+        }
+
+        #[method(webViewDidClose:)]
+        fn did_close(&self, _web_view: &WKWebView) {
+            self.ivars().closed.set(true);
+            (self.ivars().wake)();
+        }
+
+        #[method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:)]
+        fn alert(
+            &self,
+            web_view: &WKWebView,
+            message: &NSString,
+            _frame: &WKFrameInfo,
+            reply: &Block<dyn Fn()>,
+        ) {
+            self.ask(web_view, DialogKind::Alert, message, DialogReply::Alert(reply.copy()));
+        }
+
+        #[method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:)]
+        fn confirm(
+            &self,
+            web_view: &WKWebView,
+            message: &NSString,
+            _frame: &WKFrameInfo,
+            reply: &Block<dyn Fn(Bool)>,
+        ) {
+            self.ask(web_view, DialogKind::Confirm, message, DialogReply::Confirm(reply.copy()));
+        }
+
+        #[method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:)]
+        fn prompt(
+            &self,
+            web_view: &WKWebView,
+            message: &NSString,
+            default: Option<&NSString>,
+            _frame: &WKFrameInfo,
+            reply: &Block<dyn Fn(*mut NSString)>,
+        ) {
+            let kind = DialogKind::Prompt {
+                default: default.map(NSString::to_string).unwrap_or_default(),
+            };
+            self.ask(web_view, kind, message, DialogReply::Prompt(reply.copy()));
+        }
+
+        #[method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:)]
+        fn open_panel(
+            &self,
+            web_view: &WKWebView,
+            parameters: &WKOpenPanelParameters,
+            _frame: &WKFrameInfo,
+            reply: &Block<dyn Fn(*mut NSArray<NSURL>)>,
+        ) {
+            choose_files(web_view, parameters, reply.copy(), MainThreadMarker::from(self));
         }
     }
 );
 
-impl OpenInPlace {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(());
+impl PageUi {
+    fn new(host: Retained<NSView>, wake: Wake, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(PageUiIvars {
+            host,
+            wake,
+            opened: RefCell::default(),
+            dialog: RefCell::default(),
+            closed: Cell::new(false),
+        });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    fn ask(&self, web_view: &WKWebView, kind: DialogKind, message: &NSString, reply: DialogReply) {
+        let dialog = PageDialog {
+            kind,
+            message: message.to_string(),
+            site: favicons::site_of(&view_url(web_view))
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        let earlier = self
+            .ivars()
+            .dialog
+            .replace(Some(AskedDialog { dialog, reply }));
+        if let Some(earlier) = earlier {
+            earlier.reply.send(&DialogAnswer::Cancel);
+        }
+        (self.ivars().wake)();
+    }
+}
+
+fn view_url(view: &WKWebView) -> String {
+    unsafe { view.URL().and_then(|url| url.absoluteString()) }
+        .map(|url| url.to_string())
+        .unwrap_or_default()
+}
+
+/// The page's `<input type="file">`: the open panel, as a sheet on the window.
+fn choose_files(
+    web_view: &WKWebView,
+    parameters: &WKOpenPanelParameters,
+    reply: RcBlock<dyn Fn(*mut NSArray<NSURL>)>,
+    mtm: MainThreadMarker,
+) {
+    let Some(window) = web_view.window() else {
+        reply.call((std::ptr::null_mut(),));
+        return;
+    };
+    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    unsafe {
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(parameters.allowsDirectories());
+        panel.setAllowsMultipleSelection(parameters.allowsMultipleSelection());
+    }
+    let chosen = panel.clone();
+    let done = RcBlock::new(move |response: NSModalResponse| {
+        if response != NSModalResponseOK {
+            reply.call((std::ptr::null_mut(),));
+            return;
+        }
+        let urls = unsafe { chosen.URLs() };
+        reply.call((Retained::as_ptr(&urls).cast_mut(),));
+    });
+    unsafe { panel.beginSheetModalForWindow_completionHandler(&window, &done) };
+}
+
+struct NavigationIvars {
+    wake: Wake,
+    failure: RefCell<Option<LoadFailure>>,
+    downloads: Retained<DownloadTracker>,
+}
+
+declare_class!(
+    /// A page's failed loads and the responses it saves instead of showing
+    /// (browser.md §13, §14).
+    struct PageNavigation;
+
+    unsafe impl ClassType for PageNavigation {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "HelmBrowserPageNavigation";
+    }
+
+    impl DeclaredClass for PageNavigation {
+        type Ivars = NavigationIvars;
+    }
+
+    unsafe impl NSObjectProtocol for PageNavigation {}
+
+    unsafe impl WKNavigationDelegate for PageNavigation {
+        #[method(webView:decidePolicyForNavigationAction:decisionHandler:)]
+        fn decide_action(
+            &self,
+            _web_view: &WKWebView,
+            action: &WKNavigationAction,
+            decide: &Block<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            let downloads = action.respondsToSelector(sel!(shouldPerformDownload))
+                && unsafe { action.shouldPerformDownload() };
+            decide.call((if downloads {
+                WKNavigationActionPolicy::Download
+            } else {
+                WKNavigationActionPolicy::Allow
+            },));
+        }
+
+        #[method(webView:decidePolicyForNavigationResponse:decisionHandler:)]
+        fn decide_response(
+            &self,
+            _web_view: &WKWebView,
+            response: &WKNavigationResponse,
+            decide: &Block<dyn Fn(WKNavigationResponsePolicy)>,
+        ) {
+            let served = unsafe { response.response() };
+            let saved = !unsafe { response.canShowMIMEType() } || is_attachment(&served);
+            decide.call((if saved {
+                WKNavigationResponsePolicy::Download
+            } else {
+                WKNavigationResponsePolicy::Allow
+            },));
+        }
+
+        #[method(webView:navigationAction:didBecomeDownload:)]
+        fn action_became_download(
+            &self,
+            _web_view: &WKWebView,
+            _action: &WKNavigationAction,
+            download: &WKDownload,
+        ) {
+            self.ivars().downloads.track(download);
+        }
+
+        #[method(webView:navigationResponse:didBecomeDownload:)]
+        fn response_became_download(
+            &self,
+            _web_view: &WKWebView,
+            _response: &WKNavigationResponse,
+            download: &WKDownload,
+        ) {
+            self.ivars().downloads.track(download);
+        }
+
+        #[method(webView:didStartProvisionalNavigation:)]
+        fn did_start(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.ivars().failure.replace(None);
+        }
+
+        #[method(webView:didFailProvisionalNavigation:withError:)]
+        fn did_fail(&self, web_view: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+            let reason = FailureReason::of_error(
+                &error.domain().to_string(),
+                error.code() as i64,
+                &error.localizedDescription().to_string(),
+            );
+            if let Some(reason) = reason {
+                let url = failing_url(error).unwrap_or_else(|| view_url(web_view));
+                self.fail(LoadFailure { url, reason });
+            }
+        }
+
+        #[method(webViewWebContentProcessDidTerminate:)]
+        fn did_crash(&self, web_view: &WKWebView) {
+            self.fail(LoadFailure {
+                url: view_url(web_view),
+                reason: FailureReason::Crashed,
+            });
+        }
+    }
+);
+
+impl PageNavigation {
+    fn new(wake: Wake, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(NavigationIvars {
+            downloads: DownloadTracker::new(wake.clone(), mtm),
+            wake,
+            failure: RefCell::default(),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+
+    fn fail(&self, failure: LoadFailure) {
+        self.ivars().failure.replace(Some(failure));
+        (self.ivars().wake)();
+    }
+}
+
+/// The URL a navigation failed on, as the error carries it.
+fn failing_url(error: &NSError) -> Option<String> {
+    let info = error.userInfo();
+    let value = info.get(ns_string!("NSErrorFailingURLStringKey"))?;
+    let is_string: bool = unsafe { msg_send![value, isKindOfClass: NSString::class()] };
+    if !is_string {
+        return None;
+    }
+    let text: &NSString = unsafe { &*(value as *const AnyObject).cast::<NSString>() };
+    Some(text.to_string())
+}
+
+fn is_attachment(response: &NSURLResponse) -> bool {
+    if !response.isKindOfClass(NSHTTPURLResponse::class()) {
+        return false;
+    }
+    let http: &NSHTTPURLResponse = unsafe { &*(response as *const NSURLResponse).cast() };
+    unsafe { http.valueForHTTPHeaderField(ns_string!("Content-Disposition")) }
+        .is_some_and(|disposition| download::is_attachment(&disposition.to_string()))
+}
+
+/// A download and what the shelf shows of it.
+struct Tracked {
+    download: Retained<WKDownload>,
+    record: Download,
+}
+
+struct DownloadIvars {
+    wake: Wake,
+    tracked: RefCell<Vec<Tracked>>,
+}
+
+declare_class!(
+    /// Writes a page's downloads into the Downloads folder (browser.md §13).
+    struct DownloadTracker;
+
+    unsafe impl ClassType for DownloadTracker {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "HelmBrowserDownloadTracker";
+    }
+
+    impl DeclaredClass for DownloadTracker {
+        type Ivars = DownloadIvars;
+    }
+
+    unsafe impl NSObjectProtocol for DownloadTracker {}
+
+    unsafe impl WKDownloadDelegate for DownloadTracker {
+        #[method(download:decideDestinationUsingResponse:suggestedFilename:completionHandler:)]
+        fn decide_destination(
+            &self,
+            download: &WKDownload,
+            _response: &NSURLResponse,
+            suggested: &NSString,
+            reply: &Block<dyn Fn(*mut NSURL)>,
+        ) {
+            let path = download::destination(&download::downloads_dir(), &suggested.to_string());
+            let url = unsafe { NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy())) };
+            self.edit(download, |record| {
+                record.file_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                record.path = Some(path.clone());
+            });
+            reply.call((Retained::as_ptr(&url).cast_mut(),));
+        }
+
+        #[method(downloadDidFinish:)]
+        fn did_finish(&self, download: &WKDownload) {
+            self.edit(download, |record| record.status = DownloadStatus::Done);
+        }
+
+        #[method(download:didFailWithError:resumeData:)]
+        fn did_fail(&self, download: &WKDownload, error: &NSError, _resume: Option<&NSData>) {
+            let reason = error.localizedDescription().to_string();
+            self.edit(download, |record| record.status = DownloadStatus::Failed(reason.clone()));
+        }
+    }
+);
+
+impl DownloadTracker {
+    fn new(wake: Wake, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(DownloadIvars {
+            wake,
+            tracked: RefCell::default(),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+
+    fn track(&self, download: &WKDownload) {
+        unsafe { download.setDelegate(Some(ProtocolObject::from_ref(self))) };
+        let mut tracked = self.ivars().tracked.borrow_mut();
+        let file_name = unsafe { download.originalRequest() }
+            .and_then(|request| unsafe { request.URL() })
+            .and_then(|url| unsafe { url.lastPathComponent() })
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+        let id = tracked.len() as u64;
+        tracked.push(Tracked {
+            download: download.retain(),
+            record: Download {
+                id,
+                file_name,
+                path: None,
+                status: DownloadStatus::Running(None),
+            },
+        });
+        drop(tracked);
+        (self.ivars().wake)();
+    }
+
+    fn edit(&self, download: &WKDownload, edit: impl FnOnce(&mut Download)) {
+        let mut tracked = self.ivars().tracked.borrow_mut();
+        let Some(entry) = tracked
+            .iter_mut()
+            .find(|entry| std::ptr::eq(&*entry.download, download))
+        else {
+            return;
+        };
+        edit(&mut entry.record);
+        drop(tracked);
+        (self.ivars().wake)();
+    }
+
+    /// Each download, its progress read now.
+    fn downloads(&self) -> Vec<Download> {
+        self.ivars()
+            .tracked
+            .borrow()
+            .iter()
+            .map(|entry| {
+                let mut record = entry.record.clone();
+                if let DownloadStatus::Running(_) = record.status {
+                    let progress = unsafe { entry.download.progress() };
+                    let known = unsafe { progress.totalUnitCount() } > 0;
+                    record.status = DownloadStatus::Running(
+                        known.then(|| unsafe { progress.fractionCompleted() } as f32),
+                    );
+                }
+                record
+            })
+            .collect()
     }
 }
 

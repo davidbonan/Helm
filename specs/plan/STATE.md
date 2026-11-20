@@ -6,6 +6,45 @@
 
 ---
 
+## ◐ Milestone — M-BrowserLayout · Full window and split
+
+Spec: [`specs/browser.md`](../browser.md) §15–16, [`keybindings.md`](../keybindings.md).
+Per the user: whole window under a thin title strip (`Cmd+Shift+Enter` + toolbar),
+two tabs side by side (tab menu + drag), nothing kept across launches. Counter: **2/3**.
+
+- ☑ **BL1 — Full window.** `Action::ToggleBrowserFullWindow`, `ui::browser_full_window`
+  (morph from the sidebar / floating panel, scrim, lift shadow, title strip + Exit
+  keycap). *Tests*: 1 app; headless capture (sidebar → mid-morph → full).
+- ☑ **BL2 — Split.** `browser::split`, `ui::browser_split` (cards, ring, divider, right
+  drop zone), tab pair in the row + tab menu, partner view placed, `ViewRect.rounds_top`.
+  *Tests*: 3 unit, 5 UI e2e, 2 app; headless capture (drop zone → split → narrow sidebar).
+- ☐ **BL3 — Manual check.** In the real app: morph, traffic lights clear of the strip,
+  two live pages side by side, divider drag, native click switching halves.
+
+## ◐ Milestone — M-BrowserGaps · Browser functional gaps
+
+Spec: [`specs/browser.md`](../browser.md) §2, §4, §12–14. Per the user: page dialogs
+on an in-page card, Downloads + shelf, `_blank`/`window.open` in a new tab, failure
+page with Run server. Counter: **5/6**.
+
+- ☑ **BG1 — Dialogs.** `browser::dialog`, `PageUi` (`WKUIDelegate`), `ui::browser_dialog`,
+  `Cover::Blocked`. *Tests*: 1 freeze unit, 2 UI e2e, 1 app; WebKit probe (confirm →
+  prompt → alert answered, title `c=true p=typed`; no snapshot while blocked).
+- ☑ **BG2 — File inputs.** Open panel sheet. *Tests*: WebKit probe (sheet attached, ended).
+- ☑ **BG3 — Downloads.** `browser::download`, `PageNavigation` policies, `DownloadTracker`,
+  `ui::browser_downloads`. *Tests*: 3 unit, 1 UI e2e; WebKit probe (attachment +
+  `<a download>` written to Downloads).
+- ☑ **BG4 — Popups in tabs.** `WebView::take_opened`, popup on WebKit's configuration,
+  `window.close()`. *Tests*: 1 app; WebKit probe (`_blank` noopener, `window.open`
+  opener kept, self-close).
+- ☑ **BG5 — Failure page.** `browser::load_failure`, `ui::browser_failure_page`, Run
+  server. *Tests*: 3 unit, 2 UI e2e; WebKit probe (refused port → `Refused`, cleared on
+  next load); headless dark + light `verify-artifacts/20261119_133425_97299/`.
+- ☐ **BG6 — Manual check in the real window.** Not done: card over a real page,
+  open panel by hand, Run server from the failure page, popup login flow.
+
+---
+
 ## ☑ Milestone — M-MdPreview · Markdown preview in the file viewer
 
 Spec: [`specs/files.md`](../files.md) §4.3. Per the user: a `.md` opens on its code,

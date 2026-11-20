@@ -1,17 +1,25 @@
 //! Browser pane (specs/browser.md): the engine port and the URL rules.
 
+pub mod dialog;
+pub mod download;
 pub mod favicons;
 pub mod fold;
 pub mod freeze;
 pub mod import;
 pub mod keyboard;
 pub mod library;
+pub mod load_failure;
 pub mod page_view;
 pub mod pip;
 pub mod sections;
+pub mod split;
 pub mod url;
 #[cfg(target_os = "macos")]
 pub mod webkit;
+
+use dialog::{DialogAnswer, PageDialog};
+use download::Download;
+use load_failure::LoadFailure;
 
 /// What the toolbar shows of the page.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -31,6 +39,14 @@ pub struct PageState {
     pub pointer_over: bool,
     /// The icon the page names (browser.md §10), once it reported it.
     pub icon_url: Option<String>,
+    /// Why the last load failed, until another starts (browser.md §14).
+    pub failure: Option<LoadFailure>,
+    /// What the page waits on the user for (browser.md §12).
+    pub dialog: Option<PageDialog>,
+    /// The files the page handed over, oldest first (browser.md §13).
+    pub downloads: Vec<Download>,
+    /// The page closed itself (`window.close()`).
+    pub closed: bool,
 }
 
 /// A rectangle in window points, origin top-left.
@@ -41,7 +57,12 @@ pub struct ViewRect {
     pub width: f64,
     pub height: f64,
     /// Rounding of the bottom corners, those of the block the page sits in.
-    pub bottom_radius: f64,
+    pub radius: f64,
+    /// The top corners round too: a split half's card (browser.md §16).
+    pub rounds_top: bool,
+    /// Width of the left edge whose clicks go to helm, not the page: the
+    /// sidebar's resize grab reaches over it.
+    pub pass_through_left: f64,
 }
 
 /// A picture of the page, standing in for the view while egui draws over it.
@@ -56,6 +77,7 @@ pub struct PageSnapshot {
 pub enum Navigation {
     Back,
     Forward,
+    /// After a failed load, tries it again.
     Reload,
     /// Reload bypassing the cache.
     ReloadFromOrigin,
@@ -104,4 +126,9 @@ pub trait WebView {
     fn find(&mut self, text: &str, backwards: bool);
     /// Whether the last `find` matched, once the engine answers.
     fn take_find_result(&mut self) -> Option<bool>;
+    /// Answers the page's dialog; none pending ⇒ nothing.
+    fn answer_dialog(&mut self, answer: DialogAnswer);
+    /// A page this one opened (`target="_blank"`, `window.open`), already
+    /// loading in its own view.
+    fn take_opened(&mut self) -> Option<Box<dyn WebView>>;
 }

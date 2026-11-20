@@ -3,10 +3,15 @@
 //! and persistence flush (M17-12). Free `render_pane` draws one split leaf.
 
 use super::browser_sidebar::{
-    render_browser_pip, render_browser_sidebar, server_url_from, WorktreeBrowser,
+    render_browser_full_window, render_browser_pip, render_browser_sidebar, server_url_from,
+    FullWindowDraw, WorktreeBrowser,
 };
 use super::*;
+use crate::ui::browser_full_window::FullWindowStage;
 use crate::ui::browser_pip::PipPlacement;
+
+/// How long the browser takes to grow over the window, or back (browser.md §15).
+const BROWSER_FULL_WINDOW_MOTION: f32 = 0.24;
 
 /// Borrow an open PR review (pull-requests.md §11) as the view struct the cockpit
 /// renders. Built in both `root_layout` arms (active repo / none), so it lives
@@ -538,6 +543,9 @@ impl HelmApp {
         }
         if action_pressed(ctx, &self.keymap, Action::ToggleBrowserSidebar) {
             self.toggle_browser();
+        }
+        if action_pressed(ctx, &self.keymap, Action::ToggleBrowserFullWindow) {
+            self.toggle_browser_full_window();
         }
         // ⌘⇧G (keybindings §1): keyboard equivalent of the header switch — consumed
         // by `render_page` with `switch_request` to share the enter/exit logic.
@@ -1239,19 +1247,45 @@ impl HelmApp {
                         .entry(run_key.clone())
                         .or_insert_with(|| WorktreeBrowser::opening(server_url.clone()))
                 });
-                let (sidebar_browser, floating_browser) = match browser {
-                    Some(browser) if browser_pip.floating => (None, Some(browser)),
-                    browser => (browser, None),
+                // Full window (browser.md §15) grows out of the sidebar or the
+                // floating panel and back: neither draws the browser meanwhile.
+                let full_window = browser.as_ref().is_some_and(|b| b.full_window)
+                    && !(agents_active || pr_active);
+                let full_progress = ctx.animate_bool_with_time_and_easing(
+                    egui::Id::new(("browser_full_window", &run_key)),
+                    full_window,
+                    BROWSER_FULL_WINDOW_MOTION,
+                    egui::emath::easing::cubic_out,
+                );
+                let (sidebar_browser, floating_browser, full_browser) = match browser {
+                    Some(browser) if full_progress > 0.0 => (None, None, Some(browser)),
+                    Some(browser) if browser_pip.floating => (None, Some(browser), None),
+                    browser => (browser, None, None),
                 };
+                let mut empty_browser_block = None;
+                let project_name = self
+                    .workspace
+                    .active()
+                    .and_then(|index| self.workspace.project_name(index))
+                    .unwrap_or_default();
+                let exit_full_window = keymap
+                    .shortcut_for(Action::ToggleBrowserFullWindow)
+                    .map(|s| s.display());
                 let files_were_shown = self.prefs.shows_files(&cwd);
                 let mut files_panel = crate::ui::FilesPanel {
                     shown: files_were_shown,
                     tree: &mut self.file_tree,
                 };
                 let browser_project = run_root.display().to_string();
+                let server_running = match self.caches.run_panes.get_mut(&run_key) {
+                    Some(TerminalState::Live(pane)) => pane.exit_code().is_none(),
+                    _ => false,
+                };
                 let browser_chrome = crate::ui::browser_panel::BrowserChrome {
                     palette: &palette,
                     server: server_url.as_deref(),
+                    server_running,
+                    full_window,
                     project: &browser_project,
                     library: &self.browser_library.library,
                     import: &self.browser_import.status,
@@ -1370,11 +1404,12 @@ impl HelmApp {
                             },
                         );
                     },
-                    |ui| {
-                        if let Some(browser) = sidebar_browser {
+                    |ui| match sidebar_browser {
+                        Some(browser) => {
                             browser_output =
                                 Some(render_browser_sidebar(ui, browser, &browser_chrome));
                         }
+                        None => empty_browser_block = Some(ui.available_rect_before_wrap()),
                     },
                     |ui| {
                         // The in-app conflict editor (conflicts.md §3) owns the whole
@@ -1680,6 +1715,25 @@ impl HelmApp {
                         render_browser_pip(ui, browser, &browser_chrome, placement);
                     browser_output = Some(output);
                     pip_moved = (browser_pip.frame != Some(frame)).then_some(frame);
+                }
+                if let Some(browser) = full_browser {
+                    let window = ui.ctx().content_rect();
+                    let edge = egui::Rect::from_x_y_ranges(
+                        (window.right() - 1.0)..=window.right(),
+                        window.y_range(),
+                    );
+                    let home = empty_browser_block
+                        .filter(|_| browser_was_shown && !browser_pip.floating)
+                        .unwrap_or_else(|| browser.home_or(edge));
+                    let stage = FullWindowStage {
+                        progress: full_progress,
+                        home,
+                        project: &project_name,
+                        branch: &branch_label,
+                        exit_shortcut: exit_full_window.as_deref(),
+                    };
+                    let draw = FullWindowDraw { browser, stage };
+                    browser_output = Some(render_browser_full_window(ui, &browser_chrome, draw));
                 }
                 // ⌘R (keybindings §1) runs the active project, or relaunches it when
                 // already running (run+relaunch share one apply path). Reveal the git

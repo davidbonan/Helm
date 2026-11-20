@@ -5059,7 +5059,7 @@ fn viewer_and_diff_notes_share_one_batch_that_send_hands_over_and_clears() {
 mod browser_sidebar {
     use super::*;
     use egui_kittest::kittest::Queryable;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     /// Frames run like the app's: keys, render, views.
@@ -5324,6 +5324,15 @@ mod browser_sidebar {
     struct FakePage {
         focused: Rc<Cell<bool>>,
         reloads: Rc<Cell<usize>>,
+        /// Popups the page opened, not yet taken.
+        popups: Rc<RefCell<Vec<FakePage>>>,
+        /// The page called `window.close()`.
+        closed: Rc<Cell<bool>>,
+        dialog: Rc<RefCell<Option<crate::browser::dialog::PageDialog>>>,
+        answers: Rc<RefCell<Vec<crate::browser::dialog::DialogAnswer>>>,
+        title: &'static str,
+        /// Where the view was last placed.
+        placed: Rc<Cell<Option<crate::browser::ViewRect>>>,
     }
 
     impl crate::browser::WebEngine for FakePage {
@@ -5336,7 +5345,9 @@ mod browser_sidebar {
     }
 
     impl crate::browser::WebView for FakePage {
-        fn place(&mut self, _: Option<crate::browser::ViewRect>) {}
+        fn place(&mut self, rect: Option<crate::browser::ViewRect>) {
+            self.placed.set(rect);
+        }
         fn load(&mut self, _: &str) {}
         fn navigate(&mut self, navigation: crate::browser::Navigation) {
             if navigation == crate::browser::Navigation::Reload {
@@ -5344,7 +5355,13 @@ mod browser_sidebar {
             }
         }
         fn page(&self) -> crate::browser::PageState {
-            crate::browser::PageState::default()
+            crate::browser::PageState {
+                url: "http://localhost:3000/".to_owned(),
+                title: self.title.to_owned(),
+                closed: self.closed.get(),
+                dialog: self.dialog.borrow().clone(),
+                ..crate::browser::PageState::default()
+            }
         }
         fn focus(&mut self) {
             self.focused.set(true);
@@ -5362,6 +5379,148 @@ mod browser_sidebar {
         fn take_find_result(&mut self) -> Option<bool> {
             None
         }
+        fn answer_dialog(&mut self, answer: crate::browser::dialog::DialogAnswer) {
+            self.dialog.replace(None);
+            self.answers.borrow_mut().push(answer);
+        }
+        fn take_opened(&mut self) -> Option<Box<dyn crate::browser::WebView>> {
+            let popup = self.popups.borrow_mut().pop()?;
+            Some(Box::new(popup))
+        }
+    }
+
+    fn browser_on(page: &FakePage, dir: &Path) -> egui_kittest::Harness<'static, HelmApp> {
+        let mut app = with_dev_server(dir);
+        app.web_engine = Some(Box::new(page.clone()));
+        let mut harness = harness(app);
+        open_browser(&mut harness);
+        harness
+    }
+
+    #[test]
+    fn cmd_shift_enter_grows_the_hidden_browser_over_the_window_and_exit_brings_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness(with_dev_server(dir.path()));
+        let full = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        harness.key_press_modifiers(full, egui::Key::Enter);
+        harness.run();
+        assert!(harness.state().shows_browser());
+        harness
+            .get_all_by_label(crate::ui::browser_full_window::EXIT_LABEL)
+            .next()
+            .expect("exit button")
+            .click();
+        harness.run();
+        assert!(harness
+            .query_by_label(crate::ui::browser_full_window::EXIT_LABEL)
+            .is_none());
+        assert!(harness.state().shows_browser(), "back into its sidebar");
+    }
+
+    #[test]
+    fn a_tab_split_with_the_shown_one_shows_on_its_right_until_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage {
+            title: "Admin",
+            ..FakePage::default()
+        };
+        let mut harness = browser_on(&page, dir.path());
+        let docs = FakePage {
+            title: "Docs",
+            ..FakePage::default()
+        };
+        page.popups.borrow_mut().push(docs.clone());
+        harness.run();
+        page.focused.set(false);
+        let full = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        harness.key_press_modifiers(full, egui::Key::Enter);
+        harness.run();
+        harness.get_by_label("Admin").click_secondary();
+        // The open menu freezes the pages: their snapshot never comes here.
+        harness.run_steps(2);
+        harness
+            .get_by_label(crate::ui::browser_panel::SPLIT_WITH_CURRENT_LABEL)
+            .click();
+        harness.run();
+        let (shown, partner) = (docs.placed.get().unwrap(), page.placed.get().unwrap());
+        assert!(
+            shown.x + shown.width < partner.x,
+            "{shown:?} then {partner:?}"
+        );
+        assert!(partner.rounds_top && partner.radius > 0.0, "a rounded card");
+        harness.get_by_label("Admin").click_secondary();
+        // The open menu freezes the pages: their snapshot never comes here.
+        harness.run_steps(2);
+        harness
+            .get_by_label(crate::ui::browser_panel::CLOSE_TAB_LABEL)
+            .click();
+        harness.run();
+        assert_eq!(browser_tabs(&harness), 1);
+        assert!(!docs.placed.get().unwrap().rounds_top, "alone again");
+    }
+
+    #[test]
+    fn a_click_on_the_partner_s_page_makes_it_the_shown_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage {
+            title: "Admin",
+            ..FakePage::default()
+        };
+        let mut harness = browser_on(&page, dir.path());
+        let docs = FakePage {
+            title: "Docs",
+            ..FakePage::default()
+        };
+        page.popups.borrow_mut().push(docs.clone());
+        let full = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        harness.key_press_modifiers(full, egui::Key::Enter);
+        harness.run();
+        harness.get_by_label("Admin").click_secondary();
+        // The open menu freezes the pages: their snapshot never comes here.
+        harness.run_steps(2);
+        harness
+            .get_by_label(crate::ui::browser_panel::SPLIT_WITH_CURRENT_LABEL)
+            .click();
+        harness.run();
+        docs.focused.set(false);
+        page.focused.set(true);
+        harness.run();
+        let key = harness.state().active_repo_key().unwrap();
+        assert_eq!(harness.state().caches.browsers[&key].shown_title(), "Admin");
+    }
+
+    #[test]
+    fn escape_cancels_the_page_s_confirm() {
+        use crate::browser::dialog::{DialogAnswer, DialogKind, PageDialog};
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage::default();
+        let mut harness = browser_on(&page, dir.path());
+        page.dialog.replace(Some(PageDialog {
+            kind: DialogKind::Confirm,
+            message: "Leave this page?".to_owned(),
+            site: "localhost:3000".to_owned(),
+        }));
+        harness.run();
+        harness.get_by_label("Leave this page?");
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(*page.answers.borrow(), vec![DialogAnswer::Cancel]);
+        assert!(harness.query_by_label("Leave this page?").is_none());
+    }
+
+    #[test]
+    fn a_popup_the_page_opens_shows_in_a_tab_that_closes_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage::default();
+        let mut harness = browser_on(&page, dir.path());
+        let popup = FakePage::default();
+        page.popups.borrow_mut().push(popup.clone());
+        harness.run();
+        assert_eq!(browser_tabs(&harness), 2);
+        popup.closed.set(true);
+        harness.run();
+        assert_eq!(browser_tabs(&harness), 1);
+        assert!(harness.state().shows_browser());
     }
 
     #[test]
@@ -5464,6 +5623,23 @@ mod browser_sidebar {
             "edge at {edge}, pointer at {}",
             to.x
         );
+    }
+
+    #[test]
+    fn the_page_lets_the_resize_grab_over_its_left_edge_through_to_helm() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = FakePage::default();
+        let mut harness = browser_on(&page, dir.path());
+        harness.run();
+        let placed = page.placed.get().expect("page placed");
+        let panel = egui::containers::panel::PanelState::load(
+            &harness.ctx,
+            egui::Id::new(crate::ui::BROWSER_SIDEBAR_ID),
+        )
+        .unwrap()
+        .rect;
+        let grab_reach = f64::from(panel.left() + crate::ui::BROWSER_RESIZE_GRAB);
+        assert_eq!(placed.x + placed.pass_through_left, grab_reach);
     }
 
     // run_ok: the dev server's PTY output keeps requesting repaints on slow runners.

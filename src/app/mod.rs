@@ -4907,8 +4907,10 @@ pub fn run(open_url: Option<String>) -> eframe::Result<()> {
             let mut app = HelmApp::from_prefs(prefs);
             #[cfg(target_os = "macos")]
             {
-                app.web_engine = crate::browser::webkit::WebKitEngine::attach(cc)
-                    .map(|engine| Box::new(engine) as Box<dyn crate::browser::WebEngine>);
+                let ctx = cc.egui_ctx.clone();
+                app.web_engine =
+                    crate::browser::webkit::WebKitEngine::attach(cc, move || ctx.request_repaint())
+                        .map(|engine| Box::new(engine) as Box<dyn crate::browser::WebEngine>);
             }
             app.prefs_path = crate::persistence::prefs_path();
             app.phone_devices = crate::remote::devices::PairedDevices::load();

@@ -7,11 +7,13 @@ terminals, to preview the worktree's dev server next to them.
 
 | In v1 | Out of v1 |
 |-------|-----------|
-| A **browser toggle** in the title bar (and `⌘⇧B`) shows a resizable sidebar between the terminals and the git sidebar | Several browsers side by side, a full-window browser |
+| A **browser toggle** in the title bar (and `⌘⇧B`) shows a resizable sidebar between the terminals and the git sidebar | More than two pages side by side, a separate macOS window |
 | **Picture in Picture**: the browser detached into a floating panel over the window (§11) | A separate macOS window, floating over other apps |
 | Native engine view (WebKit) over the sidebar, real input, IME, cursor, scroll | Chromium engine (CEF) — the engine port keeps it a drop-in (§2) |
-| Toolbar: back, forward, address pill (reload/stop inside), Dev server, Favorites, More (Find in page, page zoom, viewport width, Web Inspector, Open in Chrome, Copy URL) | Downloads, device emulation beyond the width |
-| Tabs per worktree: a tab row under the toolbar, reordered by dragging | `target="_blank"` in a new tab, a tab dragged out to its own browser |
+| Full window (§15) and two tabs side by side (§16), neither kept across launches | Split in Picture in Picture, a split of more than two |
+| Toolbar: back, forward, address pill (reload/stop inside), Dev server, Favorites, More (Find in page, page zoom, viewport width, Web Inspector, Open in Chrome, Copy URL) | Device emulation beyond the width, a downloads list beyond the tab's shelf |
+| Tabs per worktree: a tab row under the toolbar, reordered by dragging; `target="_blank"` and `window.open` in a new tab | A tab dragged out to its own browser |
+| Page dialogs (`alert`, `confirm`, `prompt`) on a card, file inputs on the open panel, downloads into Downloads, a failure page (§12–14) | HTTP authentication, a bypass of certificate errors, `beforeunload` prompts |
 | Default URL: the server the Run strip printed, else `localhost:$PORT` | Following the server after the first load, element picker, agent bridge |
 | One persistent profile shared by every worktree (cookies, storage survive restarts) | Per-worktree profiles, private mode |
 | Helm's `Cmd` shortcuts keep working while the page has focus | Tabs persisted across launches (terminals are not either) |
@@ -29,7 +31,12 @@ terminals, to preview the worktree's dev server next to them.
   `browser::WebView`: place, load, navigate, page state, focus, inspector). WebKit is
   the one adapter; a CEF adapter implements the same port without touching the sidebar.
 - Profile: the engine's default persistent data store, shared by every worktree.
-- `target="_blank"` links and `window.open` load **in the same tab**.
+- `target="_blank"` links and `window.open` open **a new tab**, shown right after
+  the opener's, its page made by WebKit on the opener's configuration (`window.opener`
+  kept for `window.open`, popup logins work). A page calling `window.close()`
+  closes its tab (the last one hides the sidebar, §4).
+- `<input type="file">` opens the system open panel as a sheet on the window
+  (multiple selection and folders as the input allows); cancelled ⇒ nothing chosen.
 - No engine (headless tests): the sidebar draws its toolbar and an empty page area.
 
 ## 3. Sidebar
@@ -143,6 +150,9 @@ terminals, to preview the worktree's dev server next to them.
     comes back at once.
   - A view leaving the screen (another tab shown, the start page, the sidebar
     not drawn) hides at once and takes a last snapshot, drawn while it comes back.
+  - A page waiting on its dialog (§12) takes no snapshot (its web process is
+    blocked): its view hides at once, the page area keeps a picture only if one
+    was already up, else its fill.
 
 ## 5. Default URL
 
@@ -302,5 +312,94 @@ full width.
   suggestions or pane drag freezes the page; a pane drag under the panel shows it
   frozen, not hidden.
 - **Keyboard**: §6 applies while the panel's page has focus, but for `Cmd+F`:
-  the panel has no find bar. `Cmd+T` opens a tab shown in the panel; `Cmd+W` on
+  the panel has no find bar. Dialogs (§12) and the failure page (§14) show in
+  the panel too; the downloads shelf (§13) does not (files still land). `Cmd+T` opens a tab shown in the panel; `Cmd+W` on
   the last tab hides the browser, the mode kept.
+
+## 12. Page dialogs
+
+- `alert`, `confirm` and `prompt` (any frame) show a **card** over the shown tab's
+  page area, its page frozen (§4 *Covered*) under a light scrim that takes the
+  clicks: **{site} says** (the page's host and port; *This page says* without
+  one), the message (wrapping, scrolling past 260 pt), a field for `prompt`
+  (seeded with its default, focused), then **Cancel** (not for `alert`) and
+  **OK**, right-aligned. 420 pt wide at most, 16 pt below the top of the page area.
+- `Enter` answers OK (the field's text for `prompt`), `Esc` Cancel; the page
+  takes the keyboard back. While the card is up, the browser keeps the keyboard
+  (no terminal gets `Enter`).
+- A dialog of a tab not shown waits until the tab is shown. A tab closing (or
+  its page dropped) answers Cancel.
+
+## 13. Downloads
+
+- A response the page cannot show, one sent as `Content-Disposition: attachment`,
+  or a link with `download` is **saved** instead of loaded: into the user's
+  Downloads folder, under its suggested name's last segment, numbered like
+  Finder while taken (`report (1).csv`). The page stays where it was.
+- **Shelf**: at the foot of the sidebar's page area, a row (34 pt) per download
+  of the shown tab, the 3 latest at most: status icon, file name, *Downloading…*
+  or its percent (and an accent bar along the row's foot), *Done* with **Show in
+  Finder**, or the failure's reason. A finished or failed row's `×` dismisses
+  it; the shelf goes with its last row. The page ends above it.
+
+## 14. Failure page
+
+- A load that fails before showing anything (nothing listening, host not found,
+  timeout, offline, TLS), or a page whose web process dies, shows a **failure
+  page** in the page area instead of the view: an icon for the reason, *Can't
+  reach {site}* (*This page stopped working* for a crash), the reason in words,
+  the URL, and **Try again**. The address pill shows the failed URL, the toolbar
+  its untinted colors.
+- **Try again**, reload and `Cmd+R` load the failed URL again; any new load
+  leaves the page.
+- Nothing listening on the worktree's own server (§5) while its Run strip is not
+  running ⇒ **Run server** first: runs it as `⌘R` does (git sidebar shown, strip
+  unfolded; no command yet ⇒ its editor opens). The page does not reload by itself.
+- A navigation replaced by another, or turned into a download, is no failure.
+
+## 15. Full window
+
+The worktree's browser over the whole window, under a thin title strip: the
+page at full size, the rest of helm a shortcut away.
+
+- **Toggle**: `Cmd+Shift+Enter` (rebindable, keybindings §6) and the toolbar's
+  **Full window** button (left of More, its icon a diagonal expand; pressed look
+  while full). The shortcut shows the browser first when hidden. `Esc` does not
+  leave it (pages use it). Not kept across launches; per worktree.
+- **Motion**: the browser grows out of where it was (the sidebar block, the
+  floating panel, else the window's right edge) to the whole window in 0.24 s
+  (ease out), its corners squaring and a soft shadow lifting it meanwhile, the
+  window behind dimmed; leaving runs it backwards. The page shows frozen during
+  the motion (§4 *Covered*), live at both ends.
+- **Title strip** (the title bar's height, the toolbar's tint so both read as one
+  bar): the traffic lights' room, then the project, a muted `/`, and the worktree's
+  branch in a chip; at the right, **Exit full window** with its keycap.
+- **Underneath**: the layout stays as it was (the browser sidebar's block empty),
+  hidden; terminals keep running. Modals, popups and Preferences cover it as they
+  cover the sidebar; the Agents and PR modes hide it (the mode is kept).
+- Picture in Picture leaves for full window and comes back after it.
+
+## 16. Two tabs side by side
+
+- **Split**: two tabs of a worktree's browser shown side by side, the tab shown
+  and its **partner**. One split per browser.
+  - A tab's right-click menu: **Split with Current Tab** (the tab joins the shown
+    one, on its right), **Unsplit**, **Close Tab**. Or a tab dragged onto the right
+    side of the page area: a drop zone lights up (the right half, *Open on the
+    right*); released, the tab joins the shown one there.
+  - The two tabs sit next to each other in the row: shown, they make one folder
+    tab of two compartments, a hairline between them; unshown, a faint capsule
+    groups them.
+  - Showing either tab shows both; showing another tab shows it alone (the split
+    stays). Closing either tab, or **Unsplit**, ends it.
+- **Layout**: the page area becomes two rounded cards (10 pt) on the toolbar's
+  tint, 6 pt apart and in from its edges; between them a divider, its grip shown
+  on hover, dragged to share the width (each card 320 pt at least; halves at
+  first). Where both cannot keep 320 pt (a narrow sidebar), only the shown tab
+  shows, the split kept.
+- **Active half**: the one the toolbar, the find bar, zoom and the keyboard act
+  on — the last one clicked. An accent ring (2 pt) circles it. A click in the
+  other half makes it active.
+- Each half shows its own start page, failure page or dialog; the downloads
+  shelf is the active tab's.
+- Not in Picture in Picture (the shown tab alone).

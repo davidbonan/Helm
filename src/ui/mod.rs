@@ -1,6 +1,11 @@
 pub mod agents_view;
+pub(crate) mod browser_dialog;
+pub(crate) mod browser_downloads;
+pub(crate) mod browser_failure_page;
+pub(crate) mod browser_full_window;
 pub mod browser_panel;
 pub(crate) mod browser_pip;
+pub mod browser_split;
 pub(crate) mod browser_start_page;
 pub mod command_palette;
 pub mod commit_detail;
@@ -66,6 +71,9 @@ const LEFT_SIDEBAR_FOOTER_ID: &str = "repos_footer";
 const RIGHT_SIDEBAR_ID: &str = "git";
 pub(crate) const BROWSER_SIDEBAR_ID: &str = "browser";
 const BROWSER_SIDEBAR_MIN_WIDTH: f32 = 320.0;
+/// How far each side of the browser sidebar's edge grabs its resize: the whole
+/// gap outside, the same width over the page, which lets it through.
+pub(crate) const BROWSER_RESIZE_GRAB: f32 = BLOCK_GAP as f32;
 const FILES_SIDEBAR_ID: &str = "files";
 const FILES_SIDEBAR_MIN_WIDTH: f32 = 200.0;
 const GIT_SIDEBAR_MIN_WIDTH: f32 = 260.0;
@@ -97,7 +105,7 @@ const SIDEBAR_PAD_Y: i8 = 8;
 // the native lights.
 pub(crate) const MACOS_TITLEBAR_INSET: i8 = 28;
 pub(crate) const TITLEBAR_HEIGHT: i8 = 40;
-const TRAFFIC_LIGHTS_RESERVE: f32 = 78.0;
+pub(crate) const TRAFFIC_LIGHTS_RESERVE: f32 = 78.0;
 
 pub(crate) fn section_label(palette: &Palette, text: &str) -> egui::RichText {
     egui::RichText::new(text.to_uppercase())
@@ -1084,9 +1092,14 @@ pub fn root_layout(
 
     let room_after_browser = SIDEBAR_CENTRAL_RESERVE + files_min;
     let browser_max = (ui.available_width() - room_after_browser).max(BROWSER_SIDEBAR_MIN_WIDTH);
-    // The native page swallows the inner half of the grab zone: the outer half spans the whole gap.
-    let grab_radius = ui.style().interaction.resize_grab_radius_side;
-    ui.style_mut().interaction.resize_grab_radius_side = f32::from(BLOCK_GAP);
+    let outer_style = ui.style().clone();
+    {
+        let style = ui.style_mut();
+        style.interaction.resize_grab_radius_side = BROWSER_RESIZE_GRAB;
+        // egui's edge highlight falls under the native page: paint_browser_resize_edge draws it.
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::NONE;
+    }
     egui::Panel::right(BROWSER_SIDEBAR_ID)
         .resizable(true)
         .default_size(browser_sidebar_width)
@@ -1095,10 +1108,11 @@ pub fn root_layout(
         .frame(block_panel_frame(palette))
         .show_separator_line(false)
         .show_animated_inside(ui, browser_shown, |ui| {
+            ui.set_style(outer_style.clone());
             ui.set_min_width(ui.available_width());
             sidebar_block(ui, palette, egui::Margin::ZERO, browser_panel);
         });
-    ui.style_mut().interaction.resize_grab_radius_side = grab_radius;
+    ui.set_style(outer_style);
 
     let files_max = (ui.available_width() - SIDEBAR_CENTRAL_RESERVE).max(FILES_SIDEBAR_MIN_WIDTH);
     egui::Panel::right(FILES_SIDEBAR_ID)
@@ -1127,6 +1141,7 @@ pub fn root_layout(
         })
         .response
         .rect;
+    paint_browser_resize_edge(ui);
 
     // Single title row: both clusters center vertically in the title strip so the
     // left sidebar toggle and the right actions share one baseline. The macOS
@@ -1198,6 +1213,30 @@ pub fn root_layout(
                 },
             )
         });
+}
+
+/// The browser sidebar's hovered or dragged edge, just outside it: inside, the
+/// native page would hide it.
+fn paint_browser_resize_edge(ui: &egui::Ui) {
+    let id = egui::Id::new(BROWSER_SIDEBAR_ID);
+    let ctx = ui.ctx();
+    // egui's own id for a panel's resize handle.
+    let (Some(panel), Some(resize)) = (
+        egui::containers::panel::PanelState::load(ctx, id),
+        ctx.read_response(id.with("__resize")),
+    ) else {
+        return;
+    };
+    let widgets = &ui.style().visuals.widgets;
+    let stroke = if resize.dragged() {
+        widgets.active.fg_stroke
+    } else if resize.hovered() {
+        widgets.hovered.fg_stroke
+    } else {
+        return;
+    };
+    let x = panel.rect.left() - 0.5 * stroke.width;
+    ui.painter().vline(x, panel.rect.y_range(), stroke);
 }
 
 /// The title-row actions; [`central_switch`] reads where they were last drawn.
@@ -1338,7 +1377,7 @@ fn sidebar_toggles(
 const TOP_ACTION_GAP: f32 = 6.0;
 /// Height of the line the terminals' switch, the title-row actions and the right
 /// blocks' headers are centered on, from the window's top.
-const TITLE_LINE_Y: f32 = BLOCK_GAP as f32 + git_panel::HEADER_BAND_H / 2.0;
+pub(crate) const TITLE_LINE_Y: f32 = BLOCK_GAP as f32 + git_panel::HEADER_BAND_H / 2.0;
 /// Room between the title-row actions and the first right sidebar block.
 const TITLE_ACTIONS_MARGIN: f32 = 8.0;
 const SHORTCUT_BADGE_DROP: f32 = 3.0;

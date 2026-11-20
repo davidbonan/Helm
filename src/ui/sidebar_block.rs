@@ -62,7 +62,7 @@ fn block_shadow(palette: &Palette) -> egui::Shadow {
 }
 
 /// Paints `ground` over each corner of `rect` outside its rounding.
-fn paint_corner_masks(
+pub(crate) fn paint_corner_masks(
     painter: &egui::Painter,
     rect: egui::Rect,
     radius: f32,

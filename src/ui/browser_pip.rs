@@ -6,8 +6,9 @@ use lucide_icons::Icon;
 use crate::browser::pip::{Grip, PipFrame, Side};
 use crate::browser::PageState;
 use crate::ui::browser_panel::{
-    paint_backdrop, paint_host, pill_button, pressed_in, reload_button, viewport_rect, BarColors,
-    BrowserChrome, BrowserIntent, BrowserPanelOutput, BrowserTabState,
+    child_at, page_content, paint_host, pill_button, pressed_in, reload_button, shows_live_page,
+    BarColors, BrowserChrome, BrowserIntent, BrowserPanelOutput, BrowserTabState, PageArea,
+    PageCorners,
 };
 
 const PIP_BAR_HEIGHT: f32 = 26.0;
@@ -90,7 +91,7 @@ pub(crate) fn browser_pip(
     let id = egui::Id::new("browser_pip");
     let mut frame = frame.fitted(bounds);
     let panel = panel_rect(frame);
-    let shows_page = !(tab.start_page || page.url.is_empty());
+    let shows_page = shows_live_page(page, tab);
     let colors = BarColors::new(ui, chrome.palette, page.tint.filter(|_| shows_page));
     let bar = egui::Rect::from_min_max(
         panel.min - egui::vec2(0.0, PIP_BAR_HEIGHT),
@@ -107,6 +108,8 @@ pub(crate) fn browser_pip(
     ctx.data_mut(|data| data.insert_temp(bar_shown, bar_opacity > 0.0));
     let mut intents = Vec::new();
     let mut page_rect = None;
+    let mut page_blocked = false;
+    let mut field_focused = false;
     let mut grabbed = None;
     egui::Area::new(id)
         .order(egui::Order::Middle)
@@ -128,25 +131,22 @@ pub(crate) fn browser_pip(
                 se: RADIUS,
             };
             ui.painter().rect_filled(panel, radius, colors.fill);
-            let page_area = panel.shrink(RIM);
-            let page_fill = if colors.tinted {
-                colors.fill
-            } else {
-                chrome.palette.bg_surface
+            let area = PageArea {
+                split: None,
+                page,
+                tab: &mut *tab,
+                fill: if colors.tinted {
+                    colors.fill
+                } else {
+                    chrome.palette.bg_surface
+                },
+                with_shelf: false,
             };
-            ui.painter().rect_filled(page_area, 0.0, page_fill);
-            if shows_page {
-                let viewport = viewport_rect(page_area, tab.page_view.viewport);
-                paint_backdrop(ui, tab.backdrop.as_ref(), viewport);
-                page_rect = Some(viewport);
-            } else {
-                intents.extend(crate::ui::browser_start_page::start_page(
-                    ui,
-                    chrome,
-                    &mut tab.favorites,
-                    page_area,
-                ));
-            }
+            let content = page_content(&mut child_at(ui, panel.shrink(RIM)), chrome, area);
+            intents.extend(content.intents);
+            page_rect = content.page_rect;
+            page_blocked = content.blocked;
+            field_focused = content.field_focused;
             grabbed = resize_grips(ui, id, panel);
         });
     if let Some((grip, delta)) = grabbed {
@@ -174,12 +174,14 @@ pub(crate) fn browser_pip(
     let clicked = pressed_in(ui, panel.expand(GRIP_OUTSET)) || pressed_in(ui, bar);
     BrowserPipOutput {
         panel: BrowserPanelOutput {
+            partner: None,
             intents,
             page_rect,
-            page_bottom_radius: 0.0,
+            page_corners: PageCorners::default(),
             page_overlaid: false,
+            page_blocked,
             clicked,
-            field_focused: false,
+            field_focused,
         },
         frame,
     }
