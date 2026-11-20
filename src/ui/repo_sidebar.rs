@@ -1428,6 +1428,7 @@ fn repo_row(
     let icon_left = rect.left() + ROW_PAD_X + ROW_INDENT;
     let agents_toggled = !row.deleting
         && !row.agents.is_empty()
+        && response.contains_pointer()
         && agents_chevron(ui, palette, row, egui::pos2(icon_left, rect.center().y));
     if agents_toggled {
         out.toggle_agents = Some(row.index);
@@ -1598,8 +1599,9 @@ fn repo_row(
     response
 }
 
-/// Fold chevron of the row's agent list, in the guide gutter just left of the row
-/// icon (`icon_left_center`): it costs the row no width. `true` when clicked.
+/// Fold chevron of the row's agent list, revealed while the row is hovered, in the
+/// guide gutter just left of the row icon (`icon_left_center`): it costs the row no
+/// width. `true` when clicked.
 fn agents_chevron(
     ui: &mut egui::Ui,
     palette: &Palette,

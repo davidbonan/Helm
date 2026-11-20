@@ -543,13 +543,19 @@ fn agents_harness(agents_open: bool) -> Harness<'static, SidebarAction> {
 }
 
 #[test]
-fn folded_agent_list_shows_only_the_chevron() {
+fn folded_agent_list_reveals_its_chevron_on_hover() {
     let mut harness = agents_harness(false);
     harness.run();
 
     assert!(harness
         .query_by_label("Fix login redirect · agent idle")
         .is_none());
+    assert!(
+        harness.query_by_label("Show agents").is_none(),
+        "the chevron waits for the row's hover"
+    );
+    harness.get_by_label("feature-x · agent done").hover();
+    harness.run();
     harness.get_by_label("Show agents").click();
     harness.run();
     assert_eq!(harness.state().toggle_agents, Some(1));
@@ -565,7 +571,6 @@ fn unfolded_agent_list_rows_focus_their_pane() {
     let mut harness = agents_harness(true);
     harness.run();
 
-    harness.get_by_label("Hide agents");
     harness.get_by_label("Codex · agent done");
     harness
         .get_by_label("Fix login redirect · agent idle")
@@ -577,6 +582,8 @@ fn unfolded_agent_list_rows_focus_their_pane() {
 #[test]
 fn rows_without_agents_have_no_chevron() {
     let mut harness = grouped_harness();
+    harness.run();
+    harness.get_by_label("feature-x").hover();
     harness.run();
 
     assert!(harness.query_by_label("Show agents").is_none());

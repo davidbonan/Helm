@@ -281,9 +281,9 @@ Under each sidebar **worktree row**, the agents running in that worktree — eve
 of every tab whose badge is not `None` — listed as **child rows**, one per agent pane,
 in workspace order (tab, then pane: stable, so rows never jump on a state change).
 
-**Disclosure.** A worktree row with at least one agent carries a small **chevron** in
-the tree-guide gutter, between the guide's tick and the row icon — it costs the row no
-width; a row without agents has none. Clicking it folds/unfolds the list without
+**Disclosure.** A worktree row with at least one agent reveals a small **chevron**
+while it is **hovered**, in the tree-guide gutter between the guide's tick and the row
+icon — it costs the row no width; a row without agents has none. Clicking it folds/unfolds the list without
 selecting the row. **Folded by default**; the open state is **per worktree** and
 **persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
 max badge in place of its icon (§1) and its `+N −M` diffstat at the right edge.
