@@ -88,6 +88,8 @@ fn root_harness(
                     deleting: false,
                     agent: AgentBadge::None,
                     stats: None,
+                    agents: Vec::new(),
+                    agents_open: false,
                 }),
             ];
             let (items, child_flags): (&[SidebarItem], &[bool]) = if active_repo.is_some() {

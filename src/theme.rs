@@ -106,7 +106,7 @@ pub struct Palette {
     pub git_renamed: Color32,
     pub git_conflict: Color32,
     /// Cyclic colors of the graph lanes (M10-1) — see `lane_color`.
-    pub lane_colors: [Color32; 8],
+    pub lane_colors: [Color32; LANE_COUNT],
     /// Text laid over a graph node bubble (author initials, M10-3).
     pub lane_node_text: Color32,
     /// syntect theme name (two-face set) for diff coloring — the syntax follows
@@ -496,12 +496,35 @@ impl Palette {
     /// read as thin lines on the graph, too bright to sit under white text as a disc.
     pub fn avatar_fill(&self, name: &str) -> Color32 {
         const DARKEN: f32 = 0.68;
-        let hash = name.bytes().fold(0usize, |acc, byte| {
-            acc.wrapping_mul(31).wrapping_add(usize::from(byte))
-        });
-        let [r, g, b, _] = self.lane_color(hash).to_array();
+        let [r, g, b, _] = self.lane_color(name_lane(name)).to_array();
         let dim = |c: u8| (f32::from(c) * DARKEN).round() as u8;
         Color32::from_rgb(dim(r), dim(g), dim(b))
+    }
+
+    /// Project card of the workspace sidebar (design-system §4): raised from the
+    /// sidebar toward the canvas, so it lifts in both modes.
+    pub fn card_fill(&self) -> Color32 {
+        blend(self.bg_sidebar, self.bg_canvas, CARD_RAISE)
+    }
+
+    pub fn card_border(&self) -> Color32 {
+        blend(self.card_fill(), self.border_subtle, CARD_BORDER)
+    }
+
+    /// Hovered row inside a project card.
+    pub fn card_hover(&self) -> Color32 {
+        blend(self.card_fill(), self.text_primary, CARD_HOVER)
+    }
+
+    /// `hue` washed over a project card: the project's on its monogram tile and
+    /// active row, a git color on a diffstat pill.
+    pub fn card_tint(&self, hue: Color32) -> Color32 {
+        blend(self.card_fill(), hue, CARD_TINT)
+    }
+
+    /// A thin line in `hue` drawn on a project card (the agent list's thread).
+    pub fn card_line(&self, hue: Color32) -> Color32 {
+        blend(self.card_fill(), hue, CARD_LINE)
     }
 
     /// Fill of the solid primary button (Commit, Open Folder…): `accent`
@@ -646,6 +669,35 @@ impl FileTypeHues {
 
 /// How far a dark-mode title slides from primary toward secondary ink.
 const TITLE_SOFTEN_DARK: f32 = 0.4;
+
+const CARD_RAISE: f32 = 0.5;
+const CARD_BORDER: f32 = 0.6;
+const CARD_HOVER: f32 = 0.06;
+const CARD_TINT: f32 = 0.16;
+const CARD_LINE: f32 = 0.45;
+
+const LANE_COUNT: usize = 8;
+/// The red of every preset's `lane_colors`.
+const RED_LANE: usize = 4;
+
+/// Lane (`Palette::lane_color`) a name always wears — an author, a site: hashed from
+/// the name alone, so it never shifts with list order.
+pub fn name_lane(name: &str) -> usize {
+    name.bytes().fold(0usize, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(usize::from(byte))
+    })
+}
+
+/// Lane a project wears (worktrees.md §1): its name's, red aside — on a project
+/// card red would read as a deletion.
+pub fn project_lane(name: &str) -> usize {
+    let lane = name_lane(name) % (LANE_COUNT - 1);
+    if lane >= RED_LANE {
+        lane + 1
+    } else {
+        lane
+    }
+}
 
 const PRIMARY_BUTTON_DARKEN_LIGHT: f32 = 0.85;
 const PRIMARY_BUTTON_DARKEN_DARK: f32 = 0.70;
@@ -1046,6 +1098,19 @@ mod tests {
             }
         }
         assert_ne!(Palette::light().lane_colors, Palette::dark().lane_colors);
+    }
+
+    #[test]
+    fn projects_wear_every_lane_but_the_red_one() {
+        for preset in PRESETS {
+            let [r, g, b, _] = preset.palette.lane_colors[RED_LANE].to_array();
+            assert!(r > g && r > b, "lane {RED_LANE} is the red of every preset");
+        }
+        let worn: std::collections::HashSet<usize> = (0..200)
+            .map(|i| project_lane(&format!("project-{i}")))
+            .collect();
+        assert!(!worn.contains(&RED_LANE));
+        assert_eq!(worn.len(), LANE_COUNT - 1, "every other lane stays in use");
     }
 
     #[test]

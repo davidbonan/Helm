@@ -57,6 +57,10 @@ pub(crate) struct AgentEntry {
     pub(crate) pane_name: String,
     pub(crate) pane_id: PaneId,
     pub(crate) agent: &'static str,
+    /// What the agent is doing, for its sidebar row (specs/agents.md §6).
+    pub(crate) recap: String,
+    /// Last prompt of a Claude Code session, from its transcript (specs/agents.md §6).
+    pub(crate) last_prompt: Option<String>,
     pub(crate) badge: AgentBadge,
     /// Monotonic stamp (`activity::now_ms`) of the pane's last spontaneous output
     /// — the page renders "finished <ago>" off the live clock.
@@ -66,6 +70,25 @@ pub(crate) struct AgentEntry {
     /// for a moment after a turn lands. Not `last_output_ms` — the badge only flips
     /// once the silence window has passed, so the output stamp is already stale.
     pub(crate) done_at_ms: Option<u64>,
+}
+
+/// Agents running in the worktree keyed `key`, for its sidebar row's fold-out list
+/// (specs/agents.md §6); `agents` is already in workspace order.
+pub(crate) fn row_agents<'a>(
+    agents: &'a [AgentEntry],
+    key: Option<&RepoKey>,
+) -> Vec<crate::ui::repo_sidebar::RowAgent<'a>> {
+    agents
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| Some(&e.repo_key) == key)
+        .map(|(index, e)| crate::ui::repo_sidebar::RowAgent {
+            index,
+            badge: e.badge,
+            recap: &e.recap,
+            last_prompt: e.last_prompt.as_deref(),
+        })
+        .collect()
 }
 
 /// Per-repo UI state under one roof (M17-11), reconciled by `sync` after every

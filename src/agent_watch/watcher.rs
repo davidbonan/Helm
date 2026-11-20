@@ -5,12 +5,14 @@
 //! since a backgrounded helm draws no frame to post them (specs/agents.md §5).
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
+use super::claude_session::{config_dir, PromptReader};
 use super::{newly_completed, probe, AgentBadge, PaneAgentState};
 use crate::terminal::activity::{now_ms, PaneActivity};
 use crate::terminal::pane::{Pane, PaneUid};
@@ -65,6 +67,8 @@ pub struct PaneReading {
 pub struct Readings {
     pub generation: u64,
     pub panes: HashMap<PaneUid, PaneReading>,
+    /// Last prompt of each Claude Code pane, from its transcript (specs/agents.md §6).
+    pub prompts: HashMap<PaneUid, String>,
 }
 
 /// What the UI hands over at each poll.
@@ -217,6 +221,7 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, sinks: &Sinks)
     // Phones showing each pane: two phones on one agent both count.
     let mut phone_seen: HashMap<PaneUid, usize> = HashMap::new();
     let mut states: HashMap<PaneUid, PaneAgentState> = HashMap::new();
+    let mut prompt_reader = PromptReader::default();
     let mut next_tick = Instant::now();
     loop {
         let sight_moved = match commands.recv_deadline(next_tick) {
@@ -265,27 +270,30 @@ fn run(commands: &Receiver<Command>, published: &Mutex<Readings>, sinks: &Sinks)
         if probe::helm_is_frontmost() {
             seen.extend(&focused);
         }
-        let panes = tick(
+        let (panes, prompts) = tick(
             watched.iter().chain(&launched),
             &seen,
             &mut states,
+            &mut prompt_reader,
             now_ms(),
         );
         next_tick = Instant::now() + TICK;
         let mut readings = lock(published);
-        if readings.panes != panes {
-            let completed = if alert_on_completion {
-                completions(&readings.panes, &panes, watched.iter().chain(&launched))
-            } else {
-                Vec::new()
-            };
-            readings.generation += 1;
-            readings.panes = panes;
-            drop(readings);
-            (sinks.on_change)();
-            for completion in &completed {
-                (sinks.on_completion)(completion);
-            }
+        if readings.panes == panes && readings.prompts == prompts {
+            continue;
+        }
+        let completed = if alert_on_completion {
+            completions(&readings.panes, &panes, watched.iter().chain(&launched))
+        } else {
+            Vec::new()
+        };
+        readings.generation += 1;
+        readings.panes = panes;
+        readings.prompts = prompts;
+        drop(readings);
+        (sinks.on_change)();
+        for completion in &completed {
+            (sinks.on_completion)(completion);
         }
     }
 }
@@ -313,23 +321,40 @@ fn tick<'a>(
     watched: impl Iterator<Item = &'a WatchedPane>,
     focused: &HashSet<PaneUid>,
     states: &mut HashMap<PaneUid, PaneAgentState>,
+    prompt_reader: &mut PromptReader,
     now_ms: u64,
-) -> HashMap<PaneUid, PaneReading> {
-    watched
-        .map(|pane| {
-            let agent = pane
-                .pgid_probe
-                .foreground_pgid()
-                .and_then(probe::foreground_agent);
-            let badge = states.entry(pane.uid).or_default().tick(
-                agent.is_some(),
-                &pane.activity.snapshot(),
-                focused.contains(&pane.uid),
-                now_ms,
-            );
-            (pane.uid, PaneReading { agent, badge })
-        })
-        .collect()
+) -> (HashMap<PaneUid, PaneReading>, HashMap<PaneUid, String>) {
+    let mut readings = HashMap::new();
+    let mut prompts = HashMap::new();
+    for pane in watched {
+        let found = pane
+            .pgid_probe
+            .foreground_pgid()
+            .and_then(probe::foreground_agent_pid);
+        let agent = found.map(|(_, agent)| agent);
+        let badge = states.entry(pane.uid).or_default().tick(
+            agent.is_some(),
+            &pane.activity.snapshot(),
+            focused.contains(&pane.uid),
+            now_ms,
+        );
+        readings.insert(pane.uid, PaneReading { agent, badge });
+        if let Some(prompt) =
+            found.and_then(|(pid, agent)| claude_prompt(prompt_reader, pid, agent))
+        {
+            prompts.insert(pane.uid, prompt);
+        }
+    }
+    (readings, prompts)
+}
+
+fn claude_prompt(reader: &mut PromptReader, pid: i32, agent: &str) -> Option<String> {
+    if agent != "claude" {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    let config = config_dir(probe::env_var(pid, "CLAUDE_CONFIG_DIR"), Path::new(&home));
+    reader.last_prompt(&config, pid)
 }
 
 #[cfg(test)]

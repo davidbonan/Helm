@@ -45,6 +45,10 @@ pub struct Project {
     /// from the TOML unless set, so visible projects round-trip unchanged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub hidden: bool,
+    /// Root / worktree paths whose sidebar agent list is unfolded (agents.md §6);
+    /// omitted while every list is folded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents_open: Vec<PathBuf>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -323,6 +327,7 @@ impl From<LegacyPrefs> for Prefs {
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 })
                 .collect(),
             ..Self::default()
@@ -643,6 +648,7 @@ mod tests {
             worktrees: worktrees.iter().map(PathBuf::from).collect(),
             collapsed: false,
             hidden: false,
+            agents_open: Vec::new(),
         }
     }
 
@@ -655,6 +661,7 @@ mod tests {
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: true,
+                    agents_open: Vec::new(),
                 },
                 project("/Users/dev/beta", &[]),
             ],
@@ -1056,6 +1063,7 @@ agent = "Mine"
                 worktrees: vec![PathBuf::from("/a.wt/x")],
                 collapsed: true,
                 hidden: false,
+                agents_open: Vec::new(),
             }],
             ..Prefs::default()
         };
@@ -1435,12 +1443,14 @@ agent = "Mine"
                     worktrees: vec![kept_wt.clone()],
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
                 Project {
                     root: kept.clone(),
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
             ],
             ..Prefs::default()
@@ -1454,6 +1464,7 @@ agent = "Mine"
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             }],
             "a gone root drops its whole group, even with surviving worktree dirs"
         );
@@ -1473,6 +1484,7 @@ agent = "Mine"
                 worktrees: vec![gone_wt],
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             }],
             ..Prefs::default()
         };
@@ -1485,6 +1497,7 @@ agent = "Mine"
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             }]
         );
         assert_eq!(prefs.active, Some(root), "active falls back to the root");
@@ -1505,12 +1518,14 @@ agent = "Mine"
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
                 Project {
                     root: gone_root,
                     worktrees: vec![gone_wt],
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
             ],
             ..Prefs::default()
@@ -1536,12 +1551,14 @@ agent = "Mine"
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
                 Project {
                     root: plain,
                     worktrees: Vec::new(),
                     collapsed: false,
                     hidden: false,
+                    agents_open: Vec::new(),
                 },
             ],
             ..Prefs::default()
@@ -1555,6 +1572,7 @@ agent = "Mine"
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             }],
             "an existing folder that is not a git repo is dropped like a vanished root"
         );
@@ -1572,6 +1590,7 @@ agent = "Mine"
                 worktrees: Vec::new(),
                 collapsed: false,
                 hidden: false,
+                agents_open: Vec::new(),
             }],
             ..Prefs::default()
         };

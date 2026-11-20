@@ -173,7 +173,7 @@ nothing but the wall's **pager** (below), clear of the traffic lights: a
 terminals of the ones picked from it.
 
 The strip is grouped into **one cluster per project**: a **title line** — the project's
-name behind the same hue-tinted folder box the sidebar's project header wears, so the two
+name behind a box tinted in the project's hue — the hue its sidebar card wears — so the two
 read as one project — **over the row of chips** it heads, one per agent running in it.
 Clusters follow workspace order, so a project and its worktrees stay adjacent, and they
 read apart by **proximity**: chips of one project sit tight, projects sit a hairline apart.
@@ -275,7 +275,49 @@ terminal holds keyboard focus, where `Esc` reaches the agent as an interrupt
 keeps the watch live; viewing the dashboard does **not** acknowledge greens (focus
 gating excludes `CentralMode::Agents`).
 
-## 6. Out of scope for v1
+## 6. Per-worktree agent list (sidebar accordion)
+
+Under each sidebar **worktree row**, the agents running in that worktree — every pane
+of every tab whose badge is not `None` — listed as **child rows**, one per agent pane,
+in workspace order (tab, then pane: stable, so rows never jump on a state change).
+
+**Disclosure.** A worktree row with at least one agent reveals a small **chevron**
+while it is **hovered**, in the gutter left of the row icon — it costs the row no width; a row without agents has none. Clicking it folds/unfolds the list without
+selecting the row. **Folded by default**; the open state is **per worktree** and
+**persisted** ([`worktrees.md`](worktrees.md) §5). Folded or open, the row keeps its
+max badge in place of its icon (§1) and its `+N −M` diffstat at the right edge.
+
+**Agent row.** The open list hangs on a **thread**: a thin line in the project hue
+dropping from under the worktree icon, with a rounded branch to each agent ending just
+short of its state indicator — no background, the line alone ties the agents to their
+worktree. One line, **24 pt**, aligned on the worktree's label column: the
+agent's **state indicator** (§1: spinner / green dot / grey ring) then its **recap**,
+truncated, the full text on hover; the recap is `text.primary` while the agent works,
+`text.secondary` once done, `text.muted` at rest. Nothing else — no agent name, no terminal name, no
+elapsed time: the space is the sidebar's scarcest. Clicking it **focuses** that pane
+(activates the worktree, its tab and pane, back to the terminal view), which
+acknowledges a green like any tab focus (§1).
+
+**Recap** — what the agent is doing, resolved per pane at the 1 s tick:
+1. the pane's **OSC title** — Claude Code titles its terminal with the session topic
+   (`✳ Fix login redirect`; a braille spinner glyph replaces `✳` while it works): a
+   leading status glyph and its space are dropped;
+2. otherwise the agent's **display name** (`Codex`).
+
+The **Done** child rows under the Agents entry (§5) carry the same recap instead of
+`branch · tab`.
+
+**Last prompt (hover).** For a Claude Code pane, the agent row's hover text adds the
+session's last prompt. The link is exact, no guessing: the agent's **pid** (found by the
+§2 probe) names `<config>/sessions/<pid>.json`, which gives the session id and its cwd;
+the transcript is `<config>/projects/<cwd, non-alphanumerics → '-'>/<session>.jsonl`
+(else found by file name among the project folders), and its last `last-prompt` entry
+is the prompt. `<config>` is the process's own `CLAUDE_CONFIG_DIR` (read from its
+environment), else `~/.claude`. Read on the watcher thread, the transcript's tail only,
+again only when its mtime moves. Anything missing or unparsable ⇒ no prompt line
+(fail-safe: these are Claude Code's internal files).
+
+## 7. Out of scope for v1
 
 Configurable watchlist in Preferences; agents under tmux; in-app
-notification-center history.
+notification-center history; a *needs input* / *failed* agent state.

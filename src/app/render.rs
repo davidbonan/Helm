@@ -717,19 +717,17 @@ impl HelmApp {
         let child_flags: Vec<bool> = (0..repo_paths.len())
             .map(|i| self.workspace.parent_root(i).is_some())
             .collect();
-        // Each root project gets a stable color index — its rank among roots, with
-        // worktrees inheriting their root's. Shared with the Agents columns view so a
+        // Each root project wears the hue of its name, worktrees inheriting their
+        // root's (they follow it in entry order). Shared with the Agents view so a
         // project reads with one color across both surfaces.
         let lane_of_repo: Vec<usize> = {
             let mut lane = 0usize;
-            let mut seen_root = false;
-            (0..repo_paths.len())
-                .map(|i| {
+            self.workspace
+                .repos()
+                .enumerate()
+                .map(|(i, r)| {
                     if !child_flags[i] {
-                        if seen_root {
-                            lane += 1;
-                        }
-                        seen_root = true;
+                        lane = crate::theme::project_lane(&r.name);
                     }
                     lane
                 })
@@ -809,6 +807,11 @@ impl HelmApp {
                             deleting: deleting[i],
                             agent: badges[i],
                             stats: stats[i],
+                            agents: super::git_session::row_agents(
+                                &self.caches.agents,
+                                self.caches.keys.get(i),
+                            ),
+                            agents_open: self.workspace.is_agents_open(i),
                         })
                     });
                 header.into_iter().chain(row)
@@ -960,8 +963,7 @@ impl HelmApp {
             .filter(|(_, e)| e.badge == crate::agent_watch::AgentBadge::Done)
             .map(|(index, e)| crate::ui::repo_sidebar::DoneAgentRow {
                 index,
-                branch: e.branch.clone(),
-                tab: e.pane_name.clone(),
+                recap: e.recap.clone(),
             })
             .collect();
         // Dashboard rows borrow `self.caches.agents` (disjoint from `panes`, mutably
@@ -2873,6 +2875,11 @@ impl HelmApp {
         }
         if let Some(index) = sidebar.toggle_collapse {
             self.workspace.toggle_collapsed(index);
+            let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
+            self.persist(move |_| next);
+        }
+        if let Some(index) = sidebar.toggle_agents {
+            self.workspace.toggle_agents_open(index);
             let next = prefs_from_workspace(self.prefs.clone(), &self.workspace);
             self.persist(move |_| next);
         }

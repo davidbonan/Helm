@@ -14,6 +14,7 @@
 
 use crate::terminal::activity::ActivitySnapshot;
 
+pub mod claude_session;
 pub mod watcher;
 
 /// Recognized agent binaries (compared against the process `p_comm`, and
@@ -149,6 +150,32 @@ pub fn display_name(agent: &str) -> String {
     }
 }
 
+/// What an agent is doing, for its sidebar row (specs/agents.md §6): the pane's OSC
+/// title minus a leading status glyph (`✳ Fix login` → `Fix login`), else the
+/// agent's display name.
+pub fn recap(osc_title: Option<&str>, agent: &str) -> String {
+    let title = osc_title.map(strip_status_glyph).unwrap_or_default();
+    if title.is_empty() {
+        display_name(agent)
+    } else {
+        title.to_owned()
+    }
+}
+
+fn strip_status_glyph(title: &str) -> &str {
+    let title = title.trim();
+    let mut chars = title.chars();
+    let Some(glyph) = chars.next() else {
+        return title;
+    };
+    let rest = chars.as_str();
+    if !glyph.is_alphanumeric() && (rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        rest.trim_start()
+    } else {
+        title
+    }
+}
+
 /// A pane's state machine, ticked at a fixed cadence (1 s). Pure: time and
 /// probes are injected, testable without a PTY or real clock.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -271,15 +298,20 @@ pub mod probe {
     /// classifies), for the completion notification and the cross-repo dashboard
     /// (specs/agents.md). `None` when no agent is present.
     pub fn foreground_agent(pgid: i32) -> Option<&'static str> {
-        group_comms(pgid).iter().find_map(|(pid, comm)| {
+        foreground_agent_pid(pgid).map(|(_, agent)| agent)
+    }
+
+    /// Pid and watchlist name of the agent running in group `pgid`.
+    pub fn foreground_agent_pid(pgid: i32) -> Option<(i32, &'static str)> {
+        group_comms(pgid).into_iter().find_map(|(pid, comm)| {
             // argv disambiguates interpreters (launched script) and versioned
             // binaries (invoked name); unnecessary if the comm matches alone.
             let argv = if super::WATCHLIST.contains(&comm.as_str()) {
                 Vec::new()
             } else {
-                argv(*pid)
+                argv(pid)
             };
-            classify(comm, &argv)
+            classify(&comm, &argv).map(|agent| (pid, agent))
         })
     }
 
@@ -345,6 +377,22 @@ pub mod probe {
     /// A process's argv (sysctl `KERN_PROCARGS2`). Empty if unreadable (another
     /// user's process, race with its death) — comm-only degradation.
     pub fn argv(pid: i32) -> Vec<String> {
+        procargs(pid)
+            .map(|buf| parse_procargs2(&buf).0)
+            .unwrap_or_default()
+    }
+
+    /// Value of environment variable `name` in process `pid` (`KERN_PROCARGS2`).
+    pub fn env_var(pid: i32, name: &str) -> Option<String> {
+        let buf = procargs(pid)?;
+        let prefix = format!("{name}=");
+        parse_procargs2(&buf)
+            .1
+            .into_iter()
+            .find_map(|entry| entry.strip_prefix(&prefix).map(str::to_owned))
+    }
+
+    fn procargs(pid: i32) -> Option<Vec<u8>> {
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let mut size: libc::size_t = 0;
         let rc = unsafe {
@@ -358,7 +406,7 @@ pub mod probe {
             )
         };
         if rc != 0 || size < 4 {
-            return Vec::new();
+            return None;
         }
         let mut buf = vec![0u8; size];
         let rc = unsafe {
@@ -372,15 +420,16 @@ pub mod probe {
             )
         };
         if rc != 0 || size < 4 {
-            return Vec::new();
+            return None;
         }
         buf.truncate(size);
-        parse_procargs2(&buf)
+        Some(buf)
     }
 
     /// KERN_PROCARGS2 format: argc (i32) · NUL-terminated exec path · NUL
-    /// padding · argv[0..argc] NUL-separated.
-    fn parse_procargs2(buf: &[u8]) -> Vec<String> {
+    /// padding · argv[0..argc] NUL-separated · envp NUL-separated, up to an empty
+    /// string. Returns `(argv, envp)`.
+    fn parse_procargs2(buf: &[u8]) -> (Vec<String>, Vec<String>) {
         let argc = i32::from_ne_bytes(buf[..4].try_into().unwrap_or_default()).max(0) as usize;
         let rest = &buf[4..];
         // Skip the executable path then the padding.
@@ -389,11 +438,12 @@ pub mod probe {
         while i < rest.len() && rest[i] == 0 {
             i += 1;
         }
-        rest[i..]
+        let mut strings = rest[i..]
             .split(|b| *b == 0)
-            .take(argc)
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect()
+            .map(|s| String::from_utf8_lossy(s).into_owned());
+        let argv = strings.by_ref().take(argc).collect();
+        let envp = strings.take_while(|s| !s.is_empty()).collect();
+        (argv, envp)
     }
 }
 
@@ -404,6 +454,30 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn recap_drops_claude_status_glyph_from_its_title() {
+        assert_eq!(
+            recap(Some("✳ Fix login redirect"), "claude"),
+            "Fix login redirect"
+        );
+        assert_eq!(
+            recap(Some("⠂ Fix login redirect"), "claude"),
+            "Fix login redirect"
+        );
+    }
+
+    #[test]
+    fn recap_keeps_a_title_without_status_glyph() {
+        assert_eq!(recap(Some("#42 triage"), "codex"), "#42 triage");
+        assert_eq!(recap(Some("Fix login"), "codex"), "Fix login");
+    }
+
+    #[test]
+    fn recap_falls_back_to_agent_name_without_title() {
+        assert_eq!(recap(None, "codex"), "Codex");
+        assert_eq!(recap(Some("  ✳  "), "claude"), "Claude");
     }
 
     #[test]

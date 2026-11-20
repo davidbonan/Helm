@@ -6,6 +6,36 @@
 
 ---
 
+## ◐ Milestone — M-ProjectCards · Project cards in the sidebar
+
+Spec: [`specs/worktrees.md`](../worktrees.md) §1, §3, [`design-system.md`](../design-system.md) §4,
+[`agents.md`](../agents.md) §6. Per the user: mockup E (one card per project), no worktree
+count, hue derived from the project name, monogram left to the implementation.
+Counter: **1/2**.
+
+- ☑ **PC1 — Cards.** `theme::name_lane` (project, author and site hues share it),
+  `Palette::card_*`, cards + monogram + hue-tinted icons and active row, agents hung on a thread in the project hue, diffstat pill in `ui::repo_sidebar`. *Tests*: 1 unit
+  reworked; headless capture (dark + light).
+- ☐ **PC2 — Manual check.** In the real app: cards, hues stable across reorders and
+  launches, drag-and-drop drop line, hover / active fills, agent thread, Cmd badges.
+
+## ◐ Milestone — M-AgentList · Agents under each worktree row
+
+Spec: [`specs/agents.md`](../agents.md) §6, [`worktrees.md`](../worktrees.md) §1, §5.
+Per the user: fold-out list per worktree (folded by default, persisted), one line per
+agent (state + recap), click focuses the pane; Done rows under Agents show the recap.
+Counter: **2/3**.
+
+- ☑ **AL1 — Recap + fold-out list.** `agent_watch::recap`, `AgentEntry.recap`,
+  `Workspace` agents-open state + `Project.agents_open`, gutter chevron + agent rows in
+  `ui::repo_sidebar`, Done rows show the recap. *Tests*: 3 unit, 3 UI e2e, 1 app;
+  headless capture (3 fake agents: folded → unfolded → click focuses tab 2).
+- ☑ **AL2 — Last prompt on hover.** `agent_watch::claude_session` (pid → session
+  file → transcript, `CLAUDE_CONFIG_DIR` from the process env), read on the watcher
+  thread, prompt line in the agent row's hover. *Tests*: 4 unit, 1 business e2e.
+- ☐ **AL3 — Manual check.** In the real app: chevron in the gutter, list folds and
+  persists across launches, recap follows Claude's topic, click focuses the pane.
+
 ## ◐ Milestone — M-BrowserLayout · Full window and split
 
 Spec: [`specs/browser.md`](../browser.md) §15–16, [`keybindings.md`](../keybindings.md).
