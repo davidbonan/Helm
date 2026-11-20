@@ -72,6 +72,8 @@ pub struct RowAgent<'a> {
     pub index: usize,
     pub badge: AgentBadge,
     pub recap: &'a str,
+    /// Shown on hover under the recap, when the agent's transcript gives it.
+    pub last_prompt: Option<&'a str>,
 }
 
 /// An indented child row under the Agents entry: one agent pane currently in the
@@ -1672,7 +1674,11 @@ fn worktree_agent_row(
     );
     let label = agent_row_label(agent);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-    if response.on_hover_text(agent.recap).clicked() {
+    let hover = match agent.last_prompt {
+        Some(prompt) => format!("{}\n\nLast prompt: {prompt}", agent.recap),
+        None => agent.recap.to_owned(),
+    };
+    if response.on_hover_text(hover).clicked() {
         out.focus_agent = Some(agent.index);
     }
 }

@@ -59,6 +59,8 @@ pub(crate) struct AgentEntry {
     pub(crate) agent: &'static str,
     /// What the agent is doing, for its sidebar row (specs/agents.md §6).
     pub(crate) recap: String,
+    /// Last prompt of a Claude Code session, from its transcript (specs/agents.md §6).
+    pub(crate) last_prompt: Option<String>,
     pub(crate) badge: AgentBadge,
     /// Monotonic stamp (`activity::now_ms`) of the pane's last spontaneous output
     /// — the page renders "finished <ago>" off the live clock.
@@ -84,6 +86,7 @@ pub(crate) fn row_agents<'a>(
             index,
             badge: e.badge,
             recap: &e.recap,
+            last_prompt: e.last_prompt.as_deref(),
         })
         .collect()
 }

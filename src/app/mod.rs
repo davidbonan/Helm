@@ -1296,6 +1296,7 @@ impl HelmApp {
                     pane_id: *pane_id,
                     agent,
                     recap: crate::agent_watch::recap(pane.osc_title().as_deref(), agent),
+                    last_prompt: self.agent_readings.prompts.get(&pane.uid()).cloned(),
                     badge,
                     last_output_ms: snapshot.last_spont_output_ms,
                     done_at_ms,

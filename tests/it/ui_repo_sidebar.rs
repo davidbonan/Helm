@@ -512,11 +512,13 @@ fn agents_harness(agents_open: bool) -> Harness<'static, SidebarAction> {
                         index: 4,
                         badge: AgentBadge::Idle,
                         recap: "Fix login redirect",
+                        last_prompt: Some("Le login redirige en boucle"),
                     },
                     RowAgent {
                         index: 5,
                         badge: AgentBadge::Done,
                         recap: "Codex",
+                        last_prompt: None,
                     },
                 ];
             }

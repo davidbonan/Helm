@@ -305,14 +305,14 @@ The **Done** child rows under the Agents entry (§5) carry the same recap instea
 `branch · tab`.
 
 **Last prompt (hover).** For a Claude Code pane, the agent row's hover text adds the
-session's last prompt, read from its transcript
-(`~/.claude/projects/<cwd, non-alphanumerics → '-'>/<session>.jsonl`, `last-prompt`
-entries; the tail only, re-read when the file's mtime moves, off the UI thread). The
-pane is linked to a transcript by the Claude process's cwd: among the transcripts of
-that directory modified since the process started, the one whose last `ai-title`
-equals the pane's recap — else the only one, when a single Claude runs in that cwd.
-Anything ambiguous or unreadable ⇒ no prompt line (fail-safe: the transcript format is
-Claude Code's internal one).
+session's last prompt. The link is exact, no guessing: the agent's **pid** (found by the
+§2 probe) names `<config>/sessions/<pid>.json`, which gives the session id and its cwd;
+the transcript is `<config>/projects/<cwd, non-alphanumerics → '-'>/<session>.jsonl`
+(else found by file name among the project folders), and its last `last-prompt` entry
+is the prompt. `<config>` is the process's own `CLAUDE_CONFIG_DIR` (read from its
+environment), else `~/.claude`. Read on the watcher thread, the transcript's tail only,
+again only when its mtime moves. Anything missing or unparsable ⇒ no prompt line
+(fail-safe: these are Claude Code's internal files).
 
 ## 7. Out of scope for v1
 

@@ -924,6 +924,7 @@ fn agent_entry(
         pane_id: PaneId(pane),
         agent,
         recap: format!("Task {}", pane + 1),
+        last_prompt: None,
         badge,
         last_output_ms: 0,
         done_at_ms: (badge == AgentBadge::Done).then_some(0),
@@ -943,8 +944,8 @@ fn app_with_agents(agents: &[(&'static str, AgentBadge)]) -> HelmApp {
 }
 
 /// A pane running a binary compiled under a watchlist name (copying a platform
-/// binary does not work: AMFI kills the copy).
-fn fake_agent_pane(dir: &Path) -> Pane {
+/// binary does not work: AMFI kills the copy), with `env` added to its environment.
+fn fake_agent_pane(dir: &Path, env: &[(&str, &Path)]) -> Pane {
     let src = dir.join("agent.c");
     std::fs::write(
         &src,
@@ -959,7 +960,11 @@ fn fake_agent_pane(dir: &Path) -> Pane {
         .status()
         .unwrap();
     assert!(built.success(), "fake agent compilation failed");
-    Pane::from_command(portable_pty::CommandBuilder::new(&bin), 24, 80, || {}).unwrap()
+    let mut cmd = portable_pty::CommandBuilder::new(&bin);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    Pane::from_command(cmd, 24, 80, || {}).unwrap()
 }
 
 #[test]
@@ -970,7 +975,7 @@ fn a_live_agent_reaches_the_sidebar_through_the_watcher() {
     let mut panes = Panes::new();
     panes.insert(
         PaneId(0),
-        TerminalState::Live(Box::new(fake_agent_pane(tmp.path()))),
+        TerminalState::Live(Box::new(fake_agent_pane(tmp.path(), &[]))),
     );
     app.caches.panes.insert(key.clone(), panes);
     let ctx = egui::Context::default();
@@ -988,6 +993,49 @@ fn a_live_agent_reaches_the_sidebar_through_the_watcher() {
         "the watcher's reading should light the worktree row"
     );
     assert_eq!(app.caches.agents.first().map(|e| e.agent), Some("claude"));
+}
+
+#[test]
+fn a_claude_pane_carries_the_last_prompt_of_its_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("claude-config");
+    let pane = fake_agent_pane(tmp.path(), &[("CLAUDE_CONFIG_DIR", &config)]);
+    let pid = pane.shell_pid().unwrap();
+    std::fs::create_dir_all(config.join("sessions")).unwrap();
+    std::fs::write(
+        config.join("sessions").join(format!("{pid}.json")),
+        format!(r#"{{"pid":{pid},"sessionId":"s-1","cwd":"/tmp/repo.wt/feat"}}"#),
+    )
+    .unwrap();
+    let transcript = config.join("projects/-tmp-repo-wt-feat");
+    std::fs::create_dir_all(&transcript).unwrap();
+    std::fs::write(
+        transcript.join("s-1.jsonl"),
+        "{\"type\":\"last-prompt\",\"lastPrompt\":\"fix the pager\"}\n",
+    )
+    .unwrap();
+
+    let mut app = app_with(&["a"]);
+    let key = key_of(&app.workspace, 0, 0);
+    let mut panes = Panes::new();
+    panes.insert(PaneId(0), TerminalState::Live(Box::new(pane)));
+    app.caches.panes.insert(key, panes);
+    let ctx = egui::Context::default();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let prompt = |app: &HelmApp| {
+        app.caches
+            .agents
+            .first()
+            .and_then(|e| e.last_prompt.clone())
+    };
+    while prompt(&app).is_none() && std::time::Instant::now() < deadline {
+        app.last_agent_poll = f64::NEG_INFINITY;
+        app.update_agent_watch(&ctx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert_eq!(prompt(&app).as_deref(), Some("fix the pager"));
 }
 
 fn columns(handle: &crate::terminal::pane::PaneHandle) -> usize {
