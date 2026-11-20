@@ -138,7 +138,7 @@ character (⚠️), `U+FE0E` for the mono glyph. The terminal grid has its own r
   halfway from `bg.sidebar` toward `bg.canvas`, 1px border between that fill and
   `border.subtle`, radius ~12pt, ~4pt inner margin reaching into the sidebar's
   padding, ~8pt between two cards. The project **hue** is a lane-palette color hashed
-  from the project name.
+  from the project name, never the palette's red.
 - **Repository row** (worktree) — a **folder** icon for the **main** worktree / a
   **worktree** (folder-with-git) icon for a **linked** worktree, at the shared
   sidebar indent. The **main** row is **single line** — the **branch** as the label

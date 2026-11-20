@@ -727,7 +727,7 @@ impl HelmApp {
                 .enumerate()
                 .map(|(i, r)| {
                     if !child_flags[i] {
-                        lane = crate::theme::name_lane(&r.name);
+                        lane = crate::theme::project_lane(&r.name);
                     }
                     lane
                 })

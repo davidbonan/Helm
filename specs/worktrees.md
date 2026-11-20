@@ -25,7 +25,7 @@ below it.
 - **Each project is a card** holding its header and its rows, apart from the next
   card by a small gap. The project wears a **hue** derived from its **root folder
   name** (a stable hash into the lane palette, so it never shifts with the list
-  order), the same one its agents carry in the Agents view ([`agents.md`](agents.md)
+  order — red excluded, it would read as a deletion), the same one its agents carry in the Agents view ([`agents.md`](agents.md)
   §5): it tints the header monogram, the worktree row icons and the active row.
 - **The project header is not selectable**: it carries the project identity — a
   **monogram** (the initials of the name's first two words, else its first two

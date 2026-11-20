@@ -106,7 +106,7 @@ pub struct Palette {
     pub git_renamed: Color32,
     pub git_conflict: Color32,
     /// Cyclic colors of the graph lanes (M10-1) — see `lane_color`.
-    pub lane_colors: [Color32; 8],
+    pub lane_colors: [Color32; LANE_COUNT],
     /// Text laid over a graph node bubble (author initials, M10-3).
     pub lane_node_text: Color32,
     /// syntect theme name (two-face set) for diff coloring — the syntax follows
@@ -676,12 +676,27 @@ const CARD_HOVER: f32 = 0.06;
 const CARD_TINT: f32 = 0.16;
 const CARD_LINE: f32 = 0.45;
 
-/// Lane (`Palette::lane_color`) a name always wears — a project, an author, a site:
-/// hashed from the name alone, so it never shifts with list order.
+const LANE_COUNT: usize = 8;
+/// The red of every preset's `lane_colors`.
+const RED_LANE: usize = 4;
+
+/// Lane (`Palette::lane_color`) a name always wears — an author, a site: hashed from
+/// the name alone, so it never shifts with list order.
 pub fn name_lane(name: &str) -> usize {
     name.bytes().fold(0usize, |acc, byte| {
         acc.wrapping_mul(31).wrapping_add(usize::from(byte))
     })
+}
+
+/// Lane a project wears (worktrees.md §1): its name's, red aside — on a project
+/// card red would read as a deletion.
+pub fn project_lane(name: &str) -> usize {
+    let lane = name_lane(name) % (LANE_COUNT - 1);
+    if lane >= RED_LANE {
+        lane + 1
+    } else {
+        lane
+    }
 }
 
 const PRIMARY_BUTTON_DARKEN_LIGHT: f32 = 0.85;
@@ -1083,6 +1098,19 @@ mod tests {
             }
         }
         assert_ne!(Palette::light().lane_colors, Palette::dark().lane_colors);
+    }
+
+    #[test]
+    fn projects_wear_every_lane_but_the_red_one() {
+        for preset in PRESETS {
+            let [r, g, b, _] = preset.palette.lane_colors[RED_LANE].to_array();
+            assert!(r > g && r > b, "lane {RED_LANE} is the red of every preset");
+        }
+        let worn: std::collections::HashSet<usize> = (0..200)
+            .map(|i| project_lane(&format!("project-{i}")))
+            .collect();
+        assert!(!worn.contains(&RED_LANE));
+        assert_eq!(worn.len(), LANE_COUNT - 1, "every other lane stays in use");
     }
 
     #[test]
