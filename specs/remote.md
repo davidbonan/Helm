@@ -300,6 +300,14 @@ palette ([`design-system.md`](design-system.md) §1).
 - **Terminal header**: back chevron, project over branch · tab, state
   pill, a **Files** button (§7.3), A−/A+ segmented. Both lines keep their height while empty: on a direct
   load the rows are sized before the agents list fills them.
+- **Back chevrons** (terminal, files, viewer, sheets) go back in history, except on
+  the entry the page was loaded on (Home Screen relaunch, restored tab, reload): no
+  in-app entry precedes it, so back replaces it with its parent — file → its
+  folder → up to the root → terminal → agents list. In-app links push their route
+  with `history.pushState`, never by assigning `location.hash`: Safari reloads an
+  `http://` page on a fragment navigation (*Process swap due to EnhancedSecurity
+  change*, seen on the iOS 27 simulator), which doubled every entry — back then
+  landed on the same pane.
 - **Composer** (bottom, above the keyboard): an input card (`border.input`, accent
   when focused) holding the multi-line field and a round **Send** (`send`); empty
   text + Send = Enter alone. **Dictation** = the iOS keyboard's own mic: Web Speech

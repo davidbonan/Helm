@@ -8,6 +8,7 @@ const SILENT_MS = 10000;
 const SILENCE_CHECK_MS = 2000;
 const LAUNCH_ROUTE = "#/new";
 const PROJECTS_ROUTE = "#/projects";
+const PANE_ROUTE = /^#\/pane\/(\d+)(?:\/(files|file)\/(.*))?$/;
 const FONT_MIN = 3;
 const FONT_MAX = 20;
 const READING_FONT_MIN = 7;
@@ -611,7 +612,9 @@ function startLaunch() {
 
 function launched(id) {
   state.launchedLabels.set(id, state.launchLabel);
-  if (location.hash === LAUNCH_ROUTE) location.replace(`#/pane/${id}`);
+  if (location.hash !== LAUNCH_ROUTE) return;
+  history.replaceState(history.state, "", `#/pane/${id}`);
+  route();
 }
 
 function launchFailed(message) {
@@ -881,25 +884,31 @@ function showUnpaired() {
 
 $("agents").addEventListener("click", (event) => {
   const row = event.target.closest(".row");
-  if (row) location.hash = `#/pane/${row.dataset.id}`;
+  if (row) navigate(`#/pane/${row.dataset.id}`);
 });
-$("back").addEventListener("click", () => history.back());
-$("files-back").addEventListener("click", () => history.back());
-$("file-back").addEventListener("click", () => history.back());
-$("files-open").addEventListener("click", () => { location.hash = worktreeHash("files", state.watched, ""); });
-$("new-agent").addEventListener("click", () => { location.hash = LAUNCH_ROUTE; });
-$("projects-open").addEventListener("click", () => { location.hash = PROJECTS_ROUTE; });
-$("projects-done").addEventListener("click", () => history.back());
+$("back").addEventListener("click", goBack);
+$("files-back").addEventListener("click", goBack);
+$("file-back").addEventListener("click", goBack);
+$("files").addEventListener("click", (event) => {
+  const row = event.target.closest("a.row");
+  if (!row) return;
+  event.preventDefault();
+  navigate(row.getAttribute("href"));
+});
+$("files-open").addEventListener("click", () => navigate(worktreeHash("files", state.watched, "")));
+$("new-agent").addEventListener("click", () => navigate(LAUNCH_ROUTE));
+$("projects-open").addEventListener("click", () => navigate(PROJECTS_ROUTE));
+$("projects-done").addEventListener("click", goBack);
 $("projects").addEventListener("click", (event) => {
-  if (event.target === $("projects")) history.back();
+  if (event.target === $("projects")) goBack();
 });
 $("project-rows").addEventListener("click", (event) => {
   const row = event.target.closest(".row");
   if (row) toggleProject(Number(row.dataset.project));
 });
-$("launch-cancel").addEventListener("click", () => history.back());
+$("launch-cancel").addEventListener("click", goBack);
 $("launch").addEventListener("click", (event) => {
-  if (event.target === $("launch")) history.back();
+  if (event.target === $("launch")) goBack();
 });
 $("launch-entries").addEventListener("click", (event) => {
   const row = event.target.closest(".row");
@@ -972,7 +981,7 @@ document.addEventListener("selectionchange", () => {
 // The sheet is a history entry: Safari's back-swipe snapshot of the list is then taken without it.
 // A pane's files keep its mirror watched: back on the terminal, the agent has not redrawn.
 function route() {
-  const match = location.hash.match(/^#\/pane\/(\d+)(?:\/(files|file)\/(.*))?$/);
+  const match = location.hash.match(PANE_ROUTE);
   if (location.hash !== LAUNCH_ROUTE) closeLaunch();
   if (location.hash !== PROJECTS_ROUTE) closeProjects();
   closeFile();
@@ -983,7 +992,35 @@ function route() {
   if (location.hash === LAUNCH_ROUTE) openLaunch();
   if (location.hash === PROJECTS_ROUTE) openProjects();
 }
-window.addEventListener("hashchange", route);
+window.addEventListener("popstate", route);
+
+// Safari reloads an `http://` page on a fragment navigation (EnhancedSecurity process swap): pushState does not.
+function navigate(hash) {
+  history.pushState(null, "", hash);
+  route();
+}
+
+function parentRoute(hash) {
+  const match = hash.match(PANE_ROUTE);
+  if (!match) return "";
+  const [, pane, view, encoded] = match;
+  if (!view) return "";
+  const path = decodeURIComponent(encoded);
+  if (view === "files" && path === "") return `#/pane/${pane}`;
+  return worktreeHash("files", pane, path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+}
+
+// The entry the page was loaded on has no in-app entry before it: back climbs to its parent instead.
+const OPENED_ENTRY = { opened: true };
+function goBack() {
+  if (!history.state?.opened) {
+    history.back();
+    return;
+  }
+  history.replaceState(OPENED_ENTRY, "", parentRoute(location.hash) || location.pathname);
+  route();
+}
+if (history.state === null) history.replaceState(OPENED_ENTRY, "");
 
 // Hidden, the phone stops driving: closing the socket gives the Mac its size back.
 document.addEventListener("visibilitychange", () => {
