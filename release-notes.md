@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.11.1
+
+- **Phone**: the back chevron returns to the previous screen again — opening an
+  agent no longer reloads the page, and a page reopened on an agent or a file
+  goes back up to the agents list.
+
 ## 3.11.0
 
 - **Project cards** in the sidebar: each project sits on its own card, with a
@@ -66,12 +72,3 @@
   background or hidden, not only when its window is in front.
 - Phone: hide or show a project from the eye next to the + in the Agents
   title â shared with the sidebar's eye on the Mac.
-
-## 3.7.3
-
-- **Files** now has its own sidebar, per worktree: toggle it from the folder
-  button or `ââ§E`. It sits left of the browser, and shows in Graph mode too.
-- The right sidebars are now rounded blocks floating off the window edges.
-  Their toggles sit in the terminals' title row, and Git's shows the Git icon.
-- Phone, Send feedback and Preferences moved to the bottom of the left
-  sidebar.
