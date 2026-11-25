@@ -1,5 +1,11 @@
 # Release notes
 
+## 3.11.2
+
+- **Pull requests**: a Bitbucket repository that was deleted, renamed or is no
+  longer accessible no longer hides every Bitbucket pull request — the others
+  still list, and the warning names the repository with Bitbucket's reason.
+
 ## 3.11.1
 
 - **Phone**: the back chevron returns to the previous screen again — opening an
@@ -65,10 +71,3 @@
 - Cmd+click on a URL opens it in a new tab of helm's browser; from the
   Agents view, helm jumps to that agent's worktree first.
 - Cmd+click on a folder opens it in your editor.
-
-## 3.7.4
-
-- Agent completion notifications now arrive when helm is in the
-  background or hidden, not only when its window is in front.
-- Phone: hide or show a project from the eye next to the + in the Agents
-  title â shared with the sidebar's eye on the Mac.
