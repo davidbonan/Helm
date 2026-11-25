@@ -1627,55 +1627,8 @@ fn fetch(
                     }
                 }
                 if let Some(uuid) = &bitbucket_uuid {
-                    let mut rows = Vec::new();
-                    let mut complete = true;
-                    let mut unauthorized = false;
-                    for query in plan(&forges, Some(uuid.as_str())) {
-                        if let PrQuery::Bitbucket {
-                            repo_label,
-                            url,
-                            role,
-                        } = query
-                        {
-                            let mut next = Some(url);
-                            while let Some(page_url) = next {
-                                match curl_get(&page_url, &header) {
-                                    CurlResult::Ok(json) => {
-                                        if let Ok(mut prs) =
-                                            bitbucket::parse_list(&json, &repo_label, role, uuid)
-                                        {
-                                            rows.append(&mut prs);
-                                        }
-                                        next = bitbucket::next_page(&json);
-                                    }
-                                    CurlResult::Unauthorized => {
-                                        unauthorized = true;
-                                        next = None;
-                                    }
-                                    CurlResult::HttpError(_) | CurlResult::Failed => {
-                                        complete = false;
-                                        next = None;
-                                    }
-                                }
-                            }
-                        }
-                        if unauthorized {
-                            break;
-                        }
-                    }
-                    if unauthorized {
-                        bitbucket = SourceStatus::Unavailable(
-                            "Bitbucket token invalid or expired".to_owned(),
-                        );
-                    } else if complete {
-                        bitbucket = SourceStatus::Ok;
-                        bitbucket_rows = Some(dedupe(rows));
-                    } else {
-                        bitbucket = SourceStatus::Unavailable(
-                            "Bitbucket unreachable — showing cached results".to_owned(),
-                        );
-                        bitbucket_rows = None;
-                    }
+                    (bitbucket, bitbucket_rows) =
+                        list_bitbucket(&forges, uuid, &header).into_status();
                 }
             }
         }
@@ -1691,6 +1644,90 @@ fn fetch(
         github_name,
         bitbucket_name,
     }
+}
+
+/// What the Bitbucket list queries brought back, before it becomes a source status.
+#[derive(Debug, Default)]
+struct BitbucketListing {
+    rows: Vec<PullRequest>,
+    /// Repos Bitbucket answered with an HTTP error (404 gone, 403 no access), with
+    /// its reason: skipped so the other repos still list.
+    refused: Vec<(String, String)>,
+    unreachable: bool,
+    unauthorized: bool,
+}
+
+impl BitbucketListing {
+    fn is_refused(&self, repo_label: &str) -> bool {
+        self.refused.iter().any(|(repo, _)| repo == repo_label)
+    }
+
+    /// Network failure keeps the cached rows (§6); a refused repo only drops its own.
+    fn into_status(self) -> (SourceStatus, Option<Vec<PullRequest>>) {
+        if self.unauthorized {
+            return (
+                SourceStatus::Unavailable("Bitbucket token invalid or expired".to_owned()),
+                Some(Vec::new()),
+            );
+        }
+        if self.unreachable {
+            return (
+                SourceStatus::Unavailable(
+                    "Bitbucket unreachable — showing cached results".to_owned(),
+                ),
+                None,
+            );
+        }
+        let status = if self.refused.is_empty() {
+            SourceStatus::Ok
+        } else {
+            let reasons: Vec<String> = self
+                .refused
+                .iter()
+                .map(|(repo, message)| format!("{repo}: {message}"))
+                .collect();
+            SourceStatus::Unavailable(reasons.join(" · "))
+        };
+        (status, Some(dedupe(self.rows)))
+    }
+}
+
+/// Runs every Bitbucket list query of the workspace, following pagination.
+fn list_bitbucket(forges: &[(Forge, String)], uuid: &str, header: &str) -> BitbucketListing {
+    let mut listing = BitbucketListing::default();
+    for query in plan(forges, Some(uuid)) {
+        let PrQuery::Bitbucket {
+            repo_label,
+            url,
+            role,
+        } = query
+        else {
+            continue;
+        };
+        if listing.is_refused(&repo_label) {
+            continue;
+        }
+        let mut next = Some(url);
+        while let Some(page_url) = next.take() {
+            match curl_get(&page_url, header) {
+                CurlResult::Ok(json) => {
+                    if let Ok(mut prs) = bitbucket::parse_list(&json, &repo_label, role, uuid) {
+                        listing.rows.append(&mut prs);
+                    }
+                    next = bitbucket::next_page(&json);
+                }
+                CurlResult::Unauthorized => {
+                    listing.unauthorized = true;
+                    return listing;
+                }
+                CurlResult::HttpError(message) => {
+                    listing.refused.push((repo_label.clone(), message));
+                }
+                CurlResult::Failed => listing.unreachable = true,
+            }
+        }
+    }
+    listing
 }
 
 fn command_ok(program: &str, args: &[String]) -> bool {
@@ -2053,6 +2090,34 @@ mod tests {
             github_name: None,
             bitbucket_name: None,
         }
+    }
+
+    fn listing_with_a_refused_repo() -> BitbucketListing {
+        BitbucketListing {
+            rows: vec![row(ForgeKind::Bitbucket, "team/web", 7)],
+            refused: vec![("team/gone".to_owned(), "repository not found".to_owned())],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn refused_repo_still_lists_the_others_and_names_itself() {
+        let (status, rows) = listing_with_a_refused_repo().into_status();
+        assert_eq!(rows.map(|r| r.len()), Some(1));
+        assert_eq!(
+            status,
+            SourceStatus::Unavailable("team/gone: repository not found".to_owned())
+        );
+    }
+
+    #[test]
+    fn network_failure_keeps_the_cached_rows_even_beside_a_refused_repo() {
+        let listing = BitbucketListing {
+            unreachable: true,
+            ..listing_with_a_refused_repo()
+        };
+        let (_, rows) = listing.into_status();
+        assert!(rows.is_none());
     }
 
     #[test]

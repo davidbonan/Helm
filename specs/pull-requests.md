@@ -194,7 +194,10 @@ Empty / edge states, all a centered glyph over a headline and a line saying what
 do about it: no recognized-forge repo ⇒ *"No GitHub or Bitbucket repository in your
 workspace"*; nothing open ⇒ *"No pull requests"*; the filters leaving nothing ⇒
 *"No pull request matches these filters"*. A source unavailable ⇒ its inline hint
-(§3) while the other source still lists.
+(§3) while the other source still lists. A repository the forge refuses
+(Bitbucket 403/404: deleted, renamed, access lost) is skipped: its source still
+lists the other repositories, the hint names the refused repo with the forge's
+reason. Only a network failure keeps the cached rows (§6).
 
 ## 6. Fetching, refresh & threading
 
